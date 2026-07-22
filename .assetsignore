@@ -1,0 +1,7 @@
+.git
+.wrangler
+.wrangler-local
+node_modules
+npm-debug.log
+wrangler.out.log
+wrangler.err.log

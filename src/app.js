@@ -23,6 +23,7 @@ async function getView(name) {
     else if (name === 'leave')       _viewModules[name] = await import('./views/leave.js');
     else if (name === 'campaigns')   _viewModules[name] = await import('./views/campaigns.js');
     else if (name === 'evaluation')  _viewModules[name] = await import('./views/evaluation.js');
+    else if (name === 'db-admin')    _viewModules[name] = await import('./views/dbadmin.js');
   }
   return _viewModules[name];
 }
@@ -122,6 +123,7 @@ function initApp() {
   const isManager = me.role === 'admin' || me.role === 'manager';
   const adminNav = document.getElementById('admin-nav');
   if (!isManager) adminNav.style.display = 'none';
+  document.getElementById('db-admin-nav-item')?.classList.toggle('hidden', me.role !== 'admin');
 
   startClock();
 
@@ -371,7 +373,7 @@ async function route() {
 
   try {
     const mod = await getView(path);
-    const fnName = 'render' + path.charAt(0).toUpperCase() + path.slice(1);
+    const fnName = 'render' + path.split('-').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join('');
     if (mod && typeof mod[fnName] === 'function') {
       await mod[fnName](viewNode, me);
       const cleanup = viewNode._cleanup || null;

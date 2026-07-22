@@ -1,0 +1,12 @@
+name = "nexrall-hr-manager-marketing"
+main = "worker.js"
+compatibility_date = "2026-07-22"
+
+[assets]
+directory = ".local-public"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "nexrall-hr-manager-local"
+database_id = "1e0eeebd-82fa-4c10-a079-97d35308a58b"

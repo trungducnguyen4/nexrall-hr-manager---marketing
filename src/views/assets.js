@@ -6,7 +6,7 @@
 //  See server.js /api/assets for permission enforcement.
 // ════════════════════════════════════════════════
 import { api } from '../api.js';
-import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, assetStatusBadge, lifecycleBadge, fmtDate, DEPARTMENTS, noop, safeCb } from '../utils.js';
+import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, assetStatusBadge, lifecycleBadge, fmtDate, DEPARTMENTS, noop, safeCb, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js';
 
 // HCNS (Phòng HCNS) and Ban Giám Đốc are DEPARTMENTS (not roles).
 function isHrOrBod(u) {
@@ -134,17 +134,14 @@ function renderAssetList(list, mode) {
 }
 
 function filterAssets(assets) {
-  const search = (document.getElementById('asset-search')?.value || '').toLowerCase();
+  const search = document.getElementById('asset-search')?.value || '';
   const dept = document.getElementById('asset-f-dept')?.value || '';
   const empType = document.getElementById('asset-f-emptype')?.value || '';
   const assetType = document.getElementById('asset-f-type')?.value || '';
   const status = document.getElementById('asset-f-status')?.value || '';
   const beforeDate = document.getElementById('asset-f-date')?.value || '';
-  let list = assets;
-  if (search) list = list.filter(a =>
-    (a.owner_name || '').toLowerCase().includes(search) || (a.owner_code || '').toLowerCase().includes(search)
-  );
-  if (dept) list = list.filter(a => a.owner_department === dept);
+  let list = filterBySearch(assets, search, ['owner_name', 'owner_code', 'asset_name', 'platform']);
+  list = filterByDepartment(list, dept, ['owner_department']);
   if (empType) list = list.filter(a => (a.owner_employee_type || 'NV') === empType);
   if (assetType) list = list.filter(a => a.asset_type === assetType);
   if (status) list = list.filter(a => a.status === status);
@@ -160,6 +157,18 @@ function wireAssetHandlers(el, me, assets) {
     openAssetForm(null, me, () => renderAssetSection(el, me), { forOwnerPick: true });
   });
 
+  let managePage = 1;
+
+  function renderManageList() {
+    const filtered = filterAssets(assets);
+    const pageData = paginateRows(filtered, managePage);
+    managePage = pageData.page;
+    const listEl = document.getElementById('asset-all-list');
+    if (listEl) listEl.innerHTML = renderAssetList(pageData.rows, 'manage') + paginationHTML(pageData);
+    wireManageListClicks(pageData.rows);
+    if (listEl) bindPagination(listEl, page => { managePage = page; renderManageList(); });
+  }
+
   function wireManageListClicks(list) {
     document.getElementById('asset-all-list')?.querySelectorAll('.list-item[data-aid]').forEach(item => {
       item.addEventListener('click', () => {
@@ -169,15 +178,16 @@ function wireAssetHandlers(el, me, assets) {
     });
   }
   ['asset-search','asset-f-dept','asset-f-emptype','asset-f-type','asset-f-status','asset-f-date'].forEach(id => {
-    document.getElementById(id)?.addEventListener('input', () => {
-      const filtered = filterAssets(assets);
-      const listEl = document.getElementById('asset-all-list');
-      if (listEl) listEl.innerHTML = renderAssetList(filtered, 'manage');
-      wireManageListClicks(filtered);
+    const evt = id === 'asset-search' ? 'input' : 'change';
+    document.getElementById(id)?.addEventListener(evt, () => {
+      managePage = 1;
+      renderManageList();
     });
   });
+  renderManageList();
 
   el.querySelectorAll('.list-item[data-aid]').forEach(item => {
+    if (item.closest('#asset-all-list')) return;
     item.addEventListener('click', () => {
       const asset = assets.find(a => a.id === parseInt(item.dataset.aid));
       if (asset) openAssetDetail(asset, me, () => renderAssetSection(el, me));

@@ -13,7 +13,14 @@ export async function renderWifi(el, me) {
         <div class="page-title">📡 WiFi Whitelist</div>
         <div class="page-sub">Quản lý mạng WiFi được phép chấm công</div>
       </div>
-      <button id="btn-add-wifi" class="btn-primary btn-sm">+ Thêm WiFi</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button id="btn-check-ip" class="btn-secondary btn-sm">Kiểm tra IP hiện tại</button>
+        <button id="btn-add-wifi" class="btn-primary btn-sm">+ Thêm WiFi</button>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:12px;background:#FFF7ED;border-color:#FED7AA;">
+      <div style="font-size:13px;color:var(--text-2);">Chưa xác định đường truyền sử dụng IP tĩnh hay IP động. Nếu IP thay đổi, việc chấm công tại văn phòng có thể bị gián đoạn.</div>
+      <div id="wifi-ip-result" style="font-size:12px;color:var(--text-3);margin-top:6px;"></div>
     </div>
     <div id="wifi-list">${loadingHTML()}</div>
   `;
@@ -55,6 +62,16 @@ export async function renderWifi(el, me) {
   }
 
   document.getElementById('btn-add-wifi').addEventListener('click', () => openWifiForm(null, loadWifi));
+  document.getElementById('btn-check-ip').addEventListener('click', async () => {
+    const box = document.getElementById('wifi-ip-result');
+    box.textContent = 'Đang kiểm tra...';
+    try {
+      const r = await api.getIp();
+      box.innerHTML = `IP backend nhận được: <code>${esc(r.ip)}</code> ${r.matched ? '(đã khớp whitelist)' : '(chưa khớp whitelist)'}`;
+    } catch(e) {
+      box.textContent = e.message || 'Không kiểm tra được IP';
+    }
+  });
   loadWifi();
 }
 
@@ -62,7 +79,8 @@ function openWifiForm(data, refreshFn) {
   const isEdit = !!data?.wid;
   openModal(isEdit ? 'Sửa WiFi' : 'Thêm WiFi', `
     <div class="field"><label>Tên WiFi *</label><input type="text" id="wf-name" value="${esc(data?.name||'')}" placeholder="Office WiFi"/></div>
-    <div class="field"><label>Dải IP (prefix)</label><input type="text" id="wf-ip" value="${esc(data?.ip||'')}" placeholder="192.168.1"/></div>
+    <div class="field"><label>Public IPv4</label><input type="text" id="wf-ip" value="${esc(data?.ip||'')}" placeholder="42.118.136.186"/></div>
+    ${!isEdit ? `<button type="button" class="btn-secondary btn-sm" id="wf-use-current" style="margin-bottom:10px;">Dùng IP backend hiện tại</button>` : ''}
     <div class="field"><label>Mô tả</label><input type="text" id="wf-desc" value="${esc(data?.desc||data?.description||'')}" placeholder="Văn phòng tầng 2"/></div>
     <div class="field"><label>Trạng thái</label>
       <select id="wf-active">
@@ -74,6 +92,13 @@ function openWifiForm(data, refreshFn) {
     <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Hủy</button>
     <button class="btn-primary" id="wf-save">Lưu</button>
   `);
+  document.getElementById('wf-use-current')?.addEventListener('click', async () => {
+    try {
+      const r = await api.getIp();
+      document.getElementById('wf-ip').value = r.ip || '';
+      if (r.warning) toast(r.warning, 'info', 5000);
+    } catch(e) { toast(e.message || 'Không lấy được IP', 'error'); }
+  });
   document.getElementById('wf-save').addEventListener('click', async () => {
     const wifi_name = document.getElementById('wf-name').value.trim();
     if (!wifi_name) { toast('Nhập tên WiFi', 'error'); return; }

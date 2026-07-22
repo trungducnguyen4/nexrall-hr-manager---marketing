@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, DEPARTMENTS, noop, safeCb } from '../utils.js';
+import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb } from '../utils.js';
 
 const DEPT_COLORS = [
   '#6366F1','#10B981','#F59E0B','#EF4444','#3B82F6',
@@ -173,10 +173,7 @@ function openDeptForm(dept, onRefresh = noop, existingDepts = []) {
   const isEdit = !!dept;
   openModal(isEdit ? 'Sửa phòng ban' : 'Thêm phòng ban', `
     <div class="field"><label>Tên phòng ban *</label>
-      <select id="df-name">
-        <option value="">-- Chọn phòng ban --</option>
-        ${DEPARTMENTS.map(d => `<option value="${esc(d)}" ${dept?.name===d?'selected':''}>${esc(d)}</option>`).join('')}
-      </select>
+      <input type="text" id="df-name" value="${esc(dept?.name||'')}" placeholder="Nhập tên phòng ban"/>
     </div>
     <div class="field"><label>Trưởng phòng</label>
       <input type="text" id="df-manager" value="${esc(dept?.manager||'')}" placeholder="Nguyễn Văn A"/>
@@ -190,9 +187,9 @@ function openDeptForm(dept, onRefresh = noop, existingDepts = []) {
   `);
 
   document.getElementById('df-save').addEventListener('click', async () => {
-    const name = document.getElementById('df-name').value;
-    if (!name) { toast('Vui lòng chọn phòng ban', 'error'); return; }
-    const dup = existingDepts.some(d => d.name === name && (!isEdit || d.id !== dept.id));
+    const name = document.getElementById('df-name').value.trim().replace(/\s+/g, ' ');
+    if (!name) { toast('Vui lòng nhập tên phòng ban', 'error'); return; }
+    const dup = existingDepts.some(d => String(d.name || '').trim().replace(/\s+/g, ' ').toLowerCase() === name.toLowerCase() && (!isEdit || d.id !== dept.id));
     if (dup) { toast('Phòng ban này đã tồn tại', 'error'); return; }
     const data = {
       name,

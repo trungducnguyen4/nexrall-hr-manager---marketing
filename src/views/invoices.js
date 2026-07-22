@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { esc, fmtMoney, fmtDateTime, invStatusBadge, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb } from '../utils.js';
+import { esc, fmtMoney, fmtDateTime, invStatusBadge, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js';
 import { navigate } from '../app.js';
 
 export async function renderInvoices(el, me) {
@@ -30,10 +30,13 @@ export async function renderInvoices(el, me) {
       ` : ''}
     </div>
 
+    ${isManager ? `<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;"><input type="text" id="inv-search" placeholder="Tìm theo tên, mã, email..." style="flex:2;min-width:220px;"/><select id="inv-dept-filter" style="flex:1;min-width:180px;"><option value="">Tất cả phòng ban</option>${DEPARTMENTS.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}</select></div>` : ''}
+
     <div id="inv-list">${loadingHTML()}</div>
   `;
 
   let users = [];
+  let currentPage = 1;
   if (isManager) {
     try {
       users = (await api.getUsers()).users || [];
@@ -43,12 +46,14 @@ export async function renderInvoices(el, me) {
         opt.value = u.id; opt.textContent = u.full_name;
         sel.appendChild(opt);
       });
-      sel.addEventListener('change', loadInvoices);
-      document.getElementById('inv-status-filter').addEventListener('change', loadInvoices);
+      sel.addEventListener('change', () => { currentPage = 1; loadInvoices(); });
+      document.getElementById('inv-status-filter').addEventListener('change', () => { currentPage = 1; loadInvoices(); });
     } catch(_) {}
   }
 
-  document.getElementById('inv-month-filter').addEventListener('change', loadInvoices);
+  document.getElementById('inv-month-filter').addEventListener('change', () => { currentPage = 1; loadInvoices(); });
+  document.getElementById('inv-search')?.addEventListener('input', () => { currentPage = 1; loadInvoices(); });
+  document.getElementById('inv-dept-filter')?.addEventListener('change', () => { currentPage = 1; loadInvoices(); });
 
   async function loadInvoices() {
     const listEl = document.getElementById('inv-list');
@@ -67,8 +72,15 @@ export async function renderInvoices(el, me) {
     }
     try {
       const { invoices } = await api.getInvoices(params);
-      if (!invoices.length) { listEl.innerHTML = emptyHTML('💰', 'Không có phiếu lương nào'); return; }
-      listEl.innerHTML = invoices.map(inv => `
+      let filteredInvoices = invoices || [];
+      if (isManager) {
+        filteredInvoices = filterBySearch(filteredInvoices, document.getElementById('inv-search')?.value || '', ['full_name', 'employee_code', 'invoice_number']);
+        filteredInvoices = filterByDepartment(filteredInvoices, document.getElementById('inv-dept-filter')?.value || '', ['department']);
+      }
+      const pageData = paginateRows(filteredInvoices, currentPage);
+      currentPage = pageData.page;
+      if (!filteredInvoices.length) { listEl.innerHTML = emptyHTML('💰', 'Không có phiếu lương nào'); return; }
+      listEl.innerHTML = pageData.rows.map(inv => `
         <div class="invoice-card" data-inv="${inv.id}">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;">
             <div>
@@ -83,10 +95,11 @@ export async function renderInvoices(el, me) {
           </div>
           ${inv.department ? `<div style="font-size:11px;color:var(--text-2);margin-top:4px;">${esc(inv.department)} · ${esc(inv.position||'')}</div>` : ''}
         </div>
-      `).join('');
+      `).join('') + paginationHTML(pageData);
       listEl.querySelectorAll('.invoice-card').forEach(card => {
         card.addEventListener('click', () => openInvoiceDetail(parseInt(card.dataset.inv), isManager, users, loadInvoices));
       });
+      bindPagination(listEl, page => { currentPage = page; loadInvoices(); });
     } catch(e) {
       listEl.innerHTML = emptyHTML('⚠️', e.message);
     }
@@ -153,7 +166,7 @@ function openInvoiceDetail(invId, isManager, users, onRefresh = noop) {
       closeModal();
       navigate('#/attendance');
     });
-    if (isManager) {
+    if (isManager && !(inv.locked_at || inv.status === 'paid')) {
       document.getElementById('modal-footer').innerHTML = `
         <button class="btn-danger" id="inv-del-btn">Xóa</button>
         <select id="inv-status-sel" style="flex:1;border:1.5px solid var(--border);border-radius:8px;padding:8px;font-size:13px;">

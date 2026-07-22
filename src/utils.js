@@ -222,6 +222,48 @@ export function noop() {}
  *  `if (typeof X !== 'function') X = noop;` line duplicated across every view. */
 export function safeCb(fn) { return typeof fn === 'function' ? fn : noop; }
 
+export const PAGE_SIZE = 10;
+
+export function filterBySearch(rows, search, fields = []) {
+  const q = String(search || '').trim().toLowerCase();
+  if (!q) return rows || [];
+  return (rows || []).filter(row => fields.some(field => String(row?.[field] ?? '').toLowerCase().includes(q)));
+}
+
+export function filterByDepartment(rows, department, fields = ['department']) {
+  if (!department) return rows || [];
+  return (rows || []).filter(row => fields.some(field => String(row?.[field] ?? '') === String(department)));
+}
+
+export function paginateRows(rows, page = 1, pageSize = PAGE_SIZE) {
+  const total = (rows || []).length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(Math.max(parseInt(page, 10) || 1, 1), totalPages);
+  const start = (safePage - 1) * pageSize;
+  return { rows: (rows || []).slice(start, start + pageSize), page: safePage, total, totalPages, pageSize };
+}
+
+export function paginationHTML({ page = 1, total = 0, pageSize = PAGE_SIZE } = {}) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  if (total <= pageSize) return '';
+  return `
+    <div class="pagination" style="display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px;flex-wrap:wrap;">
+      <button class="btn-secondary btn-sm" data-page="${Math.max(1, page - 1)}" ${page <= 1 ? 'disabled' : ''}>Trước</button>
+      <span style="font-size:12px;color:var(--text-2);">Trang ${page}/${totalPages} · ${total} dòng</span>
+      <button class="btn-secondary btn-sm" data-page="${Math.min(totalPages, page + 1)}" ${page >= totalPages ? 'disabled' : ''}>Sau</button>
+    </div>
+  `;
+}
+
+export function bindPagination(container, onPageChange) {
+  container?.querySelectorAll('.pagination [data-page]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const page = parseInt(btn.dataset.page, 10);
+      if (!btn.disabled && page) onPageChange(page);
+    });
+  });
+}
+
 export function today() {
   return new Date().toLocaleDateString('en-CA');
 }

@@ -1,4 +1,4 @@
-import { esc, EVAL_GROUPS, EVAL_RATING_SCALE, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtDateTime, noop, safeCb } from '../utils.js';
+import { esc, EVAL_GROUPS, EVAL_RATING_SCALE, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtDateTime, noop, safeCb, paginateRows, paginationHTML, bindPagination } from '../utils.js';
 import { api } from '../api.js';
 
 // ════════════════════════════════════════════════
@@ -150,6 +150,9 @@ const STATUS_META = {
   HR_RECEIVED:                 { label: 'HCNS đã tiếp nhận',          cls: 'badge-success' },
   LOCKED:                      { label: 'Đã khóa',                    cls: 'badge-gray' },
 };
+let evalAdminPage = 1;
+let evalAssignedPage = 1;
+
 function statusBadgeHtml(status) {
   const m = STATUS_META[status] || { label: status || '—', cls: 'badge-gray' };
   return `<span class="badge ${m.cls}">${esc(m.label)}</span>`;
@@ -264,7 +267,7 @@ function adminSectionHtml(periods, evaluations, basicUsers, latestPeriod) {
       <table>
         <thead><tr><th>TTS</th><th>Kỳ</th><th>Mentor</th><th>Trưởng phòng</th><th>Trạng thái</th></tr></thead>
         <tbody>
-          ${evaluations.length ? evaluations.map(e => `
+          ${evaluations.length ? paginateRows(evaluations, evalAdminPage).rows.map(e => `
             <tr class="eval-row" data-id="${e.id}" style="cursor:pointer;">
               <td>${esc(e.user_name || '—')}</td>
               <td>${e.period_month || '—'}/${e.period_year || ''}</td>
@@ -276,6 +279,7 @@ function adminSectionHtml(periods, evaluations, basicUsers, latestPeriod) {
         </tbody>
       </table>
     </div>
+    <div id="eval-admin-pagination">${paginationHTML(paginateRows(evaluations, evalAdminPage))}</div>
   </div>`;
 }
 
@@ -287,7 +291,7 @@ function assignedSectionHtml(list) {
       <table>
         <thead><tr><th>TTS</th><th>Mã NV</th><th>Phòng ban</th><th>Vị trí</th><th>Kỳ</th><th>Thời hạn</th><th>Trạng thái</th></tr></thead>
         <tbody>
-          ${list.map(e => `
+          ${paginateRows(list, evalAssignedPage).rows.map(e => `
             <tr class="eval-row" data-id="${e.id}" style="cursor:pointer;">
               <td>${esc(e.user_name || '—')}</td>
               <td>${esc(e.user_code || '—')}</td>
@@ -301,6 +305,7 @@ function assignedSectionHtml(list) {
         </tbody>
       </table>
     </div>
+    <div id="eval-assigned-pagination">${paginationHTML(paginateRows(list, evalAssignedPage))}</div>
   </div>`;
 }
 
@@ -325,6 +330,8 @@ function ttsSectionHtml(ev) {
 
 function wireWorkflowHandlers(el, me, ctx) {
   const refresh = () => renderWorkflowSection(el, me);
+  bindPagination(document.getElementById('eval-admin-pagination'), page => { evalAdminPage = page; refresh(); });
+  bindPagination(document.getElementById('eval-assigned-pagination'), page => { evalAssignedPage = page; refresh(); });
 
   document.getElementById('eval-period-new-btn')?.addEventListener('click', () => {
     document.getElementById('eval-period-form-wrap')?.classList.toggle('hidden');

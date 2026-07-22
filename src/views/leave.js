@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtDate, noop, safeCb } from '../utils.js';
+import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtDate, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js';
 
 const LEAVE_TYPES = [
   { value: 'annual',   label: 'Phép năm',       icon: '🏖️', color: '#6366F1' },
@@ -9,7 +9,12 @@ const LEAVE_TYPES = [
   { value: 'other',    label: 'Khác',            icon: '📝', color: '#64748B' },
 ];
 
-function leaveType(t) { return LEAVE_TYPES.find(x => x.value === t) || { label: t, icon: '📝', color: '#64748B' }; }
+let activeLeaveTypes = LEAVE_TYPES;
+function leaveType(t) { return activeLeaveTypes.find(x => x.value === t) || LEAVE_TYPES.find(x => x.value === t) || { label: t, icon: '📝', color: '#64748B' }; }
+function mapLeaveType(row) {
+  const fallback = LEAVE_TYPES.find(x => x.value === row.code) || LEAVE_TYPES[LEAVE_TYPES.length - 1];
+  return { ...fallback, value: row.code, label: row.name || fallback.label, policy: row };
+}
 
 function daysBetween(a, b) {
   const ms = Math.abs(new Date(b) - new Date(a));
@@ -18,6 +23,12 @@ function daysBetween(a, b) {
 
 export async function renderLeave(el, me) {
   const isManager = me.role === 'admin' || me.role === 'manager';
+  try {
+    const { leaveTypes = [] } = await api.getLeaveTypes(false);
+    if (leaveTypes.length) activeLeaveTypes = leaveTypes.map(mapLeaveType);
+  } catch(_) {
+    activeLeaveTypes = LEAVE_TYPES;
+  }
 
   el.innerHTML = `
     <div class="page-header">
@@ -35,18 +46,24 @@ export async function renderLeave(el, me) {
       <span class="filter-chip" data-status="rejected">❌ Từ chối</span>
     </div>
 
+    ${isManager ? `<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;"><input type="text" id="leave-search" placeholder="Tìm theo tên, mã nhân viên..." style="flex:2;min-width:220px;"/><select id="leave-dept-filter" style="flex:1;min-width:180px;"><option value="">Tất cả phòng ban</option>${DEPARTMENTS.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}</select></div>` : ''}
     <div id="leave-list">${loadingHTML()}</div>
   `;
 
-  document.getElementById('btn-new-leave').addEventListener('click', () => openLeaveForm(null, me, loadLeave));
+  let currentPage = 1;
+  document.getElementById('btn-new-leave').addEventListener('click', () => openLeaveForm(null, me, loadLeave, activeLeaveTypes));
 
   document.querySelector('.filter-bar').addEventListener('click', (e) => {
     const chip = e.target.closest('.filter-chip');
     if (!chip) return;
     document.querySelectorAll('.filter-bar .filter-chip').forEach(c => c.classList.remove('active'));
     chip.classList.add('active');
+    currentPage = 1;
     loadLeave();
   });
+
+  document.getElementById('leave-search')?.addEventListener('input', () => { currentPage = 1; loadLeave(); });
+  document.getElementById('leave-dept-filter')?.addEventListener('change', () => { currentPage = 1; loadLeave(); });
 
   async function loadLeave() {
     const listEl = document.getElementById('leave-list');
@@ -59,13 +76,20 @@ export async function renderLeave(el, me) {
 
     try {
       const { leave = [] } = await api.getLeave(params);
-      if (!leave.length) {
+      let filteredLeave = leave;
+      if (isManager) {
+        filteredLeave = filterBySearch(filteredLeave, document.getElementById('leave-search')?.value || '', ['employee_name', 'employee_code']);
+        filteredLeave = filterByDepartment(filteredLeave, document.getElementById('leave-dept-filter')?.value || '', ['department']);
+      }
+      const pageData = paginateRows(filteredLeave, currentPage);
+      currentPage = pageData.page;
+      if (!filteredLeave.length) {
         listEl.innerHTML = emptyHTML('🏖️', 'Không có đơn nghỉ phép nào', 'Nhấn "+ Xin nghỉ" để tạo đơn mới');
         return;
       }
 
-      listEl.innerHTML = leave.map(l => {
-        const lt = leaveType(l.type);
+      listEl.innerHTML = pageData.rows.map(l => {
+        const lt = l.type_name ? { ...leaveType(l.type), label: l.type_name } : leaveType(l.type);
         const days = daysBetween(l.start_date, l.end_date);
         const statusInfo = statusData(l.status);
         return `
@@ -91,7 +115,7 @@ export async function renderLeave(el, me) {
             </div>
           </div>
         `;
-      }).join('');
+      }).join('') + paginationHTML(pageData);
 
       listEl.querySelectorAll('.leave-approve').forEach(btn => {
         btn.addEventListener('click', async () => {
@@ -124,6 +148,7 @@ export async function renderLeave(el, me) {
         });
       });
 
+      bindPagination(listEl, page => { currentPage = page; loadLeave(); });
     } catch(e) {
       listEl.innerHTML = emptyHTML('⚠️', e.message);
     }
@@ -140,13 +165,13 @@ function statusData(s) {
   }[s] || { cls: 'badge-gray', label: s };
 }
 
-function openLeaveForm(leave, me, onRefresh = noop) {
+function openLeaveForm(leave, me, onRefresh = noop, leaveTypes = activeLeaveTypes) {
   onRefresh = safeCb(onRefresh);
   const today = new Date().toISOString().slice(0,10);
   openModal('Đăng ký nghỉ phép', `
     <div class="field"><label>Loại nghỉ phép *</label>
       <select id="lf-type">
-        ${LEAVE_TYPES.map(t => `<option value="${t.value}" ${leave?.type===t.value?'selected':''}>${t.icon} ${t.label}</option>`).join('')}
+        ${leaveTypes.map(t => `<option value="${t.value}" ${leave?.type===t.value?'selected':''}>${t.icon || '📝'} ${esc(t.label)}</option>`).join('')}
       </select>
     </div>
     <div class="input-row">

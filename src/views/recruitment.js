@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, DEPARTMENTS, noop, safeCb } from '../utils.js';
+import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, DEPARTMENTS, noop, safeCb, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js';
 
 const STAGES = [
   { key: 'received',    label: 'Mới tiếp nhận', color: '#64748B', bg: '#F1F5F9' },
@@ -42,6 +42,7 @@ export async function renderRecruitment(el, me) {
     <div class="search-bar">
       <span class="search-icon">🔍</span>
       <input type="text" id="recruit-search" placeholder="Tìm tên, vị trí ứng tuyển..."/>
+      <select id="recruit-dept-filter" style="max-width:220px;"><option value="">Tất cả phòng ban</option>${DEPT_LIST.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}</select>
     </div>
 
     <div id="recruit-list">${loadingHTML()}</div>
@@ -51,17 +52,21 @@ export async function renderRecruitment(el, me) {
     document.getElementById('btn-new-cand').addEventListener('click', () => openCandidateForm(null, loadCandidates));
   }
 
+  let allCandidates = [];
+  let currentPage = 1;
+
   document.getElementById('recruit-filter').addEventListener('click', (e) => {
     const chip = e.target.closest('.filter-chip');
     if (!chip) return;
     document.querySelectorAll('#recruit-filter .filter-chip').forEach(c => c.classList.remove('active'));
     chip.classList.add('active');
+    currentPage = 1;
     loadCandidates();
   });
 
-  document.getElementById('recruit-search').addEventListener('input', loadCandidates);
+  document.getElementById('recruit-search').addEventListener('input', () => { currentPage = 1; loadCandidates(); });
+  document.getElementById('recruit-dept-filter')?.addEventListener('change', () => { currentPage = 1; loadCandidates(); });
 
-  let allCandidates = [];
 
   async function loadCandidates() {
     const listEl = document.getElementById('recruit-list');
@@ -104,17 +109,16 @@ export async function renderRecruitment(el, me) {
 
       let filtered = allCandidates;
       if (stageFilter) filtered = filtered.filter(c => c.stage === stageFilter);
-      if (searchFilter) filtered = filtered.filter(c =>
-        (c.name||'').toLowerCase().includes(searchFilter) ||
-        (c.position||'').toLowerCase().includes(searchFilter)
-      );
-
+      filtered = filterBySearch(filtered, searchFilter, ['name', 'position', 'email', 'phone']);
+      filtered = filterByDepartment(filtered, document.getElementById('recruit-dept-filter')?.value || '', ['department']);
+      const pageData = paginateRows(filtered, currentPage);
+      currentPage = pageData.page;
       if (!filtered.length) {
         listEl.innerHTML = emptyHTML('🎯', 'Không có ứng viên nào', 'Hãy thêm ứng viên mới');
         return;
       }
 
-      listEl.innerHTML = filtered.map(c => {
+      listEl.innerHTML = pageData.rows.map(c => {
         const stage = stageInfo(c.stage);
         return `
           <div class="list-item" data-cid="${c.id}">
@@ -142,7 +146,7 @@ export async function renderRecruitment(el, me) {
             ` : ''}
           </div>
         `;
-      }).join('');
+      }).join('') + paginationHTML(pageData);
 
       if (isAdmin) {
         listEl.querySelectorAll('.stage-select').forEach(sel => {
@@ -176,6 +180,7 @@ export async function renderRecruitment(el, me) {
           });
         });
       }
+      bindPagination(listEl, page => { currentPage = page; loadCandidates(); });
     } catch(e) {
       listEl.innerHTML = emptyHTML('⚠️', e.message);
     }

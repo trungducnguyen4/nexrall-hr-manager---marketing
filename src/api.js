@@ -22,6 +22,7 @@ const CACHE_TTL = {
   '/api/tasks':            30_000,
   '/api/attendance':       20_000,
   '/api/leave':            30_000,
+  '/api/leave-types':      60_000,
   '/api/candidates':       30_000,
   '/api/payroll':          30_000,
   '/api/invoices':         30_000,
@@ -174,6 +175,16 @@ export const api = {
   updateWifi: (id, d) => req('PUT', `/api/wifi-whitelist/${id}`, d).then(r => { inv('/api/wifi-whitelist'); return r; }),
   deleteWifi: (id) => req('DELETE', `/api/wifi-whitelist/${id}`).then(r => { inv('/api/wifi-whitelist'); return r; }),
 
+  // Database Admin (admin only, never cached)
+  getDbTables: () => req('GET', '/api/db-admin/tables'),
+  getDbRows: (table, params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return req('GET', `/api/db-admin/tables/${encodeURIComponent(table)}` + (q ? '?' + q : ''));
+  },
+  createDbRow: (table, data) => req('POST', `/api/db-admin/tables/${encodeURIComponent(table)}`, data),
+  updateDbRow: (table, id, data) => req('PUT', `/api/db-admin/tables/${encodeURIComponent(table)}/${encodeURIComponent(id)}`, data),
+  deleteDbRow: (table, id) => req('DELETE', `/api/db-admin/tables/${encodeURIComponent(table)}/${encodeURIComponent(id)}`),
+
   // Tasks
   getTasks: (params = {}) => {
     const q = new URLSearchParams(params).toString();
@@ -228,6 +239,10 @@ export const api = {
   createLeave: (d) => req('POST', '/api/leave', d).then(r => { inv('/api/leave'); return r; }),
   updateLeave: (id, d) => req('PUT', `/api/leave/${id}`, d).then(r => { inv('/api/leave'); return r; }),
   deleteLeave: (id) => req('DELETE', `/api/leave/${id}`).then(r => { inv('/api/leave'); return r; }),
+  getLeaveTypes: (includeInactive = false) => cachedGet('/api/leave-types' + (includeInactive ? '?includeInactive=1' : '')),
+  createLeaveType: (d) => req('POST', '/api/leave-types', d).then(r => { inv('/api/leave-types'); return r; }),
+  updateLeaveType: (id, d) => req('PUT', `/api/leave-types/${id}`, d).then(r => { inv('/api/leave-types'); return r; }),
+  deleteLeaveType: (id) => req('DELETE', `/api/leave-types/${id}`).then(r => { inv('/api/leave-types'); return r; }),
 
   // Candidates / Recruitment
   getCandidates: (params = {}) => {
@@ -244,6 +259,8 @@ export const api = {
     return cachedGet('/api/payroll' + (q ? '?' + q : ''));
   },
   createPayroll: (d) => req('POST', '/api/payroll', d).then(r => { inv('/api/payroll'); return r; }),
+  loadPayrollData: (month) => req('POST', '/api/payroll/load', { month }).then(r => { inv('/api/payroll'); return r; }),
+  createPayrollBatch: (month) => req('POST', '/api/payroll/batch', { month }).then(r => { inv('/api/payroll'); return r; }),
   updatePayroll: (id, d) => req('PUT', `/api/payroll/${id}`, d).then(r => { inv('/api/payroll'); return r; }),
   deletePayroll: (id) => req('DELETE', `/api/payroll/${id}`).then(r => { inv('/api/payroll'); return r; }),
 

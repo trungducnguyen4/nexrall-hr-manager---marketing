@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { esc, roleBadge, setAvatar, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtMoney, initials, avatarColor, DEPARTMENTS, DEPT_CODE, lifecycleBadge, LIFECYCLE_STATUSES, noop, safeCb } from '../utils.js';
+import { esc, roleBadge, setAvatar, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtMoney, initials, avatarColor, DEPARTMENTS, DEPT_CODE, lifecycleBadge, LIFECYCLE_STATUSES, noop, safeCb, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js';
 
 // Preview-only: mirrors server's nextEmployeeCode() logic (server always re-computes
 // and confirms the official code on save; this is just live UI feedback).
@@ -45,6 +45,7 @@ export async function renderUsers(el, me) {
   `;
 
   let allUsers = [];
+  let currentPage = 1;
 
   async function loadUsers() {
     const listEl = document.getElementById('user-list');
@@ -69,17 +70,14 @@ export async function renderUsers(el, me) {
   function renderList() {
     const listEl = document.getElementById('user-list');
     if (!listEl) return;
-    const search = (document.getElementById('user-search')?.value || '').toLowerCase();
+    const search = document.getElementById('user-search')?.value || '';
     const activeDept = document.querySelector('#user-dept-filter .filter-chip.active')?.dataset.dept || '';
-    let users = allUsers;
-    if (activeDept) users = users.filter(u => u.department === activeDept);
-    if (search) users = users.filter(u =>
-      (u.full_name||'').toLowerCase().includes(search) ||
-      (u.email||'').toLowerCase().includes(search) ||
-      (u.employee_code||'').toLowerCase().includes(search)
-    );
+    let users = filterByDepartment(allUsers, activeDept, ['department']);
+    users = filterBySearch(users, search, ['full_name', 'email', 'employee_code']);
     if (!users.length) { listEl.innerHTML = emptyHTML('👥', 'Không tìm thấy nhân viên'); return; }
-    listEl.innerHTML = users.map(u => `
+    const pageData = paginateRows(users, currentPage);
+    currentPage = pageData.page;
+    listEl.innerHTML = pageData.rows.map(u => `
       <div class="list-item" data-uid="${u.id}" style="${!u.is_active?'opacity:.55':''}">
         <div class="avatar avatar-md" style="background:${esc(u.avatar_color||avatarColor(u.full_name))}">${esc(u.avatar_initials||initials(u.full_name))}</div>
         <div class="list-item-content">
@@ -92,16 +90,17 @@ export async function renderUsers(el, me) {
           <span class="badge ${u.is_active ? 'badge-success' : 'badge-gray'}" style="font-size:10px;">${u.is_active?'✅ Hoạt động':'⛔ Khóa'}</span>
         </div>
       </div>
-    `).join('');
+    `).join('') + paginationHTML(pageData);
     listEl.querySelectorAll('.list-item').forEach(item => {
       item.addEventListener('click', () => {
         const user = allUsers.find(u => u.id === parseInt(item.dataset.uid));
         if (user) openUserDetail(user, me, loadUsers);
       });
     });
+    bindPagination(listEl, page => { currentPage = page; renderList(); });
   }
 
-  document.getElementById('user-search').addEventListener('input', renderList);
+  document.getElementById('user-search').addEventListener('input', () => { currentPage = 1; renderList(); });
   document.getElementById('user-dept-filter').addEventListener('click', (e) => {
     const chip = e.target.closest('.filter-chip');
     if (!chip) return;

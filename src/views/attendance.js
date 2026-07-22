@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { esc, fmtDate, statusBadge, setAvatar, toast, openModal, closeModal, loadingHTML, emptyHTML, today, initials, avatarColor } from '../utils.js';
+import { esc, fmtDate, statusBadge, setAvatar, toast, openModal, closeModal, loadingHTML, emptyHTML, today, initials, avatarColor, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js';
 
 const WORK_TYPE_LABEL = { office: '🏢 Văn phòng', wfh: '🏠 WFH', business: '✈️ Công tác' };
 const SHIFT_LABEL = { morning: 'Ca sáng (08:30–12:00)', afternoon: 'Ca chiều (13:30–17:00)', full: 'Cả ngày' };
@@ -76,6 +76,11 @@ export async function renderAttendance(el, me) {
         ${isManager ? `
           <select id="att-user-filter" style="max-width:200px;">
             <option value="">-- Tất cả nhân viên --</option>
+          </select>
+          <input type="text" id="att-search" placeholder="Tìm theo tên, mã nhân viên..." style="min-width:220px;flex:1;"/>
+          <select id="att-dept-filter" style="max-width:220px;">
+            <option value="">Tất cả phòng ban</option>
+            ${DEPARTMENTS.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}
           </select>` : ''}
       </div>
       <div id="att-list">${loadingHTML()}</div>
@@ -225,9 +230,7 @@ export async function renderAttendance(el, me) {
     const btnIn = document.getElementById('btn-checkin');
     submitting = true; btnIn.disabled = true; btnIn.textContent = '...';
     try {
-      let ip = '';
-      try { const r = await api.getIp(); ip = r.ip || ''; } catch(_) {}
-      await api.checkin({ note, ip });
+      await api.checkin({ note });
       toast('Check in thành công!', 'success');
       await loadTodayStatus();
       loadHistory();
@@ -245,9 +248,7 @@ export async function renderAttendance(el, me) {
     const btnOut = document.getElementById('btn-checkout');
     submitting = true; btnOut.disabled = true; btnOut.textContent = '...';
     try {
-      let ip = '';
-      try { const r = await api.getIp(); ip = r.ip || ''; } catch(_) {}
-      await api.checkout({ ip });
+      await api.checkout({});
       toast('Check out thành công!', 'success');
       await loadTodayStatus();
       loadHistory();
@@ -258,6 +259,8 @@ export async function renderAttendance(el, me) {
       submitting = false;
     }
   });
+
+  let historyPage = 1;
 
   // Load users for filter
   if (isManager) {
@@ -270,12 +273,14 @@ export async function renderAttendance(el, me) {
         opt.textContent = u.full_name;
         sel.appendChild(opt);
       });
-      sel.addEventListener('change', loadHistory);
+      sel.addEventListener('change', () => { historyPage = 1; loadHistory(); });
     } catch(_) {}
   }
 
   // Month filter
-  document.getElementById('att-month-filter').addEventListener('change', loadHistory);
+  document.getElementById('att-month-filter').addEventListener('change', () => { historyPage = 1; loadHistory(); });
+  document.getElementById('att-search')?.addEventListener('input', () => { historyPage = 1; loadHistory(); });
+  document.getElementById('att-dept-filter')?.addEventListener('change', () => { historyPage = 1; loadHistory(); });
 
   function statusWithMinutes(a) {
     const badge = statusBadge(a.status);
@@ -298,7 +303,14 @@ export async function renderAttendance(el, me) {
     }
     try {
       const { attendance } = await api.getAttendance(params);
-      if (!attendance.length) { listEl.innerHTML = emptyHTML('📅', 'Không có dữ liệu chấm công'); return; }
+      let filteredAttendance = attendance || [];
+      if (isManager) {
+        filteredAttendance = filterBySearch(filteredAttendance, document.getElementById('att-search')?.value || '', ['full_name', 'employee_code']);
+        filteredAttendance = filterByDepartment(filteredAttendance, document.getElementById('att-dept-filter')?.value || '', ['department']);
+      }
+      const pageData = paginateRows(filteredAttendance, historyPage);
+      historyPage = pageData.page;
+      if (!filteredAttendance.length) { listEl.innerHTML = emptyHTML('📅', 'Không có dữ liệu chấm công'); return; }
       listEl.innerHTML = `
         <div class="table-wrap">
           <table>
@@ -310,7 +322,7 @@ export async function renderAttendance(el, me) {
               </tr>
             </thead>
             <tbody>
-              ${attendance.map(a => `
+              ${pageData.rows.map(a => `
                 <tr>
                   ${isManager ? `<td><span style="font-weight:600">${esc(a.full_name)}</span><br><span style="font-size:11px;color:var(--text-2)">${esc(a.department||'')}</span></td>` : ''}
                   <td style="white-space:nowrap">${esc(a.date)}</td>
@@ -327,10 +339,12 @@ export async function renderAttendance(el, me) {
             </tbody>
           </table>
         </div>
+        ${paginationHTML(pageData)}
       `;
       listEl.querySelectorAll('.btn-edit-att').forEach(btn => {
         btn.addEventListener('click', () => openEditAttModal(btn.dataset));
       });
+      bindPagination(listEl, page => { historyPage = page; loadHistory(); });
     } catch(e) {
       listEl.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">${esc(e.message)}</div></div>`;
     }
