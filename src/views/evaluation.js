@@ -23,10 +23,10 @@ export async function renderEvaluation(el, me) {
     <div class="card" style="margin-bottom:16px;">
       <div class="card-header">
         <div class="card-title">📋 Quy định &amp; Tiêu chí đánh giá</div>
-        <button id="eval-toggle" class="btn-secondary btn-sm" aria-expanded="true">Thu gọn</button>
+        <button id="eval-toggle" class="btn-secondary btn-sm" aria-expanded="false">Mở rộng</button>
       </div>
 
-      <div id="eval-policy-body">
+      <div id="eval-policy-body" class="hidden">
         <!-- 1. Tổng quan chính sách -->
         <div class="section-title">Tổng quan chính sách</div>
         <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:18px;">

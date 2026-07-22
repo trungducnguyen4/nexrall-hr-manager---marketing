@@ -10,13 +10,13 @@ let _viewModules = {};
 async function getView(name) {
   if (!_viewModules[name]) {
     if (name === 'dashboard')    _viewModules[name] = await import('./views/dashboard.js');
-    else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js');
-    else if (name === 'tasks')       _viewModules[name] = await import('./views/tasks.js');
+    else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js?v=20260722-att-date');
+    else if (name === 'tasks')       _viewModules[name] = await import('./views/tasks.js?v=20260722-plain-task-groups');
     else if (name === 'invoices')    _viewModules[name] = await import('./views/invoices.js');
-    else if (name === 'users')       _viewModules[name] = await import('./views/users.js');
+    else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260722-role-label2');
     else if (name === 'wifi')        _viewModules[name] = await import('./views/wifi.js');
     else if (name === 'settings')    _viewModules[name] = await import('./views/settings.js');
-    else if (name === 'taskpanel')   _viewModules[name] = await import('./views/taskpanel.js');
+    else if (name === 'taskpanel')   _viewModules[name] = await import('./views/taskpanel.js?v=20260722-rich-task-editor');
     else if (name === 'departments') _viewModules[name] = await import('./views/departments.js');
     else if (name === 'recruitment') _viewModules[name] = await import('./views/recruitment.js');
     else if (name === 'payroll')     _viewModules[name] = await import('./views/payroll.js');
@@ -32,6 +32,7 @@ async function getView(name) {
 let me = null;
 let _currentView = null;
 let _contentCleanup = null;
+let _appInitialized = false;
 
 // DOM view cache — stores { node, cleanup, ts } per view name
 // Cached nodes stay in contentEl but are hidden (display:none) when not active
@@ -40,7 +41,8 @@ const _viewCache = new Map();
 const VIEW_CACHE_TTL = 90_000; // 90 s — force re-render after this long
 
 // Views that must ALWAYS re-render (they have live clocks / realtime state)
-const NO_CACHE_VIEWS = new Set(['attendance']);
+const NO_CACHE_VIEWS = new Set(['attendance', 'tasks']);
+let _routeGeneration = 0;
 
 // ── DOM refs ────────────────────────────────────
 const loginScreen  = document.getElementById('login-screen');
@@ -96,16 +98,32 @@ function showLoginError(msg) {
 //  BOOT — try resuming session
 // ════════════════════════════════════════════════
 async function boot() {
-  loadToken();
+  loginUser.value = '';
+  loginPw.value = '';
+  appEl.classList.add('hidden');
+  loginScreen.classList.remove('hidden');
+
+  if (!loadToken()) return;
+
+  loginBtn.disabled = true;
+  loginBtn.textContent = 'Đang kiểm tra phiên...';
+  loginError.classList.add('hidden');
   try {
-    const { user } = await api.me();
-    me = user;
+    const { user: userData } = await api.me();
+    me = userData;
     loginScreen.classList.add('hidden');
     appEl.classList.remove('hidden');
     initApp();
-  } catch(_) {
+  } catch (_) {
+    setToken(null);
+    clearCache();
+    loginUser.value = '';
+    loginPw.value = '';
     loginScreen.classList.remove('hidden');
     appEl.classList.add('hidden');
+  } finally {
+    loginBtn.disabled = false;
+    loginBtn.textContent = 'Đăng nhập';
   }
 }
 
@@ -124,6 +142,12 @@ function initApp() {
   const adminNav = document.getElementById('admin-nav');
   if (!isManager) adminNav.style.display = 'none';
   document.getElementById('db-admin-nav-item')?.classList.toggle('hidden', me.role !== 'admin');
+
+  if (_appInitialized) {
+    route();
+    return;
+  }
+  _appInitialized = true;
 
   startClock();
 
@@ -155,9 +179,6 @@ function initApp() {
   });
 
   document.getElementById('modal-close').addEventListener('click', closeModal);
-  document.getElementById('modal-overlay').addEventListener('click', (e) => {
-    if (e.target === document.getElementById('modal-overlay')) closeModal();
-  });
 
   window.addEventListener('hashchange', route);
   route();
@@ -327,6 +348,7 @@ iconObserver.observe(document.documentElement, { childList: true, subtree: true 
 //  ROUTER  (DOM-level view cache)
 // ════════════════════════════════════════════════
 async function route() {
+  const routeGeneration = ++_routeGeneration;
   const hash = location.hash || '#/dashboard';
   const path = hash.replace('#/', '').split('/')[0] || 'dashboard';
 
@@ -359,23 +381,42 @@ async function route() {
     _viewCache.delete(path);
   }
 
+  if (NO_CACHE_VIEWS.has(path)) {
+    contentEl.querySelectorAll(':scope > .view-container').forEach(node => node.remove());
+    _viewCache.clear();
+  }
+  contentEl.querySelectorAll(`:scope > .view-container[data-view="${CSS.escape(path)}"]`).forEach(node => node.remove());
+
   // Create a fresh container node for this view
   const viewNode = document.createElement('div');
   viewNode.className = 'view-container';
+  viewNode.dataset.view = path;
   contentEl.appendChild(viewNode);
 
   // Hide all other cached view nodes
   _viewCache.forEach((entry, name) => {
     if (name !== path) entry.node.style.display = 'none';
   });
+  contentEl.querySelectorAll(':scope > .view-container').forEach(node => {
+    if (node !== viewNode && node.dataset.view !== path) node.style.display = 'none';
+  });
 
   _currentView = path;
 
   try {
     const mod = await getView(path);
+    if (routeGeneration !== _routeGeneration) {
+      viewNode.remove();
+      return;
+    }
     const fnName = 'render' + path.split('-').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join('');
     if (mod && typeof mod[fnName] === 'function') {
       await mod[fnName](viewNode, me);
+      if (routeGeneration !== _routeGeneration) {
+        if (viewNode._cleanup) viewNode._cleanup();
+        viewNode.remove();
+        return;
+      }
       const cleanup = viewNode._cleanup || null;
       viewNode._cleanup = null;
       _contentCleanup = cleanup;
@@ -457,7 +498,7 @@ function startClock() {
 function roleLabel(r) {
   const map = {
     admin:    '👑 Quản trị viên',
-    manager:  '⭐ Quản lý',
+    manager:  '⭐ Nhân sự',
     employee: '👤 Nhân viên',
   };
   return map[r] || r || '—';

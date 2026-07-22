@@ -20,6 +20,9 @@ const CACHE_TTL = {
   '/api/wifi-whitelist':   60_000,
   '/api/campaigns':        30_000,
   '/api/tasks':            30_000,
+  '/api/task-projects':     30_000,
+  '/api/task-groups':       30_000,
+  '/api/task-labels':       30_000,
   '/api/attendance':       20_000,
   '/api/leave':            30_000,
   '/api/leave-types':      60_000,
@@ -190,6 +193,28 @@ export const api = {
     const q = new URLSearchParams(params).toString();
     return cachedGet('/api/tasks' + (q ? '?' + q : ''));
   },
+  getTaskProjects: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return cachedGet('/api/task-projects' + (q ? '?' + q : ''));
+  },
+  createTaskProject: (d) => req('POST', '/api/task-projects', d).then(r => { inv('/api/task-projects', '/api/tasks'); return r; }),
+  updateTaskProject: (id, d) => req('PUT', `/api/task-projects/${id}`, d).then(r => { inv('/api/task-projects', '/api/tasks'); return r; }),
+  archiveTaskProject: (id) => req('DELETE', `/api/task-projects/${id}`).then(r => { inv('/api/task-projects', '/api/tasks'); return r; }),
+  saveTaskProjectMembers: (id, members) => req('PUT', `/api/task-projects/${id}/members`, { members }).then(r => { inv('/api/task-projects', '/api/tasks'); return r; }),
+  getTaskGroups: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return cachedGet('/api/task-groups' + (q ? '?' + q : ''));
+  },
+  createTaskGroup: (d) => req('POST', '/api/task-groups', d).then(r => { inv('/api/task-groups', '/api/tasks'); return r; }),
+  updateTaskGroup: (id, d) => req('PUT', `/api/task-groups/${id}`, d).then(r => { inv('/api/task-groups', '/api/tasks'); return r; }),
+  archiveTaskGroup: (id) => req('DELETE', `/api/task-groups/${id}`).then(r => { inv('/api/task-groups', '/api/tasks'); return r; }),
+  getTaskLabels: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return cachedGet('/api/task-labels' + (q ? '?' + q : ''));
+  },
+  createTaskLabel: (d) => req('POST', '/api/task-labels', d).then(r => { inv('/api/task-labels', '/api/tasks'); return r; }),
+  updateTaskLabel: (id, d) => req('PUT', `/api/task-labels/${id}`, d).then(r => { inv('/api/task-labels', '/api/tasks'); return r; }),
+  deleteTaskLabel: (id) => req('DELETE', `/api/task-labels/${id}`).then(r => { inv('/api/task-labels', '/api/tasks'); return r; }),
   getTask:    (id) => req('GET', `/api/tasks/${id}`), // single task detail — bypass cache (task panel needs fresh)
   createTask: (d) => req('POST', '/api/tasks', d).then(r => { inv('/api/tasks'); return r; }),
   updateTask: (id, d) => req('PUT', `/api/tasks/${id}`, d).then(r => { inv('/api/tasks'); return r; }),

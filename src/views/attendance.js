@@ -73,10 +73,9 @@ export async function renderAttendance(el, me) {
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
         <input type="month" id="att-month-filter" class="w-full" style="max-width:180px;" value="${new Date().toISOString().slice(0,7)}"/>
+        <input type="date" id="att-date-filter" class="w-full" style="max-width:170px;" title="Lọc theo ngày cụ thể"/>
         ${isManager ? `
-          <select id="att-user-filter" style="max-width:200px;">
-            <option value="">-- Tất cả nhân viên --</option>
-          </select>
+
           <input type="text" id="att-search" placeholder="Tìm theo tên, mã nhân viên..." style="min-width:220px;flex:1;"/>
           <select id="att-dept-filter" style="max-width:220px;">
             <option value="">Tất cả phòng ban</option>
@@ -262,23 +261,11 @@ export async function renderAttendance(el, me) {
 
   let historyPage = 1;
 
-  // Load users for filter
-  if (isManager) {
-    try {
-      const { users } = await api.getUsers();
-      const sel = document.getElementById('att-user-filter');
-      users.forEach(u => {
-        const opt = document.createElement('option');
-        opt.value = u.id;
-        opt.textContent = u.full_name;
-        sel.appendChild(opt);
-      });
-      sel.addEventListener('change', () => { historyPage = 1; loadHistory(); });
-    } catch(_) {}
-  }
+
 
   // Month filter
   document.getElementById('att-month-filter').addEventListener('change', () => { historyPage = 1; loadHistory(); });
+  document.getElementById('att-date-filter')?.addEventListener('change', () => { historyPage = 1; loadHistory(); });
   document.getElementById('att-search')?.addEventListener('input', () => { historyPage = 1; loadHistory(); });
   document.getElementById('att-dept-filter')?.addEventListener('change', () => { historyPage = 1; loadHistory(); });
 
@@ -297,9 +284,11 @@ export async function renderAttendance(el, me) {
     const monthVal = document.getElementById('att-month-filter')?.value || new Date().toISOString().slice(0,7);
     const [yr, mo] = monthVal.split('-');
     const params = { month: mo, year: yr };
-    if (isManager) {
-      const uid = document.getElementById('att-user-filter')?.value;
-      if (uid) params.userId = uid;
+    const dateVal = document.getElementById('att-date-filter')?.value || '';
+    if (dateVal) {
+      params.date = dateVal;
+      delete params.month;
+      delete params.year;
     }
     try {
       const { attendance } = await api.getAttendance(params);
@@ -324,7 +313,7 @@ export async function renderAttendance(el, me) {
             <tbody>
               ${pageData.rows.map(a => `
                 <tr>
-                  ${isManager ? `<td><span style="font-weight:600">${esc(a.full_name)}</span><br><span style="font-size:11px;color:var(--text-2)">${esc(a.department||'')}</span></td>` : ''}
+                  ${isManager ? `<td><span style="font-weight:600">${esc(a.full_name)}</span><br><span style="font-size:11px;color:var(--text-2)">${esc(a.employee_code||'—')}</span><br><span style="font-size:11px;color:var(--text-2)">${esc(a.department||'')}</span></td>` : ''}
                   <td style="white-space:nowrap">${esc(a.date)}</td>
                   <td style="white-space:nowrap">${esc((WORK_TYPE_LABEL[a.work_type] || WORK_TYPE_LABEL.office))}</td>
                   <td style="white-space:nowrap">${esc(SHIFT_LABEL_SHORT[a.shift] || SHIFT_LABEL_SHORT.full)}${a.work_type === 'business' ? `<br><span style="font-size:11px;color:var(--text-2)">${esc(a.expected_start||'—')}–${esc(a.expected_end||'—')}</span>` : ''}</td>

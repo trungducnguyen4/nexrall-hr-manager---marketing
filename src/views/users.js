@@ -198,7 +198,7 @@ function openUserForm(user, onRefresh = noop, allUsers = []) {
       <div class="field"><label>Vai trò</label>
         <select id="uf-role">
           <option value="employee" ${(!user||user.role==='employee')?'selected':''}>Nhân viên</option>
-          <option value="manager" ${user?.role==='manager'?'selected':''}>Manager</option>
+          <option value="manager" ${user?.role==='manager'?'selected':''}>Nhân sự</option>
           <option value="admin" ${user?.role==='admin'?'selected':''}>Admin</option>
         </select>
       </div>

@@ -4,7 +4,7 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
   <title>NetViet HR – Marketing</title>
-  <link rel="icon" href="https://pub-84c3902526ad4c82b488275b43b39e3a.r2.dev/agent-assets/c2523c17-d234-4f27-8357-3fa41ad984f6/b3e0a752-24e6-4465-a2e3-f6f6286c520e.jpg"/>
+  <link rel="icon" type="image/png" href="/favicon.png?v=20260722-netviettv"/>
   <link rel="stylesheet" href="/styles/main.css"/>
 </head>
 <body>
@@ -19,19 +19,18 @@
     <form id="login-form" autocomplete="off">
       <div class="field">
         <label>Email / Mã nhân viên</label>
-        <input id="login-user" type="text" placeholder="admin@company.com" autocomplete="username"/>
+        <input id="login-user" type="text" placeholder="Nhập email hoặc mã nhân viên" autocomplete="off"/>
       </div>
       <div class="field">
         <label>Mật khẩu</label>
         <div class="pw-wrap">
-          <input id="login-pw" type="password" placeholder="••••••••" autocomplete="current-password"/>
+          <input id="login-pw" type="password" placeholder="Nhập mật khẩu" autocomplete="new-password"/>
           <button type="button" id="pw-eye" class="pw-eye-btn" aria-label="Hiện mật khẩu">👁</button>
         </div>
       </div>
       <div id="login-error" class="login-error hidden"></div>
       <button id="login-btn" type="submit" class="btn-primary w-full" style="margin-top:4px;">Đăng nhập</button>
     </form>
-    <p class="login-hint">Admin: admin@company.com / Admin@123</p>
   </div>
 </div>
 
@@ -171,6 +170,6 @@
 <!-- ═══════════════════ TOAST ═══════════════════ -->
 <div id="toast-container" aria-live="polite"></div>
 
-<script type="module" src="/src/app.js"></script>
+<script type="module" src="/src/app.js?v=20260722-remember-login"></script>
 </body>
 </html>

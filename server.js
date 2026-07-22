@@ -300,9 +300,78 @@ async function migrate(env) {
     note TEXT,
     created_at TEXT DEFAULT (datetime('now','localtime'))
   )`); } catch (_) {}
+  // Tasks: workspace/team/project and managed labels. Safe additive upgrades only.
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS task_workspaces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_by INTEGER,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS task_projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id INTEGER DEFAULT 1,
+    name TEXT NOT NULL,
+    code TEXT,
+    type TEXT DEFAULT 'project',
+    description TEXT,
+    department TEXT,
+    manager_id INTEGER,
+    status TEXT DEFAULT 'active',
+    start_date TEXT,
+    end_date TEXT,
+    created_by INTEGER,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS task_project_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    role TEXT DEFAULT 'member',
+    added_by INTEGER,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS task_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    position INTEGER DEFAULT 0,
+    color TEXT DEFAULT '#6366F1',
+    is_archived INTEGER DEFAULT 0,
+    created_by INTEGER,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS task_labels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id INTEGER DEFAULT 1,
+    project_id INTEGER,
+    name TEXT NOT NULL,
+    code TEXT,
+    color TEXT NOT NULL,
+    description TEXT,
+    is_active INTEGER DEFAULT 1,
+    created_by INTEGER,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE tasks ADD COLUMN workspace_id INTEGER DEFAULT 1'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE tasks ADD COLUMN team_project_id INTEGER'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE tasks ADD COLUMN group_id INTEGER'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE tasks ADD COLUMN label_id INTEGER'); } catch (_) {}
+  try { await env.DB.exec("INSERT INTO task_workspaces (id,name,description) SELECT 1,'Workspace NetViet HR','Default task workspace' WHERE NOT EXISTS (SELECT 1 FROM task_workspaces WHERE id=1)"); } catch (_) {}
+  try { await env.DB.exec("INSERT INTO task_labels (workspace_id,name,code,color,description,is_active) SELECT 1,'Mac dinh','default','#6366F1','Nhan mac dinh' ,1 WHERE NOT EXISTS (SELECT 1 FROM task_labels WHERE workspace_id=1 AND code='default' AND project_id IS NULL)"); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id,date)'); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_tasks_assigned_to ON tasks(assigned_to)'); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_tasks_status_due ON tasks(status,due_date)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(team_project_id)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_tasks_group ON tasks(group_id)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_tasks_label ON tasks(label_id)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_task_project_members_project_user ON task_project_members(project_id,user_id)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_task_groups_project_archived ON task_groups(project_id,is_archived,position)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_task_labels_project_active ON task_labels(project_id,is_active)'); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_leave_requests_type ON leave_requests(type)'); } catch (_) {}
   try { await env.DB.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_departments_name_ci ON departments(lower(name))'); } catch (_) {}
 
@@ -715,6 +784,55 @@ function taskLabelColor(status, priority, provided) {
   return '#6366F1';
 }
 
+function isTaskAdmin(u) {
+  return isHcns(u);
+}
+
+function intOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
+}
+
+async function canUseTaskProject(env, projectId, me) {
+  if (!projectId) return true;
+  if (isTaskAdmin(me)) return true;
+  const row = await env.DB.prepare(
+    `SELECT p.id
+       FROM task_projects p
+       LEFT JOIN task_project_members m ON m.project_id=p.id AND m.user_id=?
+      WHERE p.id=? AND (p.manager_id=? OR m.id IS NOT NULL)`
+  ).bind(me.id, projectId, me.id).first();
+  return !!row;
+}
+
+async function resolveTaskLabel(env, labelId, projectId) {
+  if (!labelId) return null;
+  return await env.DB.prepare(
+    `SELECT * FROM task_labels
+      WHERE id=? AND is_active=1 AND (project_id IS NULL OR project_id=?)
+      LIMIT 1`
+  ).bind(labelId, projectId || 0).first();
+}
+
+async function ensureDefaultTaskGroup(env, projectId, userId = null) {
+  const existing = await env.DB.prepare(
+    "SELECT * FROM task_groups WHERE project_id=? AND is_archived=0 ORDER BY position,id LIMIT 1"
+  ).bind(projectId).first();
+  if (existing) return existing;
+  const r = await env.DB.prepare(
+    "INSERT INTO task_groups (project_id,name,position,color,created_by) VALUES (?,?,?,?,?)"
+  ).bind(projectId, 'Cong viec chung', 0, '#6366F1', userId).run();
+  return await env.DB.prepare('SELECT * FROM task_groups WHERE id=?').bind(r.meta.last_row_id).first();
+}
+
+async function canUseTaskGroup(env, groupId, projectId, me) {
+  if (!groupId) return true;
+  const group = await env.DB.prepare('SELECT * FROM task_groups WHERE id=? AND project_id=? AND is_archived=0')
+    .bind(groupId, projectId || 0).first();
+  if (!group) return false;
+  return canUseTaskProject(env, group.project_id, me);
+}
+
 async function seedLeaveTypes(env) {
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS leave_types (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -741,6 +859,16 @@ async function seedLeaveTypes(env) {
   ).bind(...r)));
 }
 
+async function seedDepartments(env) {
+  const existing = await env.DB.prepare('SELECT COUNT(*) AS cnt FROM departments').first();
+  const rows = STANDARD_DEPARTMENTS.map(name => [name, '']);
+  if (!existing || Number(existing.cnt || 0) === 0) {
+    await env.DB.batch(rows.map(([name, description]) => env.DB.prepare(
+      'INSERT OR IGNORE INTO departments (user_id,name,manager,description) VALUES (?,?,?,?)'
+    ).bind(1, name, '', description)));
+  }
+}
+
 // ===================== SEED =====================
 let _seeded = false;
 async function seedIfNeeded(env) {
@@ -750,19 +878,6 @@ async function seedIfNeeded(env) {
   await env.DB.prepare(
     'INSERT OR IGNORE INTO users (employee_code,full_name,email,password_hash,role,department,position,avatar_color,avatar_initials,phone,salary,is_active) VALUES (?,?,?,?,?,?,?,?,?,?,?,1)'
   ).bind('ADMIN001','Quản Trị Viên','admin@company.com',adminHash,'admin','Ban Giám Đốc','Giám đốc','#4F46E5','QT','0900000000',50000000).run();
-
-  const empHash = await hashPassword('Pass@123');
-  const empSeeds = [
-    ['NV001','Nguyễn Thị Lan',  'lan.nguyen@company.com', empHash,'employee','Phòng Marketing','Content Writer','#7C3AED','NL','0901234001',18000000],
-    ['NV002','Trần Văn Hùng',   'hung.tran@company.com',  empHash,'employee','Phòng Marketing',  'SEO Specialist','#10B981','TH','0901234002',20000000],
-    ['NV003','Lê Thị Mai',       'mai.le@company.com',     empHash,'manager', 'Phòng Marketing',     'Social Media Lead','#F59E0B','LM','0901234003',25000000],
-    ['NV004','Phạm Minh Tuấn',   'tuan.pham@company.com',  empHash,'employee','Phòng Marketing',           'UI/UX Designer','#EF4444','PT','0901234004',22000000],
-  ];
-  for (const e of empSeeds) {
-    await env.DB.prepare(
-      'INSERT OR IGNORE INTO users (employee_code,full_name,email,password_hash,role,department,position,avatar_color,avatar_initials,phone,salary,is_active) VALUES (?,?,?,?,?,?,?,?,?,?,?,1)'
-    ).bind(...e).run();
-  }
 
   // Seed a default wifi entry only if table is empty
   const wifiCount = await env.DB.prepare('SELECT COUNT(*) as cnt FROM wifi_whitelist').first();
@@ -776,6 +891,7 @@ async function seedIfNeeded(env) {
     "UPDATE wifi_whitelist SET wifi_name=?, ip_range=?, description=? WHERE wifi_name='Office WiFi Test' AND ip_range='192.168.1'"
   ).bind('NetViet Office IPv4','42.118.136.186','Public IPv4 van phong NetViet').run();
   await seedLeaveTypes(env);
+  await seedDepartments(env);
 
   const defaults = [
     ['company_name','NEXRALL MARKETING'],['company_address','123 Nguyễn Huệ, Q.1, TP.HCM'],
@@ -1330,6 +1446,16 @@ export async function handle(request, env) {
   const lifecycleMatch = path.match(/^\/api\/users\/(\d+)\/lifecycle$/);
   if (lifecycleMatch && request.method === 'PUT') {
     if (!isHrOrBod(me)) return json({ error: 'Không có quyền' }, 403);
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS lifecycle_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      from_status TEXT,
+      to_status TEXT NOT NULL,
+      changed_by INTEGER,
+      changed_by_name TEXT,
+      reason TEXT,
+      changed_at TEXT DEFAULT (datetime('now','localtime'))
+    )`).run();
     const luid = parseInt(lifecycleMatch[1]);
     const b = await request.json().catch(() => ({}));
     const newStatus = String(b.status || '');
@@ -1710,6 +1836,237 @@ export async function handle(request, env) {
   }
 
   // ── TASKS ────────────────────────────────────────────────────────
+  if (path === '/api/task-projects' && request.method === 'GET') {
+    const includeArchived = url.searchParams.get('include_archived') === '1';
+    const search = String(url.searchParams.get('search') || '').trim().toLowerCase();
+    let q = `SELECT p.*, u.full_name as manager_name,
+                    (SELECT COUNT(*) FROM task_project_members m WHERE m.project_id=p.id) as member_count,
+                    (SELECT GROUP_CONCAT(user_id) FROM task_project_members m WHERE m.project_id=p.id) as member_ids,
+                    (SELECT COUNT(*) FROM tasks t WHERE t.team_project_id=p.id) as task_count
+               FROM task_projects p
+               LEFT JOIN users u ON p.manager_id=u.id
+              WHERE 1=1`;
+    const binds = [];
+    if (!includeArchived) q += " AND COALESCE(p.status,'active')!='archived'";
+    if (!isTaskAdmin(me)) {
+      q += ` AND (p.manager_id=? OR EXISTS (
+        SELECT 1 FROM task_project_members m WHERE m.project_id=p.id AND m.user_id=?
+      ))`;
+      binds.push(me.id, me.id);
+    }
+    if (search) {
+      q += ' AND (lower(p.name) LIKE ? OR lower(COALESCE(p.code,"")) LIKE ? OR lower(COALESCE(p.description,"")) LIKE ?)';
+      const like = '%' + search + '%';
+      binds.push(like, like, like);
+    }
+    q += " ORDER BY CASE COALESCE(p.status,'active') WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, p.updated_at DESC, p.id DESC";
+    const stmt = env.DB.prepare(q);
+    const { results } = await (binds.length ? stmt.bind(...binds) : stmt).all();
+    return json({ projects: results, canManage: isTaskAdmin(me) });
+  }
+
+  if (path === '/api/task-projects' && request.method === 'POST') {
+    if (!isTaskAdmin(me)) return json({ error: 'Khong co quyen' }, 403);
+    const b = await request.json();
+    const name = String(b.name || '').trim();
+    if (!name) return json({ error: 'Thieu ten Project' }, 400);
+    const type = 'project';
+    const status = ['active','paused','archived','done'].includes(b.status) ? b.status : 'active';
+    const managerId = intOrNull(b.manager_id);
+    const r = await env.DB.prepare(
+      `INSERT INTO task_projects (workspace_id,name,code,type,description,department,manager_id,status,start_date,end_date,created_by)
+       VALUES (1,?,?,?,?,?,?,?,?,?,?)`
+    ).bind(name, String(b.code || '').trim(), type, String(b.description || '').trim(), String(b.department || '').trim(), managerId, status, b.start_date || null, b.end_date || null, me.id).run();
+    const projectId = r.meta.last_row_id;
+    const members = Array.isArray(b.members) ? b.members : [];
+    if (managerId && !members.includes(managerId)) members.push(managerId);
+    for (const uid of [...new Set(members.map(Number).filter(Boolean))]) {
+      await env.DB.prepare('INSERT INTO task_project_members (project_id,user_id,role,added_by) VALUES (?,?,?,?)')
+        .bind(projectId, uid, uid === managerId ? 'owner' : 'member', me.id).run();
+    }
+    await ensureDefaultTaskGroup(env, projectId, me.id);
+    return json({ ok: true, id: projectId });
+  }
+
+  const projectMatch = path.match(/^\/api\/task-projects\/(\d+)$/);
+  if (projectMatch) {
+    if (!isTaskAdmin(me)) return json({ error: 'Khong co quyen' }, 403);
+    const projectId = parseInt(projectMatch[1]);
+    if (request.method === 'PUT') {
+      const b = await request.json();
+      const project = await env.DB.prepare('SELECT * FROM task_projects WHERE id=?').bind(projectId).first();
+      if (!project) return json({ error: 'Khong tim thay' }, 404);
+      const type = 'project';
+      const status = ['active','paused','archived','done'].includes(b.status) ? b.status : project.status;
+      await env.DB.prepare(
+        `UPDATE task_projects
+            SET name=?,code=?,type=?,description=?,department=?,manager_id=?,status=?,start_date=?,end_date=?,updated_at=datetime('now','localtime')
+          WHERE id=?`
+      ).bind(
+        String(b.name || project.name).trim(),
+        String(b.code ?? project.code ?? '').trim(),
+        type,
+        String(b.description ?? project.description ?? '').trim(),
+        String(b.department ?? project.department ?? '').trim(),
+        intOrNull(b.manager_id) || project.manager_id || null,
+        status,
+        b.start_date ?? project.start_date ?? null,
+        b.end_date ?? project.end_date ?? null,
+        projectId
+      ).run();
+      return json({ ok: true });
+    }
+    if (request.method === 'DELETE') {
+      await env.DB.prepare("UPDATE task_projects SET status='archived',updated_at=datetime('now','localtime') WHERE id=?").bind(projectId).run();
+      return json({ ok: true });
+    }
+  }
+
+  const projectMembersMatch = path.match(/^\/api\/task-projects\/(\d+)\/members$/);
+  if (projectMembersMatch && request.method === 'PUT') {
+    if (!isTaskAdmin(me)) return json({ error: 'Khong co quyen' }, 403);
+    const projectId = parseInt(projectMembersMatch[1]);
+    const b = await request.json();
+    const project = await env.DB.prepare('SELECT * FROM task_projects WHERE id=?').bind(projectId).first();
+    if (!project) return json({ error: 'Khong tim thay' }, 404);
+    const members = Array.isArray(b.members) ? b.members.map(Number).filter(Boolean) : [];
+    if (project.manager_id && !members.includes(project.manager_id)) members.push(project.manager_id);
+    await env.DB.prepare('DELETE FROM task_project_members WHERE project_id=?').bind(projectId).run();
+    for (const uid of [...new Set(members)]) {
+      await env.DB.prepare('INSERT INTO task_project_members (project_id,user_id,role,added_by) VALUES (?,?,?,?)')
+        .bind(projectId, uid, uid === Number(project.manager_id) ? 'owner' : 'member', me.id).run();
+    }
+    return json({ ok: true });
+  }
+
+  if (path === '/api/task-groups' && request.method === 'GET') {
+    const projectId = intOrNull(url.searchParams.get('project_id'));
+    if (!projectId) return json({ error: 'Thieu project_id' }, 400);
+    if (!(await canUseTaskProject(env, projectId, me))) return json({ error: 'Khong co quyen voi Project nay' }, 403);
+    await ensureDefaultTaskGroup(env, projectId, me.id);
+    const includeArchived = url.searchParams.get('include_archived') === '1';
+    let q = `SELECT g.*,
+                    (SELECT COUNT(*) FROM tasks t WHERE t.group_id=g.id OR (g.position=0 AND t.team_project_id=g.project_id AND t.group_id IS NULL)) as task_count
+               FROM task_groups g WHERE g.project_id=?`;
+    const binds = [projectId];
+    if (!includeArchived) q += ' AND g.is_archived=0';
+    q += ' ORDER BY g.position ASC, g.id ASC';
+    const { results } = await env.DB.prepare(q).bind(...binds).all();
+    return json({ groups: results, canManage: isTaskAdmin(me) });
+  }
+
+  if (path === '/api/task-groups' && request.method === 'POST') {
+    if (!isTaskAdmin(me)) return json({ error: 'Khong co quyen' }, 403);
+    const b = await request.json();
+    const projectId = intOrNull(b.project_id);
+    const name = String(b.name || '').trim();
+    if (!projectId || !name) return json({ error: 'Thieu Project hoac ten nhom' }, 400);
+    if (!(await canUseTaskProject(env, projectId, me))) return json({ error: 'Khong co quyen voi Project nay' }, 403);
+    const color = /^#[0-9a-fA-F]{6}$/.test(String(b.color || '')) ? String(b.color) : '#6366F1';
+    const posRow = await env.DB.prepare('SELECT COALESCE(MAX(position), -1) + 1 as next_pos FROM task_groups WHERE project_id=?').bind(projectId).first();
+    const position = Number.isFinite(Number(b.position)) ? Number(b.position) : Number(posRow?.next_pos || 0);
+    const r = await env.DB.prepare(
+      'INSERT INTO task_groups (project_id,name,position,color,created_by) VALUES (?,?,?,?,?)'
+    ).bind(projectId, name, position, color, me.id).run();
+    return json({ ok: true, id: r.meta.last_row_id });
+  }
+
+  const groupMatch = path.match(/^\/api\/task-groups\/(\d+)$/);
+  if (groupMatch) {
+    if (!isTaskAdmin(me)) return json({ error: 'Khong co quyen' }, 403);
+    const groupId = parseInt(groupMatch[1]);
+    const group = await env.DB.prepare('SELECT * FROM task_groups WHERE id=?').bind(groupId).first();
+    if (!group) return json({ error: 'Khong tim thay' }, 404);
+    if (!(await canUseTaskProject(env, group.project_id, me))) return json({ error: 'Khong co quyen voi Project nay' }, 403);
+    if (request.method === 'PUT') {
+      const b = await request.json();
+      const name = String(b.name || group.name || '').trim();
+      if (!name) return json({ error: 'Thieu ten nhom' }, 400);
+      const color = /^#[0-9a-fA-F]{6}$/.test(String(b.color || '')) ? String(b.color) : group.color;
+      const position = Number.isFinite(Number(b.position)) ? Number(b.position) : group.position;
+      await env.DB.prepare(
+        "UPDATE task_groups SET name=?,position=?,color=?,is_archived=?,updated_at=datetime('now','localtime') WHERE id=?"
+      ).bind(name, position, color, b.is_archived ?? group.is_archived ?? 0, groupId).run();
+      return json({ ok: true });
+    }
+    if (request.method === 'DELETE') {
+      await env.DB.prepare("UPDATE task_groups SET is_archived=1,updated_at=datetime('now','localtime') WHERE id=?").bind(groupId).run();
+      return json({ ok: true });
+    }
+  }
+
+  if (path === '/api/task-labels' && request.method === 'GET') {
+    const projectId = intOrNull(url.searchParams.get('project_id'));
+    let q = `SELECT l.*, p.name as project_name,
+                    (SELECT COUNT(*) FROM tasks t WHERE t.label_id=l.id) as usage_count
+               FROM task_labels l
+               LEFT JOIN task_projects p ON l.project_id=p.id
+              WHERE l.is_active=1 AND (l.project_id IS NULL`;
+    const binds = [];
+    if (projectId) { q += ' OR l.project_id=?'; binds.push(projectId); }
+    q += ')';
+    if (!isTaskAdmin(me) && projectId) {
+      q += ` AND (l.project_id IS NULL OR EXISTS (
+        SELECT 1 FROM task_project_members m WHERE m.project_id=l.project_id AND m.user_id=?
+      ) OR EXISTS (SELECT 1 FROM task_projects p2 WHERE p2.id=l.project_id AND p2.manager_id=?))`;
+      binds.push(me.id, me.id);
+    }
+    q += ' ORDER BY l.project_id IS NOT NULL, l.name';
+    const stmt = env.DB.prepare(q);
+    const { results } = await (binds.length ? stmt.bind(...binds) : stmt).all();
+    return json({ labels: results, canManage: isTaskAdmin(me) });
+  }
+
+  if (path === '/api/task-labels' && request.method === 'POST') {
+    if (!isTaskAdmin(me)) return json({ error: 'Khong co quyen' }, 403);
+    const b = await request.json();
+    const name = String(b.name || '').trim();
+    const color = String(b.color || '').trim();
+    if (!name) return json({ error: 'Thieu ten nhan' }, 400);
+    if (!/^#[0-9a-fA-F]{6}$/.test(color)) return json({ error: 'Mau khong hop le' }, 400);
+    const projectId = intOrNull(b.project_id);
+    await env.DB.prepare(
+      `INSERT INTO task_labels (workspace_id,project_id,name,code,color,description,is_active,created_by)
+       VALUES (1,?,?,?,?,?,1,?)`
+    ).bind(projectId, name, String(b.code || '').trim(), color, String(b.description || '').trim(), me.id).run();
+    return json({ ok: true });
+  }
+
+  const labelMatch = path.match(/^\/api\/task-labels\/(\d+)$/);
+  if (labelMatch) {
+    if (!isTaskAdmin(me)) return json({ error: 'Khong co quyen' }, 403);
+    const labelId = parseInt(labelMatch[1]);
+    if (request.method === 'PUT') {
+      const b = await request.json();
+      const label = await env.DB.prepare('SELECT * FROM task_labels WHERE id=?').bind(labelId).first();
+      if (!label) return json({ error: 'Khong tim thay' }, 404);
+      const color = String(b.color || label.color || '').trim();
+      if (!/^#[0-9a-fA-F]{6}$/.test(color)) return json({ error: 'Mau khong hop le' }, 400);
+      await env.DB.prepare(
+        `UPDATE task_labels
+            SET name=?,code=?,color=?,description=?,project_id=?,updated_at=datetime('now','localtime')
+          WHERE id=?`
+      ).bind(
+        String(b.name || label.name).trim(),
+        String(b.code ?? label.code ?? '').trim(),
+        color,
+        String(b.description ?? label.description ?? '').trim(),
+        intOrNull(b.project_id) || null,
+        labelId
+      ).run();
+      return json({ ok: true });
+    }
+    if (request.method === 'DELETE') {
+      const used = await env.DB.prepare('SELECT COUNT(*) as cnt FROM tasks WHERE label_id=?').bind(labelId).first();
+      if ((used?.cnt || 0) > 0) {
+        await env.DB.prepare("UPDATE task_labels SET is_active=0,updated_at=datetime('now','localtime') WHERE id=?").bind(labelId).run();
+      } else {
+        await env.DB.prepare('DELETE FROM task_labels WHERE id=?').bind(labelId).run();
+      }
+      return json({ ok: true });
+    }
+  }
+
   if (path === '/api/tasks' && request.method === 'GET') {
     const date = url.searchParams.get('date');
     const assignee = url.searchParams.get('assignee');
@@ -1717,6 +2074,9 @@ export async function handle(request, env) {
     const taskStatus = url.searchParams.get('status');
     const dept = url.searchParams.get('department');
     const priority = url.searchParams.get('priority');
+    const projectId = intOrNull(url.searchParams.get('project_id'));
+    const groupId = intOrNull(url.searchParams.get('group_id'));
+    const labelId = intOrNull(url.searchParams.get('label_id'));
     const search = String(url.searchParams.get('search') || '').trim();
     const createdFrom = url.searchParams.get('created_from');
     const createdTo = url.searchParams.get('created_to');
@@ -1726,11 +2086,20 @@ export async function handle(request, env) {
     const order = (url.searchParams.get('order') || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
     let q = `SELECT t.*, u.full_name as assignee_name, u.employee_code as assignee_code, u.department as assignee_department,
                     u.avatar_color, u.avatar_initials, ab.full_name as assigner_name,
+                    p.name as project_name, p.code as project_code, p.type as project_type, p.status as project_status,
+                    g.name as group_name, g.position as group_position, g.color as group_color,
+                    l.name as label_name, l.color as label_color_real,
                     (SELECT COUNT(*) FROM subtasks s WHERE s.task_id=t.id) as subtask_total,
                     (SELECT COUNT(*) FROM subtasks s WHERE s.task_id=t.id AND s.is_done=1) as subtask_done
-             FROM tasks t LEFT JOIN users u ON t.assigned_to=u.id LEFT JOIN users ab ON t.assigned_by=ab.id WHERE 1=1`;
+             FROM tasks t
+             LEFT JOIN users u ON t.assigned_to=u.id
+             LEFT JOIN users ab ON t.assigned_by=ab.id
+             LEFT JOIN task_projects p ON t.team_project_id=p.id
+             LEFT JOIN task_groups g ON t.group_id=g.id
+             LEFT JOIN task_labels l ON t.label_id=l.id
+             WHERE 1=1`;
     const binds = [];
-    if (isAdmin) {
+    if (isAdmin || isHcns(me)) {
       // Admin sees all tasks; optional assignee filter
       if (assignee) { q += ' AND t.assigned_to=?'; binds.push(parseInt(assignee)); }
     } else {
@@ -1744,6 +2113,9 @@ export async function handle(request, env) {
     if (dept) { q += ' AND (t.department=? OR u.department=?)'; binds.push(dept, dept); }
     if (assigner) { q += ' AND t.assigned_by=?'; binds.push(parseInt(assigner)); }
     if (priority) { q += ' AND t.priority=?'; binds.push(priority); }
+    if (projectId) { q += ' AND t.team_project_id=?'; binds.push(projectId); }
+    if (groupId) { q += ' AND t.group_id=?'; binds.push(groupId); }
+    if (labelId) { q += ' AND t.label_id=?'; binds.push(labelId); }
     if (createdFrom) { q += ' AND date(t.created_at)>=date(?)'; binds.push(createdFrom); }
     if (createdTo) { q += ' AND date(t.created_at)<=date(?)'; binds.push(createdTo); }
     if (dueFrom) { q += ' AND date(t.due_date)>=date(?)'; binds.push(dueFrom); }
@@ -1766,9 +2138,17 @@ export async function handle(request, env) {
     if (!b.title) return json({ error: 'Thiếu tiêu đề' }, 400);
     const status = b.status || 'todo';
     const priority = b.priority || 'normal';
+    const projectId = intOrNull(b.team_project_id || b.project_id);
+    const groupId = intOrNull(b.group_id);
+    const labelId = intOrNull(b.label_id);
+    if (!(await canUseTaskProject(env, projectId, me))) return json({ error: 'Khong co quyen voi Team/Project nay' }, 403);
+    if (groupId && !(await canUseTaskGroup(env, groupId, projectId, me))) return json({ error: 'Nhom cong viec khong hop le' }, 400);
+    const label = await resolveTaskLabel(env, labelId, projectId);
+    if (labelId && !label) return json({ error: 'Nhan cong viec khong hop le' }, 400);
+    const labelColor = label ? label.color : taskLabelColor(status, priority, b.label_color);
     const r = await env.DB.prepare(
-      'INSERT INTO tasks (title,description,assigned_to,assigned_by,department,date,due_date,status,priority,label_color,checkin_time,checkout_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'
-    ).bind(b.title,b.description||'',b.assigned_to||null,me.id,b.department||'',b.date||null,b.due_date||null,status,priority,taskLabelColor(status, priority, b.label_color),b.checkin_time||null,b.checkout_time||null).run();
+      'INSERT INTO tasks (title,description,assigned_to,assigned_by,department,date,due_date,status,priority,label_color,checkin_time,checkout_time,workspace_id,team_project_id,group_id,label_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)'
+    ).bind(b.title,b.description||'',b.assigned_to||null,me.id,b.department||'',b.date||null,b.due_date||null,status,priority,labelColor,b.checkin_time||null,b.checkout_time||null,projectId,groupId,labelId).run();
     const taskId = r.meta.last_row_id;
     await env.DB.prepare('INSERT INTO task_activity (task_id,user_id,action,detail) VALUES (?,?,?,?)')
       .bind(taskId, me.id, 'created', 'Tạo công việc: ' + b.title).run();
@@ -1780,12 +2160,23 @@ export async function handle(request, env) {
     const tid = parseInt(taskMatch[1]);
     if (request.method === 'GET') {
       const task = await env.DB.prepare(
-        'SELECT t.*, u.full_name as assignee_name, u.avatar_color, u.avatar_initials FROM tasks t LEFT JOIN users u ON t.assigned_to=u.id WHERE t.id=?'
+        `SELECT t.*, u.full_name as assignee_name, u.employee_code as assignee_code, u.department as assignee_department,
+                u.avatar_color, u.avatar_initials, ab.full_name as assigner_name,
+                p.name as project_name, p.code as project_code, p.type as project_type,
+                g.name as group_name, g.position as group_position, g.color as group_color,
+                l.name as label_name, l.color as label_color_real
+           FROM tasks t
+           LEFT JOIN users u ON t.assigned_to=u.id
+           LEFT JOIN users ab ON t.assigned_by=ab.id
+           LEFT JOIN task_projects p ON t.team_project_id=p.id
+           LEFT JOIN task_groups g ON t.group_id=g.id
+           LEFT JOIN task_labels l ON t.label_id=l.id
+          WHERE t.id=?`
       ).bind(tid).first();
       if (!task) return json({ error: 'Không tìm thấy' }, 404);
       // Access: only admins see all tasks; managers and employees can only see
       // tasks they are assigned to, created, or following
-      if (!isAdmin) {
+      if (!isAdmin && !isHcns(me)) {
         const myId = Number(me.id);
         const isInvolved = Number(task.assigned_to) === myId || Number(task.assigned_by) === myId;
         const follower = isInvolved ? null : await env.DB.prepare('SELECT id FROM task_followers WHERE task_id=? AND user_id=?').bind(tid, myId).first();
@@ -1806,9 +2197,17 @@ export async function handle(request, env) {
       if (!isManager && task.assigned_to !== me.id) return json({ error: 'Không có quyền' }, 403);
       const nextStatus = b.status || task.status;
       const nextPriority = b.priority || task.priority;
+      const nextProjectId = (b.team_project_id !== undefined || b.project_id !== undefined) ? intOrNull(b.team_project_id || b.project_id) : (task.team_project_id || null);
+      const nextGroupId = b.group_id !== undefined ? intOrNull(b.group_id) : (task.group_id || null);
+      const nextLabelId = b.label_id !== undefined ? intOrNull(b.label_id) : (task.label_id || null);
+      if (!(await canUseTaskProject(env, nextProjectId, me))) return json({ error: 'Khong co quyen voi Team/Project nay' }, 403);
+      if (nextGroupId && !(await canUseTaskGroup(env, nextGroupId, nextProjectId, me))) return json({ error: 'Nhom cong viec khong hop le' }, 400);
+      const label = await resolveTaskLabel(env, nextLabelId, nextProjectId);
+      if (nextLabelId && !label) return json({ error: 'Nhan cong viec khong hop le' }, 400);
+      const nextColor = label ? label.color : taskLabelColor(nextStatus, nextPriority, b.label_color || task.label_color);
       await env.DB.prepare(
-        "UPDATE tasks SET title=?,description=?,assigned_to=?,department=?,date=?,due_date=?,status=?,priority=?,label_color=?,checkin_time=?,checkout_time=?,updated_at=datetime('now') WHERE id=?"
-      ).bind(b.title||task.title,b.description??task.description,b.assigned_to??task.assigned_to,b.department??task.department,b.date??task.date,b.due_date??task.due_date,nextStatus,nextPriority,taskLabelColor(nextStatus, nextPriority, b.label_color || task.label_color),b.checkin_time??task.checkin_time,b.checkout_time??task.checkout_time,tid).run();
+        "UPDATE tasks SET title=?,description=?,assigned_to=?,department=?,date=?,due_date=?,status=?,priority=?,label_color=?,checkin_time=?,checkout_time=?,team_project_id=?,group_id=?,label_id=?,updated_at=datetime('now') WHERE id=?"
+      ).bind(b.title||task.title,b.description??task.description,b.assigned_to??task.assigned_to,b.department??task.department,b.date??task.date,b.due_date??task.due_date,nextStatus,nextPriority,nextColor,b.checkin_time??task.checkin_time,b.checkout_time??task.checkout_time,nextProjectId,nextGroupId,nextLabelId,tid).run();
       await env.DB.prepare('INSERT INTO task_activity (task_id,user_id,action,detail) VALUES (?,?,?,?)')
         .bind(tid, me.id, 'updated', 'Cập nhật: ' + (b.title||task.title)).run();
       return json({ ok: true });

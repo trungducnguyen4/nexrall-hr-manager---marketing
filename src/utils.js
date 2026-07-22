@@ -124,7 +124,7 @@ export function invStatusBadge(s) {
 export function roleBadge(r) {
   const map = {
     admin: ['badge-danger', '👑 Admin'],
-    manager: ['badge-warning', '⭐ Manager'],
+    manager: ['badge-warning', '⭐ Nhân sự'],
     employee: ['badge-gray', '👤 Nhân viên'],
   };
   const [cls, label] = map[r] || ['badge-gray', r || '—'];
@@ -290,7 +290,7 @@ export function openModal(title, bodyHtml, footerHtml = '') {
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = bodyHtml;
   document.getElementById('modal-footer').innerHTML = footerHtml;
-  document.getElementById('modal')?.classList.remove('modal--scroll-fixed');
+  document.getElementById('modal')?.classList.remove('modal--scroll-fixed', 'modal--project');
   ov.classList.remove('hidden');
 }
 
