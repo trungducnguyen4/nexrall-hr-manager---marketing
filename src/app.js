@@ -3,6 +3,7 @@
 // ════════════════════════════════════════════════
 import { api, setToken, loadToken, clearCache } from './api.js';
 import { setAvatar, toast, initials, avatarColor, closeModal } from './utils.js';
+import { icon } from './icons.js';
 
 // ── Lazy view imports ───────────────────────────
 let _viewModules = {};
@@ -111,6 +112,7 @@ async function boot() {
 //  APP INIT
 // ════════════════════════════════════════════════
 function initApp() {
+  normalizeIcons(document);
   setAvatar(document.getElementById('sidebar-av'), me.full_name, me.avatar_color, me.avatar_initials);
   document.getElementById('sidebar-name').textContent = me.full_name;
   document.getElementById('sidebar-role').textContent = roleLabel(me.role);
@@ -158,6 +160,166 @@ function initApp() {
   window.addEventListener('hashchange', route);
   route();
 }
+
+const GLYPH_ICONS = {
+  '🏠': 'layoutDashboard',
+  '⏱️': 'clock3',
+  '⏱': 'clock3',
+  '🏖️': 'calendarDays',
+  '🏖': 'calendarDays',
+  '📋': 'clipboardList',
+  '💵': 'banknote',
+  '💰': 'banknote',
+  '📈': 'barChart3',
+  '📊': 'barChart3',
+  '👥': 'users',
+  '🏢': 'building2',
+  '🎯': 'target',
+  '📣': 'megaphone',
+  '📡': 'wifi',
+  '⚙️': 'settings',
+  '⚙': 'settings',
+  '🔑': 'keyRound',
+  '🚪': 'logOut',
+  '☰': 'menu',
+  '✕': 'x',
+  '✖': 'x',
+  '←': 'arrowLeft',
+  '→': 'arrowRight',
+  '✅': 'circleCheck',
+  '❌': 'circleX',
+  '⚠️': 'triangleAlert',
+  '⚠': 'triangleAlert',
+  '🔒': 'lock',
+  '🔓': 'lockOpen',
+  '⛔': 'ban',
+  '✏️': 'pencil',
+  '✏': 'pencil',
+  '🗑️': 'trash2',
+  '🗑': 'trash2',
+  '🔍': 'search',
+  '📅': 'calendarDays',
+  '🗓️': 'calendarDays',
+  '🗓': 'calendarDays',
+  '🕒': 'clock3',
+  '⏳': 'clock3',
+  '⏰': 'clock3',
+  '🔄': 'refreshCw',
+  '📌': 'mapPin',
+  '➡': 'arrowRight',
+  '⬆': 'arrowUp',
+  '⬇': 'arrowDown',
+  '🔥': 'triangleAlert',
+  '💳': 'creditCard',
+  '👑': 'shieldAlert',
+  '⭐': 'star',
+  '👤': 'userRound',
+  '🎓': 'badgeCheck',
+  '🧪': 'clipboardCheck',
+  '📝': 'fileText',
+  '🗂️': 'library',
+  '🗂': 'library',
+  '🎁': 'gift',
+  '▶️': 'arrowRight',
+  '▶': 'arrowRight',
+  '📱': 'smartPhone',
+  '📧': 'mail',
+  '🤝': 'handshake',
+  '👁️': 'eye',
+  '👁': 'eye',
+  '🏁': 'flag',
+  '☑️': 'clipboardCheck',
+  '☑': 'clipboardCheck',
+  '☀️': 'sun',
+  '☀': 'sun',
+  '🌤️': 'sun',
+  '🌤': 'sun',
+  '🌙': 'moon',
+  '🏥': 'heartPulse',
+  '👶': 'userRound',
+  '✈️': 'plane',
+  '✈': 'plane',
+  '🏃': 'activity',
+  '🌓': 'moon',
+  '👋': 'userRound',
+  '💡': 'lightbulb',
+  '🏆': 'trophy',
+  '💻': 'notebookTabs',
+  '🎨': 'sparkles',
+};
+
+function normalizeIcons(root = document) {
+  renderDataIcons(root);
+  replaceGlyphTextNodes(root);
+}
+
+function renderDataIcons(root = document) {
+  const nodes = [];
+  if (root.nodeType === Node.ELEMENT_NODE && root.matches('[data-icon]')) nodes.push(root);
+  if (root.querySelectorAll) nodes.push(...root.querySelectorAll('[data-icon]'));
+  nodes.forEach(el => {
+    if (el.dataset.iconRendered === '1') return;
+    const size = el.dataset.iconSize || (el.classList.contains('nav-icon') ? 'lg' : 'sm');
+    el.innerHTML = icon(el.dataset.icon, size);
+    el.dataset.iconRendered = '1';
+  });
+}
+
+function replaceGlyphTextNodes(root = document) {
+  if (root.nodeType === Node.TEXT_NODE) {
+    replaceGlyphNode(root);
+    return;
+  }
+  if (root.nodeType !== Node.ELEMENT_NODE && root.nodeType !== Node.DOCUMENT_NODE) return;
+  const walkerRoot = root.nodeType === Node.TEXT_NODE ? root.parentNode : root;
+  if (!walkerRoot) return;
+  const walker = document.createTreeWalker(walkerRoot, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent || parent.closest('script,style,textarea,option')) return NodeFilter.FILTER_REJECT;
+      if (parent.closest('svg,.app-icon')) return NodeFilter.FILTER_REJECT;
+      return Object.keys(GLYPH_ICONS).some(glyph => node.nodeValue.includes(glyph))
+        ? NodeFilter.FILTER_ACCEPT
+        : NodeFilter.FILTER_REJECT;
+    }
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  nodes.forEach(replaceGlyphNode);
+}
+
+function replaceGlyphNode(textNode) {
+  const parent = textNode.parentElement;
+  if (!parent || parent.closest('script,style,textarea,option,svg,.app-icon')) return;
+  const text = textNode.nodeValue;
+  const glyphs = Object.keys(GLYPH_ICONS).filter(glyph => text.includes(glyph));
+  if (!glyphs.length) return;
+  const pattern = new RegExp(glyphs.map(escapeRegExp).join('|'), 'g');
+  const frag = document.createDocumentFragment();
+  let lastIndex = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (match.index > lastIndex) frag.append(document.createTextNode(text.slice(lastIndex, match.index)));
+    const wrap = document.createElement('span');
+    wrap.innerHTML = icon(GLYPH_ICONS[match[0]], 'sm');
+    frag.append(wrap.firstElementChild);
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) frag.append(document.createTextNode(text.slice(lastIndex)));
+  textNode.replaceWith(frag);
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const iconObserver = new MutationObserver(mutations => {
+  for (const mutation of mutations) {
+    mutation.addedNodes.forEach(node => {
+      if (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.TEXT_NODE) normalizeIcons(node);
+    });
+  }
+});
+iconObserver.observe(document.documentElement, { childList: true, subtree: true });
 
 // ════════════════════════════════════════════════
 //  ROUTER  (DOM-level view cache)

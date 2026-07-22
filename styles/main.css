@@ -88,6 +88,12 @@ html, body {
 .text-warning { color: var(--warning); }
 .text-muted { color: var(--text-2); }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-icon {
+  display: inline-block;
+  flex-shrink: 0;
+  color: currentColor;
+  vertical-align: -0.15em;
+}
 
 /* ── Buttons ──────────────────────────────────── */
 .btn-primary {
@@ -243,7 +249,7 @@ input[type="checkbox"], input[type="radio"] {
   background: var(--sb-active-bg); color: var(--sb-active-color); font-weight: 600;
 }
 .nav-item.active .nav-icon { filter: none; }
-.nav-icon { font-size: 16px; width: 20px; text-align: center; flex-shrink: 0; opacity: .8; }
+.nav-icon { font-size: 16px; width: 20px; text-align: center; flex-shrink: 0; opacity: .8; display: inline-flex; align-items: center; justify-content: center; color: currentColor; }
 .nav-item.active .nav-icon { opacity: 1; }
 .nav-badge {
   margin-left: auto; background: var(--primary); color: #fff;

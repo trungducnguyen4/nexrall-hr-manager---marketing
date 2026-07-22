@@ -25,7 +25,7 @@ export async function renderTasks(el, me) {
 
     <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
       <input type="date" id="task-date-filter" style="flex:1;min-width:130px;" placeholder="Lọc ngày"/>
-      <input type="text" id="task-search" style="flex:2;min-width:160px;" placeholder="🔍 Tìm kiếm..."/>
+      <input type="text" id="task-search" style="flex:2;min-width:160px;" placeholder="Tìm kiếm..."/>
     </div>
 
     <div id="task-list">${loadingHTML()}</div>
