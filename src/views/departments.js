@@ -44,7 +44,7 @@ export async function renderDepartments(el, me) {
   let currentUsers = [];
   let currentPage = 1;
 
-  document.getElementById('btn-new-dept')?.addEventListener('click', () => openDeptForm(null, loadDepts, currentDepts));
+  document.getElementById('btn-new-dept')?.addEventListener('click', () => openDeptForm(null, loadDepts, currentDepts, currentUsers));
   document.getElementById('dept-search')?.addEventListener('input', () => {
     currentPage = 1;
     renderDeptList();
@@ -56,7 +56,9 @@ export async function renderDepartments(el, me) {
     listEl.innerHTML = loadingHTML();
     try {
       const [deptsRes, usersRes] = await Promise.allSettled([api.getDepartments(), api.getUsers()]);
-      currentDepts = deptsRes.status === 'fulfilled' ? (deptsRes.value.departments || []) : [];
+      currentDepts = deptsRes.status === 'fulfilled'
+        ? (deptsRes.value.departments || []).map(d => ({ ...d, manager: d.manager_name || d.manager || '' }))
+        : [];
       currentUsers = usersRes.status === 'fulfilled' ? (usersRes.value.users || []) : [];
       renderDeptList();
     } catch (e) {
@@ -69,7 +71,7 @@ export async function renderDepartments(el, me) {
     const empEl = document.getElementById('dept-employees');
     if (!listEl) return;
 
-    const filtered = filterBySearch(currentDepts, document.getElementById('dept-search')?.value || '', ['name', 'manager', 'description']);
+    const filtered = filterBySearch(currentDepts, document.getElementById('dept-search')?.value || '', ['name', 'manager', 'manager_name', 'description']);
     if (!filtered.length) {
       listEl.innerHTML = emptyHTML('🏢', 'Không tìm thấy phòng ban', isAdmin ? 'Nhấn + Thêm phòng ban để bắt đầu' : '');
       if (empEl) empEl.innerHTML = '';
@@ -101,7 +103,7 @@ export async function renderDepartments(el, me) {
         btn.addEventListener('click', e => {
           e.stopPropagation();
           const d = currentDepts.find(x => x.id === parseInt(btn.dataset.did, 10));
-          if (d) openDeptForm(d, loadDepts, currentDepts);
+          if (d) openDeptForm(d, loadDepts, currentDepts, currentUsers);
         });
       });
       listEl.querySelectorAll('.dept-del').forEach(btn => {
@@ -186,15 +188,22 @@ function employeesByDeptHTML(users) {
   `;
 }
 
-function openDeptForm(dept, onRefresh = noop, existingDepts = []) {
+function openDeptForm(dept, onRefresh = noop, existingDepts = [], users = []) {
   onRefresh = safeCb(onRefresh);
   const isEdit = !!dept;
+  const managerOptions = users.map(u => {
+    const label = `${u.full_name}${u.department ? ' - ' + u.department : ''}${u.position ? ' (' + u.position + ')' : ''}`;
+    return `<option value="${u.id}" ${Number(dept?.manager_id) === Number(u.id) ? 'selected' : ''}>${esc(label)}</option>`;
+  }).join('');
   openModal(isEdit ? 'Sửa phòng ban' : 'Thêm phòng ban', `
     <div class="field"><label>Tên phòng ban *</label>
       <input type="text" id="df-name" value="${esc(dept?.name || '')}" placeholder="Nhập tên phòng ban"/>
     </div>
     <div class="field"><label>Trưởng phòng</label>
-      <input type="text" id="df-manager" value="${esc(dept?.manager || '')}" placeholder="Nguyễn Văn A"/>
+      <select id="df-manager-id">
+        <option value="">-- Chưa chọn --</option>
+        ${managerOptions}
+      </select>
     </div>
     <div class="field"><label>Mô tả</label>
       <textarea id="df-desc" rows="3" placeholder="Mô tả hoạt động của phòng ban...">${esc(dept?.description || '')}</textarea>
@@ -211,7 +220,7 @@ function openDeptForm(dept, onRefresh = noop, existingDepts = []) {
     if (dup) { toast('Phòng ban này đã tồn tại', 'error'); return; }
     const data = {
       name,
-      manager: document.getElementById('df-manager').value.trim(),
+      manager_id: document.getElementById('df-manager-id').value || null,
       description: document.getElementById('df-desc').value.trim(),
     };
     try {

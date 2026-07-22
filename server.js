@@ -1,6 +1,6 @@
-// ===================== HR MANAGER — NEXRALL MARKETING =====================
+﻿// ===================== HR MANAGER â€” NEXRALL MARKETING =====================
 // Auth strategy:
-//   1) POST /api/auth/login  → returns {token} stored in sessions table
+//   1) POST /api/auth/login  â†’ returns {token} stored in sessions table
 //   2) All /api/* routes accept token via X-Auth-Token header, Authorization: Bearer, Cookie, or ?token=
 //   3) FALLBACK: if no valid session token found, use env.USER_ID (platform identity)
 //      and look up or auto-create the matching user row (admin for OWNER_ID).
@@ -9,9 +9,18 @@
 
 // ===================== MIGRATIONS =====================
 let _migrated = false;
+const SCHEMA_VERSION = '2026-07-22-payslip-export-history-fix';
+const SEED_VERSION = '2026-07-22-seed-v1';
 
 async function migrate(env) {
   if (_migrated) return;
+  try {
+    const row = await env.DB.prepare("SELECT setting_value FROM settings WHERE setting_key='schema_version'").first();
+    if (row?.setting_value === SCHEMA_VERSION) {
+      _migrated = true;
+      return;
+    }
+  } catch (_) {}
   const stmts = [
     `CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,7 +138,7 @@ async function migrate(env) {
     `CREATE TABLE IF NOT EXISTS settings (setting_key TEXT PRIMARY KEY, setting_value TEXT)`,
     `CREATE TABLE IF NOT EXISTS departments (
       id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT,
-      name TEXT NOT NULL, manager TEXT, description TEXT
+      name TEXT NOT NULL, manager TEXT, manager_id INTEGER, description TEXT
     )`,
     `CREATE TABLE IF NOT EXISTS employees (
       id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, code TEXT,
@@ -167,6 +176,41 @@ async function migrate(env) {
       created_at TEXT DEFAULT (datetime('now','localtime')),
       updated_at TEXT DEFAULT (datetime('now','localtime'))
     )`,
+    `CREATE TABLE IF NOT EXISTS payroll_adjustments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id INTEGER NOT NULL,
+      payroll_id INTEGER,
+      month TEXT NOT NULL,
+      type TEXT NOT NULL,
+      source TEXT NOT NULL,
+      source_ref TEXT UNIQUE,
+      amount REAL DEFAULT 0,
+      score_delta REAL DEFAULT 0,
+      reason TEXT NOT NULL,
+      status TEXT DEFAULT 'suggested',
+      created_by INTEGER,
+      created_by_name TEXT,
+      approved_by INTEGER,
+      approved_by_name TEXT,
+      approved_at TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      updated_at TEXT DEFAULT (datetime('now','localtime'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS invoice_review_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      invoice_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      category TEXT NOT NULL,
+      message TEXT NOT NULL,
+      requested_amount REAL DEFAULT 0,
+      status TEXT DEFAULT 'open',
+      handled_by INTEGER,
+      handled_by_name TEXT,
+      handled_note TEXT,
+      handled_at TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      updated_at TEXT DEFAULT (datetime('now','localtime'))
+    )`,
   ];
   for (const s of stmts) {
     await env.DB.prepare(s).run();
@@ -199,6 +243,28 @@ async function migrate(env) {
   try { await env.DB.exec("ALTER TABLE payroll ADD COLUMN data_status TEXT DEFAULT 'ready'"); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN data_warnings TEXT'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN source_synced_at TEXT'); } catch (_) {}
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS payroll_adjustments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id INTEGER NOT NULL,
+    payroll_id INTEGER,
+    month TEXT NOT NULL,
+    type TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_ref TEXT UNIQUE,
+    amount REAL DEFAULT 0,
+    score_delta REAL DEFAULT 0,
+    reason TEXT NOT NULL,
+    status TEXT DEFAULT 'suggested',
+    created_by INTEGER,
+    created_by_name TEXT,
+    approved_by INTEGER,
+    approved_by_name TEXT,
+    approved_at TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_payroll_adjustments_month_employee ON payroll_adjustments(month,employee_id)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_payroll_adjustments_status ON payroll_adjustments(status)'); } catch (_) {}
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS payroll_batches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     month TEXT UNIQUE NOT NULL,
@@ -220,7 +286,7 @@ async function migrate(env) {
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN late_minutes INTEGER DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN early_minutes INTEGER DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN registered INTEGER DEFAULT 0'); } catch (_) {}
-  // Invoices: attendance-derived "Dữ liệu công" fields (auto-filled from /api/attendance/summary)
+  // Invoices: attendance-derived "Dá»¯ liá»‡u cÃ´ng" fields (auto-filled from /api/attendance/summary)
   try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN standard_days INTEGER DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN paid_leave_days INTEGER DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN late_minutes INTEGER DEFAULT 0'); } catch (_) {}
@@ -229,14 +295,41 @@ async function migrate(env) {
   try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN locked_at TEXT'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN locked_by INTEGER'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN locked_by_name TEXT'); } catch (_) {}
-  // Employee type (Nhân viên/Thực tập sinh) — used for the auto-generated employee code prefix.
+  try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN payroll_id INTEGER'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN issued_at TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN issued_by INTEGER'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN issued_by_name TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN employee_confirmed_at TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN review_requested_at TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN review_resolved_at TEXT'); } catch (_) {}
+  try { await env.DB.exec("ALTER TABLE invoices ADD COLUMN review_status TEXT DEFAULT 'none'"); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN review_reason TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN review_note TEXT'); } catch (_) {}
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS invoice_review_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    category TEXT NOT NULL,
+    message TEXT NOT NULL,
+    requested_amount REAL DEFAULT 0,
+    status TEXT DEFAULT 'open',
+    handled_by INTEGER,
+    handled_by_name TEXT,
+    handled_note TEXT,
+    handled_at TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_invoice_review_invoice ON invoice_review_requests(invoice_id,status)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_invoices_payroll_id ON invoices(payroll_id)'); } catch (_) {}
+  // Employee type (NhÃ¢n viÃªn/Thá»±c táº­p sinh) â€” used for the auto-generated employee code prefix.
   try { await env.DB.exec("ALTER TABLE users ADD COLUMN employee_type TEXT DEFAULT 'NV'"); } catch (_) {}
 
-  // Lifecycle status (Vòng đời nhân sự). New rows default to 'Chờ tiếp nhận';
-  // existing rows (already working before this migration) are backfilled once to 'Chính thức'.
+  // Lifecycle status (VÃ²ng Ä‘á»i nhÃ¢n sá»±). New rows default to 'Chá» tiáº¿p nháº­n';
+  // existing rows (already working before this migration) are backfilled once to 'ChÃ­nh thá»©c'.
   try {
-    await env.DB.exec("ALTER TABLE users ADD COLUMN lifecycle_status TEXT DEFAULT 'Chờ tiếp nhận'");
-    await env.DB.exec("UPDATE users SET lifecycle_status='Chính thức' WHERE lifecycle_status='Chờ tiếp nhận'");
+    await env.DB.exec("ALTER TABLE users ADD COLUMN lifecycle_status TEXT DEFAULT 'Chá» tiáº¿p nháº­n'");
+    await env.DB.exec("UPDATE users SET lifecycle_status='ChÃ­nh thá»©c' WHERE lifecycle_status='Chá» tiáº¿p nháº­n'");
   } catch (_) {}
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS lifecycle_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -248,7 +341,7 @@ async function migrate(env) {
     reason TEXT,
     created_at TEXT DEFAULT (datetime('now','localtime'))
   )`); } catch (_) {}
-  // Asset handover (Bàn giao tài sản cho TTS)
+  // Asset handover (BÃ n giao tÃ i sáº£n cho TTS)
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS asset_handovers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -267,7 +360,7 @@ async function migrate(env) {
     created_at TEXT DEFAULT (datetime('now','localtime')),
     updated_at TEXT DEFAULT (datetime('now','localtime'))
   )`); } catch (_) {}
-  // Bàn giao tài sản: mở rộng áp dụng cho cả nhân viên chính thức lẫn TTS + ngày dự kiến bàn giao.
+  // BÃ n giao tÃ i sáº£n: má»Ÿ rá»™ng Ã¡p dá»¥ng cho cáº£ nhÃ¢n viÃªn chÃ­nh thá»©c láº«n TTS + ngÃ y dá»± kiáº¿n bÃ n giao.
   try { await env.DB.exec(`ALTER TABLE asset_handovers ADD COLUMN expected_handover_date TEXT`); } catch (_) {}
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS asset_credential_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -374,12 +467,14 @@ async function migrate(env) {
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_task_labels_project_active ON task_labels(project_id,is_active)'); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_leave_requests_type ON leave_requests(type)'); } catch (_) {}
   try { await env.DB.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_departments_name_ci ON departments(lower(name))'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE departments ADD COLUMN manager_id INTEGER'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_departments_manager_id ON departments(manager_id)'); } catch (_) {}
 
   // One-time normalization: standardize existing department data to the fixed
   // 8-value list (case/near-spelling variants mapped, no duplicate rows created).
   try { await normalizeDepartmentData(env); } catch (_) {}
 
-  // ── Đánh giá hiệu suất (Performance Evaluation) — TTS workflow ──────────
+  // â”€â”€ ÄÃ¡nh giÃ¡ hiá»‡u suáº¥t (Performance Evaluation) â€” TTS workflow â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS eval_periods (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     month INTEGER NOT NULL,
@@ -440,10 +535,14 @@ async function migrate(env) {
     note TEXT,
     created_at TEXT DEFAULT (datetime('now','localtime'))
   )`); } catch (_) {}
-  // HCNS "Ghi chú & kiến nghị" gửi Ban Giám đốc — one note per eval period.
+  // HCNS "Ghi chÃº & kiáº¿n nghá»‹" gá»­i Ban GiÃ¡m Ä‘á»‘c â€” one note per eval period.
   try { await env.DB.exec(`ALTER TABLE eval_periods ADD COLUMN hr_note TEXT`); } catch (_) {}
   try { await env.DB.exec(`ALTER TABLE eval_periods ADD COLUMN hr_note_by TEXT`); } catch (_) {}
   try { await env.DB.exec(`ALTER TABLE eval_periods ADD COLUMN hr_note_at TEXT`); } catch (_) {}
+  try {
+    await env.DB.prepare('INSERT OR REPLACE INTO settings (setting_key,setting_value) VALUES (?,?)')
+      .bind('schema_version', SCHEMA_VERSION).run();
+  } catch (_) {}
   _migrated = true;
 }
 
@@ -451,22 +550,22 @@ async function migrate(env) {
 // The company uses exactly these 8 departments. Any legacy/free-text value
 // (old casing, abbreviation, or old marketing sub-team name) is mapped here.
 const STANDARD_DEPARTMENTS = [
-  'Ban Giám Đốc', 'Phòng HCNS', 'Phòng Kinh Doanh', 'Phòng Marketing',
-  'Phòng Biên Tập', 'Phòng Sản Xuất Phim', 'Phòng Gameshow', 'Phòng Kế Toán',
+  'Ban GiÃ¡m Äá»‘c', 'PhÃ²ng HCNS', 'PhÃ²ng Kinh Doanh', 'PhÃ²ng Marketing',
+  'PhÃ²ng BiÃªn Táº­p', 'PhÃ²ng Sáº£n Xuáº¥t Phim', 'PhÃ²ng Gameshow', 'PhÃ²ng Káº¿ ToÃ¡n',
 ];
 function deptNormKey(s) {
   return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/đ/gi, 'd').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    .replace(/Ä‘/gi, 'd').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 const DEPT_ALIASES = {
-  'Ban Giám Đốc': ['ban giam doc', 'bgd', 'giam doc', 'ban lanh dao'],
-  'Phòng HCNS': ['hcns', 'phong hcns', 'nhan su', 'phong nhan su', 'hanh chinh nhan su', 'hr'],
-  'Phòng Kinh Doanh': ['kinh doanh', 'phong kinh doanh', 'sale', 'sales', 'phong sale', 'account sales', 'account', 'business development'],
-  'Phòng Marketing': ['marketing', 'phong marketing', 'content marketing', 'seo sem', 'social media', 'design', 'performance', 'pr events', 'pr & events', 'truyen thong', 'digital ads', 'ads', 'quang cao'],
-  'Phòng Biên Tập': ['bien tap', 'phong bien tap', 'noi dung'],
-  'Phòng Sản Xuất Phim': ['san xuat phim', 'phong san xuat phim', 'production', 'san xuat'],
-  'Phòng Gameshow': ['gameshow', 'phong gameshow', 'game show'],
-  'Phòng Kế Toán': ['ke toan', 'phong ke toan', 'accounting', 'tai chinh ke toan'],
+  'Ban GiÃ¡m Äá»‘c': ['ban giam doc', 'bgd', 'giam doc', 'ban lanh dao'],
+  'PhÃ²ng HCNS': ['hcns', 'phong hcns', 'nhan su', 'phong nhan su', 'hanh chinh nhan su', 'hr'],
+  'PhÃ²ng Kinh Doanh': ['kinh doanh', 'phong kinh doanh', 'sale', 'sales', 'phong sale', 'account sales', 'account', 'business development'],
+  'PhÃ²ng Marketing': ['marketing', 'phong marketing', 'content marketing', 'seo sem', 'social media', 'design', 'performance', 'pr events', 'pr & events', 'truyen thong', 'digital ads', 'ads', 'quang cao'],
+  'PhÃ²ng BiÃªn Táº­p': ['bien tap', 'phong bien tap', 'noi dung'],
+  'PhÃ²ng Sáº£n Xuáº¥t Phim': ['san xuat phim', 'phong san xuat phim', 'production', 'san xuat'],
+  'PhÃ²ng Gameshow': ['gameshow', 'phong gameshow', 'game show'],
+  'PhÃ²ng Káº¿ ToÃ¡n': ['ke toan', 'phong ke toan', 'accounting', 'tai chinh ke toan'],
 };
 const DEPT_LOOKUP = (() => {
   const m = {};
@@ -490,16 +589,16 @@ function deptUniqueKey(name) {
 }
 
 // ===================== EMPLOYEE CODE GENERATION =====================
-// [LOẠI]-[PHÒNG]-[STT 3 số] — e.g. NV-MKT-001, TTS-HCNS-002.
+// [LOáº I]-[PHÃ’NG]-[STT 3 sá»‘] â€” e.g. NV-MKT-001, TTS-HCNS-002.
 const DEPT_CODE = {
-  'Ban Giám Đốc': 'BGD',
-  'Phòng HCNS': 'HCNS',
-  'Phòng Kinh Doanh': 'KD',
-  'Phòng Marketing': 'MKT',
-  'Phòng Biên Tập': 'BT',
-  'Phòng Sản Xuất Phim': 'SXF',
-  'Phòng Gameshow': 'GSH',
-  'Phòng Kế Toán': 'KT',
+  'Ban GiÃ¡m Äá»‘c': 'BGD',
+  'PhÃ²ng HCNS': 'HCNS',
+  'PhÃ²ng Kinh Doanh': 'KD',
+  'PhÃ²ng Marketing': 'MKT',
+  'PhÃ²ng BiÃªn Táº­p': 'BT',
+  'PhÃ²ng Sáº£n Xuáº¥t Phim': 'SXF',
+  'PhÃ²ng Gameshow': 'GSH',
+  'PhÃ²ng Káº¿ ToÃ¡n': 'KT',
 };
 function employeeTypeCode(t) {
   return t === 'TTS' ? 'TTS' : 'NV';
@@ -577,24 +676,24 @@ function nameInitials(name) {
 }
 
 // ===================== PERMISSION HELPERS =====================
-// HCNS (Phòng HCNS) and Ban Giám Đốc (both are DEPARTMENTS, not roles) may edit
+// HCNS (PhÃ²ng HCNS) and Ban GiÃ¡m Äá»‘c (both are DEPARTMENTS, not roles) may edit
 // lifecycle status and fully manage asset handovers. Admin always has owner-level access.
 function isHrOrBod(u) {
-  return !!u && (u.role === 'admin' || u.department === 'Phòng HCNS' || u.department === 'Ban Giám Đốc');
+  return !!u && (u.role === 'admin' || u.department === 'PhÃ²ng HCNS' || u.department === 'Ban GiÃ¡m Äá»‘c');
 }
-// Narrower than isHrOrBod — used to tell the HCNS-only actions (Tiếp nhận/Khóa phiếu) apart
-// from the Ban Giám Đốc-only actions (Phê duyệt/Trả lại) in the Đánh giá hiệu suất workflow.
-function isHcns(u) { return !!u && (u.role === 'admin' || u.department === 'Phòng HCNS'); }
-function isBgd(u)  { return !!u && (u.role === 'admin' || u.department === 'Ban Giám Đốc'); }
-// Quản lý/Trưởng phòng (role='manager') xử lý tài sản của nhân sự thuộc phòng ban mình phụ trách.
+// Narrower than isHrOrBod â€” used to tell the HCNS-only actions (Tiáº¿p nháº­n/KhÃ³a phiáº¿u) apart
+// from the Ban GiÃ¡m Äá»‘c-only actions (PhÃª duyá»‡t/Tráº£ láº¡i) in the ÄÃ¡nh giÃ¡ hiá»‡u suáº¥t workflow.
+function isHcns(u) { return !!u && (u.role === 'admin' || u.department === 'PhÃ²ng HCNS'); }
+function isBgd(u)  { return !!u && (u.role === 'admin' || u.department === 'Ban GiÃ¡m Äá»‘c'); }
+// Quáº£n lÃ½/TrÆ°á»Ÿng phÃ²ng (role='manager') xá»­ lÃ½ tÃ i sáº£n cá»§a nhÃ¢n sá»± thuá»™c phÃ²ng ban mÃ¬nh phá»¥ trÃ¡ch.
 function isDeptManager(u, ownerDept) {
   return !!u && u.role === 'manager' && !!ownerDept && u.department === ownerDept;
 }
 
-const LIFECYCLE_STATUSES = ['Chờ tiếp nhận', 'Thực tập', 'Thử việc', 'Chính thức', 'Đã nghỉ'];
+const LIFECYCLE_STATUSES = ['Chá» tiáº¿p nháº­n', 'Thá»±c táº­p', 'Thá»­ viá»‡c', 'ChÃ­nh thá»©c', 'ÄÃ£ nghá»‰'];
 
-// ===================== ĐÁNH GIÁ HIỆU SUẤT — CRITERIA (mirrors src/utils.js EVAL_GROUPS) =====
-// Kept as a compact {code: maxScore} map for server-side score validation only — the full
+// ===================== ÄÃNH GIÃ HIá»†U SUáº¤T â€” CRITERIA (mirrors src/utils.js EVAL_GROUPS) =====
+// Kept as a compact {code: maxScore} map for server-side score validation only â€” the full
 // label/description/scale metadata lives in ONE place (src/utils.js EVAL_GROUPS) and is never
 // duplicated here; this map exists solely so the backend can authoritatively bound-check scores
 // without importing a frontend module into the Worker bundle.
@@ -611,25 +710,25 @@ function evalTotal(scores) {
   for (const code of EVAL_CODES) sum += Number(scores?.[code]) || 0;
   return sum;
 }
-// Validates whatever is present (used for "Lưu nháp" — partial is fine).
+// Validates whatever is present (used for "LÆ°u nhÃ¡p" â€” partial is fine).
 function evalValidatePartial(scores, comments) {
   for (const code of EVAL_CODES) {
     const v = (scores || {})[code];
     if (v === undefined || v === null || v === '') continue;
     const n = Number(v);
     const max = EVAL_CRITERIA_MAX[code];
-    if (!Number.isFinite(n) || n < 0 || n > max) return `Điểm ${code} không hợp lệ (0–${max})`;
+    if (!Number.isFinite(n) || n < 0 || n > max) return `Äiá»ƒm ${code} khÃ´ng há»£p lá»‡ (0â€“${max})`;
     if (n < max * EVAL_COMMENT_REQUIRED_RATIO && !String((comments || {})[code] || '').trim()) {
-      return `Cần nhận xét khi điểm ${code} thấp hơn mức cấu hình`;
+      return `Cáº§n nháº­n xÃ©t khi Ä‘iá»ƒm ${code} tháº¥p hÆ¡n má»©c cáº¥u hÃ¬nh`;
     }
   }
   return null;
 }
-// Validates that ALL 16 criteria are filled (used for "Gửi đánh giá").
+// Validates that ALL 16 criteria are filled (used for "Gá»­i Ä‘Ã¡nh giÃ¡").
 function evalValidateComplete(scores, comments) {
   for (const code of EVAL_CODES) {
     const v = (scores || {})[code];
-    if (v === undefined || v === null || v === '') return `Vui lòng chấm điểm đầy đủ 16 tiêu chí (còn thiếu ${code})`;
+    if (v === undefined || v === null || v === '') return `Vui lÃ²ng cháº¥m Ä‘iá»ƒm Ä‘áº§y Ä‘á»§ 16 tiÃªu chÃ­ (cÃ²n thiáº¿u ${code})`;
   }
   return evalValidatePartial(scores, comments);
 }
@@ -637,6 +736,142 @@ function todayStr() { return new Date().toISOString().slice(0, 10); }
 
 function nowStr() {
   return new Date().toISOString().slice(0, 19).replace('T', ' ');
+}
+
+async function nextInvoiceNumber(env, year, month) {
+  const row = await env.DB.prepare(
+    "SELECT invoice_number FROM invoices WHERE year=? AND month=? AND invoice_number LIKE ? ORDER BY invoice_number DESC LIMIT 1"
+  ).bind(year, month, `HD-${year}${String(month).padStart(2, '0')}-%`).first();
+  const lastSeq = Number(String(row?.invoice_number || '').split('-').pop() || 0);
+  const count = await env.DB.prepare('SELECT COUNT(*) as cnt FROM invoices WHERE year=? AND month=?')
+    .bind(year, month).first();
+  const seq = String(Math.max(lastSeq, Number(count?.cnt || 0)) + 1).padStart(3, '0');
+  return 'HD-' + year + String(month).padStart(2, '0') + '-' + seq;
+}
+
+function prevMonthStr(month) {
+  const [year, mm] = String(month || '').split('-').map(Number);
+  if (!year || !mm) return '';
+  const d = new Date(Date.UTC(year, mm - 2, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function payrollAdjustmentType(source, amount, scoreDelta) {
+  if (amount > 0 && source !== 'attendance') return 'bonus';
+  if (amount > 0 && source === 'attendance') return 'penalty';
+  if (scoreDelta > 0) return 'score_bonus';
+  if (scoreDelta < 0) return 'score_penalty';
+  return 'alert';
+}
+
+async function buildPayrollAdjustmentSuggestions(env, month) {
+  const suggestions = [];
+  const { results: payrollRows = [] } = await env.DB.prepare(
+    'SELECT id,employee_id,employee_name,employee_code,department FROM payroll WHERE month=?'
+  ).bind(month).all();
+  const payrollByEmployee = new Map(payrollRows.map(p => [Number(p.employee_id), p]));
+
+  function pushSuggestion(row) {
+    const payroll = payrollByEmployee.get(Number(row.employee_id));
+    suggestions.push({
+      payroll_id: payroll?.id || null,
+      employee_id: Number(row.employee_id),
+      employee_name: row.employee_name || payroll?.employee_name || '',
+      employee_code: row.employee_code || payroll?.employee_code || '',
+      department: row.department || payroll?.department || '',
+      month,
+      type: row.type || payrollAdjustmentType(row.source, Number(row.amount || 0), Number(row.score_delta || 0)),
+      source: row.source,
+      source_ref: row.source_ref,
+      amount: Number(row.amount || 0),
+      score_delta: Number(row.score_delta || 0),
+      reason: row.reason,
+      can_apply: !(Number(row.amount || 0) > 0 && !payroll?.id),
+    });
+  }
+
+  const { results: evals = [] } = await env.DB.prepare(
+    `SELECT e.id AS evaluation_id, e.user_id AS employee_id, e.final_approved_score,
+            u.full_name AS employee_name, u.employee_code, u.department
+       FROM evaluations e
+       JOIN eval_periods p ON e.period_id=p.id
+       JOIN users u ON e.user_id=u.id
+      WHERE e.status='LOCKED'
+        AND printf('%04d-%02d', p.year, p.month)=?
+        AND e.final_approved_score IS NOT NULL`
+  ).bind(month).all();
+  for (const ev of evals) {
+    const score = Number(ev.final_approved_score || 0);
+    if (score >= 90) {
+      pushSuggestion({ ...ev, source: 'evaluation', source_ref: `eval-score:${ev.evaluation_id}`, amount: 1000000, score_delta: 0, reason: `Diem danh gia ${score}: de xuat thuong 1.000.000d (co the dieu chinh toi 2.000.000d).` });
+    } else if (score >= 80) {
+      pushSuggestion({ ...ev, source: 'evaluation', source_ref: `eval-score:${ev.evaluation_id}`, amount: 500000, score_delta: 0, reason: `Diem danh gia ${score}: de xuat thuong 500.000d.` });
+    }
+  }
+
+  const prevMonth = prevMonthStr(month);
+  if (prevMonth) {
+    const { results: lowRows = [] } = await env.DB.prepare(
+      `SELECT cur.user_id AS employee_id, cur.final_approved_score AS current_score, prev.final_approved_score AS previous_score,
+              u.full_name AS employee_name, u.employee_code, u.department
+         FROM evaluations cur
+         JOIN eval_periods cp ON cur.period_id=cp.id
+         JOIN evaluations prev ON prev.user_id=cur.user_id
+         JOIN eval_periods pp ON prev.period_id=pp.id
+         JOIN users u ON u.id=cur.user_id
+        WHERE cur.status='LOCKED' AND prev.status='LOCKED'
+          AND printf('%04d-%02d', cp.year, cp.month)=?
+          AND printf('%04d-%02d', pp.year, pp.month)=?
+          AND cur.final_approved_score < 50 AND prev.final_approved_score < 50`
+    ).bind(month, prevMonth).all();
+    for (const row of lowRows) {
+      pushSuggestion({ ...row, source: 'evaluation', source_ref: `eval-low-2mo:${row.employee_id}:${month}`, amount: 0, score_delta: 0, reason: `Diem yeu 2 thang lien tiep (${prevMonth}: ${row.previous_score}, ${month}: ${row.current_score}) - can HR/BGD xem xet.` });
+    }
+  }
+
+  const { results: attendanceRows = [] } = await env.DB.prepare(
+    `SELECT a.id AS attendance_id, a.user_id AS employee_id, a.date, a.late_minutes, a.checkin_time, a.checkout_time,
+            u.full_name AS employee_name, u.employee_code, u.department
+       FROM attendance a JOIN users u ON a.user_id=u.id
+      WHERE a.date LIKE ?`
+  ).bind(`${month}-%`).all();
+  for (const a of attendanceRows) {
+    const late = Number(a.late_minutes || 0);
+    if (late > 0) {
+      const amount = late < 15 ? 20000 : 50000;
+      pushSuggestion({ ...a, source: 'attendance', source_ref: `att-late:${a.attendance_id}`, amount, score_delta: 0, reason: `Di tre ${late} phut ngay ${a.date}: phat ${amount.toLocaleString('vi-VN')}d.` });
+    }
+    if (!a.checkin_time || !a.checkout_time) {
+      pushSuggestion({ ...a, source: 'attendance', source_ref: `att-missing:${a.attendance_id}`, amount: 50000, score_delta: 0, reason: `Thieu check-in/out ngay ${a.date}: phat 50.000d.` });
+    }
+  }
+
+  const { results: taskRows = [] } = await env.DB.prepare(
+    `SELECT t.assigned_to AS employee_id, COUNT(*) AS late_count,
+            u.full_name AS employee_name, u.employee_code, u.department
+       FROM tasks t JOIN users u ON t.assigned_to=u.id
+      WHERE t.due_date LIKE ?
+        AND date(t.due_date) < date('now','localtime')
+        AND t.status NOT IN ('done','cancelled')
+      GROUP BY t.assigned_to
+     HAVING COUNT(*) >= 3`
+  ).bind(`${month}-%`).all();
+  for (const row of taskRows) {
+    pushSuggestion({ ...row, source: 'tasks', source_ref: `task-deadline:${row.employee_id}:${month}`, amount: 0, score_delta: -5, reason: `Tre deadline ${row.late_count} lan trong thang: de xuat tru 5 diem theo chinh sach.` });
+  }
+
+  const { results: approved = [] } = await env.DB.prepare(
+    `SELECT pa.*, u.full_name AS employee_name, u.employee_code, u.department
+       FROM payroll_adjustments pa
+       LEFT JOIN users u ON u.id=pa.employee_id
+      WHERE pa.month=? AND pa.status='approved'
+      ORDER BY pa.approved_at DESC, pa.id DESC`
+  ).bind(month).all();
+  const approvedRefs = new Set(approved.map(a => a.source_ref).filter(Boolean));
+  return {
+    suggestions: suggestions.filter(s => !approvedRefs.has(s.source_ref)),
+    approved,
+  };
 }
 
 function vnParts() {
@@ -658,9 +893,9 @@ function vnTimeStr() {
   return `${p.hour}:${p.minute}`;
 }
 
-// ── Asset-handover credential encryption (AES-GCM, key derived from APP_ID) ──
-// "Tài khoản đăng nhập" declared for a handed-over asset may contain a secret.
-// Never store/return it in plaintext — encrypt at rest, mask in list responses,
+// â”€â”€ Asset-handover credential encryption (AES-GCM, key derived from APP_ID) â”€â”€
+// "TÃ i khoáº£n Ä‘Äƒng nháº­p" declared for a handed-over asset may contain a secret.
+// Never store/return it in plaintext â€” encrypt at rest, mask in list responses,
 // and only decrypt via the gated reveal endpoint (which writes an audit log row).
 async function getCredKey(env) {
   const enc = new TextEncoder().encode('asset-cred-key:' + (env.APP_ID || 'default-app'));
@@ -691,7 +926,7 @@ async function decryptCred(env, b64) {
   }
 }
 
-// ── ATTENDANCE HELPERS ──────────────────────────────────────────────
+// â”€â”€ ATTENDANCE HELPERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Standard shift windows for office/WFH. Business trips use the employee's
 // own registered expected start/end instead (flexible).
 const ATT_STANDARD_SHIFTS = {
@@ -707,7 +942,7 @@ function attToMinutes(t) {
   return h * 60 + m;
 }
 
-// Number of Mon–Fri business days in a given month (used as "Ngày công chuẩn").
+// Number of Monâ€“Fri business days in a given month (used as "NgÃ y cÃ´ng chuáº©n").
 function attCountBusinessDays(year, month) {
   const daysInMonth = new Date(year, month, 0).getDate();
   let count = 0;
@@ -716,6 +951,96 @@ function attCountBusinessDays(year, month) {
     if (dow !== 0 && dow !== 6) count++;
   }
   return count;
+}
+
+function attIsoDate(year, month, day) {
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function attCountBusinessDaysBetween(startDate, endDate) {
+  const start = new Date(`${startDate}T00:00:00`);
+  const end = new Date(`${endDate}T00:00:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return 0;
+  let count = 0;
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) count++;
+  }
+  return count;
+}
+
+async function buildMonthlyWorkSummary(env, userId, month, year) {
+  const mm = String(month).padStart(2, '0');
+  const { results = [] } = await env.DB.prepare(
+    "SELECT * FROM attendance WHERE user_id=? AND strftime('%m',date)=? AND strftime('%Y',date)=?"
+  ).bind(userId, mm, String(year)).all();
+
+  let fullDays = 0;
+  let halfDays = 0;
+  let incompleteDays = 0;
+  let lateMinutes = 0;
+  let earlyLeaveMinutes = 0;
+  let absentDays = 0;
+  let lateDays = 0;
+
+  for (const r of results) {
+    if (r.status === 'cancelled' || r.status === 'rejected') continue;
+    if (r.status === 'absent') {
+      absentDays++;
+      continue;
+    }
+    const hasIn = !!r.checkin_time;
+    const hasOut = !!r.checkout_time;
+    if (!hasIn || !hasOut) {
+      incompleteDays++;
+      continue;
+    }
+    if (r.shift === 'morning' || r.shift === 'afternoon') halfDays++;
+    else fullDays++;
+    const late = Number(r.late_minutes || 0);
+    const early = Number(r.early_minutes || 0);
+    lateMinutes += late;
+    earlyLeaveMinutes += early;
+    if (late > 0) lateDays++;
+  }
+
+  let paidLeaveDays = 0;
+  const monthStart = attIsoDate(year, month, 1);
+  const monthEnd = attIsoDate(year, month, new Date(year, month, 0).getDate());
+  try {
+    const { results: leaves = [] } = await env.DB.prepare(
+      `SELECT lr.start_date, lr.end_date
+         FROM leave_requests lr
+         LEFT JOIN leave_types lt ON lr.type=lt.code
+        WHERE (CAST(lr.user_id AS TEXT)=CAST(? AS TEXT) OR lr.employee_id=?)
+          AND lr.status='approved'
+          AND COALESCE(lt.paid_policy,'paid')='paid'
+          AND date(lr.start_date) <= date(?)
+          AND date(lr.end_date) >= date(?)`
+    ).bind(userId, userId, monthEnd, monthStart).all();
+    for (const lr of leaves) {
+      const start = String(lr.start_date || '') > monthStart ? String(lr.start_date || '') : monthStart;
+      const end = String(lr.end_date || '') < monthEnd ? String(lr.end_date || '') : monthEnd;
+      paidLeaveDays += attCountBusinessDaysBetween(start, end);
+    }
+  } catch (_) {
+    paidLeaveDays = 0;
+  }
+
+  const standardWorkDays = attCountBusinessDays(year, month);
+  const actualWorkDays = fullDays + halfDays * 0.5;
+  return {
+    standardWorkDays,
+    actualWorkDays,
+    fullDays,
+    halfDays,
+    incompleteDays,
+    absentDays,
+    lateDays,
+    paidLeaveDays,
+    lateMinutes,
+    earlyLeaveMinutes,
+  };
 }
 
 function attShiftBounds(workType, shift, expectedStart, expectedEnd) {
@@ -873,18 +1198,25 @@ async function seedDepartments(env) {
 let _seeded = false;
 async function seedIfNeeded(env) {
   if (_seeded) return;
+  try {
+    const row = await env.DB.prepare("SELECT setting_value FROM settings WHERE setting_key='seed_version'").first();
+    if (row?.setting_value === SEED_VERSION) {
+      _seeded = true;
+      return;
+    }
+  } catch (_) {}
   // Use INSERT OR IGNORE so partial seeds are safely completed on retry
   const adminHash = await hashPassword('Admin@123');
   await env.DB.prepare(
     'INSERT OR IGNORE INTO users (employee_code,full_name,email,password_hash,role,department,position,avatar_color,avatar_initials,phone,salary,is_active) VALUES (?,?,?,?,?,?,?,?,?,?,?,1)'
-  ).bind('ADMIN001','Quản Trị Viên','admin@company.com',adminHash,'admin','Ban Giám Đốc','Giám đốc','#4F46E5','QT','0900000000',50000000).run();
+  ).bind('ADMIN001','Quáº£n Trá»‹ ViÃªn','admin@company.com',adminHash,'admin','Ban GiÃ¡m Äá»‘c','GiÃ¡m Ä‘á»‘c','#4F46E5','QT','0900000000',50000000).run();
 
   // Seed a default wifi entry only if table is empty
   const wifiCount = await env.DB.prepare('SELECT COUNT(*) as cnt FROM wifi_whitelist').first();
   if (!wifiCount || wifiCount.cnt === 0) {
     await env.DB.prepare(
       'INSERT INTO wifi_whitelist (wifi_name,ip_range,description,is_active) VALUES (?,?,?,1)'
-    ).bind('Office WiFi Test','192.168.1','Mạng nội bộ văn phòng (test)').run();
+    ).bind('Office WiFi Test','192.168.1','Máº¡ng ná»™i bá»™ vÄƒn phÃ²ng (test)').run();
   }
 
   await env.DB.prepare(
@@ -894,32 +1226,34 @@ async function seedIfNeeded(env) {
   await seedDepartments(env);
 
   const defaults = [
-    ['company_name','NEXRALL MARKETING'],['company_address','123 Nguyễn Huệ, Q.1, TP.HCM'],
+    ['company_name','NEXRALL MARKETING'],['company_address','123 Nguyá»…n Huá»‡, Q.1, TP.HCM'],
     ['company_phone','028 1234 5678'],['company_email','info@nexrall.com'],
     ['work_start','08:30'],['work_end','17:00'],['late_threshold','15'],['work_days','1,2,3,4,5,6'],
   ];
   await env.DB.batch(defaults.map(([k,v]) =>
     env.DB.prepare('INSERT OR IGNORE INTO settings (setting_key,setting_value) VALUES (?,?)').bind(k,v)
   ));
+  await env.DB.prepare('INSERT OR REPLACE INTO settings (setting_key,setting_value) VALUES (?,?)')
+    .bind('seed_version', SEED_VERSION).run();
   _seeded = true;
 }
 
 // ===================== AUTH TOKEN EXTRACTION =====================
 // Strategy:
-//   EXPLICIT token locations (checked first — if a valid 64-char hex token is found
+//   EXPLICIT token locations (checked first â€” if a valid 64-char hex token is found
 //   in any of these specific places and it matches a live session, use that session):
 //     a) X-Auth-Token header
 //     b) ?token= query param
 //     c) Authorization: Bearer <token>  (the Nexrall test pipeline injects useToken here)
 //     d) Cookie hr_token=<token>
 //   WELL-KNOWN explicit-bad token: if a 64-char hex string is found in the above
-//   locations but it does NOT match any live session → return null with explicitBadToken=true
+//   locations but it does NOT match any live session â†’ return null with explicitBadToken=true
 //   (the caller returns 401 without falling back to platform identity).
 //   PLATFORM FALLBACK: if no explicit token was found in any of the above locations,
 //   use env.USER_ID (platform identity) to look up the corresponding HR user.
 //   This handles: raw API calls from the Nexrall platform UI, the automated test
 //   pipeline running as the app owner, and embedded usage.
-//   NOTE: we intentionally do NOT scan all headers broadly — that caused false-positive
+//   NOTE: we intentionally do NOT scan all headers broadly â€” that caused false-positive
 //   platform auth headers to be treated as explicit tokens, breaking the fallback.
 
 // Returns { token: string|null, hasAuthHint: boolean }
@@ -939,10 +1273,10 @@ function extractHrToken(request) {
     if (qt) return { token: isHex64(qt) ? qt.toLowerCase() : null, hasAuthHint: true };
   } catch (_) {}
 
-  // c) Authorization header — look for an isolated 64-char hex token
+  // c) Authorization header â€” look for an isolated 64-char hex token
   const auth = (request.headers.get('Authorization') || '').trim();
   if (auth) {
-    // S1: "Bearer <64hex>" — standard format with optional trailing whitespace
+    // S1: "Bearer <64hex>" â€” standard format with optional trailing whitespace
     const s1 = auth.match(/^Bearer\s+([0-9a-f]{64})\s*$/i);
     if (s1) return { token: s1[1].toLowerCase(), hasAuthHint: true };
     // S2: split on non-hex chars and look for exactly 64-char hex segment
@@ -955,7 +1289,7 @@ function extractHrToken(request) {
     }
     // S3: entire value is exactly 64 hex chars
     if (isHex64(auth)) return { token: auth.toLowerCase(), hasAuthHint: true };
-    // Authorization present but no HR token found (likely platform JWT) → allow platform fallback
+    // Authorization present but no HR token found (likely platform JWT) â†’ allow platform fallback
   }
 
   // d) Cookie hr_token
@@ -984,9 +1318,9 @@ async function getSessionFromToken(token, env) {
 }
 
 // Returns: { session, explicitBadToken }
-// - session != null                              → authenticated HR session
-// - session == null, explicitBadToken == true   → auth was attempted but invalid → caller MUST return 401
-// - session == null, explicitBadToken == false  → no auth attempt at all → caller may use platform fallback
+// - session != null                              â†’ authenticated HR session
+// - session == null, explicitBadToken == true   â†’ auth was attempted but invalid â†’ caller MUST return 401
+// - session == null, explicitBadToken == false  â†’ no auth attempt at all â†’ caller may use platform fallback
 //
 // Key rule: if ANY auth hint is present (Authorization: Bearer, X-Auth-Token, ?token=)
 // but no valid session is found, explicitBadToken=true so we NEVER fall back to platform identity.
@@ -1002,7 +1336,7 @@ async function resolveSession(request, env) {
     if (session) return { session, explicitBadToken: false };
   }
 
-  // Auth was attempted (hasAuthHint=true) but no valid session found → explicit bad token
+  // Auth was attempted (hasAuthHint=true) but no valid session found â†’ explicit bad token
   return { session: null, explicitBadToken: true };
 }
 
@@ -1034,7 +1368,7 @@ async function getPlatformUser(env) {
     }
   }
 
-  // 2) Always fall back to the admin user — this covers the test pipeline running
+  // 2) Always fall back to the admin user â€” this covers the test pipeline running
   //    as 'anon' or as the app owner (who should have admin access).
   const adminUser = await env.DB.prepare(
     "SELECT * FROM users WHERE role='admin' AND is_active=1 LIMIT 1"
@@ -1080,12 +1414,12 @@ export async function handle(request, env) {
     return json({ error: 'DB init failed: ' + e.message }, 500);
   }
 
-  // ── GET CLIENT IP ────────────────────────────────────────────────
+  // â”€â”€ GET CLIENT IP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (path === '/api/get-ip') {
     return json(await currentIpInfo(env, request));
   }
 
-  // ── DEBUG: inspect auth headers ─────────────────────────────────
+  // â”€â”€ DEBUG: inspect auth headers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (path === '/api/debug-auth') {
     const authHdr = request.headers.get('Authorization') || '';
     const xat = request.headers.get('X-Auth-Token') || '';
@@ -1103,17 +1437,17 @@ export async function handle(request, env) {
 
 
 
-  // ── AUTH: LOGIN ──────────────────────────────────────────────────
+  // â”€â”€ AUTH: LOGIN â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (url.pathname === '/api/auth/login' && request.method === 'POST') {
     const b = await request.json().catch(() => ({}));
     const { login, password } = b;
-    if (!login || !password) return json({ error: 'Vui lòng nhập đầy đủ thông tin' }, 400);
+    if (!login || !password) return json({ error: 'Vui lÃ²ng nháº­p Ä‘áº§y Ä‘á»§ thÃ´ng tin' }, 400);
     const user = await env.DB.prepare(
       'SELECT * FROM users WHERE (email=? OR employee_code=?) AND is_active=1'
     ).bind(login, login).first();
-    if (!user) return json({ error: 'Tài khoản không tồn tại hoặc đã bị khóa' }, 401);
+    if (!user) return json({ error: 'TÃ i khoáº£n khÃ´ng tá»“n táº¡i hoáº·c Ä‘Ã£ bá»‹ khÃ³a' }, 401);
     const hash = await hashPassword(password);
-    if (hash !== user.password_hash) return json({ error: 'Mật khẩu không đúng' }, 401);
+    if (hash !== user.password_hash) return json({ error: 'Máº­t kháº©u khÃ´ng Ä‘Ãºng' }, 401);
     const token = genToken();
     const expiresAt = Math.floor(Date.now() / 1000) + 8 * 3600; // Unix epoch, 8h from now
     await env.DB.prepare('INSERT INTO sessions (user_id,token,expires_at,revoked) VALUES (?,?,?,0)')
@@ -1134,9 +1468,9 @@ export async function handle(request, env) {
     });
   }
 
-  // ── AUTH: LOGOUT ─────────────────────────────────────────────────
+  // â”€â”€ AUTH: LOGOUT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (path === '/api/auth/logout' && request.method === 'POST') {
-    // Revoke using all possible token locations — mark revoked AND delete for belt+suspenders
+    // Revoke using all possible token locations â€” mark revoked AND delete for belt+suspenders
     const { token } = extractHrToken(request);
     // Also check body for token (some clients send it in body)
     let bodyToken = null;
@@ -1154,16 +1488,16 @@ export async function handle(request, env) {
     });
   }
 
-  // ── AUTH: ME ─────────────────────────────────────────────────────
+  // â”€â”€ AUTH: ME â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (url.pathname === '/api/auth/me' && request.method === 'GET') {
     const { session, explicitBadToken } = await resolveSession(request, env);
     if (!session) {
       if (!explicitBadToken) {
-        // No explicit token → try platform identity
+        // No explicit token â†’ try platform identity
         const pu = await getPlatformUser(env);
         if (pu) return json({ user: { id: pu.uid, full_name: pu.full_name, email: pu.email, role: pu.role, department: pu.department, position: pu.position, avatar_color: pu.avatar_color, avatar_initials: pu.avatar_initials, employee_code: pu.employee_code, salary: pu.salary, phone: pu.phone, bank_account: pu.bank_account, bank_name: pu.bank_name, is_active: pu.is_active, lifecycle_status: pu.lifecycle_status } });
       }
-      return json({ error: 'Chưa đăng nhập', code: 'UNAUTHORIZED' }, 401);
+      return json({ error: 'ChÆ°a Ä‘Äƒng nháº­p', code: 'UNAUTHORIZED' }, 401);
     }
     const userId = session.uid ?? session.id;
     return json({
@@ -1179,7 +1513,7 @@ export async function handle(request, env) {
     });
   }
 
-  // ── AUTH: CHANGE PASSWORD ────────────────────────────────────────
+  // â”€â”€ AUTH: CHANGE PASSWORD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (path === '/api/auth/change-password' && (request.method === 'PUT' || request.method === 'POST')) {
     const { session: cpSession, explicitBadToken: cpBad } = await resolveSession(request, env);
     let cpUser = cpSession ? { id: cpSession.uid ?? cpSession.id } : null;
@@ -1187,25 +1521,25 @@ export async function handle(request, env) {
       const pu = await getPlatformUser(env);
       if (pu) cpUser = { id: pu.uid };
     }
-    if (!cpUser) return json({ error: 'Chưa đăng nhập' }, 401);
+    if (!cpUser) return json({ error: 'ChÆ°a Ä‘Äƒng nháº­p' }, 401);
     const b = await request.json().catch(() => ({}));
     const { old_password, new_password } = b;
-    if (!old_password || !new_password) return json({ error: 'Thiếu thông tin' }, 400);
+    if (!old_password || !new_password) return json({ error: 'Thiáº¿u thÃ´ng tin' }, 400);
     const user = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(cpUser.id).first();
-    if (!user) return json({ error: 'Không tìm thấy tài khoản' }, 404);
+    if (!user) return json({ error: 'KhÃ´ng tÃ¬m tháº¥y tÃ i khoáº£n' }, 404);
     const oldHash = await hashPassword(old_password);
-    if (oldHash !== user.password_hash) return json({ error: 'Mật khẩu cũ không đúng' }, 400);
+    if (oldHash !== user.password_hash) return json({ error: 'Máº­t kháº©u cÅ© khÃ´ng Ä‘Ãºng' }, 400);
     const newHash = await hashPassword(new_password);
     await env.DB.prepare('UPDATE users SET password_hash=? WHERE id=?').bind(newHash, cpUser.id).run();
     return json({ ok: true });
   }
 
-  // ── Resolve authenticated user for all protected routes ──────────
+  // â”€â”€ Resolve authenticated user for all protected routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Priority:
   //   1) Valid HR session token (from X-Auth-Token / Authorization Bearer / Cookie / ?token=)
-  //   2) Platform identity fallback (env.USER_ID → look up matching HR user)
-  //      — used when no explicit HR token was provided (raw API calls, test pipeline, embedded)
-  //   3) Explicit bad token (provided but invalid/expired) → 401
+  //   2) Platform identity fallback (env.USER_ID â†’ look up matching HR user)
+  //      â€” used when no explicit HR token was provided (raw API calls, test pipeline, embedded)
+  //   3) Explicit bad token (provided but invalid/expired) â†’ 401
   const { session: mainSession, explicitBadToken: mainBad } = await resolveSession(request, env);
   let me = null;
 
@@ -1220,7 +1554,7 @@ export async function handle(request, env) {
       lifecycle_status: mainSession.lifecycle_status,
     };
   } else if (!mainBad) {
-    // No explicit token → platform identity fallback
+    // No explicit token â†’ platform identity fallback
     const pu = await getPlatformUser(env);
     if (pu) {
       me = {
@@ -1235,7 +1569,7 @@ export async function handle(request, env) {
   }
 
   if (!me) {
-    return json({ error: 'Chưa đăng nhập hoặc phiên hết hạn', code: 'UNAUTHORIZED' }, 401);
+    return json({ error: 'ChÆ°a Ä‘Äƒng nháº­p hoáº·c phiÃªn háº¿t háº¡n', code: 'UNAUTHORIZED' }, 401);
   }
 
   const isAdmin = me.role === 'admin';
@@ -1252,6 +1586,7 @@ export async function handle(request, env) {
     task_activity: { label: 'Task Activity', readonly: ['id', 'created_at'] },
     invoices: { label: 'Invoices', readonly: ['id'] },
     invoice_history: { label: 'Invoice History', readonly: ['id', 'created_at'] },
+    invoice_review_requests: { label: 'Invoice Review Requests', readonly: ['id', 'created_at', 'updated_at'] },
     settings: { label: 'Settings', readonly: [] },
     departments: { label: 'Departments', readonly: ['id'] },
     employees: { label: 'Employees', readonly: ['id'] },
@@ -1259,6 +1594,7 @@ export async function handle(request, env) {
     leave_types: { label: 'Leave Types', readonly: ['id', 'created_at', 'updated_at'] },
     candidates: { label: 'Candidates', readonly: ['id'] },
     payroll: { label: 'Payroll', readonly: ['id'] },
+    payroll_adjustments: { label: 'Payroll Adjustments', readonly: ['id', 'created_at', 'updated_at'] },
     campaigns: { label: 'Campaigns', readonly: ['id'] },
     lifecycle_history: { label: 'Lifecycle History', readonly: ['id', 'changed_at'] },
     asset_handovers: { label: 'Asset Handovers', hidden: ['credential_encrypted', 'credential_iv'], readonly: ['id', 'created_at', 'updated_at'] },
@@ -1360,9 +1696,9 @@ export async function handle(request, env) {
     return json({ ok: true });
   }
 
-  // ── USERS ────────────────────────────────────────────────────────
+  // â”€â”€ USERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (path === '/api/users' && request.method === 'GET') {
-    if (!isManager) return json({ error: 'Không có quyền' }, 403);
+    if (!isManager) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
     const { results } = await env.DB.prepare(
       'SELECT id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at FROM users ORDER BY id'
     ).all();
@@ -1370,9 +1706,9 @@ export async function handle(request, env) {
   }
 
   if (path === '/api/users' && request.method === 'POST') {
-    if (!isManager) return json({ error: 'Không có quyền' }, 403);
+    if (!isManager) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
     const b = await request.json();
-    if (!b.full_name || !b.email || !b.department) return json({ error: 'Thiếu thông tin bắt buộc' }, 400);
+    if (!b.full_name || !b.email || !b.department) return json({ error: 'Thiáº¿u thÃ´ng tin báº¯t buá»™c' }, 400);
     const pw = b.password || 'Pass@123';
     const hash = await hashPassword(pw);
     const ini = b.avatar_initials || nameInitials(b.full_name);
@@ -1390,27 +1726,27 @@ export async function handle(request, env) {
       } catch (e) {
         lastErr = e;
         if (e.message.includes('UNIQUE') && e.message.includes('employee_code')) continue; // race on code, retry with next seq
-        if (e.message.includes('UNIQUE')) return json({ error: 'Email đã tồn tại' }, 400);
+        if (e.message.includes('UNIQUE')) return json({ error: 'Email Ä‘Ã£ tá»“n táº¡i' }, 400);
         throw e;
       }
     }
     console.error(lastErr);
-    return json({ error: 'Không thể sinh mã nhân viên, vui lòng thử lại' }, 500);
+    return json({ error: 'KhÃ´ng thá»ƒ sinh mÃ£ nhÃ¢n viÃªn, vui lÃ²ng thá»­ láº¡i' }, 500);
   }
 
   const userMatch = path.match(/^\/api\/users\/(\d+)$/);
   if (userMatch) {
     const uid = parseInt(userMatch[1]);
     if (request.method === 'GET') {
-      if (!isManager && me.id !== uid) return json({ error: 'Không có quyền' }, 403);
+      if (!isManager && me.id !== uid) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
       const row = await env.DB.prepare(
         'SELECT id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at FROM users WHERE id=?'
       ).bind(uid).first();
-      if (!row) return json({ error: 'Không tìm thấy' }, 404);
+      if (!row) return json({ error: 'KhÃ´ng tÃ¬m tháº¥y' }, 404);
       return json({ user: row });
     }
     if (request.method === 'PUT') {
-      if (!isManager && me.id !== uid) return json({ error: 'Không có quyền' }, 403);
+      if (!isManager && me.id !== uid) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
       const b = await request.json();
       const ini = b.avatar_initials || nameInitials(b.full_name || '');
       let extraSql = '';
@@ -1427,14 +1763,14 @@ export async function handle(request, env) {
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
-      if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
-      if (uid === me.id) return json({ error: 'Không thể xóa tài khoản đang dùng' }, 400);
+      if (!isAdmin) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
+      if (uid === me.id) return json({ error: 'KhÃ´ng thá»ƒ xÃ³a tÃ i khoáº£n Ä‘ang dÃ¹ng' }, 400);
       await env.DB.prepare('DELETE FROM users WHERE id=?').bind(uid).run();
       return json({ ok: true });
     }
   }
 
-  // ── USERS: basic list (safe fields only, for pickers e.g. Mentor select) ──
+  // â”€â”€ USERS: basic list (safe fields only, for pickers e.g. Mentor select) â”€â”€
   if (path === '/api/users/basic' && request.method === 'GET') {
     const { results } = await env.DB.prepare(
       'SELECT id, full_name, department, position, lifecycle_status FROM users WHERE is_active=1 ORDER BY full_name'
@@ -1442,10 +1778,10 @@ export async function handle(request, env) {
     return json({ users: results });
   }
 
-  // ── LIFECYCLE STATUS (Vòng đời nhân sự) — only HCNS / Ban Giám Đốc may edit ──
+  // â”€â”€ LIFECYCLE STATUS (VÃ²ng Ä‘á»i nhÃ¢n sá»±) â€” only HCNS / Ban GiÃ¡m Äá»‘c may edit â”€â”€
   const lifecycleMatch = path.match(/^\/api\/users\/(\d+)\/lifecycle$/);
   if (lifecycleMatch && request.method === 'PUT') {
-    if (!isHrOrBod(me)) return json({ error: 'Không có quyền' }, 403);
+    if (!isHrOrBod(me)) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
     await env.DB.prepare(`CREATE TABLE IF NOT EXISTS lifecycle_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
@@ -1460,11 +1796,11 @@ export async function handle(request, env) {
     const b = await request.json().catch(() => ({}));
     const newStatus = String(b.status || '');
     const reason = String(b.reason || '').trim();
-    if (!LIFECYCLE_STATUSES.includes(newStatus)) return json({ error: 'Trạng thái không hợp lệ' }, 400);
-    if (!reason) return json({ error: 'Vui lòng nhập lý do' }, 400);
+    if (!LIFECYCLE_STATUSES.includes(newStatus)) return json({ error: 'Tráº¡ng thÃ¡i khÃ´ng há»£p lá»‡' }, 400);
+    if (!reason) return json({ error: 'Vui lÃ²ng nháº­p lÃ½ do' }, 400);
     const target = await env.DB.prepare('SELECT id, lifecycle_status FROM users WHERE id=?').bind(luid).first();
-    if (!target) return json({ error: 'Không tìm thấy nhân viên' }, 404);
-    const fromStatus = target.lifecycle_status || 'Chính thức';
+    if (!target) return json({ error: 'KhÃ´ng tÃ¬m tháº¥y nhÃ¢n viÃªn' }, 404);
+    const fromStatus = target.lifecycle_status || 'ChÃ­nh thá»©c';
     await env.DB.batch([
       env.DB.prepare('UPDATE users SET lifecycle_status=? WHERE id=?').bind(newStatus, luid),
       env.DB.prepare('INSERT INTO lifecycle_history (user_id,from_status,to_status,changed_by,changed_by_name,reason) VALUES (?,?,?,?,?,?)')
@@ -1473,7 +1809,7 @@ export async function handle(request, env) {
     return json({ ok: true });
   }
 
-  // ── ASSET HANDOVER (Bàn giao tài sản — Nhân viên chính thức & TTS) ──
+  // â”€â”€ ASSET HANDOVER (BÃ n giao tÃ i sáº£n â€” NhÃ¢n viÃªn chÃ­nh thá»©c & TTS) â”€â”€
   if (path === '/api/assets' && request.method === 'GET') {
     let rowsResult;
     if (isHrOrBod(me)) {
@@ -1484,7 +1820,7 @@ export async function handle(request, env) {
          FROM asset_handovers a LEFT JOIN users u ON a.user_id=u.id ORDER BY a.updated_at DESC`
       ).all();
     } else {
-      // Manager/Trưởng phòng also sees assets owned by anyone in their own department
+      // Manager/TrÆ°á»Ÿng phÃ²ng also sees assets owned by anyone in their own department
       rowsResult = await env.DB.prepare(
         `SELECT a.*, u.full_name as owner_name, u.employee_code as owner_code,
                 u.department as owner_department, u.employee_type as owner_employee_type,
@@ -1502,21 +1838,21 @@ export async function handle(request, env) {
   }
 
   if (path === '/api/assets' && request.method === 'POST') {
-    // Any signed-in employee/TTS may declare their OWN asset. HCNS/BGĐ may declare
+    // Any signed-in employee/TTS may declare their OWN asset. HCNS/BGÄ may declare
     // for anyone; a department manager may declare on behalf of their own dept only.
     const b = await request.json().catch(() => ({}));
     const assetName = String(b.asset_name || '').trim();
-    if (!assetName) return json({ error: 'Tên tài sản là bắt buộc' }, 400);
+    if (!assetName) return json({ error: 'TÃªn tÃ i sáº£n lÃ  báº¯t buá»™c' }, 400);
     let ownerUserId = me.id;
     if (b.user_id && parseInt(b.user_id) !== me.id) {
       if (isHrOrBod(me)) {
         ownerUserId = parseInt(b.user_id);
       } else if (me.role === 'manager') {
         const target = await env.DB.prepare('SELECT department FROM users WHERE id=?').bind(parseInt(b.user_id)).first();
-        if (!target || target.department !== me.department) return json({ error: 'Chỉ có thể khai báo hộ nhân sự thuộc phòng ban của bạn' }, 403);
+        if (!target || target.department !== me.department) return json({ error: 'Chá»‰ cÃ³ thá»ƒ khai bÃ¡o há»™ nhÃ¢n sá»± thuá»™c phÃ²ng ban cá»§a báº¡n' }, 403);
         ownerUserId = parseInt(b.user_id);
       } else {
-        return json({ error: 'Không có quyền khai báo hộ nhân sự khác' }, 403);
+        return json({ error: 'KhÃ´ng cÃ³ quyá»n khai bÃ¡o há»™ nhÃ¢n sá»± khÃ¡c' }, 403);
       }
     }
     const credEnc = b.credential ? await encryptCred(env, String(b.credential)) : null;
@@ -1535,9 +1871,9 @@ export async function handle(request, env) {
     const asset = await env.DB.prepare(
       `SELECT a.*, u.department as owner_department FROM asset_handovers a LEFT JOIN users u ON a.user_id=u.id WHERE a.id=?`
     ).bind(aid).first();
-    if (!asset) return json({ error: 'Không tìm thấy' }, 404);
+    if (!asset) return json({ error: 'KhÃ´ng tÃ¬m tháº¥y' }, 404);
     const allowed = asset.user_id === me.id || asset.mentor_id === me.id || isHrOrBod(me) || isDeptManager(me, asset.owner_department);
-    if (!allowed) return json({ error: 'Không có quyền' }, 403);
+    if (!allowed) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
     if (!asset.credential_enc) return json({ credential: '' });
     const plain = await decryptCred(env, asset.credential_enc);
     await env.DB.prepare('INSERT INTO asset_credential_log (asset_id,viewed_by,viewed_by_name) VALUES (?,?,?)').bind(aid, me.id, me.full_name).run();
@@ -1550,19 +1886,19 @@ export async function handle(request, env) {
     const asset = await env.DB.prepare(
       `SELECT a.*, u.department as owner_department FROM asset_handovers a LEFT JOIN users u ON a.user_id=u.id WHERE a.id=?`
     ).bind(aid).first();
-    if (!asset) return json({ error: 'Không tìm thấy' }, 404);
+    if (!asset) return json({ error: 'KhÃ´ng tÃ¬m tháº¥y' }, 404);
     const isOwner = asset.user_id === me.id;
     const isMentor = asset.mentor_id === me.id;
     const isHr = isHrOrBod(me);
     const isDeptMgr = isDeptManager(me, asset.owner_department);
 
     if (request.method === 'PUT') {
-      if (!isOwner && !isMentor && !isHr && !isDeptMgr) return json({ error: 'Không có quyền' }, 403);
+      if (!isOwner && !isMentor && !isHr && !isDeptMgr) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
       const b = await request.json().catch(() => ({}));
 
       if (isMentor && !isOwner && !isHr && !isDeptMgr) {
-        // Mentor may only confirm — no other field edits accepted
-        if (b.status !== 'confirmed') return json({ error: 'Bạn chỉ có thể xác nhận tài sản này' }, 403);
+        // Mentor may only confirm â€” no other field edits accepted
+        if (b.status !== 'confirmed') return json({ error: 'Báº¡n chá»‰ cÃ³ thá»ƒ xÃ¡c nháº­n tÃ i sáº£n nÃ y' }, 403);
         await env.DB.prepare(
           `UPDATE asset_handovers SET status='confirmed', confirmed_by=?, confirmed_at=?, note=COALESCE(?,note), updated_at=? WHERE id=?`
         ).bind(me.id, nowStr(), b.note ?? null, nowStr(), aid).run();
@@ -1596,7 +1932,7 @@ export async function handle(request, env) {
     }
 
     if (request.method === 'DELETE') {
-      if (!isHr) return json({ error: 'Không có quyền' }, 403);
+      if (!isHr) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
       await env.DB.batch([
         env.DB.prepare('DELETE FROM asset_handovers WHERE id=?').bind(aid),
         env.DB.prepare('DELETE FROM asset_credential_log WHERE asset_id=?').bind(aid),
@@ -1605,7 +1941,7 @@ export async function handle(request, env) {
     }
   }
 
-  // ── ATTENDANCE ───────────────────────────────────────────────────
+  // â”€â”€ ATTENDANCE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (path === '/api/attendance' && request.method === 'GET') {
     const userId = url.searchParams.get('userId');
     const month = url.searchParams.get('month');
@@ -1651,13 +1987,13 @@ export async function handle(request, env) {
     const workType = ['office', 'wfh', 'business'].includes(b.work_type) ? b.work_type : 'office';
     const shift = ['morning', 'afternoon', 'full'].includes(b.shift) ? b.shift : 'full';
     if (workType === 'business' && (!b.expected_start || !b.expected_end)) {
-      return json({ error: 'Vui lòng nhập giờ bắt đầu và kết thúc dự kiến cho chuyến công tác' }, 400);
+      return json({ error: 'Vui lÃ²ng nháº­p giá» báº¯t Ä‘áº§u vÃ  káº¿t thÃºc dá»± kiáº¿n cho chuyáº¿n cÃ´ng tÃ¡c' }, 400);
     }
     const today = vnTodayStr();
     const existing = await env.DB.prepare('SELECT * FROM attendance WHERE user_id=? AND date=?')
       .bind(me.id, today).first();
     if (existing && existing.checkin_time) {
-      return json({ error: 'Đã check-in hôm nay, không thể thay đổi đăng ký' }, 400);
+      return json({ error: 'ÄÃ£ check-in hÃ´m nay, khÃ´ng thá»ƒ thay Ä‘á»•i Ä‘Äƒng kÃ½' }, 400);
     }
     const expectedStart = workType === 'business' ? b.expected_start : null;
     const expectedEnd = workType === 'business' ? b.expected_end : null;
@@ -1682,7 +2018,7 @@ export async function handle(request, env) {
     // Idempotent: if already checked in today, return ok (don't block re-runs/tests)
     if (existing && existing.checkin_time) return json({ ok: true, status: existing.status, time: existing.checkin_time, late_minutes: existing.late_minutes || 0, already: true });
     if (!existing) {
-      // Not registered yet — default to office/full day (UI normally blocks this by requiring registration first)
+      // Not registered yet â€” default to office/full day (UI normally blocks this by requiring registration first)
       await env.DB.prepare(
         'INSERT INTO attendance (user_id,date,work_type,shift,registered,note) VALUES (?,?,?,?,1,?)'
       ).bind(me.id, today, 'office', 'full', b.note || '').run();
@@ -1738,7 +2074,7 @@ export async function handle(request, env) {
     const earlyMinutes = Math.max(0, attToMinutes(bounds.end) - coMin);
     let workMinutes = Math.max(0, coMin - ciMin);
     if (workType !== 'business' && shift === 'full') {
-      // Exclude the 12:00–13:30 lunch break from total worked time
+      // Exclude the 12:00â€“13:30 lunch break from total worked time
       const lunchStart = 12 * 60, lunchEnd = 13 * 60 + 30;
       const overlap = Math.max(0, Math.min(coMin, lunchEnd) - Math.max(ciMin, lunchStart));
       workMinutes -= overlap;
@@ -1751,7 +2087,7 @@ export async function handle(request, env) {
 
   const attMatch = path.match(/^\/api\/attendance\/(\d+)$/);
   if (attMatch && request.method === 'PUT') {
-    if (!isManager) return json({ error: 'Không có quyền' }, 403);
+    if (!isManager) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
     const aid = parseInt(attMatch[1]);
     const b = await request.json();
     await env.DB.prepare(
@@ -1760,46 +2096,29 @@ export async function handle(request, env) {
     return json({ ok: true });
   }
 
-  // Aggregated monthly attendance summary — used to auto-fill "Ngày công" when
-  // creating/reviewing a payroll invoice (Phiếu lương ← Chấm công).
+  // Aggregated monthly attendance summary â€” used to auto-fill "NgÃ y cÃ´ng" when
+  // creating/reviewing a payroll invoice (Phiáº¿u lÆ°Æ¡ng â† Cháº¥m cÃ´ng).
   if (path === '/api/attendance/summary' && request.method === 'GET') {
     const month = parseInt(url.searchParams.get('month'));
     const year = parseInt(url.searchParams.get('year'));
-    if (!month || !year) return json({ error: 'Thiếu tháng/năm' }, 400);
+    if (!month || !year) return json({ error: 'Thiáº¿u thÃ¡ng/nÄƒm' }, 400);
     let targetUserId = me.id;
     const qUserId = url.searchParams.get('userId');
     if (qUserId) {
-      if (!isManager && parseInt(qUserId) !== me.id) return json({ error: 'Không có quyền' }, 403);
+      if (!isManager && parseInt(qUserId) !== me.id) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
       targetUserId = parseInt(qUserId);
     }
-    const mm = String(month).padStart(2, '0');
-    const { results } = await env.DB.prepare(
-      "SELECT * FROM attendance WHERE user_id=? AND strftime('%m',date)=? AND strftime('%Y',date)=?"
-    ).bind(targetUserId, mm, String(year)).all();
-
-    let fullDays = 0, halfDays = 0, incompleteDays = 0, lateMinutes = 0, earlyLeaveMinutes = 0;
-    for (const r of results) {
-      // Cancelled/rejected records don't count toward công.
-      if (r.status === 'cancelled' || r.status === 'rejected') continue;
-      const hasIn = !!r.checkin_time, hasOut = !!r.checkout_time;
-      if (!hasIn || !hasOut) { incompleteDays++; continue; }
-      if (r.shift === 'morning' || r.shift === 'afternoon') halfDays++;
-      else fullDays++;
-      lateMinutes += r.late_minutes || 0;
-      earlyLeaveMinutes += r.early_minutes || 0;
-    }
-    const standardWorkDays = attCountBusinessDays(year, month);
-    const actualWorkDays = fullDays + halfDays * 0.5;
-    return json({ standardWorkDays, actualWorkDays, fullDays, halfDays, incompleteDays, lateMinutes, earlyLeaveMinutes });
+    const summary = await buildMonthlyWorkSummary(env, targetUserId, month, year);
+    return json(summary);
   }
 
-  // ── WIFI WHITELIST ───────────────────────────────────────────────
+  // â”€â”€ WIFI WHITELIST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (path === '/api/wifi-whitelist' && request.method === 'GET') {
     const { results } = await env.DB.prepare('SELECT * FROM wifi_whitelist ORDER BY id').all();
     return json({ whitelist: results });
   }
   if (path === '/api/wifi-whitelist' && request.method === 'POST') {
-    if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
+    if (!isAdmin) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
     const b = await request.json();
     const ipInfo = await currentIpInfo(env, request);
     const requestedIp = String(b.ip_range || '').trim();
@@ -1818,7 +2137,7 @@ export async function handle(request, env) {
   if (wifiMatch) {
     const wid = parseInt(wifiMatch[1]);
     if (request.method === 'PUT') {
-      if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
+      if (!isAdmin) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
       const b = await request.json();
       const requestedIp = String(b.ip_range || '').trim();
       if (requestedIp === '192.168.1.1' || requestedIp.startsWith('192.168.')) {
@@ -1829,13 +2148,13 @@ export async function handle(request, env) {
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
-      if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
+      if (!isAdmin) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
       await env.DB.prepare('DELETE FROM wifi_whitelist WHERE id=?').bind(wid).run();
       return json({ ok: true });
     }
   }
 
-  // ── TASKS ────────────────────────────────────────────────────────
+  // â”€â”€ TASKS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (path === '/api/task-projects' && request.method === 'GET') {
     const includeArchived = url.searchParams.get('include_archived') === '1';
     const search = String(url.searchParams.get('search') || '').trim().toLowerCase();
@@ -2135,7 +2454,7 @@ export async function handle(request, env) {
   if (path === '/api/tasks' && request.method === 'POST') {
     // Allow all authenticated users to create tasks (not just managers)
     const b = await request.json();
-    if (!b.title) return json({ error: 'Thiếu tiêu đề' }, 400);
+    if (!b.title) return json({ error: 'Thiáº¿u tiÃªu Ä‘á»' }, 400);
     const status = b.status || 'todo';
     const priority = b.priority || 'normal';
     const projectId = intOrNull(b.team_project_id || b.project_id);
@@ -2151,7 +2470,7 @@ export async function handle(request, env) {
     ).bind(b.title,b.description||'',b.assigned_to||null,me.id,b.department||'',b.date||null,b.due_date||null,status,priority,labelColor,b.checkin_time||null,b.checkout_time||null,projectId,groupId,labelId).run();
     const taskId = r.meta.last_row_id;
     await env.DB.prepare('INSERT INTO task_activity (task_id,user_id,action,detail) VALUES (?,?,?,?)')
-      .bind(taskId, me.id, 'created', 'Tạo công việc: ' + b.title).run();
+      .bind(taskId, me.id, 'created', 'Táº¡o cÃ´ng viá»‡c: ' + b.title).run();
     return json({ ok: true, id: taskId });
   }
 
@@ -2173,14 +2492,14 @@ export async function handle(request, env) {
            LEFT JOIN task_labels l ON t.label_id=l.id
           WHERE t.id=?`
       ).bind(tid).first();
-      if (!task) return json({ error: 'Không tìm thấy' }, 404);
+      if (!task) return json({ error: 'KhÃ´ng tÃ¬m tháº¥y' }, 404);
       // Access: only admins see all tasks; managers and employees can only see
       // tasks they are assigned to, created, or following
       if (!isAdmin && !isHcns(me)) {
         const myId = Number(me.id);
         const isInvolved = Number(task.assigned_to) === myId || Number(task.assigned_by) === myId;
         const follower = isInvolved ? null : await env.DB.prepare('SELECT id FROM task_followers WHERE task_id=? AND user_id=?').bind(tid, myId).first();
-        if (!isInvolved && !follower) return json({ error: 'Không tìm thấy' }, 404);
+        if (!isInvolved && !follower) return json({ error: 'KhÃ´ng tÃ¬m tháº¥y' }, 404);
       }
       const { results: subtasks } = await env.DB.prepare(
         'SELECT s.*, u.full_name as assignee_name FROM subtasks s LEFT JOIN users u ON s.assigned_to=u.id WHERE s.task_id=? ORDER BY s.id'
@@ -2193,8 +2512,8 @@ export async function handle(request, env) {
     if (request.method === 'PUT') {
       const b = await request.json();
       const task = await env.DB.prepare('SELECT * FROM tasks WHERE id=?').bind(tid).first();
-      if (!task) return json({ error: 'Không tìm thấy' }, 404);
-      if (!isManager && task.assigned_to !== me.id) return json({ error: 'Không có quyền' }, 403);
+      if (!task) return json({ error: 'KhÃ´ng tÃ¬m tháº¥y' }, 404);
+      if (!isManager && task.assigned_to !== me.id) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
       const nextStatus = b.status || task.status;
       const nextPriority = b.priority || task.priority;
       const nextProjectId = (b.team_project_id !== undefined || b.project_id !== undefined) ? intOrNull(b.team_project_id || b.project_id) : (task.team_project_id || null);
@@ -2209,7 +2528,7 @@ export async function handle(request, env) {
         "UPDATE tasks SET title=?,description=?,assigned_to=?,department=?,date=?,due_date=?,status=?,priority=?,label_color=?,checkin_time=?,checkout_time=?,team_project_id=?,group_id=?,label_id=?,updated_at=datetime('now') WHERE id=?"
       ).bind(b.title||task.title,b.description??task.description,b.assigned_to??task.assigned_to,b.department??task.department,b.date??task.date,b.due_date??task.due_date,nextStatus,nextPriority,nextColor,b.checkin_time??task.checkin_time,b.checkout_time??task.checkout_time,nextProjectId,nextGroupId,nextLabelId,tid).run();
       await env.DB.prepare('INSERT INTO task_activity (task_id,user_id,action,detail) VALUES (?,?,?,?)')
-        .bind(tid, me.id, 'updated', 'Cập nhật: ' + (b.title||task.title)).run();
+        .bind(tid, me.id, 'updated', 'Cáº­p nháº­t: ' + (b.title||task.title)).run();
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
@@ -2217,7 +2536,7 @@ export async function handle(request, env) {
         // Allow task creator/assignee to delete their own tasks
         const task = await env.DB.prepare('SELECT * FROM tasks WHERE id=?').bind(tid).first();
         if (!task || (task.assigned_to !== me.id && task.assigned_by !== me.id)) {
-          return json({ error: 'Không có quyền' }, 403);
+          return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
         }
       }
       await env.DB.prepare('DELETE FROM tasks WHERE id=?').bind(tid).run();
@@ -2265,7 +2584,7 @@ export async function handle(request, env) {
     }
     if (request.method === 'POST') {
       const b = await request.json();
-      if (!b.content) return json({ error: 'Nội dung không được trống' }, 400);
+      if (!b.content) return json({ error: 'Ná»™i dung khÃ´ng Ä‘Æ°á»£c trá»‘ng' }, 400);
       const r = await env.DB.prepare('INSERT INTO task_comments (task_id,user_id,content) VALUES (?,?,?)')
         .bind(tid, me.id, b.content).run();
       return json({ ok: true, id: r.meta.last_row_id });
@@ -2285,7 +2604,7 @@ export async function handle(request, env) {
     return json({ ok: true });
   }
 
-  // ── INVOICES ─────────────────────────────────────────────────────
+  // â”€â”€ INVOICES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (path === '/api/invoices' && request.method === 'GET') {
     const userId2 = url.searchParams.get('userId');
     const month2 = url.searchParams.get('month');
@@ -2305,9 +2624,9 @@ export async function handle(request, env) {
   }
 
   if (path === '/api/invoices' && request.method === 'POST') {
-    if (!isManager) return json({ error: 'Không có quyền' }, 403);
+    if (!isManager) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
     const b = await request.json();
-    if (!b.user_id || !b.month || !b.year) return json({ error: 'Thiếu thông tin' }, 400);
+    if (!b.user_id || !b.month || !b.year) return json({ error: 'Thiáº¿u thÃ´ng tin' }, 400);
     const count = await env.DB.prepare('SELECT COUNT(*) as cnt FROM invoices WHERE year=? AND month=?')
       .bind(b.year, b.month).first();
     const seq = String((count?.cnt || 0) + 1).padStart(3, '0');
@@ -2327,6 +2646,80 @@ export async function handle(request, env) {
     return json({ ok: true, id: r.meta.last_row_id, invoice_number: invNum });
   }
 
+  const invConfirmMatch = path.match(/^\/api\/invoices\/(\d+)\/confirm$/);
+  if (invConfirmMatch && request.method === 'POST') {
+    const iid = parseInt(invConfirmMatch[1]);
+    const inv = await env.DB.prepare('SELECT * FROM invoices WHERE id=?').bind(iid).first();
+    if (!inv) return json({ error: 'Khong tim thay phieu luong' }, 404);
+    if (inv.user_id !== me.id) return json({ error: 'Khong co quyen' }, 403);
+    if (!['issued', 'review_requested'].includes(String(inv.status || ''))) {
+      return json({ error: 'Chi co the xac nhan phieu luong da phat hanh' }, 400);
+    }
+    await env.DB.prepare(
+      "UPDATE invoices SET status='employee_confirmed',employee_confirmed_at=datetime('now','localtime'),review_status='none',review_resolved_at=COALESCE(review_resolved_at,datetime('now','localtime')) WHERE id=?"
+    ).bind(iid).run();
+    await env.DB.prepare(
+      "UPDATE invoice_review_requests SET status='closed',updated_at=datetime('now','localtime') WHERE invoice_id=? AND status='open'"
+    ).bind(iid).run();
+    await env.DB.prepare('INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)')
+      .bind(iid, inv.status || null, 'employee_confirmed', me.id, me.full_name || '', 'Employee confirmed payslip').run();
+    return json({ ok: true });
+  }
+
+  const invReviewMatch = path.match(/^\/api\/invoices\/(\d+)\/review-request$/);
+  if (invReviewMatch && request.method === 'POST') {
+    const iid = parseInt(invReviewMatch[1]);
+    const inv = await env.DB.prepare('SELECT * FROM invoices WHERE id=?').bind(iid).first();
+    if (!inv) return json({ error: 'Khong tim thay phieu luong' }, 404);
+    if (inv.user_id !== me.id) return json({ error: 'Khong co quyen' }, 403);
+    if (inv.locked_at || inv.status === 'paid' || inv.status === 'employee_confirmed') {
+      return json({ error: 'Phieu luong da khoa hoac da xac nhan' }, 400);
+    }
+    if (!['issued', 'review_requested'].includes(String(inv.status || ''))) {
+      return json({ error: 'Chi co the yeu cau xem lai phieu luong da phat hanh' }, 400);
+    }
+    const b = await request.json().catch(() => ({}));
+    const category = String(b.category || '').trim();
+    const allowed = new Set(['attendance', 'bonus', 'deduction', 'base_salary', 'bank_info', 'other']);
+    const message = String(b.message || '').trim();
+    if (!allowed.has(category)) return json({ error: 'Loai yeu cau khong hop le' }, 400);
+    if (!message) return json({ error: 'Vui long nhap ly do can xem lai' }, 400);
+    await env.DB.prepare(
+      `INSERT INTO invoice_review_requests (invoice_id,user_id,category,message,requested_amount,status)
+       VALUES (?,?,?,?,?,'open')`
+    ).bind(iid, me.id, category, message, Number(b.requested_amount || 0)).run();
+    await env.DB.prepare(
+      "UPDATE invoices SET status='review_requested',review_status='open',review_reason=?,review_requested_at=datetime('now','localtime') WHERE id=?"
+    ).bind(message, iid).run();
+    await env.DB.prepare('INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)')
+      .bind(iid, inv.status || null, 'review_requested', me.id, me.full_name || '', message).run();
+    return json({ ok: true });
+  }
+
+  const invResolveMatch = path.match(/^\/api\/invoices\/(\d+)\/resolve-review$/);
+  if (invResolveMatch && request.method === 'POST') {
+    if (!isManager) return json({ error: 'Khong co quyen' }, 403);
+    const iid = parseInt(invResolveMatch[1]);
+    const inv = await env.DB.prepare('SELECT * FROM invoices WHERE id=?').bind(iid).first();
+    if (!inv) return json({ error: 'Khong tim thay phieu luong' }, 404);
+    if (inv.locked_at || inv.status === 'paid') return json({ error: 'Phieu luong da khoa' }, 400);
+    const b = await request.json().catch(() => ({}));
+    const note = String(b.note || '').trim();
+    const nextStatus = b.nextStatus === 'employee_confirmed' ? 'employee_confirmed' : 'issued';
+    if (!note) return json({ error: 'Vui long nhap ghi chu xu ly' }, 400);
+    await env.DB.prepare(
+      `UPDATE invoices SET status=?,review_status='resolved',review_note=?,review_resolved_at=datetime('now','localtime'),
+        employee_confirmed_at=CASE WHEN ?='employee_confirmed' THEN datetime('now','localtime') ELSE employee_confirmed_at END
+       WHERE id=?`
+    ).bind(nextStatus, note, nextStatus, iid).run();
+    await env.DB.prepare(
+      "UPDATE invoice_review_requests SET status='resolved',handled_by=?,handled_by_name=?,handled_note=?,handled_at=datetime('now','localtime'),updated_at=datetime('now','localtime') WHERE invoice_id=? AND status='open'"
+    ).bind(me.id, me.full_name || '', note, iid).run();
+    await env.DB.prepare('INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)')
+      .bind(iid, inv.status || null, nextStatus, me.id, me.full_name || '', note).run();
+    return json({ ok: true });
+  }
+
   const invMatch = path.match(/^\/api\/invoices\/(\d+)$/);
   if (invMatch) {
     const iid = parseInt(invMatch[1]);
@@ -2334,12 +2727,20 @@ export async function handle(request, env) {
       const row = await env.DB.prepare(
         'SELECT i.*, u.full_name, u.employee_code, u.department, u.position, u.bank_account, u.bank_name FROM invoices i JOIN users u ON i.user_id=u.id WHERE i.id=?'
       ).bind(iid).first();
-      if (!row) return json({ error: 'Không tìm thấy' }, 404);
-      if (!isManager && row.user_id !== me.id) return json({ error: 'Không có quyền' }, 403);
+      if (!row) return json({ error: 'KhÃ´ng tÃ¬m tháº¥y' }, 404);
+      if (!isManager && row.user_id !== me.id) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
+      const review = await env.DB.prepare(
+        'SELECT * FROM invoice_review_requests WHERE invoice_id=? ORDER BY id DESC LIMIT 1'
+      ).bind(iid).first();
+      row.latest_review_request = review || null;
+      row.pending_actor = row.status === 'issued' ? row.full_name : (row.status === 'review_requested' ? 'HCNS' : '');
+      row.confirmed_by = row.employee_confirmed_at ? row.full_name : '';
+      row.checked_by = row.review_resolved_at ? (row.issued_by_name || '') : '';
+      row.approved_by = row.issued_by_name || '';
       return json({ invoice: row });
     }
     if (request.method === 'PUT') {
-      if (!isManager) return json({ error: 'Không có quyền' }, 403);
+      if (!isManager) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
       const b = await request.json();
       const existingInv = await env.DB.prepare('SELECT * FROM invoices WHERE id=?').bind(iid).first();
       if (!existingInv) return json({ error: 'Khong tim thay' }, 404);
@@ -2351,9 +2752,10 @@ export async function handle(request, env) {
       const net = base + bonus + allowance - deduction - tax - insurance;
       const nextStatus = b.status || existingInv.status || 'draft';
       const lockAt = nextStatus === 'paid' ? nowStr() : null;
+      const confirmedAt = nextStatus === 'employee_confirmed' ? (existingInv.employee_confirmed_at || nowStr()) : existingInv.employee_confirmed_at;
       await env.DB.prepare(
-        'UPDATE invoices SET base_salary=?,bonus=?,allowance=?,deduction=?,tax=?,insurance=?,net_salary=?,work_days=?,absent_days=?,late_days=?,standard_days=?,paid_leave_days=?,late_minutes=?,early_leave_minutes=?,missing_checkinout_days=?,status=?,note=?,locked_at=?,locked_by=?,locked_by_name=? WHERE id=?'
-      ).bind(base,bonus,allowance,deduction,tax,insurance,net,b.work_days||0,b.absent_days||0,b.late_days||0,b.standard_days??0,b.paid_leave_days??0,b.late_minutes??0,b.early_leave_minutes??0,b.missing_checkinout_days??0,nextStatus,b.note||'',lockAt,lockAt ? me.id : null,lockAt ? me.full_name : null,iid).run();
+        'UPDATE invoices SET base_salary=?,bonus=?,allowance=?,deduction=?,tax=?,insurance=?,net_salary=?,work_days=?,absent_days=?,late_days=?,standard_days=?,paid_leave_days=?,late_minutes=?,early_leave_minutes=?,missing_checkinout_days=?,status=?,note=?,locked_at=?,locked_by=?,locked_by_name=?,employee_confirmed_at=? WHERE id=?'
+      ).bind(base,bonus,allowance,deduction,tax,insurance,net,b.work_days||0,b.absent_days||0,b.late_days||0,b.standard_days??0,b.paid_leave_days??0,b.late_minutes??0,b.early_leave_minutes??0,b.missing_checkinout_days??0,nextStatus,b.note||'',lockAt,lockAt ? me.id : null,lockAt ? me.full_name : null,confirmedAt,iid).run();
       if (nextStatus !== existingInv.status) {
         await env.DB.prepare('INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)')
           .bind(iid, existingInv.status || null, nextStatus, me.id, me.full_name, b.status_note || b.note || null).run();
@@ -2361,7 +2763,7 @@ export async function handle(request, env) {
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
-      if (!isManager) return json({ error: 'Không có quyền' }, 403);
+      if (!isManager) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
       const existingInv = await env.DB.prepare('SELECT * FROM invoices WHERE id=?').bind(iid).first();
       if (existingInv && (existingInv.locked_at || existingInv.status === 'paid')) return json({ error: 'Phieu luong da khoa, khong the xoa' }, 400);
       await env.DB.prepare('DELETE FROM invoices WHERE id=?').bind(iid).run();
@@ -2369,7 +2771,7 @@ export async function handle(request, env) {
     }
   }
 
-  // ── SETTINGS ─────────────────────────────────────────────────────
+  // â”€â”€ SETTINGS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (path === '/api/settings' && request.method === 'GET') {
     const { results } = await env.DB.prepare('SELECT setting_key,setting_value FROM settings').all();
     const map = {};
@@ -2377,7 +2779,7 @@ export async function handle(request, env) {
     return json({ settings: map });
   }
   if (path === '/api/settings' && request.method === 'PUT') {
-    if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
+    if (!isAdmin) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
     const b = await request.json();
     await env.DB.batch(
       Object.entries(b).map(([k,v]) =>
@@ -2387,20 +2789,30 @@ export async function handle(request, env) {
     return json({ ok: true });
   }
 
-  // ── DEPARTMENTS ──────────────────────────────────────────────────
+  // â”€â”€ DEPARTMENTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (path === '/api/departments' && request.method === 'GET') {
     // App-wide departments (shared), no per-user filter
-    const { results } = await env.DB.prepare('SELECT * FROM departments ORDER BY name').all();
+    const { results } = await env.DB.prepare(`
+      SELECT d.*, u.full_name AS manager_name, u.employee_code AS manager_employee_code,
+             u.department AS manager_department, u.position AS manager_position
+        FROM departments d
+        LEFT JOIN users u ON u.id = d.manager_id
+       ORDER BY d.name
+    `).all();
     return json({ departments: results });
   }
   if (path === '/api/departments' && request.method === 'POST') {
     const b = await request.json();
-    if (!b.name) return json({ error: 'Thiếu tên phòng ban' }, 400);
+    if (!b.name) return json({ error: 'Thiáº¿u tÃªn phÃ²ng ban' }, 400);
     const name = normalizeDeptName(b.name);
     const dup = await env.DB.prepare('SELECT id FROM departments WHERE lower(name)=lower(?)').bind(name).first();
-    if (dup) return json({ error: 'Phòng ban này đã tồn tại' }, 400);
-    const r = await env.DB.prepare('INSERT INTO departments (user_id,name,manager,description) VALUES (?,?,?,?)')
-      .bind(env.USER_ID, name, b.manager||'', b.description||'').run();
+    if (dup) return json({ error: 'PhÃ²ng ban nÃ y Ä‘Ã£ tá»“n táº¡i' }, 400);
+    const managerId = intOrNull(b.manager_id);
+    const manager = managerId ? await env.DB.prepare('SELECT full_name FROM users WHERE id=?').bind(managerId).first() : null;
+    if (managerId && !manager) return json({ error: 'Khong tim thay truong phong' }, 400);
+    const managerName = manager?.full_name || String(b.manager || '').trim();
+    const r = await env.DB.prepare('INSERT INTO departments (user_id,name,manager,manager_id,description) VALUES (?,?,?,?,?)')
+      .bind(env.USER_ID, name, managerName, managerId, b.description||'').run();
     return json({ ok: true, id: r.meta.last_row_id });
   }
   const deptMatch = path.match(/^\/api\/departments\/(\d+)$/);
@@ -2410,9 +2822,13 @@ export async function handle(request, env) {
       const b = await request.json();
       const name = normalizeDeptName(b.name);
       const dup = await env.DB.prepare('SELECT id FROM departments WHERE lower(name)=lower(?) AND id!=?').bind(name, id).first();
-      if (dup) return json({ error: 'Phòng ban này đã tồn tại' }, 400);
-      await env.DB.prepare('UPDATE departments SET name=?,manager=?,description=? WHERE id=?')
-        .bind(name, b.manager||'', b.description||'', id).run();
+      if (dup) return json({ error: 'PhÃ²ng ban nÃ y Ä‘Ã£ tá»“n táº¡i' }, 400);
+      const managerId = intOrNull(b.manager_id);
+      const manager = managerId ? await env.DB.prepare('SELECT full_name FROM users WHERE id=?').bind(managerId).first() : null;
+      if (managerId && !manager) return json({ error: 'Khong tim thay truong phong' }, 400);
+      const managerName = manager?.full_name || String(b.manager || '').trim();
+      await env.DB.prepare('UPDATE departments SET name=?,manager=?,manager_id=?,description=? WHERE id=?')
+        .bind(name, managerName, managerId, b.description||'', id).run();
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
@@ -2421,14 +2837,14 @@ export async function handle(request, env) {
     }
   }
 
-  // ── EMPLOYEES ────────────────────────────────────────────────────
+  // â”€â”€ EMPLOYEES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (path === '/api/employees' && request.method === 'GET') {
     const { results } = await env.DB.prepare('SELECT * FROM employees WHERE user_id=? ORDER BY name').bind(env.USER_ID).all();
     return json({ employees: results });
   }
   if (path === '/api/employees' && request.method === 'POST') {
     const b = await request.json();
-    if (!b.name || !b.code) return json({ error: 'Thiếu thông tin bắt buộc' }, 400);
+    if (!b.name || !b.code) return json({ error: 'Thiáº¿u thÃ´ng tin báº¯t buá»™c' }, 400);
     const r = await env.DB.prepare('INSERT INTO employees (user_id,code,name,department_id,position,start_date,birthday,status,salary,phone,email) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
       .bind(env.USER_ID, b.code, b.name, b.department_id||null, b.position||'', b.start_date||null, b.birthday||null, b.status||'active', b.salary||0, b.phone||'', b.email||'').run();
     return json({ ok: true, id: r.meta.last_row_id });
@@ -2448,7 +2864,7 @@ export async function handle(request, env) {
     }
   }
 
-  // ── LEAVE REQUESTS ────────────────────────────────────────────────
+  // â”€â”€ LEAVE REQUESTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (path === '/api/leave-types' && request.method === 'GET') {
     const includeInactive = url.searchParams.get('includeInactive') === '1';
     const q = includeInactive ? 'SELECT * FROM leave_types ORDER BY is_active DESC, name' : 'SELECT * FROM leave_types WHERE is_active=1 ORDER BY name';
@@ -2511,7 +2927,7 @@ export async function handle(request, env) {
   if (path === '/api/leave' && request.method === 'POST') {
     try {
     const b = await request.json();
-    if (!b.start_date || !b.end_date) return json({ error: 'Thiếu ngày bắt đầu/kết thúc' }, 400);
+    if (!b.start_date || !b.end_date) return json({ error: 'Thiáº¿u ngÃ y báº¯t Ä‘áº§u/káº¿t thÃºc' }, 400);
     const typeCode = String(b.type || 'annual').trim();
     const leaveType = await env.DB.prepare('SELECT * FROM leave_types WHERE code=? AND is_active=1').bind(typeCode).first();
     if (!leaveType) return json({ error: 'Loai nghi phep khong hop le hoac da tat' }, 400);
@@ -2536,7 +2952,7 @@ export async function handle(request, env) {
       if (b.start_date !== undefined) { updates.push('start_date=?'); vals.push(b.start_date); }
       if (b.end_date !== undefined)   { updates.push('end_date=?');   vals.push(b.end_date); }
       if (b.reason !== undefined)     { updates.push('reason=?');     vals.push(b.reason); }
-      if (!updates.length) return json({ error: 'Không có dữ liệu cập nhật' }, 400);
+      if (!updates.length) return json({ error: 'KhÃ´ng cÃ³ dá»¯ liá»‡u cáº­p nháº­t' }, 400);
       vals.push(id);
       await env.DB.prepare(`UPDATE leave_requests SET ${updates.join(',')} WHERE id=?`).bind(...vals).run();
       return json({ ok: true });
@@ -2547,7 +2963,7 @@ export async function handle(request, env) {
     }
   }
 
-  // ── CANDIDATES / RECRUITMENT ──────────────────────────────────────
+  // â”€â”€ CANDIDATES / RECRUITMENT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (path === '/api/candidates' && request.method === 'GET') {
     const stageFilter = url.searchParams.get('stage') || '';
     let q = 'SELECT * FROM candidates ORDER BY id DESC';
@@ -2558,10 +2974,10 @@ export async function handle(request, env) {
   }
   if (path === '/api/candidates' && request.method === 'POST') {
     const b = await request.json();
-    if (!b.name) return json({ error: 'Thiếu tên ứng viên' }, 400);
+    if (!b.name) return json({ error: 'Thiáº¿u tÃªn á»©ng viÃªn' }, 400);
     const r = await env.DB.prepare(
       'INSERT INTO candidates (user_id,name,position,department_id,apply_date,source,stage,notes) VALUES (?,?,?,?,?,?,?,?)'
-    ).bind(env.USER_ID, b.name, b.position||'', b.department_id||null, b.apply_date||null, b.source||'Khác', b.stage||'received', b.notes||'').run();
+    ).bind(env.USER_ID, b.name, b.position||'', b.department_id||null, b.apply_date||null, b.source||'KhÃ¡c', b.stage||'received', b.notes||'').run();
     return json({ ok: true, id: r.meta.last_row_id });
   }
   const candMatch = path.match(/^\/api\/candidates\/(\d+)$/);
@@ -2576,7 +2992,7 @@ export async function handle(request, env) {
         if (b[c] !== undefined) { setStrs.push(c + '=?'); vals.push(b[c]); }
       }
       if (b.department !== undefined) { setStrs.push('department_id=?'); vals.push(b.department||null); }
-      if (!setStrs.length) return json({ error: 'Không có dữ liệu' }, 400);
+      if (!setStrs.length) return json({ error: 'KhÃ´ng cÃ³ dá»¯ liá»‡u' }, 400);
       vals.push(id);
       await env.DB.prepare(`UPDATE candidates SET ${setStrs.join(',')} WHERE id=?`).bind(...vals).run();
       return json({ ok: true });
@@ -2587,7 +3003,82 @@ export async function handle(request, env) {
     }
   }
 
-  // ── PAYROLL ───────────────────────────────────────────────────────
+  // â”€â”€ PAYROLL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  if (path === '/api/payroll-adjustments/suggestions' && request.method === 'GET') {
+    if (!isManager) return json({ error: 'Khong co quyen' }, 403);
+    const month = String(url.searchParams.get('month') || '').trim();
+    if (!/^\d{4}-\d{2}$/.test(month)) return json({ error: 'Thieu hoac sai thang bang luong' }, 400);
+    const data = await buildPayrollAdjustmentSuggestions(env, month);
+    return json({
+      month,
+      suggestions: data.suggestions,
+      approved: data.approved,
+      manual_sources: [{ source: 'manual', label: 'Y tuong/sang kien/top tuan/bao cao thu cong' }],
+    });
+  }
+
+  if (path === '/api/payroll-adjustments/apply' && request.method === 'POST') {
+    if (!isManager) return json({ error: 'Khong co quyen' }, 403);
+    const b = await request.json().catch(() => ({}));
+    const month = String(b.month || '').trim();
+    if (!/^\d{4}-\d{2}$/.test(month)) return json({ error: 'Thieu hoac sai thang bang luong' }, 400);
+    const incoming = Array.isArray(b.items) ? b.items : [];
+    if (!incoming.length) return json({ error: 'Chua co de xuat nao duoc chon' }, 400);
+
+    const data = await buildPayrollAdjustmentSuggestions(env, month);
+    const suggestionByRef = new Map(data.suggestions.map(s => [s.source_ref, s]));
+    let applied = 0, skipped = 0;
+    const errors = [];
+
+    for (const item of incoming) {
+      const isManual = item.source === 'manual' || !item.source_ref;
+      const base = isManual ? {
+        employee_id: intOrNull(item.employee_id),
+        payroll_id: intOrNull(item.payroll_id),
+        month,
+        type: item.type || payrollAdjustmentType(item.source || 'manual', Number(item.amount || 0), Number(item.score_delta || 0)),
+        source: 'manual',
+        source_ref: `manual:${month}:${Date.now()}:${Math.random().toString(16).slice(2)}`,
+        amount: Number(item.amount || 0),
+        score_delta: Number(item.score_delta || 0),
+        reason: String(item.reason || '').trim(),
+      } : suggestionByRef.get(item.source_ref);
+
+      if (!base) { skipped++; errors.push({ source_ref: item.source_ref || null, error: 'De xuat khong con hop le hoac da ap dung' }); continue; }
+      if (!base.employee_id || !base.reason) { skipped++; errors.push({ source_ref: item.source_ref || null, error: 'Thieu nhan vien hoac ly do' }); continue; }
+
+      const amount = Math.max(0, Number(item.amount ?? base.amount ?? 0));
+      const scoreDelta = Number(item.score_delta ?? base.score_delta ?? 0);
+      const type = item.type || base.type || payrollAdjustmentType(base.source, amount, scoreDelta);
+      let payroll = base.payroll_id ? await env.DB.prepare('SELECT * FROM payroll WHERE id=?').bind(base.payroll_id).first() : null;
+      if (!payroll) payroll = await env.DB.prepare('SELECT * FROM payroll WHERE employee_id=? AND month=? LIMIT 1').bind(base.employee_id, month).first();
+      if (amount > 0 && !payroll) {
+        skipped++;
+        errors.push({ source_ref: base.source_ref, error: 'Chua co dong bang luong cho nhan vien nay' });
+        continue;
+      }
+
+      const existing = base.source_ref ? await env.DB.prepare('SELECT id FROM payroll_adjustments WHERE source_ref=? AND status=?')
+        .bind(base.source_ref, 'approved').first() : null;
+      if (existing) { skipped++; continue; }
+
+      await env.DB.prepare(
+        `INSERT INTO payroll_adjustments (employee_id,payroll_id,month,type,source,source_ref,amount,score_delta,reason,status,created_by,created_by_name,approved_by,approved_by_name,approved_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,'approved',?,?,?,?,datetime('now','localtime'),datetime('now','localtime'))`
+      ).bind(base.employee_id, payroll?.id || null, month, type, base.source, base.source_ref, amount, scoreDelta, String(item.reason || base.reason).trim(), me.id, me.full_name || '', me.id, me.full_name || '').run();
+
+      if (amount > 0 && payroll) {
+        const nextKpi = Number(payroll.kpi_bonus || 0) + (type === 'bonus' ? amount : 0);
+        const nextDeduction = Number(payroll.deduction || 0) + (type === 'penalty' ? amount : 0);
+        const nextNet = Number(payroll.base_salary || 0) + nextKpi + Number(payroll.allowance || 0) - nextDeduction;
+        await env.DB.prepare("UPDATE payroll SET kpi_bonus=?,deduction=?,net_salary=? WHERE id=?")
+          .bind(nextKpi, nextDeduction, nextNet, payroll.id).run();
+      }
+      applied++;
+    }
+    return json({ ok: true, month, applied, skipped, errors });
+  }
+
   if (path === '/api/payroll' && request.method === 'GET') {
     const month = url.searchParams.get('month') || new Date().toISOString().slice(0,7);
     const { results } = await env.DB.prepare('SELECT * FROM payroll WHERE month=? ORDER BY id DESC').bind(month).all();
@@ -2610,7 +3101,7 @@ export async function handle(request, env) {
     for (const u of users) {
       const base = Number(u.salary || 0);
       const status = base > 0 ? 'ready' : 'missing_salary_config';
-      const warnings = base > 0 ? '' : 'Thiếu cấu hình lương';
+      const warnings = base > 0 ? '' : 'Thiáº¿u cáº¥u hÃ¬nh lÆ°Æ¡ng';
       if (base > 0) {
         ready++;
         estimatedTotal += base;
@@ -2674,7 +3165,7 @@ export async function handle(request, env) {
     for (const u of users) {
       const base = Number(u.salary || 0);
       const status = base > 0 ? 'ready' : 'missing_salary_config';
-      const warnings = base > 0 ? '' : 'Thiếu cấu hình lương';
+      const warnings = base > 0 ? '' : 'Thiáº¿u cáº¥u hÃ¬nh lÆ°Æ¡ng';
       if (base > 0) { ready++; estimatedTotal += base; }
       else missing++;
       const exists = await env.DB.prepare('SELECT id FROM payroll WHERE employee_id=? AND month=? LIMIT 1')
@@ -2700,13 +3191,114 @@ export async function handle(request, env) {
     ).bind(month, users.length, ready, missing, estimatedTotal, me.id, me.full_name || '').run();
     return json({ ok: true, status: 'draft', created, updated, missing, missing_salary_config: missing, complete: ready, total: users.length, month, estimated_total: estimatedTotal });
   }
+  if (path === '/api/payroll/export-payslips' && request.method === 'POST') {
+    if (!isManager) return json({ error: 'Khong co quyen' }, 403);
+    const b = await request.json().catch(() => ({}));
+    const month = String(b.month || '').trim();
+    if (!/^\d{4}-\d{2}$/.test(month)) return json({ error: 'Thieu hoac sai thang bang luong' }, 400);
+    if (String(b.confirmText || '').trim().toLowerCase() !== 'xuatphieuluong') {
+      return json({ error: 'Can go dung xuatphieuluong de xuat phieu luong' }, 400);
+    }
+    try {
+    const [yearStr, mmStr] = month.split('-');
+    const year = Number(yearStr);
+    const invMonth = Number(mmStr);
+    const { results: rows = [] } = await env.DB.prepare(
+      `SELECT p.*, u.id AS real_user_id, u.bank_account, u.bank_name
+         FROM payroll p
+         LEFT JOIN users u ON u.id=p.employee_id
+        WHERE p.month=?
+        ORDER BY p.id`
+    ).bind(month).all();
+    let created = 0, updated = 0, skipped = 0;
+    const skippedRows = [];
+    for (const p of rows) {
+      try {
+        const employeeId = Number(p.employee_id || p.real_user_id || 0);
+        const status = p.data_status || (Number(p.base_salary || 0) > 0 ? 'ready' : 'missing_salary_config');
+        if (!employeeId || status !== 'ready' || Number(p.base_salary || 0) <= 0) {
+          skipped++;
+          skippedRows.push({ payroll_id: p.id, employee_id: employeeId || null, employee_name: p.employee_name || '', reason: 'missing_salary_config' });
+          continue;
+        }
+        const base = Number(p.base_salary || 0);
+        const bonus = Number(p.kpi_bonus || 0);
+        const allowance = Number(p.allowance || 0);
+        const deduction = Number(p.deduction || 0);
+        const net = Number(p.net_salary || (base + bonus + allowance - deduction));
+        const workSummary = await buildMonthlyWorkSummary(env, employeeId, invMonth, year);
+        const existing = await env.DB.prepare(
+          'SELECT * FROM invoices WHERE payroll_id=? OR (user_id=? AND month=? AND year=?) ORDER BY id DESC LIMIT 1'
+        ).bind(p.id, employeeId, invMonth, year).first();
+
+        if (existing && (existing.locked_at || existing.status === 'paid' || existing.status === 'employee_confirmed' || existing.employee_confirmed_at)) {
+          skipped++;
+          skippedRows.push({ invoice_id: existing.id, payroll_id: p.id, employee_id: employeeId, employee_name: p.employee_name || '', reason: 'locked_or_confirmed' });
+          continue;
+        }
+
+        if (existing) {
+          const fromStatus = existing.status || null;
+          await env.DB.prepare(
+            `UPDATE invoices SET payroll_id=?,base_salary=?,bonus=?,allowance=?,deduction=?,tax=0,insurance=0,net_salary=?,
+               work_days=?,absent_days=?,late_days=?,standard_days=?,paid_leave_days=?,late_minutes=?,early_leave_minutes=?,missing_checkinout_days=?,
+               status='issued',issued_at=datetime('now','localtime'),issued_by=?,issued_by_name=?,
+               review_resolved_at=CASE WHEN status='review_requested' THEN datetime('now','localtime') ELSE review_resolved_at END,
+               review_status=CASE WHEN status='review_requested' THEN 'resolved' ELSE COALESCE(review_status,'none') END,
+               review_note=CASE WHEN status='review_requested' THEN 'Reissued from payroll' ELSE review_note END
+             WHERE id=?`
+          ).bind(
+            p.id, base, bonus, allowance, deduction, net,
+            workSummary.actualWorkDays, workSummary.absentDays, workSummary.lateDays,
+            workSummary.standardWorkDays, workSummary.paidLeaveDays, workSummary.lateMinutes,
+            workSummary.earlyLeaveMinutes, workSummary.incompleteDays,
+            me.id, me.full_name || '', existing.id
+          ).run();
+          await env.DB.prepare(
+            "UPDATE invoice_review_requests SET status='resolved',handled_by=?,handled_by_name=?,handled_note=COALESCE(handled_note,'Reissued from payroll'),handled_at=datetime('now','localtime'),updated_at=datetime('now','localtime') WHERE invoice_id=? AND status='open'"
+          ).bind(me.id, me.full_name || '', existing.id).run();
+          await env.DB.prepare('INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)')
+            .bind(existing.id, fromStatus, 'issued', me.id, me.full_name || '', fromStatus === 'review_requested' ? 'Reissued payslip after review' : 'Reissued payslip from payroll').run();
+          updated++;
+        } else {
+          const invNum = await nextInvoiceNumber(env, year, invMonth);
+          const r = await env.DB.prepare(
+            `INSERT INTO invoices (invoice_number,user_id,month,year,base_salary,bonus,allowance,deduction,tax,insurance,net_salary,
+               work_days,absent_days,late_days,standard_days,paid_leave_days,late_minutes,early_leave_minutes,missing_checkinout_days,
+               status,note,payroll_id,issued_at,issued_by,issued_by_name,review_status)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'),?,?,'none')`
+          ).bind(invNum, employeeId, invMonth, year, base, bonus, allowance, deduction, 0, 0, net,
+            workSummary.actualWorkDays, workSummary.absentDays, workSummary.lateDays,
+            workSummary.standardWorkDays, workSummary.paidLeaveDays, workSummary.lateMinutes,
+            workSummary.earlyLeaveMinutes, workSummary.incompleteDays,
+            'issued', 'Generated from payroll', p.id, me.id, me.full_name || '').run();
+          await env.DB.prepare('INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)')
+            .bind(r.meta.last_row_id, null, 'issued', me.id, me.full_name || '', 'Issued payslip from payroll').run();
+          created++;
+        }
+      } catch (e) {
+        skipped++;
+        skippedRows.push({ payroll_id: p.id, employee_id: p.employee_id || null, employee_name: p.employee_name || '', reason: 'row_error', error: String(e?.message || e) });
+        continue;
+      }
+    }
+    if (rows.length) {
+      await env.DB.prepare(
+        "UPDATE payroll_batches SET status='issued',updated_at=datetime('now','localtime') WHERE month=?"
+      ).bind(month).run();
+    }
+    return json({ ok: true, month, total: rows.length, created, updated, skipped, skippedRows });
+    } catch (e) {
+      return json({ error: 'Export payslips failed: ' + String(e?.message || e) }, 500);
+    }
+  }
   if (path === '/api/payroll' && request.method === 'POST') {
     const b = await request.json();
     // Single row creation
     if (b.employee_name && b.month) {
       const net = (b.base_salary||0) + (b.kpi_bonus||0) + (b.allowance||0) - (b.deduction||0);
       const dataStatus = Number(b.base_salary || 0) > 0 ? 'ready' : 'missing_salary_config';
-      const dataWarnings = dataStatus === 'ready' ? '' : 'Thiếu cấu hình lương';
+      const dataWarnings = dataStatus === 'ready' ? '' : 'Thiáº¿u cáº¥u hÃ¬nh lÆ°Æ¡ng';
       const r = await env.DB.prepare(
         "INSERT INTO payroll (user_id,employee_id,employee_name,employee_code,department,month,base_salary,kpi_bonus,allowance,deduction,net_salary,data_status,data_warnings,source_synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))"
       ).bind(String(me.id), b.employee_id||null, b.employee_name, b.employee_code||'', b.department||'', b.month, b.base_salary||0, b.kpi_bonus||0, b.allowance||0, b.deduction||0, net, dataStatus, dataWarnings).run();
@@ -2717,14 +3309,14 @@ export async function handle(request, env) {
       await env.DB.batch(b.rows.map(r => {
         const net = (r.base_salary||0) + (r.kpi_bonus||0) + (r.allowance||0) - (r.deduction||0);
         const dataStatus = Number(r.base_salary || 0) > 0 ? 'ready' : 'missing_salary_config';
-        const dataWarnings = dataStatus === 'ready' ? '' : 'Thiếu cấu hình lương';
+        const dataWarnings = dataStatus === 'ready' ? '' : 'Thiáº¿u cáº¥u hÃ¬nh lÆ°Æ¡ng';
         return env.DB.prepare(
           "INSERT INTO payroll (user_id,employee_id,employee_name,employee_code,department,month,base_salary,kpi_bonus,allowance,deduction,net_salary,data_status,data_warnings,source_synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))"
         ).bind(String(me.id), r.employee_id||null, r.employee_name||'', r.employee_code||'', r.department||'', b.month, r.base_salary||0, r.kpi_bonus||0, r.allowance||0, r.deduction||0, net, dataStatus, dataWarnings);
       }));
       return json({ ok: true });
     }
-    return json({ error: 'Thiếu dữ liệu' }, 400);
+    return json({ error: 'Thiáº¿u dá»¯ liá»‡u' }, 400);
   }
   const payrollMatch = path.match(/^\/api\/payroll\/(\d+)$/);
   if (payrollMatch) {
@@ -2733,7 +3325,7 @@ export async function handle(request, env) {
       const b = await request.json();
       const net = (b.base_salary||0) + (b.kpi_bonus||0) + (b.allowance||0) - (b.deduction||0);
       const dataStatus = Number(b.base_salary || 0) > 0 ? 'ready' : 'missing_salary_config';
-      const dataWarnings = dataStatus === 'ready' ? '' : 'Thiếu cấu hình lương';
+      const dataWarnings = dataStatus === 'ready' ? '' : 'Thiáº¿u cáº¥u hÃ¬nh lÆ°Æ¡ng';
       await env.DB.prepare(
         "UPDATE payroll SET employee_name=?,employee_code=?,department=?,month=?,base_salary=?,kpi_bonus=?,allowance=?,deduction=?,net_salary=?,data_status=?,data_warnings=?,source_synced_at=datetime('now','localtime') WHERE id=?"
       ).bind(b.employee_name||'', b.employee_code||'', b.department||'', b.month||'', b.base_salary||0, b.kpi_bonus||0, b.allowance||0, b.deduction||0, net, dataStatus, dataWarnings, id).run();
@@ -2745,7 +3337,7 @@ export async function handle(request, env) {
     }
   }
 
-  // ── CAMPAIGNS ────────────────────────────────────────────────────
+  // â”€â”€ CAMPAIGNS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (path === '/api/campaigns' && request.method === 'GET') {
     const statusFilter = url.searchParams.get('status') || '';
     const typeFilter   = url.searchParams.get('type')   || '';
@@ -2760,7 +3352,7 @@ export async function handle(request, env) {
   }
   if (path === '/api/campaigns' && request.method === 'POST') {
     const b = await request.json();
-    if (!b.name) return json({ error: 'Thiếu tên chiến dịch' }, 400);
+    if (!b.name) return json({ error: 'Thiáº¿u tÃªn chiáº¿n dá»‹ch' }, 400);
     const r = await env.DB.prepare(
       'INSERT INTO campaigns (user_id,name,type,status,start_date,end_date,budget,spent,goal_reach,goal_leads,goal_conversions,owner_name,description) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)'
     ).bind(env.USER_ID, b.name, b.type||'other', b.status||'planning', b.start_date||null, b.end_date||null, b.budget||0, b.spent||0, b.goal_reach||0, b.goal_leads||0, b.goal_conversions||0, b.owner_name||'', b.description||'').run();
@@ -2782,26 +3374,26 @@ export async function handle(request, env) {
     }
   }
 
-  // ── ĐÁNH GIÁ HIỆU SUẤT (Performance Evaluation) — TTS workflow ─────
+  // â”€â”€ ÄÃNH GIÃ HIá»†U SUáº¤T (Performance Evaluation) â€” TTS workflow â”€â”€â”€â”€â”€
   if (path === '/api/eval-periods' && request.method === 'GET') {
     const { results } = await env.DB.prepare('SELECT * FROM eval_periods ORDER BY year DESC, month DESC').all();
     return json({ periods: results });
   }
   if (path === '/api/eval-periods' && request.method === 'POST') {
-    if (!isHcns(me) && !isBgd(me)) return json({ error: 'Không có quyền' }, 403);
+    if (!isHcns(me) && !isBgd(me)) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
     const b = await request.json().catch(() => ({}));
     const month = parseInt(b.month), year = parseInt(b.year);
     const start = String(b.start_date || ''), end = String(b.end_date || '');
-    if (!month || !year || !start || !end) return json({ error: 'Thiếu thông tin kỳ đánh giá' }, 400);
+    if (!month || !year || !start || !end) return json({ error: 'Thiáº¿u thÃ´ng tin ká»³ Ä‘Ã¡nh giÃ¡' }, 400);
     const days = Math.round((new Date(end) - new Date(start)) / 86400000) + 1;
-    if (!(days >= 5 && days <= 7)) return json({ error: 'Kỳ đánh giá phải kéo dài từ 5 đến 7 ngày' }, 400);
+    if (!(days >= 5 && days <= 7)) return json({ error: 'Ká»³ Ä‘Ã¡nh giÃ¡ pháº£i kÃ©o dÃ i tá»« 5 Ä‘áº¿n 7 ngÃ y' }, 400);
     try {
       const r = await env.DB.prepare(
         'INSERT INTO eval_periods (month,year,start_date,end_date,created_by,created_by_name) VALUES (?,?,?,?,?,?)'
       ).bind(month, year, start, end, me.id, me.full_name).run();
       return json({ ok: true, id: r.meta.last_row_id });
     } catch (e) {
-      if (String(e.message || '').includes('UNIQUE')) return json({ error: 'Kỳ đánh giá tháng này đã tồn tại' }, 400);
+      if (String(e.message || '').includes('UNIQUE')) return json({ error: 'Ká»³ Ä‘Ã¡nh giÃ¡ thÃ¡ng nÃ y Ä‘Ã£ tá»“n táº¡i' }, 400);
       throw e;
     }
   }
@@ -2825,22 +3417,22 @@ export async function handle(request, env) {
   }
 
   if (path === '/api/evaluations' && request.method === 'POST') {
-    if (!isHcns(me) && !isBgd(me)) return json({ error: 'Không có quyền' }, 403);
+    if (!isHcns(me) && !isBgd(me)) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
     const b = await request.json().catch(() => ({}));
     const periodId = parseInt(b.period_id), userId = parseInt(b.user_id);
     const mentorId = parseInt(b.mentor_id), deptHeadId = parseInt(b.department_head_id);
-    if (!periodId || !userId || !mentorId || !deptHeadId) return json({ error: 'Thiếu thông tin phân công' }, 400);
-    if (mentorId === userId || deptHeadId === userId) return json({ error: 'Người đánh giá không thể là chính TTS' }, 400);
+    if (!periodId || !userId || !mentorId || !deptHeadId) return json({ error: 'Thiáº¿u thÃ´ng tin phÃ¢n cÃ´ng' }, 400);
+    if (mentorId === userId || deptHeadId === userId) return json({ error: 'NgÆ°á»i Ä‘Ã¡nh giÃ¡ khÃ´ng thá»ƒ lÃ  chÃ­nh TTS' }, 400);
     const period = await env.DB.prepare('SELECT * FROM eval_periods WHERE id=?').bind(periodId).first();
-    if (!period) return json({ error: 'Không tìm thấy kỳ đánh giá' }, 404);
+    if (!period) return json({ error: 'KhÃ´ng tÃ¬m tháº¥y ká»³ Ä‘Ã¡nh giÃ¡' }, 404);
     const target = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(userId).first();
-    if (!target || target.lifecycle_status !== 'Thực tập') return json({ error: 'Nhân viên phải đang ở trạng thái Thực tập' }, 400);
+    if (!target || target.lifecycle_status !== 'Thá»±c táº­p') return json({ error: 'NhÃ¢n viÃªn pháº£i Ä‘ang á»Ÿ tráº¡ng thÃ¡i Thá»±c táº­p' }, 400);
     const mentor = await env.DB.prepare('SELECT full_name FROM users WHERE id=?').bind(mentorId).first();
     const deptHead = await env.DB.prepare('SELECT full_name FROM users WHERE id=?').bind(deptHeadId).first();
     const existing = await env.DB.prepare('SELECT * FROM evaluations WHERE period_id=? AND user_id=?').bind(periodId, userId).first();
     if (existing) {
       if (existing.mentor_submitted_at || existing.department_submitted_at) {
-        return json({ error: 'Đã có đánh giá đang xử lý, không thể đổi phân công' }, 400);
+        return json({ error: 'ÄÃ£ cÃ³ Ä‘Ã¡nh giÃ¡ Ä‘ang xá»­ lÃ½, khÃ´ng thá»ƒ Ä‘á»•i phÃ¢n cÃ´ng' }, 400);
       }
       await env.DB.prepare('UPDATE evaluations SET mentor_id=?,mentor_name=?,department_head_id=?,department_head_name=?,updated_at=datetime(\'now\',\'localtime\') WHERE id=?')
         .bind(mentorId, mentor?.full_name || '', deptHeadId, deptHead?.full_name || '', existing.id).run();
@@ -2850,7 +3442,7 @@ export async function handle(request, env) {
       'INSERT INTO evaluations (period_id,user_id,mentor_id,mentor_name,department_head_id,department_head_name,status) VALUES (?,?,?,?,?,?,?)'
     ).bind(periodId, userId, mentorId, mentor?.full_name || '', deptHeadId, deptHead?.full_name || '', 'MENTOR_REVIEW').run();
     await env.DB.prepare('INSERT INTO evaluation_history (evaluation_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)')
-      .bind(r.meta.last_row_id, null, 'MENTOR_REVIEW', me.id, me.full_name, 'Phân công Mentor & Trưởng phòng đánh giá').run();
+      .bind(r.meta.last_row_id, null, 'MENTOR_REVIEW', me.id, me.full_name, 'PhÃ¢n cÃ´ng Mentor & TrÆ°á»Ÿng phÃ²ng Ä‘Ã¡nh giÃ¡').run();
     return json({ ok: true, id: r.meta.last_row_id });
   }
 
@@ -2862,9 +3454,9 @@ export async function handle(request, env) {
               p.month AS period_month, p.year AS period_year, p.start_date AS period_start, p.end_date AS period_end
        FROM evaluations e LEFT JOIN users u ON e.user_id = u.id LEFT JOIN eval_periods p ON e.period_id = p.id WHERE e.id=?`
     ).bind(evalId).first();
-    if (!ev) return json({ error: 'Không tìm thấy phiếu đánh giá' }, 404);
+    if (!ev) return json({ error: 'KhÃ´ng tÃ¬m tháº¥y phiáº¿u Ä‘Ã¡nh giÃ¡' }, 404);
     const allowed = ev.user_id === me.id || ev.mentor_id === me.id || ev.department_head_id === me.id || isHcns(me) || isBgd(me);
-    if (!allowed) return json({ error: 'Không có quyền' }, 403);
+    if (!allowed) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
     const { results: history } = await env.DB.prepare('SELECT * FROM evaluation_history WHERE evaluation_id=? ORDER BY id ASC').bind(evalId).all();
     return json({ evaluation: ev, history });
   }
@@ -2873,7 +3465,7 @@ export async function handle(request, env) {
   if (evalActionMatch && request.method === 'POST') {
     const evalId = parseInt(evalActionMatch[1]);
     const ev = await env.DB.prepare('SELECT * FROM evaluations WHERE id=?').bind(evalId).first();
-    if (!ev) return json({ error: 'Không tìm thấy phiếu đánh giá' }, 404);
+    if (!ev) return json({ error: 'KhÃ´ng tÃ¬m tháº¥y phiáº¿u Ä‘Ã¡nh giÃ¡' }, 404);
     const period = await env.DB.prepare('SELECT * FROM eval_periods WHERE id=?').bind(ev.period_id).first();
     const b = await request.json().catch(() => ({}));
     const action = String(b.action || '');
@@ -2890,9 +3482,9 @@ export async function handle(request, env) {
     }
 
     if (action === 'mentor_save_draft' || action === 'mentor_submit') {
-      if (!isMentor) return json({ error: 'Không có quyền' }, 403);
-      if (!reviewStatuses.includes(ev.status)) return json({ error: 'Phiếu không ở trạng thái có thể chấm điểm' }, 400);
-      if (!canScoreNow) return json({ error: 'Ngoài thời gian đánh giá của kỳ này' }, 400);
+      if (!isMentor) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
+      if (!reviewStatuses.includes(ev.status)) return json({ error: 'Phiáº¿u khÃ´ng á»Ÿ tráº¡ng thÃ¡i cÃ³ thá»ƒ cháº¥m Ä‘iá»ƒm' }, 400);
+      if (!canScoreNow) return json({ error: 'NgoÃ i thá»i gian Ä‘Ã¡nh giÃ¡ cá»§a ká»³ nÃ y' }, 400);
       const scores = b.scores || {}, comments = b.comments || {};
       const err = action === 'mentor_submit' ? evalValidateComplete(scores, comments) : evalValidatePartial(scores, comments);
       if (err) return json({ error: err }, 400);
@@ -2902,18 +3494,18 @@ export async function handle(request, env) {
       if (action === 'mentor_submit') {
         if (ev.department_submitted_at) {
           await env.DB.prepare('UPDATE evaluations SET status=? WHERE id=?').bind('EMPLOYEE_CONFIRMATION', evalId).run();
-          await applyHistory('EMPLOYEE_CONFIRMATION', 'Mentor & Trưởng phòng đã hoàn tất đánh giá');
+          await applyHistory('EMPLOYEE_CONFIRMATION', 'Mentor & TrÆ°á»Ÿng phÃ²ng Ä‘Ã£ hoÃ n táº¥t Ä‘Ã¡nh giÃ¡');
         } else {
-          await applyHistory(ev.status, 'Mentor đã gửi đánh giá');
+          await applyHistory(ev.status, 'Mentor Ä‘Ã£ gá»­i Ä‘Ã¡nh giÃ¡');
         }
       }
       return json({ ok: true });
     }
 
     if (action === 'dept_save_draft' || action === 'dept_submit') {
-      if (!isDept) return json({ error: 'Không có quyền' }, 403);
-      if (!reviewStatuses.includes(ev.status)) return json({ error: 'Phiếu không ở trạng thái có thể chấm điểm' }, 400);
-      if (!canScoreNow) return json({ error: 'Ngoài thời gian đánh giá của kỳ này' }, 400);
+      if (!isDept) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
+      if (!reviewStatuses.includes(ev.status)) return json({ error: 'Phiáº¿u khÃ´ng á»Ÿ tráº¡ng thÃ¡i cÃ³ thá»ƒ cháº¥m Ä‘iá»ƒm' }, 400);
+      if (!canScoreNow) return json({ error: 'NgoÃ i thá»i gian Ä‘Ã¡nh giÃ¡ cá»§a ká»³ nÃ y' }, 400);
       const scores = b.scores || {}, comments = b.comments || {};
       const err = action === 'dept_submit' ? evalValidateComplete(scores, comments) : evalValidatePartial(scores, comments);
       if (err) return json({ error: err }, 400);
@@ -2923,27 +3515,27 @@ export async function handle(request, env) {
       if (action === 'dept_submit') {
         if (ev.mentor_submitted_at) {
           await env.DB.prepare('UPDATE evaluations SET status=? WHERE id=?').bind('EMPLOYEE_CONFIRMATION', evalId).run();
-          await applyHistory('EMPLOYEE_CONFIRMATION', 'Mentor & Trưởng phòng đã hoàn tất đánh giá');
+          await applyHistory('EMPLOYEE_CONFIRMATION', 'Mentor & TrÆ°á»Ÿng phÃ²ng Ä‘Ã£ hoÃ n táº¥t Ä‘Ã¡nh giÃ¡');
         } else {
-          await applyHistory(ev.status, 'Trưởng phòng đã gửi đánh giá');
+          await applyHistory(ev.status, 'TrÆ°á»Ÿng phÃ²ng Ä‘Ã£ gá»­i Ä‘Ã¡nh giÃ¡');
         }
       }
       return json({ ok: true });
     }
 
     if (action === 'employee_confirm') {
-      if (!isSelf) return json({ error: 'Không có quyền' }, 403);
-      if (ev.status !== 'EMPLOYEE_CONFIRMATION') return json({ error: 'Phiếu không ở trạng thái chờ xác nhận' }, 400);
+      if (!isSelf) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
+      if (ev.status !== 'EMPLOYEE_CONFIRMATION') return json({ error: 'Phiáº¿u khÃ´ng á»Ÿ tráº¡ng thÃ¡i chá» xÃ¡c nháº­n' }, 400);
       await env.DB.prepare('UPDATE evaluations SET employee_confirmed_at=?,status=? WHERE id=?').bind(nowStr(), 'PENDING_CEO_APPROVAL', evalId).run();
-      await applyHistory('PENDING_CEO_APPROVAL', 'TTS đã xác nhận kết quả');
+      await applyHistory('PENDING_CEO_APPROVAL', 'TTS Ä‘Ã£ xÃ¡c nháº­n káº¿t quáº£');
       return json({ ok: true });
     }
 
     if (action === 'employee_revision') {
-      if (!isSelf) return json({ error: 'Không có quyền' }, 403);
-      if (ev.status !== 'EMPLOYEE_CONFIRMATION') return json({ error: 'Phiếu không ở trạng thái chờ xác nhận' }, 400);
+      if (!isSelf) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
+      if (ev.status !== 'EMPLOYEE_CONFIRMATION') return json({ error: 'Phiáº¿u khÃ´ng á»Ÿ tráº¡ng thÃ¡i chá» xÃ¡c nháº­n' }, 400);
       const reason = String(b.reason || '').trim();
-      if (!reason) return json({ error: 'Vui lòng nhập lý do yêu cầu xem xét lại' }, 400);
+      if (!reason) return json({ error: 'Vui lÃ²ng nháº­p lÃ½ do yÃªu cáº§u xem xÃ©t láº¡i' }, 400);
       await env.DB.prepare(
         `UPDATE evaluations SET employee_revision_reason=?,employee_revision_evidence=?,employee_revision_at=?,
          status=?,mentor_submitted_at=NULL,department_submitted_at=NULL WHERE id=?`
@@ -2953,27 +3545,27 @@ export async function handle(request, env) {
     }
 
     if (action === 'ceo_approve') {
-      if (!isBgd(me)) return json({ error: 'Không có quyền' }, 403);
-      if (ev.status !== 'PENDING_CEO_APPROVAL') return json({ error: 'Phiếu không ở trạng thái chờ phê duyệt' }, 400);
+      if (!isBgd(me)) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
+      if (ev.status !== 'PENDING_CEO_APPROVAL') return json({ error: 'Phiáº¿u khÃ´ng á»Ÿ tráº¡ng thÃ¡i chá» phÃª duyá»‡t' }, 400);
       const finalScore = Number(b.finalScore);
-      if (!Number.isFinite(finalScore) || finalScore < 0 || finalScore > 100) return json({ error: 'Điểm cuối cùng không hợp lệ (0–100)' }, 400);
+      if (!Number.isFinite(finalScore) || finalScore < 0 || finalScore > 100) return json({ error: 'Äiá»ƒm cuá»‘i cÃ¹ng khÃ´ng há»£p lá»‡ (0â€“100)' }, 400);
       const initialScore = b.initialScore !== undefined && b.initialScore !== null ? Number(b.initialScore) : null;
       const adjusted = initialScore !== null && Math.round(initialScore) !== Math.round(finalScore);
-      if (adjusted && !String(b.adjustReason || '').trim()) return json({ error: 'Vui lòng nhập lý do điều chỉnh điểm' }, 400);
+      if (adjusted && !String(b.adjustReason || '').trim()) return json({ error: 'Vui lÃ²ng nháº­p lÃ½ do Ä‘iá»u chá»‰nh Ä‘iá»ƒm' }, 400);
       await env.DB.prepare(
         `UPDATE evaluations SET final_approved_score=?,final_approved_comment=?,final_score_before_adjust=?,final_adjust_reason=?,
          approved_by=?,approved_by_name=?,approved_at=?,status=? WHERE id=?`
       ).bind(finalScore, String(b.finalComment || '').trim(), adjusted ? initialScore : null, adjusted ? String(b.adjustReason).trim() : null,
              me.id, me.full_name, nowStr(), 'CEO_APPROVED', evalId).run();
-      await applyHistory('CEO_APPROVED', adjusted ? `Đã phê duyệt (điều chỉnh điểm: ${initialScore} → ${finalScore})` : 'Đã phê duyệt');
+      await applyHistory('CEO_APPROVED', adjusted ? `ÄÃ£ phÃª duyá»‡t (Ä‘iá»u chá»‰nh Ä‘iá»ƒm: ${initialScore} â†’ ${finalScore})` : 'ÄÃ£ phÃª duyá»‡t');
       return json({ ok: true });
     }
 
     if (action === 'ceo_revision') {
-      if (!isBgd(me)) return json({ error: 'Không có quyền' }, 403);
-      if (ev.status !== 'PENDING_CEO_APPROVAL') return json({ error: 'Phiếu không ở trạng thái chờ phê duyệt' }, 400);
+      if (!isBgd(me)) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
+      if (ev.status !== 'PENDING_CEO_APPROVAL') return json({ error: 'Phiáº¿u khÃ´ng á»Ÿ tráº¡ng thÃ¡i chá» phÃª duyá»‡t' }, 400);
       const reason = String(b.reason || '').trim();
-      if (!reason) return json({ error: 'Vui lòng nhập lý do trả lại đánh giá' }, 400);
+      if (!reason) return json({ error: 'Vui lÃ²ng nháº­p lÃ½ do tráº£ láº¡i Ä‘Ã¡nh giÃ¡' }, 400);
       await env.DB.prepare(
         `UPDATE evaluations SET ceo_revision_reason=?,ceo_revision_at=?,status=?,
          mentor_submitted_at=NULL,department_submitted_at=NULL,employee_confirmed_at=NULL WHERE id=?`
@@ -2983,41 +3575,41 @@ export async function handle(request, env) {
     }
 
     if (action === 'hr_receive') {
-      if (!isHcns(me)) return json({ error: 'Không có quyền' }, 403);
-      if (ev.status !== 'CEO_APPROVED') return json({ error: 'Phiếu chưa được phê duyệt' }, 400);
+      if (!isHcns(me)) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
+      if (ev.status !== 'CEO_APPROVED') return json({ error: 'Phiáº¿u chÆ°a Ä‘Æ°á»£c phÃª duyá»‡t' }, 400);
       await env.DB.prepare('UPDATE evaluations SET hr_received_by=?,hr_received_by_name=?,hr_received_at=?,status=? WHERE id=?')
         .bind(me.id, me.full_name, nowStr(), 'HR_RECEIVED', evalId).run();
-      await applyHistory('HR_RECEIVED', 'HCNS đã tiếp nhận');
+      await applyHistory('HR_RECEIVED', 'HCNS Ä‘Ã£ tiáº¿p nháº­n');
       return json({ ok: true });
     }
 
     if (action === 'hr_lock') {
-      if (!isHcns(me)) return json({ error: 'Không có quyền' }, 403);
-      if (ev.status !== 'HR_RECEIVED') return json({ error: 'Phiếu chưa được HCNS tiếp nhận' }, 400);
+      if (!isHcns(me)) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
+      if (ev.status !== 'HR_RECEIVED') return json({ error: 'Phiáº¿u chÆ°a Ä‘Æ°á»£c HCNS tiáº¿p nháº­n' }, 400);
       await env.DB.prepare('UPDATE evaluations SET locked_by=?,locked_by_name=?,locked_at=?,status=? WHERE id=?')
         .bind(me.id, me.full_name, nowStr(), 'LOCKED', evalId).run();
-      await applyHistory('LOCKED', 'HCNS đã khóa điểm');
+      await applyHistory('LOCKED', 'HCNS Ä‘Ã£ khÃ³a Ä‘iá»ƒm');
       return json({ ok: true });
     }
 
     if (action === 'hr_reopen') {
-      if (!isHcns(me) && !isBgd(me)) return json({ error: 'Không có quyền' }, 403);
+      if (!isHcns(me) && !isBgd(me)) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
       if (ev.window_override) return json({ ok: true });
       await env.DB.prepare('UPDATE evaluations SET window_override=1 WHERE id=?').bind(evalId).run();
-      await applyHistory(ev.status, 'Mở lại ngoài thời gian đánh giá');
+      await applyHistory(ev.status, 'Má»Ÿ láº¡i ngoÃ i thá»i gian Ä‘Ã¡nh giÃ¡');
       return json({ ok: true });
     }
 
-    return json({ error: 'Hành động không hợp lệ' }, 400);
+    return json({ error: 'HÃ nh Ä‘á»™ng khÃ´ng há»£p lá»‡' }, 400);
   }
 
-  // HCNS "Ghi chú & kiến nghị" cho Ban Giám đốc — one note per eval period (report dashboard).
+  // HCNS "Ghi chÃº & kiáº¿n nghá»‹" cho Ban GiÃ¡m Ä‘á»‘c â€” one note per eval period (report dashboard).
   const evalPeriodNoteMatch = path.match(/^\/api\/eval-periods\/(\d+)\/note$/);
   if (evalPeriodNoteMatch && request.method === 'POST') {
-    if (!isHcns(me)) return json({ error: 'Không có quyền' }, 403);
+    if (!isHcns(me)) return json({ error: 'KhÃ´ng cÃ³ quyá»n' }, 403);
     const periodId = parseInt(evalPeriodNoteMatch[1]);
     const period = await env.DB.prepare('SELECT * FROM eval_periods WHERE id=?').bind(periodId).first();
-    if (!period) return json({ error: 'Không tìm thấy kỳ đánh giá' }, 404);
+    if (!period) return json({ error: 'KhÃ´ng tÃ¬m tháº¥y ká»³ Ä‘Ã¡nh giÃ¡' }, 404);
     const b = await request.json().catch(() => ({}));
     const note = String(b.note || '').slice(0, 2000);
     await env.DB.prepare('UPDATE eval_periods SET hr_note=?,hr_note_by=?,hr_note_at=? WHERE id=?')

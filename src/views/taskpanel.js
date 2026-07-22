@@ -2,6 +2,22 @@ import { api } from '../api.js';
 import { esc, taskStatusBadge, priorityBadge, toast, loadingHTML, openModal, closeModal } from '../utils.js';
 import { openTaskForm, sanitizeRichText } from './tasks.js';
 
+const QUICK_LABEL_MAP = {
+  '#1D4ED8': 'Xanh dương',
+  '#6366F1': 'Tím',
+  '#10B981': 'Xanh lá',
+  '#FACC15': 'Vàng',
+  '#F97316': 'Cam',
+  '#EF4444': 'Đỏ',
+  '#64748B': 'Xám',
+};
+function quickLabelName(color) {
+  if (!color) return '';
+  const key = color.trim().toUpperCase();
+  // Try exact match, then try adding # prefix
+  return QUICK_LABEL_MAP[color] || QUICK_LABEL_MAP['#' + key.replace(/^#/, '')] || '';
+}
+
 let _currentTaskId = null;
 let _users = [];
 let _me = null;
@@ -66,7 +82,7 @@ function renderPanel(task, subtasks, followers, comments) {
         <div class="detail-item"><div class="detail-label">Người giao</div><div class="detail-val">${esc(task.assigner_name || '—')}</div></div>
         <div class="detail-item"><div class="detail-label">Project</div><div class="detail-val">${task.project_name ? esc(task.project_name) : '—'}</div></div>
         <div class="detail-item"><div class="detail-label">Nhóm công việc</div><div class="detail-val">${task.group_name ? esc(task.group_name) : 'Công việc chung'}</div></div>
-        <div class="detail-item"><div class="detail-label">Nhãn</div><div class="detail-val" style="display:flex;align-items:center;gap:6px;"><span style="width:12px;height:12px;border-radius:999px;background:${esc(labelColor)};display:inline-block;"></span>${task.label_name ? esc(task.label_name) : 'Tự suy màu'}</div></div>
+        <div class="detail-item"><div class="detail-label">Nhãn</div><div class="detail-val" style="display:flex;align-items:center;gap:6px;"><span style="width:12px;height:12px;border-radius:999px;background:${esc(labelColor)};display:inline-block;"></span>${task.label_name ? esc(task.label_name) : (quickLabelName(task.label_color_real || task.label_color) || 'Tự suy màu')}</div></div>
         <div class="detail-item"><div class="detail-label">Ngày</div><div class="detail-val">${esc(task.date || '—')}</div></div>
         <div class="detail-item"><div class="detail-label">Hạn chót</div><div class="detail-val">${esc(task.due_date || '—')}</div></div>
         <div class="detail-item"><div class="detail-label">Phòng ban</div><div class="detail-val">${esc(task.department || task.assignee_department || '—')}</div></div>
@@ -126,8 +142,9 @@ function renderPanel(task, subtasks, followers, comments) {
     const project = projects.find(p => String(p.id) === String(task.team_project_id)) || null;
     const groups = task.team_project_id ? ((await api.getTaskGroups({ project_id: task.team_project_id }).catch(() => ({ groups: [] }))).groups || []) : [];
     const labels = (await api.getTaskLabels(task.team_project_id ? { project_id: task.team_project_id } : {}).catch(() => ({ labels: [] }))).labels || [];
-    openTaskForm(task, _users, _me, () => { loadTask(); }, { project, projects, groups, labels });
-  });
+    const deptRes = await api.getDepartments().catch(() => ({ departments: [] }));
+    openTaskForm(task, _users, _me, () => { loadTask(); }, { project, projects, groups, labels, departments: deptRes.departments });
+});
 
   document.getElementById('tp-add-sub')?.addEventListener('click', () => openSubtaskForm(task.id));
   body.querySelectorAll('.sub-edit').forEach(btn => {

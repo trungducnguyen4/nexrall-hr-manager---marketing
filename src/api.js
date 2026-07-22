@@ -236,6 +236,9 @@ export const api = {
   createInvoice: (d) => req('POST', '/api/invoices', d).then(r => { inv('/api/invoices'); return r; }),
   updateInvoice: (id, d) => req('PUT', `/api/invoices/${id}`, d).then(r => { inv('/api/invoices'); return r; }),
   deleteInvoice: (id) => req('DELETE', `/api/invoices/${id}`).then(r => { inv('/api/invoices'); return r; }),
+  confirmInvoice: (id) => req('POST', `/api/invoices/${id}/confirm`).then(r => { inv('/api/invoices'); return r; }),
+  requestInvoiceReview: (id, d) => req('POST', `/api/invoices/${id}/review-request`, d).then(r => { inv('/api/invoices'); return r; }),
+  resolveInvoiceReview: (id, d) => req('POST', `/api/invoices/${id}/resolve-review`, d).then(r => { inv('/api/invoices'); return r; }),
 
   // Settings
   getSettings:  () => cachedGet('/api/settings'),
@@ -286,8 +289,13 @@ export const api = {
   createPayroll: (d) => req('POST', '/api/payroll', d).then(r => { inv('/api/payroll'); return r; }),
   loadPayrollData: (month) => req('POST', '/api/payroll/load', { month }).then(r => { inv('/api/payroll'); return r; }),
   createPayrollBatch: (month) => req('POST', '/api/payroll/batch', { month }).then(r => { inv('/api/payroll'); return r; }),
+  exportPayslips: (month, confirmText) =>
+    req('POST', '/api/payroll/export-payslips', { month, confirmText }).then(r => { inv('/api/payroll', '/api/invoices'); return r; }),
   updatePayroll: (id, d) => req('PUT', `/api/payroll/${id}`, d).then(r => { inv('/api/payroll'); return r; }),
   deletePayroll: (id) => req('DELETE', `/api/payroll/${id}`).then(r => { inv('/api/payroll'); return r; }),
+  getPayrollAdjustmentSuggestions: (month) => req('GET', `/api/payroll-adjustments/suggestions?month=${encodeURIComponent(month)}`),
+  applyPayrollAdjustments: (month, items) =>
+    req('POST', '/api/payroll-adjustments/apply', { month, items }).then(r => { inv('/api/payroll'); return r; }),
 
   // Campaigns (marketing specific)
   getCampaigns: (params = {}) => {

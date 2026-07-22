@@ -1,5 +1,5 @@
-import { api } from '../api.js';
-import { esc, fmtMoney, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js';
+import { api } from '../api.js?v=20260722-payroll-export-ux';
+import { esc, fmtMoney, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js?v=20260722-payroll-export-ux';
 
 function formatMonth(month) {
   if (!/^\d{4}-\d{2}$/.test(month || '')) return month || '';
@@ -24,7 +24,8 @@ export async function renderPayroll(el, me) {
 
   const now = new Date();
   const curMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-  let sourceSummary = null;
+  let adjustmentData = { suggestions: [], approved: [] };
+  let latestPayrollRows = [];
   let currentPage = 1;
 
   el.innerHTML = `
@@ -39,7 +40,7 @@ export async function renderPayroll(el, me) {
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;">
       <label style="font-size:13px;font-weight:600;color:var(--text-2);">Tháng:</label>
       <input type="month" id="payroll-month" value="${curMonth}" style="max-width:160px;font-weight:600;"/>
-      <button id="btn-payroll-load" class="btn-secondary btn-sm">Đồng bộ dữ liệu</button>
+      <button id="btn-export-payslips" class="btn-primary" style="font-size:14px;font-weight:800;padding:11px 18px;min-height:44px;">Xuất phiếu lương tháng ${formatMonth(curMonth)}</button>
     </div>
     <div id="payroll-load-status" style="min-height:18px;font-size:12px;color:var(--text-2);margin:-8px 0 12px;"></div>
 
@@ -52,6 +53,7 @@ export async function renderPayroll(el, me) {
     </div>
 
     <div id="payroll-summary" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:18px;"></div>
+    <div id="payroll-adjustments" style="margin-bottom:18px;"></div>
 
     <div class="card" style="padding:0;">
       <div style="display:flex;justify-content:flex-end;padding:12px 12px 0;">
@@ -63,39 +65,128 @@ export async function renderPayroll(el, me) {
 
   const monthInput = document.getElementById('payroll-month');
   document.getElementById('btn-new-payroll').addEventListener('click', openCreatePayrollBatchConfirm);
-  document.getElementById('btn-payroll-load').addEventListener('click', syncPayrollSource);
+  document.getElementById('btn-export-payslips').addEventListener('click', openExportPayslipsConfirm);
   document.getElementById('btn-manual-payroll').addEventListener('click', () => openPayrollLineForm(null, loadPayroll, monthInput.value));
   monthInput.addEventListener('change', () => {
-    sourceSummary = null;
     currentPage = 1;
+    updateExportButtonLabel();
     loadPayroll();
   });
   document.getElementById('payroll-search').addEventListener('input', () => { currentPage = 1; loadPayroll(); });
   document.getElementById('payroll-dept-filter').addEventListener('change', () => { currentPage = 1; loadPayroll(); });
 
-  async function syncPayrollSource() {
+  function adjustmentSourceLabel(source) {
+    const map = { evaluation: 'Đánh giá', attendance: 'Chấm công', tasks: 'Deadline', manual: 'Thủ công' };
+    return map[source] || source || 'Nguồn';
+  }
+
+  function adjustmentTypeLabel(type) {
+    const map = {
+      bonus: 'Thưởng tiền',
+      penalty: 'Phạt tiền',
+      score_bonus: 'Cộng điểm',
+      score_penalty: 'Trừ điểm',
+      alert: 'Cảnh báo',
+    };
+    return map[type] || type || 'Đề xuất';
+  }
+
+  function updateExportButtonLabel() {
+    const btn = document.getElementById('btn-export-payslips');
+    if (btn) btn.textContent = `Xuất phiếu lương tháng ${formatMonth(monthInput.value)}`;
+  }
+
+  function approvedAdjustmentTone(a) {
+    if (a.type === 'penalty') return { color: 'var(--danger)', bg: '#FEF2F2', border: '#FECACA', sign: '-' };
+    if (a.type === 'bonus') return { color: 'var(--success)', bg: '#ECFDF5', border: '#A7F3D0', sign: '+' };
+    return { color: 'var(--text-2)', bg: '#F8FAFC', border: 'var(--border)', sign: '' };
+  }
+
+  function renderAdjustmentPanel(month) {
+    const el = document.getElementById('payroll-adjustments');
+    if (!el) return;
+    const suggestions = adjustmentData.suggestions || [];
+    const approved = adjustmentData.approved || [];
+    const totalSuggestedBonus = suggestions.filter(x => x.type === 'bonus').reduce((s, x) => s + Number(x.amount || 0), 0);
+    const totalSuggestedPenalty = suggestions.filter(x => x.type === 'penalty').reduce((s, x) => s + Number(x.amount || 0), 0);
+    el.innerHTML = `
+      <div class="card" style="padding:0;">
+        <div class="card-header" style="padding:12px 14px;border-bottom:1px solid var(--border);">
+          <div>
+            <div class="card-title">Đề xuất thưởng-phạt tháng ${formatMonth(month)}</div>
+            <div style="font-size:12px;color:var(--text-2);margin-top:2px;">Tự động gợi ý từ đánh giá đã khóa, chấm công và deadline. HCNS xác nhận trước khi cộng/trừ lương.</div>
+          </div>
+          <button class="btn-secondary btn-sm" id="payroll-adjust-refresh">Làm mới đề xuất</button>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:12px 14px;border-bottom:1px solid var(--border);">
+          <div class="detail-item"><div class="detail-label">Chưa áp dụng</div><div class="detail-val">${suggestions.length}</div></div>
+          <div class="detail-item"><div class="detail-label">Thưởng đề xuất</div><div class="detail-val" style="color:var(--success);">+${fmtMoney(totalSuggestedBonus)}</div></div>
+          <div class="detail-item"><div class="detail-label">Phạt đề xuất</div><div class="detail-val" style="color:var(--danger);">-${fmtMoney(totalSuggestedPenalty)}</div></div>
+        </div>
+        ${suggestions.length ? `
+          <div class="table-wrap" style="border:none;border-radius:0;">
+            <table>
+              <thead><tr><th></th><th>Nhân viên</th><th>Nguồn</th><th>Loại</th><th>Số tiền</th><th>Điểm</th><th>Lý do</th></tr></thead>
+              <tbody>
+                ${suggestions.map(s => `
+                  <tr>
+                    <td><input type="checkbox" class="adj-check" data-ref="${esc(s.source_ref)}" ${s.can_apply === false ? 'disabled' : 'checked'} title="${s.can_apply === false ? 'Cần đồng bộ/tạo dòng bảng lương trước' : ''}"></td>
+                    <td><strong>${esc(s.employee_name || '—')}</strong><br><span style="font-size:11px;color:var(--text-3);">${esc(s.employee_code || '')}</span></td>
+                    <td><span class="badge badge-gray">${esc(adjustmentSourceLabel(s.source))}</span></td>
+                    <td>${esc(adjustmentTypeLabel(s.type))}</td>
+                    <td>${s.amount > 0 ? `<input type="number" class="adj-amount" data-ref="${esc(s.source_ref)}" value="${Number(s.amount || 0)}" min="0" step="50000" style="width:120px;" ${s.can_apply === false ? 'disabled' : ''}>` : '—'}</td>
+                    <td>${s.score_delta ? (s.score_delta > 0 ? '+' : '') + s.score_delta : '—'}</td>
+                    <td style="white-space:normal;min-width:220px;font-size:12px;color:var(--text-2);">${esc(s.reason)}${s.can_apply === false ? '<br><span style="color:var(--warning);font-weight:700;">Cần đồng bộ/tạo dòng bảng lương trước khi áp dụng tiền.</span>' : ''}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+          <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 14px;">
+            <button class="btn-primary btn-sm" id="payroll-adjust-apply">Áp dụng đề xuất đã chọn</button>
+          </div>
+        ` : `<div style="padding:14px;color:var(--text-2);font-size:13px;">Chưa có đề xuất mới. Các khoản mềm như sáng kiến/top tuần/báo cáo sẽ nhập thủ công khi có quyết định.</div>`}
+        ${approved.length ? `
+          <div style="padding:0 14px 14px;">
+            <div class="section-title" style="margin-top:4px;">Đã áp dụng</div>
+            <div style="display:grid;gap:6px;">
+              ${approved.slice(0, 6).map(a => {
+                const tone = approvedAdjustmentTone(a);
+                const hasAmount = Number(a.amount || 0) > 0;
+                return `
+                  <div style="display:flex;justify-content:space-between;gap:12px;border:1px solid ${tone.border};background:${tone.bg};border-radius:8px;padding:9px 11px;font-size:12px;align-items:flex-start;">
+                    <span style="color:${tone.color};line-height:1.45;"><strong>${esc(a.employee_name || '—')}</strong> · ${esc(adjustmentSourceLabel(a.source))} · ${esc(a.reason)}</span>
+                    <span style="white-space:nowrap;color:${tone.color};font-weight:800;">${hasAmount ? tone.sign + fmtMoney(a.amount) : (a.score_delta || 'audit')}</span>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </div>
+        ` : ''}
+      </div>
+    `;
+    document.getElementById('payroll-adjust-refresh')?.addEventListener('click', () => loadPayroll({ keepStatus: true }));
+    document.getElementById('payroll-adjust-apply')?.addEventListener('click', applySelectedAdjustments);
+  }
+
+  async function applySelectedAdjustments() {
     const month = monthInput.value;
-    const statusEl = document.getElementById('payroll-load-status');
-    const loadBtn = document.getElementById('btn-payroll-load');
-    if (!month) {
-      toast('Vui lòng chọn tháng/năm trước khi đồng bộ dữ liệu', 'error');
-      return;
-    }
-    if (statusEl) statusEl.textContent = 'Đang đồng bộ dữ liệu nguồn cho bảng lương...';
-    if (loadBtn) { loadBtn.disabled = true; loadBtn.textContent = 'Đang đồng bộ...'; }
+    const selectedRefs = Array.from(document.querySelectorAll('.adj-check:checked')).map(cb => cb.dataset.ref);
+    if (!selectedRefs.length) { toast('Chọn ít nhất một đề xuất để áp dụng', 'error'); return; }
+    const items = selectedRefs.map(ref => {
+      const s = adjustmentData.suggestions.find(x => x.source_ref === ref);
+      const amountInput = document.querySelector(`.adj-amount[data-ref="${CSS.escape(ref)}"]`);
+      return { source_ref: ref, amount: amountInput ? Number(amountInput.value || 0) : s?.amount };
+    });
+    const btn = document.getElementById('payroll-adjust-apply');
+    if (btn) { btn.disabled = true; btn.textContent = 'Đang áp dụng...'; }
     try {
-      const r = await api.loadPayrollData(month);
-      sourceSummary = r;
-      const msg = `Đã đồng bộ tháng ${formatMonth(month)}: ${r.total} nhân sự, ${r.existing || 0} đã có, bổ sung ${r.created || 0}, ${r.complete || 0} đủ dữ liệu, ${r.missing_salary_config || r.missing || 0} thiếu cấu hình lương.`;
-      if (statusEl) statusEl.textContent = msg;
-      toast(msg, 'success', 5000);
+      const r = await api.applyPayrollAdjustments(month, items);
+      toast(`Đã áp dụng ${r.applied || 0} đề xuất${r.skipped ? `, bỏ qua ${r.skipped}` : ''}`, 'success', 5000);
       await loadPayroll({ keepStatus: true });
     } catch (e) {
-      sourceSummary = null;
-      if (statusEl) statusEl.textContent = `Lỗi đồng bộ dữ liệu: ${e.message || 'Không xác định'}`;
-      toast(e.message || 'Không đồng bộ được dữ liệu bảng lương', 'error');
-    } finally {
-      if (loadBtn) { loadBtn.disabled = false; loadBtn.textContent = 'Đồng bộ dữ liệu'; }
+      toast(e.message || 'Không áp dụng được đề xuất', 'error');
+      if (btn) { btn.disabled = false; btn.textContent = 'Áp dụng đề xuất đã chọn'; }
     }
   }
 
@@ -105,23 +196,16 @@ export async function renderPayroll(el, me) {
       toast('Vui lòng chọn tháng/năm trước khi tạo bảng lương', 'error');
       return;
     }
-    if (!sourceSummary || sourceSummary.month !== month) {
-      toast('Vui lòng đồng bộ dữ liệu trước khi tạo bảng lương.', 'error', 4500);
-      const statusEl = document.getElementById('payroll-load-status');
-      if (statusEl) statusEl.textContent = 'Vui lòng đồng bộ dữ liệu trước khi tạo bảng lương.';
-      return;
-    }
+    const readyRows = latestPayrollRows.filter(p => (p.data_status || (Number(p.base_salary || 0) > 0 ? 'ready' : 'missing_salary_config')) === 'ready').length;
+    const missingRows = latestPayrollRows.length - readyRows;
 
     openModal(`Tạo bảng lương tháng ${formatMonth(month)}`, `
       <div style="display:grid;gap:10px;">
-        <div class="detail-item"><div class="detail-label">Tổng số nhân sự</div><div class="detail-val">${sourceSummary.total || 0}</div></div>
-        <div class="detail-item"><div class="detail-label">Đã có trong bảng</div><div class="detail-val">${sourceSummary.existing || sourceSummary.existing_rows || 0}</div></div>
-        <div class="detail-item"><div class="detail-label">Đã bổ sung mới</div><div class="detail-val">${sourceSummary.created || 0}</div></div>
-        <div class="detail-item"><div class="detail-label">Số nhân sự đủ dữ liệu</div><div class="detail-val">${sourceSummary.complete || 0}</div></div>
-        <div class="detail-item"><div class="detail-label">Thiếu cấu hình lương</div><div class="detail-val">${sourceSummary.missing_salary_config || sourceSummary.missing || 0}</div></div>
-        <div class="detail-item"><div class="detail-label">Tổng quỹ lương dự kiến</div><div class="detail-val">${fmtMoney(sourceSummary.estimated_total || 0)}</div></div>
+        <div class="detail-item"><div class="detail-label">Dòng lương hiện có</div><div class="detail-val">${latestPayrollRows.length}</div></div>
+        <div class="detail-item"><div class="detail-label">Đủ dữ liệu hiện tại</div><div class="detail-val">${readyRows}</div></div>
+        <div class="detail-item"><div class="detail-label">Thiếu cấu hình hiện tại</div><div class="detail-val">${missingRows}</div></div>
         <div style="background:#FFF7ED;border:1px solid #FDBA74;color:#9A3412;border-radius:8px;padding:12px;font-size:13px;line-height:1.5;">
-          Các trường hợp thiếu cấu hình lương cần được xử lý trước khi trình phê duyệt.
+          Hệ thống sẽ tạo hoặc cập nhật bảng lương tháng này từ danh sách nhân sự đang hoạt động. Các khoản thưởng/phạt đã áp dụng trên dòng lương hiện có vẫn được giữ lại.
         </div>
       </div>
     `, `
@@ -137,7 +221,7 @@ export async function renderPayroll(el, me) {
       try {
         const r = await api.createPayrollBatch(month);
         closeModal();
-        toast(`Đã đồng bộ bảng lương tháng ${formatMonth(month)}: bổ sung ${r.created || 0} nhân sự.`, 'success', 5000);
+        toast(`Đã tạo/cập nhật bảng lương tháng ${formatMonth(month)}: tạo mới ${r.created || 0}, cập nhật ${r.updated || 0}.`, 'success', 5000);
         await loadPayroll();
       } catch (e) {
         toast(e.message || 'Không tạo được bảng lương', e.status === 409 ? 'info' : 'error', 5000);
@@ -147,19 +231,75 @@ export async function renderPayroll(el, me) {
     });
   }
 
+  function openExportPayslipsConfirm() {
+    const month = monthInput.value;
+    const rows = latestPayrollRows || [];
+    if (!month) { toast('Vui lòng chọn tháng/năm trước khi xuất phiếu lương', 'error'); return; }
+    if (!rows.length) { toast('Chưa có dữ liệu bảng lương để xuất phiếu', 'error'); return; }
+    const readyRows = rows.filter(p => (p.data_status || (Number(p.base_salary || 0) > 0 ? 'ready' : 'missing_salary_config')) === 'ready' && Number(p.base_salary || 0) > 0);
+    const missingRows = rows.length - readyRows.length;
+    openModal(`Xuất phiếu lương tháng ${formatMonth(month)}`, `
+      <div style="display:grid;gap:12px;">
+        <div class="detail-grid">
+          <div class="detail-item"><div class="detail-label">Tổng dòng lương</div><div class="detail-val">${rows.length}</div></div>
+          <div class="detail-item"><div class="detail-label">Sẵn sàng phát hành</div><div class="detail-val" style="color:var(--success);">${readyRows.length}</div></div>
+          <div class="detail-item"><div class="detail-label">Sẽ bỏ qua</div><div class="detail-val" style="color:var(--danger);">${missingRows}</div></div>
+        </div>
+        <div style="background:#FFF7ED;border:1px solid #FDBA74;color:#9A3412;border-radius:8px;padding:12px;font-size:13px;line-height:1.5;">
+          Thao tác này sẽ phát hành phiếu lương vào mục Phiếu lương của từng nhân viên. Phiếu đã trả, đã khóa hoặc đã được nhân viên xác nhận sẽ không bị ghi đè.
+        </div>
+        <div class="field">
+          <label>Gõ <strong>xuatphieuluong</strong> hoặc <strong>XUATPHIEULUONG</strong> để xác nhận</label>
+          <input id="export-payslip-confirm" type="text" autocomplete="off" placeholder="xuatphieuluong"/>
+        </div>
+        <div id="export-payslip-result" style="font-size:12px;color:var(--text-2);min-height:18px;"></div>
+      </div>
+    `, `
+      <button class="btn-secondary" id="export-payslip-cancel">Hủy</button>
+      <button class="btn-primary" id="export-payslip-submit" disabled>Xuất phiếu lương</button>
+    `);
+    const input = document.getElementById('export-payslip-confirm');
+    const btn = document.getElementById('export-payslip-submit');
+    const isConfirmed = () => (input?.value || '').trim().toLowerCase() === 'xuatphieuluong';
+    document.getElementById('export-payslip-cancel')?.addEventListener('click', closeModal);
+    input?.addEventListener('input', () => { if (btn) btn.disabled = !isConfirmed(); });
+    btn?.addEventListener('click', async () => {
+      const result = document.getElementById('export-payslip-result');
+      btn.disabled = true;
+      btn.textContent = 'Đang xuất...';
+      if (result) result.textContent = 'Đang phát hành phiếu lương...';
+      try {
+        const r = await api.exportPayslips(month, input.value.trim().toLowerCase());
+        closeModal();
+        toast(`Đã xuất phiếu: tạo mới ${r.created || 0}, cập nhật ${r.updated || 0}, bỏ qua ${r.skipped || 0}.`, 'success', 6000);
+        await loadPayroll({ keepStatus: true });
+      } catch (e) {
+        if (result) result.textContent = e.message || 'Không xuất được phiếu lương';
+        toast(e.message || 'Không xuất được phiếu lương', 'error');
+        btn.disabled = !isConfirmed();
+        btn.textContent = 'Xuất phiếu lương';
+      }
+    });
+  }
+
   async function loadPayroll(options = {}) {
     const tableEl = document.getElementById('payroll-table');
     const sumEl = document.getElementById('payroll-summary');
     const statusEl = document.getElementById('payroll-load-status');
-    const loadBtn = document.getElementById('btn-payroll-load');
     if (!tableEl) return;
     tableEl.innerHTML = loadingHTML();
     if (statusEl && !options.keepStatus) statusEl.textContent = 'Đang tải dữ liệu bảng lương...';
-    if (loadBtn) { loadBtn.disabled = true; loadBtn.textContent = 'Đang tải...'; }
     const month = monthInput.value;
     try {
       const payrollRes = await api.getPayroll({ month });
       const payrolls = payrollRes.payroll || [];
+      latestPayrollRows = payrolls;
+      try {
+        adjustmentData = await api.getPayrollAdjustmentSuggestions(month);
+      } catch (_) {
+        adjustmentData = { suggestions: [], approved: [] };
+      }
+      renderAdjustmentPanel(month);
       const totalBonus = payrolls.reduce((s, p) => s + (p.kpi_bonus || 0) + (p.allowance || 0), 0);
       const totalNet = payrolls.reduce((s, p) => s + (p.net_salary || 0), 0);
       const readyCount = payrolls.filter(p => (p.data_status || (Number(p.base_salary || 0) > 0 ? 'ready' : 'missing_salary_config')) === 'ready').length;
@@ -263,7 +403,6 @@ export async function renderPayroll(el, me) {
       if (statusEl) statusEl.textContent = `Lỗi tải dữ liệu: ${e.message || 'Không xác định'}`;
       tableEl.innerHTML = `<div style="padding:16px;">${emptyHTML('⚠️', e.message)}</div>`;
     } finally {
-      if (loadBtn) { loadBtn.disabled = false; loadBtn.textContent = 'Đồng bộ dữ liệu'; }
     }
   }
 

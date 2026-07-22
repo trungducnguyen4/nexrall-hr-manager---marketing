@@ -115,6 +115,9 @@ export function invStatusBadge(s) {
     draft: ['badge-gray', 'Nháp'],
     pending: ['badge-warning', '⏳ Chờ duyệt'],
     approved: ['badge-success', '✅ Đã duyệt'],
+    issued: ['badge-info', 'Đã phát hành'],
+    employee_confirmed: ['badge-success', 'Đã xác nhận'],
+    review_requested: ['badge-warning', 'Yêu cầu xem lại'],
     paid: ['badge-info', '💳 Đã trả'],
   };
   const [cls, label] = map[s] || ['badge-gray', s || '—'];

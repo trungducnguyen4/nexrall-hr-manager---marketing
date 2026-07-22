@@ -1,6 +1,49 @@
 import { esc, EVAL_GROUPS, EVAL_RATING_SCALE, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtDateTime, noop, safeCb, paginateRows, paginationHTML, bindPagination } from '../utils.js';
 import { api } from '../api.js';
 
+const REWARD_POLICY = [
+  '90-100 điểm: thưởng 1-2 triệu đồng',
+  '80-89 điểm: thưởng 500.000đ',
+  'Không vi phạm deadline cả tháng: +2 điểm',
+  'Ý tưởng được ứng dụng thật: +5 điểm',
+  'Sáng kiến tiết kiệm chi phí: +3 điểm',
+  'Top hiệu suất tuần: thưởng nóng 200-500k',
+  'Được chọn tham gia dự án lớn',
+];
+const PENALTY_POLICY = [
+  'Đi trễ dưới 15 phút: phạt 20.000đ/lần',
+  'Đi trễ từ 15 phút: phạt 50.000đ/lần',
+  'Trễ deadline 3 lần/tháng: trừ 5 điểm',
+  'Không chủ động báo cáo: trừ 3 điểm',
+  'Quản lý phải hỏi tiến độ: trừ 5 điểm',
+  'Quên check-in/out: 50.000đ/lần',
+  'Điểm thấp nhất 2 tháng liên tiếp = đề xuất xem xét/nghỉ việc',
+];
+
+function rewardPenaltyPolicyHtml() {
+  const list = (items, color) => `
+    <ul style="margin:0;padding:18px 22px 18px 34px;display:grid;gap:12px;font-size:14px;line-height:1.45;color:var(--text);">
+      ${items.map(item => `<li style="padding-left:4px;"><span style="color:${color};font-weight:800;">${esc(item)}</span></li>`).join('')}
+    </ul>`;
+  return `
+    <div class="section-title">Cơ chế thưởng - phạt</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-bottom:18px;">
+      <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#fff;">
+        <div style="background:#FF9416;color:#fff;text-align:center;font-weight:800;font-size:18px;padding:12px;">THƯỞNG</div>
+        ${list(REWARD_POLICY, '#9A5A00')}
+      </div>
+      <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#fff;">
+        <div style="background:#C9252D;color:#fff;text-align:center;font-weight:800;font-size:18px;padding:12px;">PHẠT</div>
+        ${list(PENALTY_POLICY, '#7F1D1D')}
+      </div>
+    </div>
+    <div class="policy-note" style="margin-bottom:18px;">
+      Các khoản thưởng/phạt tiền được đưa sang bảng lương dưới dạng <strong>đề xuất</strong>; HCNS kiểm tra và xác nhận trước khi cộng/trừ.
+      Các khoản cộng/trừ điểm chỉ lưu audit, không sửa ngược phiếu đánh giá đã khóa.
+    </div>
+  `;
+}
+
 // ════════════════════════════════════════════════
 //  Đánh giá hiệu suất
 //  1) Quy định & Tiêu chí (read-only, policy card — unchanged from before)
@@ -43,6 +86,8 @@ export async function renderEvaluation(el, me) {
             <div class="stat-label">Tổng điểm đánh giá</div>
           </div>
         </div>
+
+        ${rewardPenaltyPolicyHtml()}
 
         <!-- 2. Thang xếp loại -->
         <div class="section-title">Thang xếp loại</div>

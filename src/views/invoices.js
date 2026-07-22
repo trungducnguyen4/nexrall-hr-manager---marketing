@@ -1,6 +1,6 @@
-import { api } from '../api.js';
-import { esc, fmtMoney, fmtDateTime, invStatusBadge, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js';
-import { navigate } from '../app.js';
+import { api } from '../api.js?v=20260722-payroll-export-ux';
+import { esc, fmtMoney, fmtDateTime, invStatusBadge, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js?v=20260722-payroll-export-ux';
+import { navigate } from '../app.js?v=20260722-payroll-export-ux';
 
 export async function renderInvoices(el, me) {
   const isManager = me.role === 'admin' || me.role === 'manager';
@@ -25,6 +25,9 @@ export async function renderInvoices(el, me) {
           <option value="draft">Nháp</option>
           <option value="pending">Chờ duyệt</option>
           <option value="approved">Đã duyệt</option>
+          <option value="issued">Đã phát hành</option>
+          <option value="employee_confirmed">Đã xác nhận</option>
+          <option value="review_requested">Yêu cầu xem lại</option>
           <option value="paid">Đã trả</option>
         </select>
       ` : ''}
@@ -97,7 +100,7 @@ export async function renderInvoices(el, me) {
         </div>
       `).join('') + paginationHTML(pageData);
       listEl.querySelectorAll('.invoice-card').forEach(card => {
-        card.addEventListener('click', () => openInvoiceDetail(parseInt(card.dataset.inv), isManager, users, loadInvoices));
+        card.addEventListener('click', () => openInvoiceDetail(parseInt(card.dataset.inv), isManager, users, loadInvoices, me));
       });
       bindPagination(listEl, page => { currentPage = page; loadInvoices(); });
     } catch(e) {
@@ -112,7 +115,120 @@ export async function renderInvoices(el, me) {
   loadInvoices();
 }
 
-function openInvoiceDetail(invId, isManager, users, onRefresh = noop) {
+function reviewCategoryLabel(category) {
+  return {
+    attendance: 'Chấm công',
+    bonus: 'Thưởng/KPI',
+    deduction: 'Khấu trừ',
+    base_salary: 'Lương cơ bản',
+    bank_info: 'Thông tin ngân hàng',
+    other: 'Khác',
+  }[category] || category || '—';
+}
+
+function openInvoiceReviewModal(inv, onRefresh = noop) {
+  openModal('Yêu cầu xem lại phiếu lương', `
+    <div style="display:grid;gap:12px;">
+      <div style="background:#EEF2FF;border:1px solid #C7D2FE;color:#3730A3;border-radius:8px;padding:12px;font-size:13px;line-height:1.5;">
+        Gửi nội dung cần kiểm tra để HCNS đối chiếu. Phiếu sẽ chuyển sang trạng thái yêu cầu xem lại.
+      </div>
+      <div class="field">
+        <label>Loại vấn đề</label>
+        <select id="inv-review-category">
+          <option value="attendance">Chấm công</option>
+          <option value="bonus">Thưởng/KPI</option>
+          <option value="deduction">Khấu trừ</option>
+          <option value="base_salary">Lương cơ bản</option>
+          <option value="bank_info">Thông tin ngân hàng</option>
+          <option value="other">Khác</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Nội dung cần xem lại *</label>
+        <textarea id="inv-review-message" rows="4" placeholder="Ví dụ: Em bị tính thiếu 1 ngày công ngày ..."></textarea>
+      </div>
+      <div class="field">
+        <label>Số tiền đề nghị điều chỉnh (nếu có)</label>
+        <input id="inv-review-amount" type="number" min="0" step="50000" value="0"/>
+      </div>
+    </div>
+  `, `
+    <button class="btn-secondary" id="inv-review-cancel">Hủy</button>
+    <button class="btn-primary" id="inv-review-submit">Gửi yêu cầu</button>
+  `);
+  document.getElementById('inv-review-cancel')?.addEventListener('click', closeModal);
+  document.getElementById('inv-review-submit')?.addEventListener('click', async () => {
+    const btn = document.getElementById('inv-review-submit');
+    const message = document.getElementById('inv-review-message')?.value.trim() || '';
+    if (!message) { toast('Vui lòng nhập nội dung cần xem lại', 'error'); return; }
+    btn.disabled = true;
+    btn.textContent = 'Đang gửi...';
+    try {
+      await api.requestInvoiceReview(inv.id, {
+        category: document.getElementById('inv-review-category')?.value || 'other',
+        message,
+        requested_amount: Number(document.getElementById('inv-review-amount')?.value || 0),
+      });
+      closeModal();
+      toast('Đã gửi yêu cầu xem lại phiếu lương', 'success');
+      onRefresh();
+    } catch (e) {
+      toast(e.message || 'Không gửi được yêu cầu', 'error');
+      btn.disabled = false;
+      btn.textContent = 'Gửi yêu cầu';
+    }
+  });
+}
+
+function openResolveReviewModal(inv, onRefresh = noop) {
+  const req = inv.latest_review_request || {};
+  openModal('Xử lý yêu cầu xem lại', `
+    <div style="display:grid;gap:12px;">
+      <div style="background:#FFF7ED;border:1px solid #FDBA74;color:#9A3412;border-radius:8px;padding:12px;font-size:13px;line-height:1.5;">
+        <strong>${esc(reviewCategoryLabel(req.category))}</strong><br>
+        ${esc(req.message || inv.review_reason || '—')}
+        ${Number(req.requested_amount || 0) > 0 ? `<br>Đề nghị điều chỉnh: <strong>${fmtMoney(req.requested_amount)}</strong>` : ''}
+      </div>
+      <div class="field">
+        <label>Kết quả xử lý *</label>
+        <textarea id="inv-resolve-note" rows="4" placeholder="Ví dụ: Đã đối chiếu chấm công và cập nhật lại bảng lương."></textarea>
+      </div>
+      <div class="field">
+        <label>Trạng thái sau xử lý</label>
+        <select id="inv-resolve-status">
+          <option value="issued">Phát hành lại để nhân viên kiểm tra</option>
+          <option value="employee_confirmed">Chốt xác nhận, không cần nhân viên xác nhận lại</option>
+        </select>
+      </div>
+    </div>
+  `, `
+    <button class="btn-secondary" id="inv-resolve-cancel">Hủy</button>
+    <button class="btn-primary" id="inv-resolve-submit">Lưu xử lý</button>
+  `);
+  document.getElementById('inv-resolve-cancel')?.addEventListener('click', closeModal);
+  document.getElementById('inv-resolve-submit')?.addEventListener('click', async () => {
+    const btn = document.getElementById('inv-resolve-submit');
+    const note = document.getElementById('inv-resolve-note')?.value.trim() || '';
+    if (!note) { toast('Vui lòng nhập ghi chú xử lý', 'error'); return; }
+    btn.disabled = true;
+    btn.textContent = 'Đang lưu...';
+    try {
+      await api.resolveInvoiceReview(inv.id, {
+        note,
+        nextStatus: document.getElementById('inv-resolve-status')?.value || 'issued',
+      });
+      closeModal();
+      toast('Đã xử lý yêu cầu xem lại', 'success');
+      onRefresh();
+    } catch (e) {
+      toast(e.message || 'Không xử lý được yêu cầu', 'error');
+      btn.disabled = false;
+      btn.textContent = 'Lưu xử lý';
+    }
+  });
+}
+
+function openInvoiceDetail(invId, isManager, users, onRefresh = noop, me = null) {
   onRefresh = safeCb(onRefresh);
   openModal('Chi tiết phiếu lương', loadingHTML(), '');
   document.getElementById('modal')?.classList.add('modal--scroll-fixed');
@@ -123,6 +239,17 @@ function openInvoiceDetail(invId, isManager, users, onRefresh = noop) {
         <div style="font-size:12px;color:var(--text-2);">${esc(inv.invoice_number)} · T${inv.month}/${inv.year}</div>
         <div style="margin-top:6px;">${invStatusBadge(inv.status)}</div>
       </div>
+      ${!isManager && inv.status === 'issued' ? `
+        <div style="background:#EEF2FF;border:1px solid #C7D2FE;color:#3730A3;border-radius:8px;padding:12px;margin-bottom:12px;font-size:13px;line-height:1.5;">
+          Vui lòng kiểm tra phiếu lương. Nếu số liệu đúng, hãy xác nhận; nếu cần đối chiếu, gửi yêu cầu xem lại cho HCNS.
+        </div>
+      ` : ''}
+      ${inv.status === 'review_requested' ? `
+        <div style="background:#FFF7ED;border:1px solid #FDBA74;color:#9A3412;border-radius:8px;padding:12px;margin-bottom:12px;font-size:13px;line-height:1.5;">
+          <strong>Yêu cầu xem lại:</strong> ${esc(inv.latest_review_request?.message || inv.review_reason || 'Đang chờ HCNS xử lý.')}
+          ${inv.latest_review_request?.category ? `<br>Loại vấn đề: ${esc(reviewCategoryLabel(inv.latest_review_request.category))}` : ''}
+        </div>
+      ` : ''}
       <div style="background:var(--bg);border-radius:10px;padding:14px;margin-bottom:12px;">
         <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px;"><span>Lương cơ bản</span><span style="font-weight:600">${fmtMoney(inv.base_salary)}</span></div>
         <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px;color:var(--success)"><span>Thưởng</span><span>+${fmtMoney(inv.bonus)}</span></div>
@@ -173,10 +300,15 @@ function openInvoiceDetail(invId, isManager, users, onRefresh = noop) {
           <option value="draft" ${inv.status==='draft'?'selected':''}>Nháp</option>
           <option value="pending" ${inv.status==='pending'?'selected':''}>Chờ duyệt</option>
           <option value="approved" ${inv.status==='approved'?'selected':''}>Đã duyệt</option>
+          <option value="issued" ${inv.status==='issued'?'selected':''}>Đã phát hành</option>
+          <option value="employee_confirmed" ${inv.status==='employee_confirmed'?'selected':''}>Đã xác nhận</option>
+          <option value="review_requested" ${inv.status==='review_requested'?'selected':''}>Yêu cầu xem lại</option>
           <option value="paid" ${inv.status==='paid'?'selected':''}>Đã trả</option>
         </select>
+        ${inv.status === 'review_requested' ? `<button class="btn-secondary" id="inv-resolve-review">Xử lý yêu cầu</button>` : ''}
         <button class="btn-primary" id="inv-save-status">Lưu</button>
       `;
+      document.getElementById('inv-resolve-review')?.addEventListener('click', () => openResolveReviewModal(inv, onRefresh));
       document.getElementById('inv-save-status').addEventListener('click', async () => {
         try {
           await api.updateInvoice(invId, { ...inv, status: document.getElementById('inv-status-sel').value });
@@ -188,6 +320,31 @@ function openInvoiceDetail(invId, isManager, users, onRefresh = noop) {
         try { await api.deleteInvoice(invId); closeModal(); toast('Đã xóa', 'success'); onRefresh(); }
         catch(e) { toast(e.message, 'error'); }
       });
+    } else if (!isManager && inv.status === 'issued') {
+      document.getElementById('modal-footer').innerHTML = `
+        <button class="btn-secondary" id="inv-review-request-btn">Yêu cầu xem lại</button>
+        <button class="btn-primary" id="inv-confirm-btn">Xác nhận đúng</button>
+      `;
+      document.getElementById('inv-review-request-btn')?.addEventListener('click', () => openInvoiceReviewModal(inv, onRefresh));
+      document.getElementById('inv-confirm-btn')?.addEventListener('click', async () => {
+        const btn = document.getElementById('inv-confirm-btn');
+        btn.disabled = true;
+        btn.textContent = 'Đang xác nhận...';
+        try {
+          await api.confirmInvoice(inv.id);
+          closeModal();
+          toast('Đã xác nhận phiếu lương', 'success');
+          onRefresh();
+        } catch (e) {
+          toast(e.message || 'Không xác nhận được phiếu lương', 'error');
+          btn.disabled = false;
+          btn.textContent = 'Xác nhận đúng';
+        }
+      });
+    } else if (!isManager && inv.status === 'review_requested') {
+      document.getElementById('modal-footer').innerHTML = `
+        <button class="btn-secondary w-full" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Đóng</button>
+      `;
     } else {
       document.getElementById('modal-footer').innerHTML = `<button class="btn-secondary w-full" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Đóng</button>`;
     }

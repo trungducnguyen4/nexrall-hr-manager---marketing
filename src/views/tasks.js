@@ -321,7 +321,7 @@ export async function renderTasks(el, me) {
     }));
     board.querySelectorAll('[data-add-task-group]').forEach(btn => btn.addEventListener('click', () => {
       const group = groups.find(g => String(g.id) === btn.dataset.addTaskGroup) || defaultGroup;
-      openTaskForm(null, users, me, loadBoard, { project, groups, labels, selectedGroupId: group.id });
+      openTaskForm(null, users, me, loadBoard, { project, groups, labels, selectedGroupId: group.id, departments });
     }));
     board.querySelectorAll('[data-move-task]').forEach(sel => sel.addEventListener('change', async () => {
       const taskId = sel.dataset.moveTask;
@@ -434,7 +434,7 @@ export async function renderTasks(el, me) {
   el.querySelector('#btn-new-task').addEventListener('click', () => {
     const project = selectedProject();
     if (!project) { toast('Vui lòng chọn Project trước khi tạo việc', 'error'); return; }
-    openTaskForm(null, users, me, loadBoard, { project, groups, labels, selectedGroupId: groups[0]?.id });
+    openTaskForm(null, users, me, loadBoard, { project, groups, labels, selectedGroupId: groups[0]?.id || '', departments});
   });
   el.querySelector('#btn-manage-labels')?.addEventListener('click', () => openLabelManager(labels, projects, async () => {
     if (selectedProjectId) await loadBoard();
@@ -448,6 +448,7 @@ export function openTaskForm(task, users, me, onDone, options = {}) {
   const project = options.project || null;
   const projects = options.projects || (project ? [project] : []);
   const groups = options.groups || [];
+  const departments = options.departments || [];
   const labels = options.labels || [];
   const selectedProjectId = task?.team_project_id || project?.id || '';
   const selectedGroupId = task?.group_id || options.selectedGroupId || groups[0]?.id || '';
@@ -477,8 +478,7 @@ export function openTaskForm(task, users, me, onDone, options = {}) {
           <div class="field"><label>Ưu tiên</label><select id="tf-priority"><option value="low" ${task?.priority==='low'?'selected':''}>Thấp</option><option value="normal" ${(!task||task?.priority==='normal')?'selected':''}>Bình thường</option><option value="high" ${task?.priority==='high'?'selected':''}>Cao</option><option value="urgent" ${task?.priority==='urgent'?'selected':''}>Khẩn cấp</option></select></div>
           <div class="field"><label>Trạng thái</label><select id="tf-status"><option value="todo" ${(!task||task?.status==='todo')?'selected':''}>Chờ làm</option><option value="in-progress" ${task?.status==='in-progress'?'selected':''}>Đang làm</option><option value="review" ${task?.status==='review'?'selected':''}>Review</option><option value="done" ${task?.status==='done'?'selected':''}>Hoàn thành</option><option value="cancelled" ${task?.status==='cancelled'?'selected':''}>Hủy</option></select></div>
         </div>
-        <div class="field"><label>Phòng ban</label><input type="text" id="tf-dept" value="${esc(task?.department||project?.department||'')}"/></div>
-      </div>
+<div class="field"><label>Phòng ban</label><select id="tf-dept"><option value="">-- Chưa chọn --</option>${departments.map(d => `<option value="${esc(d.name)}" ${(task?.department||project?.department||'')===d.name?'selected':''}>${esc(d.name)}</option>`).join('')}</select></div>      </div>
     </div>
   `, `
     <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Hủy</button>
