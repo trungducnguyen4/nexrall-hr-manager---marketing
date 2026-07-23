@@ -471,6 +471,68 @@ tr:hover td { background: var(--surface-2); }
   max-width: 1000px;
   width: min(1000px, calc(100vw - 32px));
 }
+.modal.modal--evaluation {
+  max-width: 1440px;
+  width: min(1440px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  min-height: calc(100vh - 16px);
+  border-radius: 18px;
+}
+.modal.modal--evaluation .modal-body {
+  padding-right: 6px;
+}
+.modal.modal--evaluation .detail-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.modal.modal--evaluation .detail-item {
+  min-width: 0;
+}
+.modal.modal--evaluation .detail-val {
+  word-break: break-word;
+}
+.modal.modal--evaluation .table-wrap table {
+  min-width: 100%;
+}
+@media (max-width: 1200px) {
+  .modal.modal--evaluation .detail-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 768px) {
+  .modal.modal--evaluation {
+    width: calc(100vw - 10px);
+    max-width: none;
+    max-height: calc(100vh - 10px);
+    min-height: calc(100vh - 10px);
+    border-radius: 14px;
+  }
+  .modal.modal--evaluation .detail-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* ── Evaluation Report & Dashboard ────────────── */
+#eval-report-table { font-size: 13px; }
+#eval-report-table th { font-size: 11px; white-space: normal; text-align: center; }
+#eval-report-table td { font-size: 13px; text-align: center; }
+#eval-report-table td:first-child { text-align: center; }
+#eval-report-table td:nth-child(3) { text-align: left; }
+#eval-report-table td:nth-child(4),
+#eval-report-table td:nth-child(5),
+#eval-report-table td:nth-child(6) { text-align: left; font-size: 13px; }
+#eval-report-table td:nth-child(7),
+#eval-report-table td:nth-child(8),
+#eval-report-table td:nth-child(9),
+#eval-report-table td:nth-child(10) { font-weight: 700; }
+#eval-report-table td:nth-child(13) { text-align: left; }
+
+@media (max-width: 1100px) {
+  #eval-report-table { font-size: 11px; }
+  #eval-report-table th { font-size: 10px; padding: 8px 6px; }
+  #eval-report-table td { padding: 8px 6px; font-size: 11px; }
+}
+
+/* ── Task Form Grid ──────────────────────────── */
 .task-form-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(320px, .75fr);

@@ -262,6 +262,18 @@ async function renderWorkflowSection(el, me) {
   if (!sections.length) { el.innerHTML = ''; return; }
   el.innerHTML = sections.join('');
   wireWorkflowHandlers(el, me, { evaluations, periods, basicUsers });
+
+  // ── Report & Dashboard sections (HCNS/BGD) rendered separately after main sections ──
+  if (hr || ceo) {
+    const reportEl = document.createElement('div');
+    reportEl.id = 'eval-report-section';
+    el.appendChild(reportEl);
+    const dashEl = document.createElement('div');
+    dashEl.id = 'eval-dash-section';
+    el.appendChild(dashEl);
+    renderEvalReport(reportEl, me, latestPeriod);
+    renderEvalDashboard(dashEl, me, latestPeriod);
+  }
 }
 
 function adminSectionHtml(periods, evaluations, basicUsers, latestPeriod) {
@@ -463,10 +475,10 @@ function buildCriteriaTable(mentorScores, mentorComments, deptScores, deptCommen
           ${g.criteria.map(c => `
             <tr>
               <td><span class="badge badge-gray">${esc(c.code)}</span></td>
-              <td style="white-space:normal;min-width:140px;font-weight:600;">${esc(c.name)}</td>
+              <td style="white-space:normal;min-width:180px;font-weight:600;">${esc(c.name)}</td>
               <td>${c.max}đ</td>
               <td style="min-width:60px;">${canEditMentor
-                ? `<input type="number" class="ev-input" data-role="mentor" data-field="score" data-code="${c.code}" min="0" max="${c.max}" value="${mentorScores[c.code] ?? ''}" style="width:52px;">`
+                ? `<input type="number" class="ev-input" data-role="mentor" data-field="score" data-code="${c.code}" min="0" max="${c.max}" value="${mentorScores[c.code] ?? ''}" style="width:68px;">`
                 : (mentorScores[c.code] !== undefined ? `<span class="badge" style="background:${g.color}1A;color:${g.color};">${esc(String(mentorScores[c.code]))}đ</span>` : '—')}
               </td>
               <td style="min-width:130px;">${canEditMentor
@@ -474,7 +486,7 @@ function buildCriteriaTable(mentorScores, mentorComments, deptScores, deptCommen
                 : `<span style="font-size:12px;color:var(--text-2);">${esc(mentorComments[c.code] || '—')}</span>`}
               </td>
               <td style="min-width:60px;">${canEditDept
-                ? `<input type="number" class="ev-input" data-role="dept" data-field="score" data-code="${c.code}" min="0" max="${c.max}" value="${deptScores[c.code] ?? ''}" style="width:52px;">`
+                ? `<input type="number" class="ev-input" data-role="dept" data-field="score" data-code="${c.code}" min="0" max="${c.max}" value="${deptScores[c.code] ?? ''}" style="width:68px;">`
                 : (deptScores[c.code] !== undefined ? `<span class="badge" style="background:${g.color}1A;color:${g.color};">${esc(String(deptScores[c.code]))}đ</span>` : '—')}
               </td>
               <td style="min-width:130px;">${canEditDept
@@ -590,7 +602,8 @@ function renderEvalModal(ev, history, me, onRefresh = noop) {
   if (ev.status === 'HR_RECEIVED' && hr) footer.push(`<button class="btn-primary" id="ev-hr-lock">Khóa phiếu</button>`);
 
   openModal(`Phiếu đánh giá — ${ev.user_name || ''}`, body, footer.join(''));
-  document.getElementById('modal')?.classList.add('modal--scroll-fixed');
+  const modalEl = document.getElementById('modal');
+  modalEl?.classList.add('modal--scroll-fixed', 'modal--evaluation');
 
   function collect(role) {
     const scores = {}, comments = {};
@@ -647,4 +660,212 @@ function renderEvalModal(ev, history, me, onRefresh = noop) {
     if (!confirm('Khóa phiếu đánh giá này? Sau khi khóa, tất cả chỉ có thể xem.')) return;
     runAction('hr_lock', {}, e.currentTarget);
   });
+}
+
+// ════════════════════════════════════════════════
+//  REPORT: Bảng tổng hợp điểm hiệu suất (HCNS/BGD)
+// ════════════════════════════════════════════════
+export async function renderEvalReport(el, me, latestPeriod = null) {
+  el.innerHTML = loadingHTML();
+  let report = [], periods = [], selected = null;
+  try {
+    const periodId = latestPeriod?.id || '';
+    const [rR, pR] = await Promise.all([
+      api.getEvalReport(periodId ? { period_id: periodId } : {}),
+      api.getEvalPeriods(),
+    ]);
+    report = rR.report || [];
+    periods = (rR.periods || pR.periods || []);
+    selected = rR.selectedPeriod || null;
+  } catch (e) {
+    el.innerHTML = `<div class="card" style="margin-bottom:16px;">${emptyHTML('⚠️', 'Không thể tải báo cáo đánh giá')}</div>`;
+    return;
+  }
+
+  const policyNote = '⚠️ Chính sách mới: Nhóm 1=60đ | Nhóm 2=25đ | Nhóm 3=15đ | Áp dụng đồng nhất CHÍNH THỨC & THỰC TẬP SINH';
+
+  el.innerHTML = `
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-header" style="flex-wrap:wrap;gap:8px;">
+        <div class="card-title">📊 BẢNG TỔNG HỢP ĐIỂM HIỆU SUẤT – NETVIET | Nhóm 1: 60đ | Nhóm 2: 25đ | Nhóm 3: 15đ</div>
+        <select id="eval-report-period" class="btn-secondary btn-sm" style="min-width:180px;">
+          ${periods.map(p => `<option value="${p.id}" ${selected && p.id === selected.id ? 'selected' : ''}>Tháng ${p.month}/${p.year}</option>`).join('')}
+        </select>
+      </div>
+      ${selected ? `<div class="policy-note" style="margin-bottom:12px;">${esc(policyNote)}</div>` : `<div class="policy-note" style="margin-bottom:12px;">${emptyHTML('📅', 'Chọn kỳ đánh giá để xem báo cáo')}</div>`}
+      ${report.length ? `
+      <div class="table-wrap">
+        <table id="eval-report-table">
+          <thead>
+            <tr>
+              <th>STT</th><th>MÃ NV</th><th>HỌ & TÊN</th><th>PHÒNG BAN</th><th>CHỨC VỤ</th><th>LOẠI NS</th>
+              <th style="background:rgba(238,77,45,.12);color:#EE4D2D;">N1 (60đ)</th>
+              <th style="background:rgba(29,78,216,.12);color:#1D4ED8;">N2 (25đ)</th>
+              <th style="background:rgba(4,120,87,.12);color:#047857;">N3 (15đ)</th>
+              <th style="background:rgba(99,102,241,.12);color:#6366F1;">TỔNG (100đ)</th>
+              <th>T.TRƯỚC</th><th>XẾP LOẠI</th><th>HÀNH ĐỘNG / CHẾ TÀI</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${report.map((r, i) => `
+              <tr>
+                <td>${i + 1}</td>
+                <td><span class="badge badge-gray">${esc(r.employee_code)}</span></td>
+                <td style="font-weight:600;">${esc(r.full_name)}</td>
+                <td>${esc(r.department || '—')}</td>
+                <td>${esc(r.position || '—')}</td>
+                <td><span class="badge badge-gray">${esc(r.lifecycle_status || r.employee_type || '—')}</span></td>
+                <td style="font-weight:700;color:#EE4D2D;">${r.has_evaluation ? r.n1 : '—'}</td>
+                <td style="font-weight:700;color:#1D4ED8;">${r.has_evaluation ? r.n2 : '—'}</td>
+                <td style="font-weight:700;color:#047857;">${r.has_evaluation ? r.n3 : '—'}</td>
+                <td style="font-weight:800;font-size:15px;color:#6366F1;">${r.total != null ? r.total : '—'}</td>
+                <td style="font-size:12px;">${r.prev_total != null ? r.prev_total : '—'}</td>
+                <td><span class="badge ${r.rating_cls}">${r.rating_label === 'Xuất sắc' ? '⭐ ' : ''}${esc(r.rating_label)}</span></td>
+                <td style="font-size:12px;max-width:200px;">${esc(r.action)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>` : `<div style="text-align:center;padding:20px;color:var(--text-3);">Chưa có dữ liệu đánh giá cho kỳ này</div>`}
+    </div>
+  `;
+
+  document.getElementById('eval-report-period')?.addEventListener('change', async (e) => {
+    el.innerHTML = loadingHTML();
+    try {
+      const { report: newReport, periods: newPeriods, selectedPeriod } = await api.getEvalReport({ period_id: e.target.value });
+      // Re-render with new data
+      const fakePeriod = selectedPeriod ? { id: selectedPeriod.id, month: selectedPeriod.month, year: selectedPeriod.year } : null;
+      renderEvalReport(el, me, fakePeriod);
+    } catch (err) {
+      el.innerHTML = `<div class="card">${emptyHTML('⚠️', 'Lỗi tải báo cáo: ' + esc(err.message))}</div>`;
+    }
+  });
+}
+
+// ════════════════════════════════════════════════
+//  DASHBOARD: Báo cáo hiệu suất nhân sự (BGD/HCNS)
+// ════════════════════════════════════════════════
+export async function renderEvalDashboard(el, me, latestPeriod = null) {
+  el.innerHTML = loadingHTML();
+  let dashboard, periods, periodData;
+  try {
+    const periodId = latestPeriod?.id || '';
+    const [dR, pR] = await Promise.all([
+      api.getEvalDashboard(periodId ? { period_id: periodId } : {}),
+      api.getEvalPeriods(),
+    ]);
+    dashboard = dR.dashboard;
+    periods = dR.periods || pR.periods || [];
+    periodData = dashboard?.period || null;
+  } catch (e) {
+    el.innerHTML = `<div class="card" style="margin-bottom:16px;">${emptyHTML('⚠️', 'Không thể tải dashboard đánh giá')}</div>`;
+    return;
+  }
+
+  if (!dashboard || !dashboard.total_employees) {
+    el.innerHTML = `<div class="card" style="margin-bottom:16px;text-align:center;color:var(--text-3);padding:20px;">Chưa có dữ liệu đánh giá — hãy mở kỳ đánh giá và phân công trước</div>`;
+    return;
+  }
+
+  const periodLabel = periodData ? `Tháng ${periodData.month}/${periodData.year}` : '';
+  const { total_employees, xuatsac, tot, dat, duoi_chuan, yeu, chua_danh_gia, avg_score, policy, hr_note, hr_note_by } = dashboard;
+  const policyNote = '⚠️ Chính sách mới: Nhóm 1=60đ | Nhóm 2=25đ | Nhóm 3=15đ | Áp dụng đồng nhất CHÍNH THỨC & THỰC TẬP SINH';
+
+  el.innerHTML = `
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-header" style="flex-wrap:wrap;gap:8px;">
+        <div class="card-title">📈 DASHBOARD BÁO CÁO HIỆU SUẤT NHÂN SỰ – BAN GIÁM ĐỐC | NETVIET</div>
+        <select id="eval-dash-period" class="btn-secondary btn-sm" style="min-width:180px;">
+          ${periods.map(p => `<option value="${p.id}" ${periodData && p.id === (latestPeriod?.id || periodData?.id) ? 'selected' : ''}>Tháng ${p.month}/${p.year}</option>`).join('')}
+        </select>
+      </div>
+
+      <div class="policy-note" style="margin-bottom:14px;">${esc(policyNote)}</div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:16px;">
+        <div class="stat-card" style="--stat-color:var(--primary);--stat-bg:var(--primary-light);">
+          <div class="stat-val">${total_employees}</div>
+          <div class="stat-label">Tổng nhân viên</div>
+        </div>
+        <div class="stat-card" style="--stat-color:#10B981;--stat-bg:#10B9811A;">
+          <div class="stat-val">${xuatsac}</div>
+          <div class="stat-label">Xuất sắc ≥ 90 điểm</div>
+        </div>
+        <div class="stat-card" style="--stat-color:#3B82F6;--stat-bg:#3B82F61A;">
+          <div class="stat-val">${tot}</div>
+          <div class="stat-label">Tốt 80–89 điểm</div>
+        </div>
+        <div class="stat-card" style="--stat-color:#64748B;--stat-bg:#64748B1A;">
+          <div class="stat-val">${dat}</div>
+          <div class="stat-label">Đạt 65–79 điểm</div>
+        </div>
+        <div class="stat-card" style="--stat-color:#F59E0B;--stat-bg:#F59E0B1A;">
+          <div class="stat-val">${duoi_chuan}</div>
+          <div class="stat-label">Dưới chuẩn 50–64 điểm</div>
+        </div>
+        <div class="stat-card" style="--stat-color:#EF4444;--stat-bg:#EF44441A;">
+          <div class="stat-val">${yeu}</div>
+          <div class="stat-label">Yếu < 50 điểm</div>
+        </div>
+      </div>
+
+      <div style="background:var(--surface-2);border-radius:10px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:12px;">
+        <span style="font-size:13px;font-weight:700;color:var(--text-2);">ĐIỂM TRUNG BÌNH TOÀN CÔNG TY</span>
+        <span style="font-size:28px;font-weight:800;color:var(--primary);">${avg_score}</span>
+        ${periodLabel ? `<span style="flex:1;text-align:right;font-size:12px;color:var(--text-3);">${esc(periodLabel)}</span>` : ''}
+      </div>
+
+      <div class="section-title">TÓM TẮT CHẾ TÀI THEO CHÍNH SÁCH MỚI</div>
+      <div class="table-wrap" style="margin-bottom:16px;">
+        <table>
+          <thead><tr><th>Xếp loại</th><th>Khoảng điểm</th><th>Hành động / Chế tài</th></tr></thead>
+          <tbody>
+            ${(policy || []).map(p => `
+              <tr>
+                <td><span class="badge ${p.cls}">${esc(p.grade)}</span></td>
+                <td>${esc(p.range)}</td>
+                <td style="font-size:13px;">${esc(p.action)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="section-title">GHI CHÚ & KIẾN NGHỊ CỦA NHÂN SỰ CHO BGD</div>
+      <div style="margin-bottom:10px;">
+        <textarea id="eval-hr-note" rows="4" style="width:100%;" placeholder="Nhập ghi chú & kiến nghị gửi Ban Giám Đốc...">${esc(hr_note || '')}</textarea>
+      </div>
+      ${hr_note_by ? `<div style="font-size:12px;color:var(--text-3);margin-bottom:10px;">Đã gửi bởi ${esc(hr_note_by)}</div>` : ''}
+      <button class="btn-primary btn-sm" id="eval-hr-note-save">💾 Lưu ghi chú</button>
+    </div>
+  `;
+
+  document.getElementById('eval-dash-period')?.addEventListener('change', async (e) => {
+    el.innerHTML = loadingHTML();
+    try {
+      const { dashboard: newDash, periods: newPeriods } = await api.getEvalDashboard({ period_id: e.target.value });
+      const periodId = parseInt(e.target.value);
+      const fakePeriod = { id: periodId };
+      // Re-render
+      await renderEvalDashboardInternal(el, me, fakePeriod);
+    } catch (err) {
+      el.innerHTML = `<div class="card">${emptyHTML('⚠️', 'Lỗi: ' + esc(err.message))}</div>`;
+    }
+  });
+
+  document.getElementById('eval-hr-note-save')?.addEventListener('click', async () => {
+    const note = document.getElementById('eval-hr-note').value;
+    const periodId = latestPeriod?.id;
+    if (!periodId) { toast('Chưa chọn kỳ đánh giá', 'error'); return; }
+    try {
+      await api.saveEvalPeriodNote(periodId, note);
+      toast('Đã lưu ghi chú', 'success');
+    } catch (e) { toast(e.message, 'error'); }
+  });
+}
+
+// Internal re-render helper
+async function renderEvalDashboardInternal(el, me, latestPeriod) {
+  renderEvalDashboard(el, me, latestPeriod);
 }

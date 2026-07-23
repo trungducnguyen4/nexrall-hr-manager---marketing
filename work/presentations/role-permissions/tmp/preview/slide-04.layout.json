@@ -1,0 +1,1267 @@
+{
+  "schema": "openai.presentation.layout/v4",
+  "unit": "px",
+  "slide": {
+    "aid": "sl/gg6ola",
+    "id": "gg6ola",
+    "slide": 4,
+    "layoutId": "b02ac036-680a-44cb-8b52-e97ba68fff30",
+    "layoutName": "Title Slide",
+    "layoutType": "title",
+    "masterLayoutId": "e42812d1-e92d-4713-96c5-267b6017ba24",
+    "masterLayoutName": "Master",
+    "backgroundColor": "#FFFFFF",
+    "frame": {
+      "left": 0,
+      "top": 0,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "theme": {
+    "colorSchemeName": "ChatGPT",
+    "colors": {
+      "accent1": "#156082",
+      "accent2": "#E97132",
+      "accent3": "#196B24",
+      "accent4": "#0F9ED5",
+      "accent5": "#A02B93",
+      "accent6": "#4EA72E",
+      "bg1": "#FFFFFF",
+      "bg2": "#000000",
+      "tx1": "#1F1F1F",
+      "tx2": "#FFFFFF",
+      "dk1": "#000000",
+      "lt1": "#FFFFFF",
+      "dk2": "#0E2841",
+      "lt2": "#E8E8E8",
+      "hlink": "#467886",
+      "folHlink": "#96607D"
+    },
+    "typefaces": [
+      "+mn-lt"
+    ]
+  },
+  "inheritedLayers": [
+    {
+      "scope": "layout",
+      "id": "b02ac036-680a-44cb-8b52-e97ba68fff30",
+      "name": "Title Slide",
+      "type": "title",
+      "parentLayoutId": "e42812d1-e92d-4713-96c5-267b6017ba24",
+      "elements": []
+    },
+    {
+      "scope": "master",
+      "id": "e42812d1-e92d-4713-96c5-267b6017ba24",
+      "name": "Master",
+      "type": "master",
+      "elements": []
+    }
+  ],
+  "elements": [
+    {
+      "order": 1,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/k7uxsjup",
+      "id": "1",
+      "bbox": [
+        42,
+        28,
+        520,
+        28
+      ],
+      "geometry": "rect",
+      "text": "EMPLOYEE / INTERN",
+      "textPreview": "EMPLOYEE / INTERN",
+      "resolvedFontSize": 13,
+      "resolvedTextStyle": {
+        "fontSize": 13,
+        "typeface": "+mn-lt",
+        "color": "#5E6675",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "EMPLOYEE / INTERN"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "EMPLOYEE / INTERN",
+          "resolvedTextStyle": {
+            "fontSize": 13,
+            "color": "#5E6675",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "EMPLOYEE / INTERN",
+              "fontSize": 13,
+              "color": "#5E6675",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 2,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/j6lwjet4",
+      "id": "2",
+      "bbox": [
+        42,
+        58,
+        1050,
+        76
+      ],
+      "geometry": "rect",
+      "text": "Nhân viên và TTS chủ yếu thao tác trên phạm vi cá nhân",
+      "textPreview": "Nhân viên và TTS chủ yếu thao tác trên phạm vi cá nhân",
+      "resolvedFontSize": 37,
+      "resolvedTextStyle": {
+        "fontSize": 37,
+        "typeface": "+mn-lt",
+        "color": "#0B1220",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Nhân viên và TTS chủ yếu thao tác trên phạm vi cá nhân"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Nhân viên và TTS chủ yếu thao tác trên phạm vi cá nhân",
+          "resolvedTextStyle": {
+            "fontSize": 37,
+            "color": "#0B1220",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Nhân viên và TTS chủ yếu thao tác trên phạm vi cá nhân",
+              "fontSize": 37,
+              "color": "#0B1220",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 3,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/y5cfq9cj",
+      "id": "3",
+      "bbox": [
+        1184,
+        658,
+        54,
+        24
+      ],
+      "geometry": "rect",
+      "text": "04",
+      "textPreview": "04",
+      "resolvedFontSize": 12,
+      "resolvedTextStyle": {
+        "fontSize": 12,
+        "typeface": "+mn-lt",
+        "color": "#5E6675",
+        "alignment": "right",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "04"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "04",
+          "resolvedTextStyle": {
+            "fontSize": 12,
+            "color": "#5E6675",
+            "alignment": "right"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "04",
+              "fontSize": 12,
+              "color": "#5E6675",
+              "alignment": "right"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 4,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/twnypob6",
+      "id": "4",
+      "bbox": [
+        42,
+        142,
+        1196,
+        1.2
+      ],
+      "geometry": "rect",
+      "fillColor": "#C6CBD3",
+      "lineColor": "#C6CBD3",
+      "lineWidth": 0
+    },
+    {
+      "order": 5,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/svuxw3ul",
+      "id": "5",
+      "bbox": [
+        42,
+        174,
+        360,
+        30
+      ],
+      "geometry": "rect",
+      "text": "Công việc chính",
+      "textPreview": "Công việc chính",
+      "resolvedFontSize": 26,
+      "resolvedTextStyle": {
+        "fontSize": 26,
+        "typeface": "+mn-lt",
+        "color": "#0B1220",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Công việc chính"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Công việc chính",
+          "resolvedTextStyle": {
+            "fontSize": 26,
+            "color": "#0B1220",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Công việc chính",
+              "fontSize": 26,
+              "color": "#0B1220",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 6,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/7algnyt0",
+      "id": "6",
+      "bbox": [
+        42,
+        224,
+        22,
+        46
+      ],
+      "geometry": "rect",
+      "text": "•",
+      "textPreview": "•",
+      "resolvedFontSize": 19,
+      "resolvedTextStyle": {
+        "fontSize": 19,
+        "typeface": "+mn-lt",
+        "color": "#3D8DFF",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "•"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "•",
+          "resolvedTextStyle": {
+            "fontSize": 19,
+            "color": "#3D8DFF",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "•",
+              "fontSize": 19,
+              "color": "#3D8DFF",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 7,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/69cfutcf",
+      "id": "7",
+      "bbox": [
+        66,
+        224,
+        496,
+        52
+      ],
+      "geometry": "rect",
+      "text": "Đăng ký hình thức làm việc và chấm công theo ngày.",
+      "textPreview": "Đăng ký hình thức làm việc và chấm công theo ngày.",
+      "resolvedFontSize": 19,
+      "resolvedTextStyle": {
+        "fontSize": 19,
+        "typeface": "+mn-lt",
+        "color": "#0B1220",
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Đăng ký hình thức làm việc và chấm công theo ngày."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Đăng ký hình thức làm việc và chấm công theo ngày.",
+          "resolvedTextStyle": {
+            "fontSize": 19,
+            "color": "#0B1220",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Đăng ký hình thức làm việc và chấm công theo ngày.",
+              "fontSize": 19,
+              "color": "#0B1220",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 8,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/h0nyt8b2",
+      "id": "8",
+      "bbox": [
+        42,
+        270,
+        22,
+        46
+      ],
+      "geometry": "rect",
+      "text": "•",
+      "textPreview": "•",
+      "resolvedFontSize": 19,
+      "resolvedTextStyle": {
+        "fontSize": 19,
+        "typeface": "+mn-lt",
+        "color": "#3D8DFF",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "•"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "•",
+          "resolvedTextStyle": {
+            "fontSize": 19,
+            "color": "#3D8DFF",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "•",
+              "fontSize": 19,
+              "color": "#3D8DFF",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 9,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/gzexk3uh",
+      "id": "9",
+      "bbox": [
+        66,
+        270,
+        496,
+        52
+      ],
+      "geometry": "rect",
+      "text": "Gửi đơn nghỉ phép, chỉnh / xóa khi còn phù hợp với workflow.",
+      "textPreview": "Gửi đơn nghỉ phép, chỉnh / xóa khi còn phù hợp với workflow.",
+      "resolvedFontSize": 19,
+      "resolvedTextStyle": {
+        "fontSize": 19,
+        "typeface": "+mn-lt",
+        "color": "#0B1220",
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Gửi đơn nghỉ phép, chỉnh / xóa khi còn phù hợp với workflow."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Gửi đơn nghỉ phép, chỉnh / xóa khi còn phù hợp với workflow.",
+          "resolvedTextStyle": {
+            "fontSize": 19,
+            "color": "#0B1220",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Gửi đơn nghỉ phép, chỉnh / xóa khi còn phù hợp với workflow.",
+              "fontSize": 19,
+              "color": "#0B1220",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 10,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/6pk3ahgj",
+      "id": "10",
+      "bbox": [
+        42,
+        316,
+        22,
+        46
+      ],
+      "geometry": "rect",
+      "text": "•",
+      "textPreview": "•",
+      "resolvedFontSize": 19,
+      "resolvedTextStyle": {
+        "fontSize": 19,
+        "typeface": "+mn-lt",
+        "color": "#3D8DFF",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "•"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "•",
+          "resolvedTextStyle": {
+            "fontSize": 19,
+            "color": "#3D8DFF",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "•",
+              "fontSize": 19,
+              "color": "#3D8DFF",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 11,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/7qd43mh4",
+      "id": "11",
+      "bbox": [
+        66,
+        316,
+        496,
+        52
+      ],
+      "geometry": "rect",
+      "text": "Tạo task, cập nhật task được giao hoặc do mình tạo.",
+      "textPreview": "Tạo task, cập nhật task được giao hoặc do mình tạo.",
+      "resolvedFontSize": 19,
+      "resolvedTextStyle": {
+        "fontSize": 19,
+        "typeface": "+mn-lt",
+        "color": "#0B1220",
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Tạo task, cập nhật task được giao hoặc do mình tạo."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Tạo task, cập nhật task được giao hoặc do mình tạo.",
+          "resolvedTextStyle": {
+            "fontSize": 19,
+            "color": "#0B1220",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Tạo task, cập nhật task được giao hoặc do mình tạo.",
+              "fontSize": 19,
+              "color": "#0B1220",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 12,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/srmlcryp",
+      "id": "12",
+      "bbox": [
+        42,
+        362,
+        22,
+        46
+      ],
+      "geometry": "rect",
+      "text": "•",
+      "textPreview": "•",
+      "resolvedFontSize": 19,
+      "resolvedTextStyle": {
+        "fontSize": 19,
+        "typeface": "+mn-lt",
+        "color": "#3D8DFF",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "•"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "•",
+          "resolvedTextStyle": {
+            "fontSize": 19,
+            "color": "#3D8DFF",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "•",
+              "fontSize": 19,
+              "color": "#3D8DFF",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 13,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/tsvm5cza",
+      "id": "13",
+      "bbox": [
+        66,
+        362,
+        496,
+        52
+      ],
+      "geometry": "rect",
+      "text": "Xem phiếu lương đã phát hành, xác nhận hoặc yêu cầu xem lại.",
+      "textPreview": "Xem phiếu lương đã phát hành, xác nhận hoặc yêu cầu xem lại.",
+      "resolvedFontSize": 19,
+      "resolvedTextStyle": {
+        "fontSize": 19,
+        "typeface": "+mn-lt",
+        "color": "#0B1220",
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Xem phiếu lương đã phát hành, xác nhận hoặc yêu cầu xem"
+          },
+          {
+            "index": 2,
+            "text": "lại."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Xem phiếu lương đã phát hành, xác nhận hoặc yêu cầu xem lại.",
+          "resolvedTextStyle": {
+            "fontSize": 19,
+            "color": "#0B1220",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Xem phiếu lương đã phát hành, xác nhận hoặc yêu cầu xem lại.",
+              "fontSize": 19,
+              "color": "#0B1220",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 14,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/ud43ehgv",
+      "id": "14",
+      "bbox": [
+        42,
+        408,
+        22,
+        46
+      ],
+      "geometry": "rect",
+      "text": "•",
+      "textPreview": "•",
+      "resolvedFontSize": 19,
+      "resolvedTextStyle": {
+        "fontSize": 19,
+        "typeface": "+mn-lt",
+        "color": "#3D8DFF",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "•"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "•",
+          "resolvedTextStyle": {
+            "fontSize": 19,
+            "color": "#3D8DFF",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "•",
+              "fontSize": 19,
+              "color": "#3D8DFF",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 15,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/fed47mhg",
+      "id": "15",
+      "bbox": [
+        66,
+        408,
+        496,
+        52
+      ],
+      "geometry": "rect",
+      "text": "Khai báo tài sản của bản thân, xem credential nếu được phép.",
+      "textPreview": "Khai báo tài sản của bản thân, xem credential nếu được phép.",
+      "resolvedFontSize": 19,
+      "resolvedTextStyle": {
+        "fontSize": 19,
+        "typeface": "+mn-lt",
+        "color": "#0B1220",
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Khai báo tài sản của bản thân, xem credential nếu được"
+          },
+          {
+            "index": 2,
+            "text": "phép."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Khai báo tài sản của bản thân, xem credential nếu được phép.",
+          "resolvedTextStyle": {
+            "fontSize": 19,
+            "color": "#0B1220",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Khai báo tài sản của bản thân, xem credential nếu được phép.",
+              "fontSize": 19,
+              "color": "#0B1220",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 16,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/gfmlgry1",
+      "id": "16",
+      "bbox": [
+        650,
+        178,
+        520,
+        318
+      ],
+      "geometry": "rect",
+      "fillColor": "#F2F4F7",
+      "lineColor": "#F2F4F7",
+      "lineWidth": 1
+    },
+    {
+      "order": 17,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/hgvm9wzm",
+      "id": "17",
+      "bbox": [
+        684,
+        214,
+        160,
+        28
+      ],
+      "geometry": "rect",
+      "fillColor": "#D8F0FC",
+      "lineColor": "#D8F0FC",
+      "lineWidth": 0
+    },
+    {
+      "order": 18,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/ax032xgr",
+      "id": "18",
+      "bbox": [
+        694,
+        220,
+        140,
+        18
+      ],
+      "geometry": "rect",
+      "text": "Điểm riêng của TTS",
+      "textPreview": "Điểm riêng của TTS",
+      "resolvedFontSize": 12,
+      "resolvedTextStyle": {
+        "fontSize": 12,
+        "typeface": "+mn-lt",
+        "color": "#0B1220",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Điểm riêng của TTS"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Điểm riêng của TTS",
+          "resolvedTextStyle": {
+            "fontSize": 12,
+            "color": "#0B1220",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Điểm riêng của TTS",
+              "fontSize": 12,
+              "color": "#0B1220",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 19,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/bitkv2hw",
+      "id": "19",
+      "bbox": [
+        684,
+        264,
+        430,
+        126
+      ],
+      "geometry": "rect",
+      "text": "Khi có phiếu đánh giá hiệu suất, TTS được xem kết quả, xác nhận hoặc yêu cầu xem xét lại trước khi chuyển lên phê duyệt.",
+      "textPreview": "Khi có phiếu đánh giá hiệu suất, TTS được xem kết quả, xác nhận hoặc yêu cầu xem xét lại trước khi chuyển lên phê duyệt.",
+      "resolvedFontSize": 25,
+      "resolvedTextStyle": {
+        "fontSize": 25,
+        "typeface": "+mn-lt",
+        "color": "#0B1220",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 4,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Khi có phiếu đánh giá hiệu suất, TTS"
+          },
+          {
+            "index": 2,
+            "text": "được xem kết quả, xác nhận hoặc yêu"
+          },
+          {
+            "index": 3,
+            "text": "cầu xem xét lại trước khi chuyển lên"
+          },
+          {
+            "index": 4,
+            "text": "phê duyệt."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Khi có phiếu đánh giá hiệu suất, TTS được xem kết quả, xác nhận hoặc yêu cầu xem xét lại trước khi chuyển lên phê duyệt.",
+          "resolvedTextStyle": {
+            "fontSize": 25,
+            "color": "#0B1220",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Khi có phiếu đánh giá hiệu suất, TTS được xem kết quả, xác nhận hoặc yêu cầu xem xét lại trước khi chuyển lên phê duyệt.",
+              "fontSize": 25,
+              "color": "#0B1220",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 20,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/z2p03yxo",
+      "id": "20",
+      "bbox": [
+        684,
+        420,
+        420,
+        48
+      ],
+      "geometry": "rect",
+      "text": "Không có quyền xem dữ liệu toàn công ty, chỉnh user, cấu hình hệ thống hoặc truy cập database admin.",
+      "textPreview": "Không có quyền xem dữ liệu toàn công ty, chỉnh user, cấu hình hệ thống hoặc truy cập database admin.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5E6675",
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Không có quyền xem dữ liệu toàn công ty, chỉnh user, cấu"
+          },
+          {
+            "index": 2,
+            "text": "hình hệ thống hoặc truy cập database admin."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Không có quyền xem dữ liệu toàn công ty, chỉnh user, cấu hình hệ thống hoặc truy cập database admin.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5E6675",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Không có quyền xem dữ liệu toàn công ty, chỉnh user, cấu hình hệ thống hoặc truy cập database admin.",
+              "fontSize": 16,
+              "color": "#5E6675",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 21,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/e1gjatwj",
+      "id": "21",
+      "bbox": [
+        42,
+        596,
+        760,
+        1.2
+      ],
+      "geometry": "rect",
+      "fillColor": "#3D8DFF",
+      "lineColor": "#3D8DFF",
+      "lineWidth": 0
+    },
+    {
+      "order": 22,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/1o7i58fu",
+      "id": "22",
+      "bbox": [
+        42,
+        616,
+        900,
+        28
+      ],
+      "geometry": "rect",
+      "text": "Ý nghĩa vận hành: nhóm này cần UI đơn giản, tập trung vào tự phục vụ và minh bạch dữ liệu cá nhân.",
+      "textPreview": "Ý nghĩa vận hành: nhóm này cần UI đơn giản, tập trung vào tự phục vụ và minh bạch dữ liệu cá nhân.",
+      "resolvedFontSize": 18,
+      "resolvedTextStyle": {
+        "fontSize": 18,
+        "typeface": "+mn-lt",
+        "color": "#5E6675",
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Ý nghĩa vận hành: nhóm này cần UI đơn giản, tập trung vào tự phục vụ và minh bạch dữ liệu cá nhân."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Ý nghĩa vận hành: nhóm này cần UI đơn giản, tập trung vào tự phục vụ và minh bạch dữ liệu cá nhân.",
+          "resolvedTextStyle": {
+            "fontSize": 18,
+            "color": "#5E6675",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Ý nghĩa vận hành: nhóm này cần UI đơn giản, tập trung vào tự phục vụ và minh bạch dữ liệu cá nhân.",
+              "fontSize": 18,
+              "color": "#5E6675",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    }
+  ],
+  "composeRuns": []
+}

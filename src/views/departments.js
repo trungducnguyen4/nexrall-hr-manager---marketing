@@ -213,10 +213,28 @@ function openDeptForm(dept, onRefresh = noop, existingDepts = [], users = []) {
     <button class="btn-primary" id="df-save">Lưu</button>
   `);
 
+  const deptNormKey = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[đĐ]/g, 'd').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const deptAliases = {
+    'ban giam doc': 'ban giam doc', bgd: 'ban giam doc', 'giam doc': 'ban giam doc', 'ban lanh dao': 'ban giam doc',
+    hcns: 'phong hcns', 'phong hcns': 'phong hcns', 'nhan su': 'phong hcns', 'phong nhan su': 'phong hcns', 'hanh chinh nhan su': 'phong hcns', hr: 'phong hcns',
+    'kinh doanh': 'phong kinh doanh', 'phong kinh doanh': 'phong kinh doanh', sale: 'phong kinh doanh', sales: 'phong kinh doanh', 'phong sale': 'phong kinh doanh', 'account sales': 'phong kinh doanh', account: 'phong kinh doanh', 'business development': 'phong kinh doanh',
+    marketing: 'phong marketing', 'phong marketing': 'phong marketing', 'content marketing': 'phong marketing', 'seo sem': 'phong marketing', 'social media': 'phong marketing', design: 'phong marketing', performance: 'phong marketing', 'pr events': 'phong marketing', 'pr & events': 'phong marketing', 'truyen thong': 'phong marketing', 'digital ads': 'phong marketing', ads: 'phong marketing', 'quang cao': 'phong marketing',
+    'bien tap': 'phong bien tap', 'phong bien tap': 'phong bien tap', 'noi dung': 'phong bien tap',
+    'san xuat phim': 'phong san xuat phim', 'phong san xuat phim': 'phong san xuat phim', production: 'phong san xuat phim', 'san xuat': 'phong san xuat phim',
+    gameshow: 'phong gameshow', 'phong gameshow': 'phong gameshow', 'game show': 'phong gameshow',
+    'ke toan': 'phong ke toan', 'phong ke toan': 'phong ke toan', accounting: 'phong ke toan', 'tai chinh ke toan': 'phong ke toan',
+  };
+  const deptUniqueKey = (name) => {
+    const key = deptNormKey(String(name || '').trim().replace(/\s+/g, ' '));
+    return deptAliases[key] || key;
+  };
+
   document.getElementById('df-save').addEventListener('click', async () => {
+    const saveBtn = document.getElementById('df-save');
     const name = document.getElementById('df-name').value.trim().replace(/\s+/g, ' ');
     if (!name) { toast('Vui lòng nhập tên phòng ban', 'error'); return; }
-    const dup = existingDepts.some(d => String(d.name || '').trim().replace(/\s+/g, ' ').toLowerCase() === name.toLowerCase() && (!isEdit || d.id !== dept.id));
+    const dup = existingDepts.some(d => deptUniqueKey(d.name) === deptUniqueKey(name) && (!isEdit || Number(d.id) !== Number(dept.id)));
     if (dup) { toast('Phòng ban này đã tồn tại', 'error'); return; }
     const data = {
       name,
@@ -224,6 +242,7 @@ function openDeptForm(dept, onRefresh = noop, existingDepts = [], users = []) {
       description: document.getElementById('df-desc').value.trim(),
     };
     try {
+      saveBtn.disabled = true;
       if (isEdit) await api.updateDepartment(dept.id, data);
       else await api.createDepartment(data);
       closeModal();
@@ -231,6 +250,7 @@ function openDeptForm(dept, onRefresh = noop, existingDepts = [], users = []) {
       onRefresh();
     } catch (e) {
       toast(e.message, 'error');
+      saveBtn.disabled = false;
     }
   });
 }

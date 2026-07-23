@@ -33,6 +33,8 @@ const CACHE_TTL = {
   '/api/assets':           20_000,
   '/api/eval-periods':     60_000,
   '/api/evaluations':      20_000,
+  '/api/evaluations/report':    20_000,
+  '/api/evaluations/dashboard': 20_000,
 };
 
 // Map of cacheKey → { data, ts, inflight }
@@ -71,8 +73,14 @@ async function req(method, path, body) {
   const opts = { method, headers: headers() };
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res = await fetch(path, opts);
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(data.error || `HTTP ${res.status}`), { status: res.status, data });
+  const text = await res.text().catch(() => '');
+  let data = {};
+  if (text) {
+    try { data = JSON.parse(text); }
+    catch (_) { data = { error: text }; }
+  }
+  const message = data.error || data.message || (res.statusText ? `${res.status} ${res.statusText}` : `HTTP ${res.status}`);
+  if (!res.ok) throw Object.assign(new Error(message), { status: res.status, data });
   return data;
 }
 
@@ -317,4 +325,12 @@ export const api = {
   assignEvaluation:  (d) => req('POST', '/api/evaluations', d).then(r => { inv('/api/evaluations'); return r; }),
   evalAction: (id, body) => req('POST', `/api/evaluations/${id}/action`, body).then(r => { inv('/api/evaluations'); return r; }),
   saveEvalPeriodNote: (id, note) => req('POST', `/api/eval-periods/${id}/note`, { note }).then(r => { inv('/api/eval-periods'); return r; }),
+  getEvalReport: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return cachedGet('/api/evaluations/report' + (q ? '?' + q : ''));
+  },
+  getEvalDashboard: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return cachedGet('/api/evaluations/dashboard' + (q ? '?' + q : ''));
+  },
 };

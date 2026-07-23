@@ -1,0 +1,241 @@
+{"kind":"deck","id":"pr/36a03w","name":"Deck"}
+{"kind":"layout","layoutId":"e42812d1-e92d-4713-96c5-267b6017ba24","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"b02ac036-680a-44cb-8b52-e97ba68fff30","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/mtqi53","slide":1,"title":"NEXRALL HR PLATFORM","textShapes":7}
+{"kind":"textbox","id":"sh/vadwjy1k","slide":1,"text":"NEXRALL HR PLATFORM","textPreview":"NEXRALL HR PLATFORM","textChars":19,"textLines":1,"bbox":[42,36,520,28]}
+{"kind":"textbox","id":"sh/gbmxc3i5","slide":1,"text":"Phân quyền vai trò trong hệ thống HR","textPreview":"Phân quyền vai trò trong hệ thống HR","textChars":36,"textLines":1,"bbox":[42,155,850,112]}
+{"kind":"textbox","id":"sh/hcvyl8jq","slide":1,"text":"Tài liệu tóm tắt chức năng cho Nhân viên / Thực tập sinh, Nhân sự và Admin (Anh Hậu), dựa trên route guard và UI hiện tại của dự án.","textPreview":"Tài liệu tóm tắt chức năng cho Nhân viên / Thực tập sinh, Nhân sự và Admin (Anh Hậu), dựa trên route guard và UI hiện tại của dự án.","textChars":132,"textLines":1,"bbox":[42,292,850,74]}
+{"kind":"shape","id":"sh/m5kf6903","slide":1,"bbox":[42,470,356,92]}
+{"kind":"textbox","id":"sh/76twfe1o","slide":1,"text":"3 nhóm vai trò","textPreview":"3 nhóm vai trò","textChars":14,"textLines":1,"bbox":[66,493,300,28]}
+{"kind":"textbox","id":"sh/872x8ji9","slide":1,"text":"Self-service → Vận hành HR → Toàn quyền hệ thống","textPreview":"Self-service → Vận hành HR → Toàn quyền hệ thống","textChars":48,"textLines":1,"bbox":[66,526,300,24]}
+{"kind":"shape","id":"sh/t8behoju","slide":1,"bbox":[930,0,308,720]}
+{"kind":"textbox","id":"sh/q1ofid07","slide":1,"text":"Nguồn: server.js, src/views/*.js\nNgày lập: 23/07/2026","textPreview":"Nguồn: server.js, src/views/*.js | Ngày lập: 23/07/2026","textChars":53,"textLines":2,"bbox":[966,566,220,68]}
+{"kind":"textbox","id":"sh/r2xgrihs","slide":1,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[1184,658,54,24]}
+{"kind":"notes","id":"nt/mtqi53","slide":1,"text":""}
+{"kind":"slide","id":"sl/gfg78b","slide":2,"title":"ROLE MODEL","textShapes":39}
+{"kind":"textbox","id":"sh/pgje1cv6","slide":2,"text":"ROLE MODEL","textPreview":"ROLE MODEL","textChars":10,"textLines":1,"bbox":[42,28,520,28]}
+{"kind":"textbox","id":"sh/2dsf6hwf","slide":2,"text":"Ba tầng quyền: tự phục vụ, vận hành nhân sự, quản trị hệ thống","textPreview":"Ba tầng quyền: tự phục vụ, vận hành nhân sự, quản trị hệ thống","textChars":62,"textLines":1,"bbox":[42,58,1050,76]}
+{"kind":"textbox","id":"sh/3e1wzmd0","slide":2,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[1184,658,54,24]}
+{"kind":"shape","id":"sh/c3axcreh","slide":2,"bbox":[42,142,1196,1.2]}
+{"kind":"shape","id":"sh/d4je5wv2","slide":2,"bbox":[42,190,360,360]}
+{"kind":"shape","id":"sh/q1sfahwb","slide":2,"bbox":[42,190,360,7]}
+{"kind":"textbox","id":"sh/b21w3mdw","slide":2,"text":"Nhân viên / TTS","textPreview":"Nhân viên / TTS","textChars":15,"textLines":1,"bbox":[66,218,312,40]}
+{"kind":"textbox","id":"sh/s7qd07ed","slide":2,"text":"Người dùng nghiệp vụ: thao tác trên dữ liệu cá nhân và công việc liên quan.","textPreview":"Người dùng nghiệp vụ: thao tác trên dữ liệu cá nhân và công việc liên quan.","textChars":75,"textLines":1,"bbox":[66,260,312,52]}
+{"kind":"textbox","id":"sh/t8zetsvy","slide":2,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[66,328,22,42]}
+{"kind":"textbox","id":"sh/9o7id03e","slide":2,"text":"Chấm công, đăng ký ca / hình thức làm việc","textPreview":"Chấm công, đăng ký ca / hình thức làm việc","textChars":42,"textLines":1,"bbox":[90,328,288,48]}
+{"kind":"textbox","id":"sh/8ny1kv2t","slide":2,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[66,370,22,42]}
+{"kind":"textbox","id":"sh/nmp0balo","slide":2,"text":"Tạo và theo dõi đơn nghỉ phép của bản thân","textPreview":"Tạo và theo dõi đơn nghỉ phép của bản thân","textChars":42,"textLines":1,"bbox":[90,370,288,48]}
+{"kind":"textbox","id":"sh/mlgji5k3","slide":2,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[66,412,22,42]}
+{"kind":"textbox","id":"sh/xsrihk3q","slide":2,"text":"Xem / xác nhận phiếu lương của bản thân","textPreview":"Xem / xác nhận phiếu lương của bản thân","textChars":39,"textLines":1,"bbox":[90,412,288,48]}
+{"kind":"textbox","id":"sh/wri1of25","slide":2,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[66,454,22,42]}
+{"kind":"textbox","id":"sh/vq90falk","slide":2,"text":"Xử lý task được giao hoặc do mình tạo","textPreview":"Xử lý task được giao hoặc do mình tạo","textChars":37,"textLines":1,"bbox":[90,454,288,48]}
+{"kind":"textbox","id":"sh/ap0jm5kz","slide":2,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[66,496,22,42]}
+{"kind":"textbox","id":"sh/5gb2lkjm","slide":2,"text":"TTS xác nhận hoặc yêu cầu xem lại đánh giá","textPreview":"TTS xác nhận hoặc yêu cầu xem lại đánh giá","textChars":42,"textLines":1,"bbox":[90,496,288,48]}
+{"kind":"shape","id":"sh/kfi1sf21","slide":2,"bbox":[460,190,360,360]}
+{"kind":"shape","id":"sh/4bat4nep","slide":2,"bbox":[460,190,360,7]}
+{"kind":"textbox","id":"sh/pwjudsva","slide":2,"text":"Nhân sự","textPreview":"Nhân sự","textChars":7,"textLines":1,"bbox":[484,218,312,40]}
+{"kind":"textbox","id":"sh/29sb2dwj","slide":2,"text":"Vai trò vận hành: theo dõi, tổng hợp và xử lý nghiệp vụ HR cho nhân sự.","textPreview":"Vai trò vận hành: theo dõi, tổng hợp và xử lý nghiệp vụ HR cho nhân sự.","textChars":71,"textLines":1,"bbox":[484,260,312,52]}
+{"kind":"textbox","id":"sh/3a1cbid4","slide":2,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[484,328,22,42]}
+{"kind":"textbox","id":"sh/czud87el","slide":2,"text":"Xem danh sách nhân viên, chấm công, nghỉ phép","textPreview":"Xem danh sách nhân viên, chấm công, nghỉ phép","textChars":45,"textLines":1,"bbox":[508,328,288,48]}
+{"kind":"textbox","id":"sh/d03uhcv6","slide":2,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[484,370,22,42]}
+{"kind":"textbox","id":"sh/qxcb6xwf","slide":2,"text":"Tạo / xử lý phiếu lương, yêu cầu xem lại lương","textPreview":"Tạo / xử lý phiếu lương, yêu cầu xem lại lương","textChars":46,"textLines":1,"bbox":[508,370,288,48]}
+{"kind":"textbox","id":"sh/rylcf2d0","slide":2,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[484,412,22,42]}
+{"kind":"textbox","id":"sh/s3qtw3eh","slide":2,"text":"Quản lý phòng ban, tuyển dụng, chiến dịch MKT","textPreview":"Quản lý phòng ban, tuyển dụng, chiến dịch MKT","textChars":45,"textLines":1,"bbox":[508,412,288,48]}
+{"kind":"textbox","id":"sh/t4zu58v2","slide":2,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[484,454,22,42]}
+{"kind":"textbox","id":"sh/vypwb6xk","slide":2,"text":"Quản lý tài sản trong phạm vi được phép","textPreview":"Quản lý tài sản trong phạm vi được phép","textChars":39,"textLines":1,"bbox":[508,454,288,48]}
+{"kind":"textbox","id":"sh/axgf21gz","slide":2,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[484,496,22,42]}
+{"kind":"textbox","id":"sh/x07edgfa","slide":2,"text":"Một số luồng yêu cầu thuộc Phòng HCNS","textPreview":"Một số luồng yêu cầu thuộc Phòng HCNS","textChars":37,"textLines":1,"bbox":[508,496,288,48]}
+{"kind":"shape","id":"sh/wzyx4by5","slide":2,"bbox":[878,190,360,360]}
+{"kind":"shape","id":"sh/nu5w76x8","slide":2,"bbox":[878,190,360,7]}
+{"kind":"textbox","id":"sh/mtwfy1gn","slide":2,"text":"Admin / Anh Hậu","textPreview":"Admin / Anh Hậu","textChars":15,"textLines":1,"bbox":[902,218,312,40]}
+{"kind":"textbox","id":"sh/9w7e9gfe","slide":2,"text":"Vai trò chủ hệ thống: bao phủ quyền Nhân sự và thêm lớp cấu hình / dữ liệu.","textPreview":"Vai trò chủ hệ thống: bao phủ quyền Nhân sự và thêm lớp cấu hình / dữ liệu.","textChars":75,"textLines":1,"bbox":[902,260,312,52]}
+{"kind":"textbox","id":"sh/8vex0byt","slide":2,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[902,328,22,42]}
+{"kind":"textbox","id":"sh/zq5w3mxc","slide":2,"text":"Toàn quyền nghiệp vụ như Nhân sự","textPreview":"Toàn quyền nghiệp vụ như Nhân sự","textChars":32,"textLines":1,"bbox":[926,328,288,48]}
+{"kind":"textbox","id":"sh/e5wfahgr","slide":2,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[902,370,22,42]}
+{"kind":"textbox","id":"sh/edgjepcb","slide":2,"text":"Cấu hình công ty, WiFi whitelist, Database Admin","textPreview":"Cấu hình công ty, WiFi whitelist, Database Admin","textChars":48,"textLines":1,"bbox":[926,370,288,48]}
+{"kind":"textbox","id":"sh/fep07utw","slide":2,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[902,412,22,42]}
+{"kind":"textbox","id":"sh/gzy1gzuh","slide":2,"text":"Khóa / mở khóa, sửa, reset mật khẩu, xóa user","textPreview":"Khóa / mở khóa, sửa, reset mật khẩu, xóa user","textChars":45,"textLines":1,"bbox":[926,412,288,48]}
+{"kind":"textbox","id":"sh/107i94b2","slide":2,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[902,454,22,42]}
+{"kind":"textbox","id":"sh/69wja5cf","slide":2,"text":"Có quyền HCNS và Ban Giám Đốc trong workflow","textPreview":"Có quyền HCNS và Ban Giám Đốc trong workflow","textChars":44,"textLines":1,"bbox":[926,454,288,48]}
+{"kind":"textbox","id":"sh/ra503at0","slide":2,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[902,496,22,42]}
+{"kind":"textbox","id":"sh/sby1cfu5","slide":2,"text":"Xem toàn bộ task và dữ liệu quản trị","textPreview":"Xem toàn bộ task và dữ liệu quản trị","textChars":36,"textLines":1,"bbox":[926,496,288,48]}
+{"kind":"notes","id":"nt/gfg78b","slide":2,"text":""}
+{"kind":"slide","id":"sl/ptkq20","slide":3,"title":"PERMISSION MATRIX","textShapes":44}
+{"kind":"textbox","id":"sh/0fyxwfeh","slide":3,"text":"PERMISSION MATRIX","textPreview":"PERMISSION MATRIX","textChars":17,"textLines":1,"bbox":[42,28,520,28]}
+{"kind":"textbox","id":"sh/zepgnaxw","slide":3,"text":"Ma trận quyền theo module cho thấy Admin là lớp mở rộng của Nhân sự","textPreview":"Ma trận quyền theo module cho thấy Admin là lớp mở rộng của Nhân sự","textChars":67,"textLines":1,"bbox":[42,58,1050,76]}
+{"kind":"textbox","id":"sh/edwfu5wb","slide":3,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[1184,658,54,24]}
+{"kind":"shape","id":"sh/947yt4fy","slide":3,"bbox":[42,142,1196,1.2]}
+{"kind":"shape","id":"sh/ojyh0zet","slide":3,"bbox":[42,170,1077,46]}
+{"kind":"textbox","id":"sh/nipgrux8","slide":3,"text":"Module","textPreview":"Module","textChars":6,"textLines":1,"bbox":[52,178,232,34]}
+{"kind":"shape","id":"sh/mhgfypwn","slide":3,"bbox":[294,170,46,1.2]}
+{"kind":"textbox","id":"sh/ponyh0fu","slide":3,"text":"Nhân viên / TTS","textPreview":"Nhân viên / TTS","textChars":15,"textLines":1,"bbox":[304,178,255,34]}
+{"kind":"shape","id":"sh/4nexove9","slide":3,"bbox":[569,170,46,1.2]}
+{"kind":"textbox","id":"sh/epo7up4r","slide":3,"text":"Nhân sự","textPreview":"Nhân sự","textChars":7,"textLines":1,"bbox":[579,178,255,34]}
+{"kind":"shape","id":"sh/fqx83u5c","slide":3,"bbox":[844,170,46,1.2]}
+{"kind":"textbox","id":"sh/0r6pwzmx","slide":3,"text":"Admin / Anh Hậu","textPreview":"Admin / Anh Hậu","textChars":15,"textLines":1,"bbox":[854,178,255,34]}
+{"kind":"shape","id":"sh/1szq54n2","slide":3,"bbox":[42,216,1077,46]}
+{"kind":"textbox","id":"sh/2t87y94n","slide":3,"text":"Dashboard","textPreview":"Dashboard","textChars":9,"textLines":1,"bbox":[52,224,232,34]}
+{"kind":"shape","id":"sh/nuh87e58","slide":3,"bbox":[294,216,46,1.2]}
+{"kind":"textbox","id":"sh/ofqp0jmt","slide":3,"text":"Xem dữ liệu cá nhân","textPreview":"Xem dữ liệu cá nhân","textChars":19,"textLines":1,"bbox":[304,224,255,34]}
+{"kind":"shape","id":"sh/pgzq9o3e","slide":3,"bbox":[569,216,46,1.2]}
+{"kind":"textbox","id":"sh/ah87294z","slide":3,"text":"Xem chỉ số đội / công ty","textPreview":"Xem chỉ số đội / công ty","textChars":24,"textLines":1,"bbox":[579,224,255,34]}
+{"kind":"shape","id":"sh/bih8belk","slide":3,"bbox":[844,216,46,1.2]}
+{"kind":"textbox","id":"sh/7m1ozy1c","slide":3,"text":"Xem toàn bộ","textPreview":"Xem toàn bộ","textChars":11,"textLines":1,"bbox":[854,224,255,34]}
+{"kind":"shape","id":"sh/mls7qtk7","slide":3,"bbox":[42,262,1077,46]}
+{"kind":"textbox","id":"sh/9oj61oji","slide":3,"text":"Chấm công","textPreview":"Chấm công","textChars":9,"textLines":1,"bbox":[52,270,232,34]}
+{"kind":"shape","id":"sh/8napsj2x","slide":3,"bbox":[294,262,46,1.2]}
+{"kind":"textbox","id":"sh/zihove1g","slide":3,"text":"Đăng ký, check-in/out","textPreview":"Đăng ký, check-in/out","textChars":21,"textLines":1,"bbox":[304,270,255,34]}
+{"kind":"shape","id":"sh/yh87m9kv","slide":3,"bbox":[569,262,46,1.2]}
+{"kind":"textbox","id":"sh/lkj6xojm","slide":3,"text":"Xem / sửa dữ liệu","textPreview":"Xem / sửa dữ liệu","textChars":17,"textLines":1,"bbox":[579,270,255,34]}
+{"kind":"shape","id":"sh/kjapoj21","slide":3,"bbox":[844,262,46,1.2]}
+{"kind":"textbox","id":"sh/buhoru1k","slide":3,"text":"Xem / sửa toàn bộ","textPreview":"Xem / sửa toàn bộ","textChars":17,"textLines":1,"bbox":[854,270,255,34]}
+{"kind":"shape","id":"sh/at8ni9kz","slide":3,"bbox":[42,308,1077,46]}
+{"kind":"textbox","id":"sh/0z6lsvih","slide":3,"text":"Nghỉ phép","textPreview":"Nghỉ phép","textChars":9,"textLines":1,"bbox":[52,316,232,34]}
+{"kind":"shape","id":"sh/10fml0z2","slide":3,"bbox":[294,308,46,1.2]}
+{"kind":"textbox","id":"sh/ex43q50r","slide":3,"text":"Tạo, xem đơn của mình","textPreview":"Tạo, xem đơn của mình","textChars":21,"textLines":1,"bbox":[304,316,255,34]}
+{"kind":"shape","id":"sh/fyd4jahc","slide":3,"bbox":[569,308,46,1.2]}
+{"kind":"textbox","id":"sh/on6lwfit","slide":3,"text":"Duyệt / cập nhật đơn","textPreview":"Duyệt / cập nhật đơn","textChars":20,"textLines":1,"bbox":[579,316,255,34]}
+{"kind":"shape","id":"sh/pofmpkze","slide":3,"bbox":[844,308,46,1.2]}
+{"kind":"textbox","id":"sh/21o3u50n","slide":3,"text":"Duyệt + cấu hình loại nghỉ","textPreview":"Duyệt + cấu hình loại nghỉ","textChars":26,"textLines":1,"bbox":[854,316,255,34]}
+{"kind":"shape","id":"sh/n2x4nah8","slide":3,"bbox":[42,354,1077,46]}
+{"kind":"textbox","id":"sh/4r2lkbi9","slide":3,"text":"Công việc","textPreview":"Công việc","textChars":9,"textLines":1,"bbox":[52,362,232,34]}
+{"kind":"shape","id":"sh/5svmdgzu","slide":3,"bbox":[294,354,46,1.2]}
+{"kind":"textbox","id":"sh/x07m9k3q","slide":3,"text":"Task liên quan","textPreview":"Task liên quan","textChars":14,"textLines":1,"bbox":[304,362,255,34]}
+{"kind":"shape","id":"sh/wzy5gfm5","slide":3,"bbox":[569,354,46,1.2]}
+{"kind":"textbox","id":"sh/vyp47alk","slide":3,"text":"Quản lý nếu HCNS / liên quan","textPreview":"Quản lý nếu HCNS / liên quan","textChars":28,"textLines":1,"bbox":[579,362,255,34]}
+{"kind":"shape","id":"sh/axgne54z","slide":3,"bbox":[844,354,46,1.2]}
+{"kind":"textbox","id":"sh/9w7m503e","slide":3,"text":"Xem toàn bộ, quản trị","textPreview":"Xem toàn bộ, quản trị","textChars":21,"textLines":1,"bbox":[854,362,255,34]}
+{"kind":"shape","id":"sh/8vylcvmt","slide":3,"bbox":[42,400,1077,46]}
+{"kind":"textbox","id":"sh/nup43al8","slide":3,"text":"Tài sản","textPreview":"Tài sản","textChars":7,"textLines":1,"bbox":[52,408,232,34]}
+{"kind":"shape","id":"sh/m9w3a543","slide":3,"bbox":[294,400,46,1.2]}
+{"kind":"textbox","id":"sh/l8nm103i","slide":3,"text":"Khai báo / xem của mình","textPreview":"Khai báo / xem của mình","textChars":23,"textLines":1,"bbox":[304,408,255,34]}
+{"kind":"shape","id":"sh/07el8vmx","slide":3,"bbox":[569,400,46,1.2]}
+{"kind":"textbox","id":"sh/q1sbmxgj","slide":3,"text":"Theo dõi phòng ban / HCNS","textPreview":"Theo dõi phòng ban / HCNS","textChars":25,"textLines":1,"bbox":[579,408,255,34]}
+{"kind":"shape","id":"sh/r21sv2x4","slide":3,"bbox":[844,400,46,1.2]}
+{"kind":"textbox","id":"sh/s3ato7y9","slide":3,"text":"Toàn quyền + audit credential","textPreview":"Toàn quyền + audit credential","textChars":29,"textLines":1,"bbox":[854,408,255,34]}
+{"kind":"shape","id":"sh/d4jaxcfu","slide":3,"bbox":[42,446,1077,46]}
+{"kind":"textbox","id":"sh/ixsrixg7","slide":3,"text":"Phiếu lương","textPreview":"Phiếu lương","textChars":11,"textLines":1,"bbox":[52,454,232,34]}
+{"kind":"shape","id":"sh/3y1sr2xs","slide":3,"bbox":[294,446,46,1.2]}
+{"kind":"textbox","id":"sh/4zatknyd","slide":3,"text":"Xem, xác nhận, yêu cầu xem lại","textPreview":"Xem, xác nhận, yêu cầu xem lại","textChars":30,"textLines":1,"bbox":[304,454,255,34]}
+{"kind":"shape","id":"sh/50jatsfy","slide":3,"bbox":[569,446,46,1.2]}
+{"kind":"textbox","id":"sh/ut8redgb","slide":3,"text":"Tạo, sửa, xử lý review","textPreview":"Tạo, sửa, xử lý review","textChars":22,"textLines":1,"bbox":[579,454,255,34]}
+{"kind":"shape","id":"sh/vuhsnixw","slide":3,"bbox":[844,446,46,1.2]}
+{"kind":"textbox","id":"sh/jex8vedo","slide":3,"text":"Toàn quyền + khóa dữ liệu","textPreview":"Toàn quyền + khóa dữ liệu","textChars":25,"textLines":1,"bbox":[854,454,255,34]}
+{"kind":"shape","id":"sh/yd47m9w3","slide":3,"bbox":[42,492,1077,46]}
+{"kind":"textbox","id":"sh/l0fqxove","slide":3,"text":"Nhân viên / phòng ban","textPreview":"Nhân viên / phòng ban","textChars":21,"textLines":1,"bbox":[52,500,232,34]}
+{"kind":"shape","id":"sh/kz6poje9","slide":3,"bbox":[294,492,46,1.2]}
+{"kind":"textbox","id":"sh/72x8zydk","slide":3,"text":"Không truy cập quản trị","textPreview":"Không truy cập quản trị","textChars":23,"textLines":1,"bbox":[304,500,255,34]}
+{"kind":"shape","id":"sh/61o7qtwz","slide":3,"bbox":[569,492,46,1.2]}
+{"kind":"textbox","id":"sh/t4fq1ovq","slide":3,"text":"Xem / vận hành HR","textPreview":"Xem / vận hành HR","textChars":17,"textLines":1,"bbox":[579,500,255,34]}
+{"kind":"shape","id":"sh/836ps3e5","slide":3,"bbox":[844,492,46,1.2]}
+{"kind":"textbox","id":"sh/n6donuxg","slide":3,"text":"Sửa user, khóa, reset, xóa","textPreview":"Sửa user, khóa, reset, xóa","textChars":26,"textLines":1,"bbox":[854,500,255,34]}
+{"kind":"shape","id":"sh/m5k7epwv","slide":3,"bbox":[42,538,1077,46]}
+{"kind":"textbox","id":"sh/sbi5ovut","slide":3,"text":"Đánh giá hiệu suất","textPreview":"Đánh giá hiệu suất","textChars":18,"textLines":1,"bbox":[52,546,232,34]}
+{"kind":"shape","id":"sh/dcrmh0be","slide":3,"bbox":[294,538,46,1.2]}
+{"kind":"textbox","id":"sh/qp0nmlcn","slide":3,"text":"TTS xác nhận / phản hồi","textPreview":"TTS xác nhận / phản hồi","textChars":23,"textLines":1,"bbox":[304,546,255,34]}
+{"kind":"shape","id":"sh/ra94fqd8","slide":3,"bbox":[569,538,46,1.2]}
+{"kind":"textbox","id":"sh/4ni5kvuh","slide":3,"text":"HCNS phân công, nhận, khóa","textPreview":"HCNS phân công, nhận, khóa","textChars":26,"textLines":1,"bbox":[579,546,255,34]}
+{"kind":"shape","id":"sh/5ormdgv2","slide":3,"bbox":[844,538,46,1.2]}
+{"kind":"textbox","id":"sh/ilg3ilcr","slide":3,"text":"Phê duyệt như BGD + HCNS","textPreview":"Phê duyệt như BGD + HCNS","textChars":24,"textLines":1,"bbox":[854,546,255,34]}
+{"kind":"shape","id":"sh/3mp4bqdw","slide":3,"bbox":[42,584,1077,46]}
+{"kind":"textbox","id":"sh/oj25wfu1","slide":3,"text":"Hệ thống","textPreview":"Hệ thống","textChars":8,"textLines":1,"bbox":[52,592,232,34]}
+{"kind":"shape","id":"sh/9kbmpkb6","slide":3,"bbox":[294,584,46,1.2]}
+{"kind":"textbox","id":"sh/xkvipw3q","slide":3,"text":"Không","textPreview":"Không","textChars":5,"textLines":1,"bbox":[304,592,255,34]}
+{"kind":"shape","id":"sh/wjmhwrm5","slide":3,"bbox":[569,584,46,1.2]}
+{"kind":"textbox","id":"sh/vid0nmlk","slide":3,"text":"Không / hạn chế","textPreview":"Không / hạn chế","textChars":15,"textLines":1,"bbox":[579,592,255,34]}
+{"kind":"shape","id":"sh/ah4zuh4z","slide":3,"bbox":[844,584,46,1.2]}
+{"kind":"textbox","id":"sh/5ofitw3m","slide":3,"text":"Settings, WiFi, DB Admin","textPreview":"Settings, WiFi, DB Admin","textChars":24,"textLines":1,"bbox":[854,592,255,34]}
+{"kind":"textbox","id":"sh/kn610rmh","slide":3,"text":"Ghi chú: trong code, role='manager' được dùng cho Nhân sự; một số quyền chuyên biệt vẫn kiểm theo department như Phòng HCNS hoặc Ban Giám Đốc.","textPreview":"Ghi chú: trong code, role='manager' được dùng cho Nhân sự; một số quyền chuyên biệt vẫn kiểm theo department như Phòng HCNS hoặc Ban Giám...","textChars":142,"textLines":1,"bbox":[42,642,1060,32]}
+{"kind":"notes","id":"nt/ptkq20","slide":3,"text":""}
+{"kind":"slide","id":"sl/gg6ola","slide":4,"title":"EMPLOYEE / INTERN","textShapes":18}
+{"kind":"textbox","id":"sh/k7uxsjup","slide":4,"text":"EMPLOYEE / INTERN","textPreview":"EMPLOYEE / INTERN","textChars":17,"textLines":1,"bbox":[42,28,520,28]}
+{"kind":"textbox","id":"sh/j6lwjet4","slide":4,"text":"Nhân viên và TTS chủ yếu thao tác trên phạm vi cá nhân","textPreview":"Nhân viên và TTS chủ yếu thao tác trên phạm vi cá nhân","textChars":54,"textLines":1,"bbox":[42,58,1050,76]}
+{"kind":"textbox","id":"sh/y5cfq9cj","slide":4,"text":"04","textPreview":"04","textChars":2,"textLines":1,"bbox":[1184,658,54,24]}
+{"kind":"shape","id":"sh/twnypob6","slide":4,"bbox":[42,142,1196,1.2]}
+{"kind":"textbox","id":"sh/svuxw3ul","slide":4,"text":"Công việc chính","textPreview":"Công việc chính","textChars":15,"textLines":1,"bbox":[42,174,360,30]}
+{"kind":"textbox","id":"sh/7algnyt0","slide":4,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[42,224,22,46]}
+{"kind":"textbox","id":"sh/69cfutcf","slide":4,"text":"Đăng ký hình thức làm việc và chấm công theo ngày.","textPreview":"Đăng ký hình thức làm việc và chấm công theo ngày.","textChars":50,"textLines":1,"bbox":[66,224,496,52]}
+{"kind":"textbox","id":"sh/h0nyt8b2","slide":4,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[42,270,22,46]}
+{"kind":"textbox","id":"sh/gzexk3uh","slide":4,"text":"Gửi đơn nghỉ phép, chỉnh / xóa khi còn phù hợp với workflow.","textPreview":"Gửi đơn nghỉ phép, chỉnh / xóa khi còn phù hợp với workflow.","textChars":60,"textLines":1,"bbox":[66,270,496,52]}
+{"kind":"textbox","id":"sh/6pk3ahgj","slide":4,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[42,316,22,46]}
+{"kind":"textbox","id":"sh/7qd43mh4","slide":4,"text":"Tạo task, cập nhật task được giao hoặc do mình tạo.","textPreview":"Tạo task, cập nhật task được giao hoặc do mình tạo.","textChars":51,"textLines":1,"bbox":[66,316,496,52]}
+{"kind":"textbox","id":"sh/srmlcryp","slide":4,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[42,362,22,46]}
+{"kind":"textbox","id":"sh/tsvm5cza","slide":4,"text":"Xem phiếu lương đã phát hành, xác nhận hoặc yêu cầu xem lại.","textPreview":"Xem phiếu lương đã phát hành, xác nhận hoặc yêu cầu xem lại.","textChars":60,"textLines":1,"bbox":[66,362,496,52]}
+{"kind":"textbox","id":"sh/ud43ehgv","slide":4,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[42,408,22,46]}
+{"kind":"textbox","id":"sh/fed47mhg","slide":4,"text":"Khai báo tài sản của bản thân, xem credential nếu được phép.","textPreview":"Khai báo tài sản của bản thân, xem credential nếu được phép.","textChars":60,"textLines":1,"bbox":[66,408,496,52]}
+{"kind":"shape","id":"sh/gfmlgry1","slide":4,"bbox":[650,178,520,318]}
+{"kind":"shape","id":"sh/hgvm9wzm","slide":4,"bbox":[684,214,160,28]}
+{"kind":"textbox","id":"sh/ax032xgr","slide":4,"text":"Điểm riêng của TTS","textPreview":"Điểm riêng của TTS","textChars":18,"textLines":1,"bbox":[694,220,140,18]}
+{"kind":"textbox","id":"sh/bitkv2hw","slide":4,"text":"Khi có phiếu đánh giá hiệu suất, TTS được xem kết quả, xác nhận hoặc yêu cầu xem xét lại trước khi chuyển lên phê duyệt.","textPreview":"Khi có phiếu đánh giá hiệu suất, TTS được xem kết quả, xác nhận hoặc yêu cầu xem xét lại trước khi chuyển lên phê duyệt.","textChars":120,"textLines":1,"bbox":[684,264,430,126]}
+{"kind":"textbox","id":"sh/z2p03yxo","slide":4,"text":"Không có quyền xem dữ liệu toàn công ty, chỉnh user, cấu hình hệ thống hoặc truy cập database admin.","textPreview":"Không có quyền xem dữ liệu toàn công ty, chỉnh user, cấu hình hệ thống hoặc truy cập database admin.","textChars":100,"textLines":1,"bbox":[684,420,420,48]}
+{"kind":"shape","id":"sh/e1gjatwj","slide":4,"bbox":[42,596,760,1.2]}
+{"kind":"textbox","id":"sh/1o7i58fu","slide":4,"text":"Ý nghĩa vận hành: nhóm này cần UI đơn giản, tập trung vào tự phục vụ và minh bạch dữ liệu cá nhân.","textPreview":"Ý nghĩa vận hành: nhóm này cần UI đơn giản, tập trung vào tự phục vụ và minh bạch dữ liệu cá nhân.","textChars":98,"textLines":1,"bbox":[42,616,900,28]}
+{"kind":"notes","id":"nt/gg6ola","slide":4,"text":""}
+{"kind":"slide","id":"sl/ojtgmx","slide":5,"title":"HR OPERATIONS","textShapes":26}
+{"kind":"textbox","id":"sh/tsbidg3m","slide":5,"text":"HR OPERATIONS","textPreview":"HR OPERATIONS","textChars":13,"textLines":1,"bbox":[42,28,520,28]}
+{"kind":"textbox","id":"sh/65kzi14v","slide":5,"text":"Nhân sự là lớp vận hành nghiệp vụ, không phải chủ hệ thống","textPreview":"Nhân sự là lớp vận hành nghiệp vụ, không phải chủ hệ thống","textChars":58,"textLines":1,"bbox":[42,58,1050,76]}
+{"kind":"textbox","id":"sh/76t0b6lg","slide":5,"text":"05","textPreview":"05","textChars":2,"textLines":1,"bbox":[1184,658,54,24]}
+{"kind":"shape","id":"sh/k3ihgrm5","slide":5,"bbox":[42,142,1196,1.2]}
+{"kind":"shape","id":"sh/54ri9w3a","slide":5,"bbox":[42,170,780,55]}
+{"kind":"textbox","id":"sh/i10ze14z","slide":5,"text":"Nhóm chức năng","textPreview":"Nhóm chức năng","textChars":14,"textLines":1,"bbox":[52,178,230,43]}
+{"kind":"shape","id":"sh/j2907mlk","slide":5,"bbox":[292,170,55,1.2]}
+{"kind":"textbox","id":"sh/ozm1sv29","slide":5,"text":"Nhân sự có thể làm","textPreview":"Nhân sự có thể làm","textChars":18,"textLines":1,"bbox":[302,178,510,43]}
+{"kind":"shape","id":"sh/p0vil03u","slide":5,"bbox":[42,225,780,55]}
+{"kind":"textbox","id":"sh/d0vapsnm","slide":5,"text":"Chấm công","textPreview":"Chấm công","textChars":9,"textLines":1,"bbox":[52,233,230,43]}
+{"kind":"shape","id":"sh/czmtgn61","slide":5,"bbox":[292,225,55,1.2]}
+{"kind":"textbox","id":"sh/bydsni5g","slide":5,"text":"Xem tổng hợp, lọc theo phòng ban, sửa bản ghi","textPreview":"Xem tổng hợp, lọc theo phòng ban, sửa bản ghi","textChars":45,"textLines":1,"bbox":[302,233,510,43]}
+{"kind":"shape","id":"sh/qx4bedov","slide":5,"bbox":[42,280,780,55]}
+{"kind":"textbox","id":"sh/pwval8na","slide":5,"text":"Nghỉ phép","textPreview":"Nghỉ phép","textChars":9,"textLines":1,"bbox":[52,288,230,43]}
+{"kind":"shape","id":"sh/4vmtcn6p","slide":5,"bbox":[292,280,55,1.2]}
+{"kind":"textbox","id":"sh/3udsji5k","slide":5,"text":"Xem đơn toàn công ty, duyệt / từ chối đơn","textPreview":"Xem đơn toàn công ty, duyệt / từ chối đơn","textChars":41,"textLines":1,"bbox":[302,288,510,43]}
+{"kind":"shape","id":"sh/2tkbadoz","slide":5,"bbox":[42,335,780,55]}
+{"kind":"textbox","id":"sh/9szuxcnu","slide":5,"text":"Lương","textPreview":"Lương","textChars":5,"textLines":1,"bbox":[52,343,230,43]}
+{"kind":"shape","id":"sh/8r6to7m9","slide":5,"bbox":[292,335,55,1.2]}
+{"kind":"textbox","id":"sh/s7y5gfyh","slide":5,"text":"Tạo phiếu, xử lý review, xuất / khóa theo workflow","textPreview":"Tạo phiếu, xử lý review, xuất / khóa theo workflow","textChars":50,"textLines":1,"bbox":[302,343,510,43]}
+{"kind":"shape","id":"sh/t87m9kz2","slide":5,"bbox":[42,390,780,55]}
+{"kind":"textbox","id":"sh/6lg3e5gb","slide":5,"text":"Nhân sự","textPreview":"Nhân sự","textChars":7,"textLines":1,"bbox":[52,398,230,43]}
+{"kind":"shape","id":"sh/7mp47ahw","slide":5,"bbox":[292,390,55,1.2]}
+{"kind":"textbox","id":"sh/kjylcvyl","slide":5,"text":"Xem danh sách user, vòng đời nhân sự nếu thuộc HCNS/BGD","textPreview":"Xem danh sách user, vòng đời nhân sự nếu thuộc HCNS/BGD","textChars":55,"textLines":1,"bbox":[302,398,510,43]}
+{"kind":"shape","id":"sh/5k7m50z6","slide":5,"bbox":[42,445,780,55]}
+{"kind":"textbox","id":"sh/ihw3a5gf","slide":5,"text":"Phòng ban","textPreview":"Phòng ban","textChars":9,"textLines":1,"bbox":[52,453,230,43]}
+{"kind":"shape","id":"sh/jip43qh0","slide":5,"bbox":[292,445,55,1.2]}
+{"kind":"textbox","id":"sh/wfel8vy9","slide":5,"text":"Tạo, sửa, xóa phòng ban","textPreview":"Tạo, sửa, xóa phòng ban","textChars":23,"textLines":1,"bbox":[302,453,510,43]}
+{"kind":"shape","id":"sh/xgnm10zu","slide":5,"bbox":[42,500,780,55]}
+{"kind":"textbox","id":"sh/zal4rq1w","slide":5,"text":"Tuyển dụng / MKT","textPreview":"Tuyển dụng / MKT","textChars":16,"textLines":1,"bbox":[52,508,230,43]}
+{"kind":"shape","id":"sh/y9cnilkb","slide":5,"bbox":[292,500,55,1.2]}
+{"kind":"textbox","id":"sh/lcnmd0jm","slide":5,"text":"Quản lý ứng viên và chiến dịch","textPreview":"Quản lý ứng viên và chiến dịch","textChars":30,"textLines":1,"bbox":[302,508,510,43]}
+{"kind":"shape","id":"sh/0be5kv2h","slide":5,"bbox":[878,190,310,340]}
+{"kind":"textbox","id":"sh/ne5ofq1s","slide":5,"text":"Ranh giới quan trọng","textPreview":"Ranh giới quan trọng","textChars":20,"textLines":1,"bbox":[910,226,240,34]}
+{"kind":"textbox","id":"sh/mdwnmlk7","slide":5,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[910,292,18,24]}
+{"kind":"textbox","id":"sh/9gn6h0jy","slide":5,"text":"Không có Database Admin.","textPreview":"Không có Database Admin.","textChars":24,"textLines":1,"bbox":[936,292,210,46]}
+{"kind":"textbox","id":"sh/8fe5ov2d","slide":5,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[910,348,18,24]}
+{"kind":"textbox","id":"sh/vi5oja14","slide":5,"text":"Không cấu hình WiFi / company settings.","textPreview":"Không cấu hình WiFi / company settings.","textChars":39,"textLines":1,"bbox":[936,348,210,46]}
+{"kind":"textbox","id":"sh/ahwnq5kj","slide":5,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[910,404,18,24]}
+{"kind":"textbox","id":"sh/ul47m98f","slide":5,"text":"Không reset mật khẩu hoặc xóa user nếu UI đang giới hạn cho admin.","textPreview":"Không reset mật khẩu hoặc xóa user nếu UI đang giới hạn cho admin.","textChars":66,"textLines":1,"bbox":[936,404,210,46]}
+{"kind":"textbox","id":"sh/vmx8ve90","slide":5,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[910,460,18,24]}
+{"kind":"textbox","id":"sh/gn6pojql","slide":5,"text":"Một số workflow hiệu suất yêu cầu department HCNS.","textPreview":"Một số workflow hiệu suất yêu cầu department HCNS.","textChars":50,"textLines":1,"bbox":[936,460,210,46]}
+{"kind":"notes","id":"nt/ojtgmx","slide":5,"text":""}
+{"kind":"slide","id":"sl/40eee1","slide":6,"title":"ADMIN VS HR","textShapes":20}
+{"kind":"textbox","id":"sh/qpgzi1cz","slide":6,"text":"ADMIN VS HR","textPreview":"ADMIN VS HR","textChars":11,"textLines":1,"bbox":[42,28,520,28]}
+{"kind":"textbox","id":"sh/dc7ytwba","slide":6,"text":"Admin giống Nhân sự ở nghiệp vụ, khác ở quyền sở hữu hệ thống","textPreview":"Admin giống Nhân sự ở nghiệp vụ, khác ở quyền sở hữu hệ thống","textChars":61,"textLines":1,"bbox":[42,58,1050,76]}
+{"kind":"textbox","id":"sh/sbyhkbu5","slide":6,"text":"06","textPreview":"06","textChars":2,"textLines":1,"bbox":[1184,658,54,24]}
+{"kind":"shape","id":"sh/3m5gnmt8","slide":6,"bbox":[42,142,1196,1.2]}
+{"kind":"textbox","id":"sh/ilwfehcn","slide":6,"text":"Giống nhau","textPreview":"Giống nhau","textChars":10,"textLines":1,"bbox":[42,176,240,30]}
+{"kind":"textbox","id":"sh/5onypwbe","slide":6,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[42,232,22,50]}
+{"kind":"textbox","id":"sh/4nehgrut","slide":6,"text":"Cùng thấy các khu vực quản lý công ty trong sidebar.","textPreview":"Cùng thấy các khu vực quản lý công ty trong sidebar.","textChars":52,"textLines":1,"bbox":[66,232,456,56]}
+{"kind":"textbox","id":"sh/vi5gjmtc","slide":6,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[42,282,22,50]}
+{"kind":"textbox","id":"sh/uhcfahcr","slide":6,"text":"Cùng xử lý nghiệp vụ vận hành như chấm công, nghỉ phép, lương, phòng ban.","textPreview":"Cùng xử lý nghiệp vụ vận hành như chấm công, nghỉ phép, lương, phòng ban.","textChars":73,"textLines":1,"bbox":[66,282,456,56]}
+{"kind":"textbox","id":"sh/8zulg7yh","slide":6,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[42,332,22,50]}
+{"kind":"textbox","id":"sh/tk32pcz2","slide":6,"text":"Cùng có thể xem dữ liệu tổng hợp thay vì chỉ dữ liệu cá nhân.","textPreview":"Cùng có thể xem dữ liệu tổng hợp thay vì chỉ dữ liệu cá nhân.","textChars":61,"textLines":1,"bbox":[66,332,456,56]}
+{"kind":"textbox","id":"sh/6xcjexgb","slide":6,"text":"Khác nhau","textPreview":"Khác nhau","textChars":9,"textLines":1,"bbox":[660,176,240,30]}
+{"kind":"textbox","id":"sh/7ylkn2hw","slide":6,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[660,232,22,50]}
+{"kind":"textbox","id":"sh/kvu1cnil","slide":6,"text":"Admin có DB Admin, Settings và WiFi Whitelist.","textPreview":"Admin có DB Admin, Settings và WiFi Whitelist.","textChars":46,"textLines":1,"bbox":[684,232,486,56]}
+{"kind":"textbox","id":"sh/lw32lsz6","slide":6,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[660,282,22,50]}
+{"kind":"textbox","id":"sh/ytsjax0f","slide":6,"text":"Admin có quyền sửa / khóa / reset / xóa tài khoản.","textPreview":"Admin có quyền sửa / khóa / reset / xóa tài khoản.","textChars":50,"textLines":1,"bbox":[684,282,486,56]}
+{"kind":"textbox","id":"sh/ju1kj2h0","slide":6,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[660,332,22,50]}
+{"kind":"textbox","id":"sh/4reloryp","slide":6,"text":"Admin được coi như HCNS và Ban Giám Đốc trong nhiều guard.","textPreview":"Admin được coi như HCNS và Ban Giám Đốc trong nhiều guard.","textChars":58,"textLines":1,"bbox":[684,332,486,56]}
+{"kind":"textbox","id":"sh/5sn2xwza","slide":6,"text":"•","textPreview":"•","textChars":1,"textLines":1,"bbox":[660,382,22,50]}
+{"kind":"textbox","id":"sh/d8j2hwre","slide":6,"text":"Admin thấy toàn bộ task; Nhân sự thường bị ràng bởi vai trò / phòng ban / liên quan.","textPreview":"Admin thấy toàn bộ task; Nhân sự thường bị ràng bởi vai trò / phòng ban / liên quan.","textChars":84,"textLines":1,"bbox":[684,382,486,56]}
+{"kind":"shape","id":"sh/c7a18rqt","slide":6,"bbox":[42,548,1096,94]}
+{"kind":"textbox","id":"sh/r61kfm98","slide":6,"text":"Kết luận: Nhân sự vận hành quy trình HR hằng ngày; Admin là lớp chủ hệ thống, dùng khi cần cấu hình, can thiệp dữ liệu hoặc xử lý quyền cao nhất.","textPreview":"Kết luận: Nhân sự vận hành quy trình HR hằng ngày; Admin là lớp chủ hệ thống, dùng khi cần cấu hình, can thiệp dữ liệu hoặc xử lý quyền c...","textChars":145,"textLines":1,"bbox":[70,572,1038,50]}
+{"kind":"notes","id":"nt/40eee1","slide":6,"text":""}

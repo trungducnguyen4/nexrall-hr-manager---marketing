@@ -1,11 +1,11 @@
 import { api } from '../api.js';
-import { esc, roleBadge, setAvatar, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtMoney, initials, avatarColor, DEPARTMENTS, DEPT_CODE, lifecycleBadge, LIFECYCLE_STATUSES, noop, safeCb, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js';
+import { esc, roleBadge, setAvatar, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtMoney, initials, avatarColor, DEPT_CODE, lifecycleBadge, LIFECYCLE_STATUSES, noop, safeCb, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js';
 
 // Preview-only: mirrors server's nextEmployeeCode() logic (server always re-computes
 // and confirms the official code on save; this is just live UI feedback).
 function previewEmployeeCode(allUsers, type, department) {
-  const deptCode = DEPT_CODE[department];
-  if (!type || !deptCode) return '';
+  const deptCode = DEPT_CODE[department] || 'KHAC';
+  if (!type || !department) return '';
   const prefix = `${type}-${deptCode}-`;
   let maxSeq = 0;
   (allUsers||[]).forEach(u => {
@@ -45,6 +45,7 @@ export async function renderUsers(el, me) {
   `;
 
   let allUsers = [];
+  let allDepartments = [];
   let currentPage = 1;
 
   async function loadUsers() {
@@ -52,10 +53,17 @@ export async function renderUsers(el, me) {
     if (!listEl) return;
     listEl.innerHTML = loadingHTML();
     try {
-      allUsers = (await api.getUsers()).users || [];
+      const [usersRes, deptsRes] = await Promise.allSettled([api.getUsers(), api.getDepartments()]);
+      if (usersRes.status === 'rejected') throw usersRes.reason;
+      allUsers = usersRes.value.users || [];
+      allDepartments = deptsRes.status === 'fulfilled' ? (deptsRes.value.departments || []) : [];
       // Populate dept filter
-      const depts = [...new Set(allUsers.map(u => u.department).filter(Boolean))];
+      const depts = [...new Set([
+        ...allDepartments.map(d => d.name).filter(Boolean),
+        ...allUsers.map(u => u.department).filter(Boolean),
+      ])];
       const filterBar = document.getElementById('user-dept-filter');
+      filterBar.innerHTML = '<span class="filter-chip active" data-dept="">Táº¥t cáº£</span>';
       depts.forEach(d => {
         const chip = document.createElement('span');
         chip.className = 'filter-chip';
@@ -94,7 +102,7 @@ export async function renderUsers(el, me) {
     listEl.querySelectorAll('.list-item').forEach(item => {
       item.addEventListener('click', () => {
         const user = allUsers.find(u => u.id === parseInt(item.dataset.uid));
-        if (user) openUserDetail(user, me, loadUsers);
+        if (user) openUserDetail(user, me, loadUsers, allDepartments);
       });
     });
     bindPagination(listEl, page => { currentPage = page; renderList(); });
@@ -109,12 +117,12 @@ export async function renderUsers(el, me) {
     renderList();
   });
 
-  document.getElementById('btn-new-user')?.addEventListener('click', () => openUserForm(null, loadUsers, allUsers));
+  document.getElementById('btn-new-user')?.addEventListener('click', () => openUserForm(null, loadUsers, allUsers, allDepartments));
 
   loadUsers();
 }
 
-function openUserDetail(user, me, onRefresh = noop) {
+function openUserDetail(user, me, onRefresh = noop, departments = []) {
   onRefresh = safeCb(onRefresh);
   const isAdmin = me.role === 'admin';
   const canChangeLifecycle = isHrOrBod(me);
@@ -142,7 +150,7 @@ function openUserDetail(user, me, onRefresh = noop) {
 
   document.getElementById('ud-edit')?.addEventListener('click', () => {
     closeModal();
-    openUserForm(user, onRefresh);
+    openUserForm(user, onRefresh, [], departments);
   });
   document.getElementById('ud-lock')?.addEventListener('click', async () => {
     try {
@@ -184,9 +192,13 @@ function openLifecycleForm(user, onRefresh = noop) {
   });
 }
 
-function openUserForm(user, onRefresh = noop, allUsers = []) {
+function openUserForm(user, onRefresh = noop, allUsers = [], departments = []) {
   onRefresh = safeCb(onRefresh);
   const isEdit = !!user;
+  const departmentNames = [...new Set([
+    ...departments.map(d => d.name || d).filter(Boolean),
+    ...(user?.department ? [user.department] : []),
+  ])].sort((a, b) => String(a).localeCompare(String(b), 'vi'));
   openModal(isEdit ? 'Sửa nhân viên' : 'Thêm nhân viên', `
     <div class="input-row">
       <div class="field"><label>Loại nhân sự *</label>
@@ -211,7 +223,7 @@ function openUserForm(user, onRefresh = noop, allUsers = []) {
       <div class="field"><label>Phòng ban *</label>
         <select id="uf-dept">
           <option value="">-- Chọn phòng ban --</option>
-          ${DEPARTMENTS.map(d => `<option value="${esc(d)}" ${user?.department===d?'selected':''}>${esc(d)}</option>`).join('')}
+          ${departmentNames.map(d => `<option value="${esc(d)}" ${user?.department===d?'selected':''}>${esc(d)}</option>`).join('')}
         </select>
       </div>
       <div class="field"><label>Vị trí</label><input type="text" id="uf-pos" value="${esc(user?.position||'')}" placeholder="Designer"/></div>
