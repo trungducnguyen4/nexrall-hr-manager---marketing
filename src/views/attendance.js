@@ -4,9 +4,11 @@ import { esc, fmtDate, statusBadge, setAvatar, toast, openModal, closeModal, loa
 const WORK_TYPE_LABEL = { office: '🏢 Văn phòng', wfh: '🏠 WFH', business: '✈️ Công tác' };
 const SHIFT_LABEL = { morning: 'Ca sáng (08:30–12:00)', afternoon: 'Ca chiều (13:30–17:00)', full: 'Cả ngày' };
 const SHIFT_LABEL_SHORT = { morning: 'Ca sáng', afternoon: 'Ca chiều', full: 'Cả ngày' };
+const isHcnsDepartment = (department) => ['hcns', 'phong hcns', 'nhan su', 'phong nhan su', 'hanh chinh nhan su', 'hr'].includes(String(department || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim());
 
 export async function renderAttendance(el, me) {
   const isManager = me.role === 'admin' || me.role === 'manager';
+  const canManageAttendance = isManager || isHcnsDepartment(me.department);
 
   el.innerHTML = `
     <div class="page-header">
@@ -69,12 +71,15 @@ export async function renderAttendance(el, me) {
     <div class="card" style="margin-bottom:14px;">
       <div class="card-header" style="margin-bottom:10px;">
         <div class="card-title">📅 Lịch sử chấm công</div>
-        ${isManager ? `<button id="btn-add-att" class="btn-primary btn-sm">+ Thêm</button>` : ''}
+        <div style="display:flex;gap:8px;">
+          ${!canManageAttendance ? `<button id="btn-my-att-summary" class="btn-secondary btn-sm">Tổng kết của tôi</button>` : ''}
+          ${isManager ? `<button id="btn-add-att" class="btn-primary btn-sm">+ Thêm</button>` : ''}
+        </div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
         <input type="month" id="att-month-filter" class="w-full" style="max-width:180px;" value="${new Date().toISOString().slice(0,7)}"/>
         <input type="date" id="att-date-filter" class="w-full" style="max-width:170px;" title="Lọc theo ngày cụ thể"/>
-        ${isManager ? `
+          ${canManageAttendance ? `
 
           <input type="text" id="att-search" placeholder="Tìm theo tên, mã nhân viên..." style="min-width:220px;flex:1;"/>
           <select id="att-dept-filter" style="max-width:220px;">
@@ -277,6 +282,13 @@ export async function renderAttendance(el, me) {
     return bits.length ? `${badge}<div style="font-size:11px;color:var(--text-2);margin-top:2px;">${esc(bits.join(' · '))}</div>` : badge;
   }
 
+  function employeePeriodStatus(employee) {
+    if (employee.period_status === 'no_data') return '<span class="badge badge-gray">Chưa chấm công</span>';
+    if (employee.period_status === 'incomplete') return '<span class="badge badge-warning">Thiếu check-in/out</span>';
+    if (employee.period_status === 'late') return '<span class="badge badge-warning">Có đi muộn</span>';
+    return '<span class="badge badge-success">Đủ dữ liệu</span>';
+  }
+
   async function loadHistory() {
     const listEl = document.getElementById('att-list');
     if (!listEl) return;
@@ -291,12 +303,40 @@ export async function renderAttendance(el, me) {
       delete params.year;
     }
     try {
+      if (canManageAttendance) {
+        const { employees = [] } = await api.getAttendanceEmployees(params);
+        let filteredEmployees = filterBySearch(employees, document.getElementById('att-search')?.value || '', ['full_name', 'employee_code']);
+        filteredEmployees = filterByDepartment(filteredEmployees, document.getElementById('att-dept-filter')?.value || '', ['department']);
+        const pageData = paginateRows(filteredEmployees, historyPage);
+        historyPage = pageData.page;
+        if (!filteredEmployees.length) { listEl.innerHTML = emptyHTML('👥', 'Không có nhân viên phù hợp'); return; }
+        listEl.innerHTML = `
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Nhân viên</th><th>Phòng ban</th><th>Chức danh</th><th>Ngày công</th><th>Tổng giờ</th><th>Đi muộn</th><th>Thiếu check-in/out</th><th>Trạng thái kỳ</th></tr></thead>
+              <tbody>
+                ${pageData.rows.map(employee => `<tr class="att-employee-row" data-user-id="${employee.user_id}" role="button" tabindex="0" title="Xem tổng kết chấm công">
+                  <td><span style="font-weight:600">${esc(employee.full_name)}</span><br><span style="font-size:11px;color:var(--text-2)">${esc(employee.employee_code || '—')}</span></td>
+                  <td>${esc(employee.department || '—')}</td><td>${esc(employee.position || '—')}</td>
+                  <td>${Number(employee.actual_work_days || 0)}</td><td>${Number(employee.total_work_hours || 0).toFixed(1)}h</td>
+                  <td>${employee.late_days ? `${employee.late_days} ngày · ${employee.late_minutes}p` : '—'}</td>
+                  <td>${Number(employee.missing_checkin_days || 0)} / ${Number(employee.missing_checkout_days || 0)}</td><td>${employeePeriodStatus(employee)}</td>
+                </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>
+          ${paginationHTML(pageData)}
+        `;
+        listEl.querySelectorAll('.att-employee-row').forEach(row => {
+          const open = () => openAttendanceSummary(parseInt(row.dataset.userId));
+          row.addEventListener('click', open);
+          row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+        });
+        bindPagination(listEl, page => { historyPage = page; loadHistory(); });
+        return;
+      }
       const { attendance } = await api.getAttendance(params);
       let filteredAttendance = attendance || [];
-      if (isManager) {
-        filteredAttendance = filterBySearch(filteredAttendance, document.getElementById('att-search')?.value || '', ['full_name', 'employee_code']);
-        filteredAttendance = filterByDepartment(filteredAttendance, document.getElementById('att-dept-filter')?.value || '', ['department']);
-      }
       const pageData = paginateRows(filteredAttendance, historyPage);
       historyPage = pageData.page;
       if (!filteredAttendance.length) { listEl.innerHTML = emptyHTML('📅', 'Không có dữ liệu chấm công'); return; }
@@ -305,15 +345,12 @@ export async function renderAttendance(el, me) {
           <table>
             <thead>
               <tr>
-                ${isManager ? '<th>Nhân viên</th>' : ''}
                 <th>Ngày</th><th>Hình thức</th><th>Ca đăng ký</th><th>Vào</th><th>Ra</th><th>Giờ làm</th><th>Trạng thái</th><th>Ghi chú</th>
-                ${isManager ? '<th>Thao tác</th>' : ''}
               </tr>
             </thead>
             <tbody>
               ${pageData.rows.map(a => `
                 <tr>
-                  ${isManager ? `<td><span style="font-weight:600">${esc(a.full_name)}</span><br><span style="font-size:11px;color:var(--text-2)">${esc(a.employee_code||'—')}</span><br><span style="font-size:11px;color:var(--text-2)">${esc(a.department||'')}</span></td>` : ''}
                   <td style="white-space:nowrap">${esc(a.date)}</td>
                   <td style="white-space:nowrap">${esc((WORK_TYPE_LABEL[a.work_type] || WORK_TYPE_LABEL.office))}</td>
                   <td style="white-space:nowrap">${esc(SHIFT_LABEL_SHORT[a.shift] || SHIFT_LABEL_SHORT.full)}${a.work_type === 'business' ? `<br><span style="font-size:11px;color:var(--text-2)">${esc(a.expected_start||'—')}–${esc(a.expected_end||'—')}</span>` : ''}</td>
@@ -322,7 +359,6 @@ export async function renderAttendance(el, me) {
                   <td>${a.work_hours ? Number(a.work_hours).toFixed(1)+'h' : '—'}</td>
                   <td>${statusWithMinutes(a)}</td>
                   <td style="max-width:140px;">${esc(a.note||'—')}</td>
-                  ${isManager ? `<td><button class="btn-icon btn-edit-att" data-id="${a.id}" data-checkin="${esc(a.checkin_time||'')}" data-checkout="${esc(a.checkout_time||'')}" data-status="${esc(a.status)}" data-note="${esc(a.note||'')}" title="Sửa">✏️</button></td>` : ''}
                 </tr>
               `).join('')}
             </tbody>
@@ -330,14 +366,54 @@ export async function renderAttendance(el, me) {
         </div>
         ${paginationHTML(pageData)}
       `;
-      listEl.querySelectorAll('.btn-edit-att').forEach(btn => {
-        btn.addEventListener('click', () => openEditAttModal(btn.dataset));
-      });
       bindPagination(listEl, page => { historyPage = page; loadHistory(); });
     } catch(e) {
       listEl.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">${esc(e.message)}</div></div>`;
     }
   }
+
+  function openAttendanceSummary(employeeId) {
+    const monthValue = document.getElementById('att-month-filter')?.value || new Date().toISOString().slice(0, 7);
+    const dateValue = document.getElementById('att-date-filter')?.value || '';
+    const params = dateValue ? { from: dateValue, to: dateValue } : { year: monthValue.slice(0, 4), month: monthValue.slice(5, 7) };
+    openModal('Tổng kết chấm công nhân viên', `<div id="att-summary-content">${loadingHTML()}</div>`, `<button class="btn-secondary" id="att-summary-close">Đóng</button>`);
+    document.getElementById('modal')?.classList.add('modal--scroll-fixed', 'modal--attendance-summary');
+    document.getElementById('att-summary-close')?.addEventListener('click', closeModal);
+    api.getEmployeeAttendanceSummary(employeeId, params).then(data => {
+      const content = document.getElementById('att-summary-content');
+      if (!content) return;
+      const s = data.summary;
+      const metric = (label, value) => `<div class="att-summary-metric"><span>${label}</span><strong>${value}</strong></div>`;
+      content.innerHTML = `
+        <div class="att-summary-person">
+          <div><div class="att-summary-name">${esc(data.employee.full_name)}</div><div class="att-summary-meta">${esc(data.employee.employee_code || '—')} · ${esc(data.employee.department || 'Chưa có phòng ban')} · ${esc(data.employee.position || 'Nhân viên')}</div></div>
+          <span class="badge ${data.employee.is_active ? 'badge-success' : 'badge-gray'}">${data.employee.is_active ? 'Đang làm việc' : 'Ngừng hoạt động'}</span>
+        </div>
+        <div class="att-summary-period">Kỳ tổng kết: ${esc(data.period.from)} đến ${esc(data.period.to)}</div>
+        <div class="att-summary-grid">
+          ${metric('Ngày công chuẩn', s.standardWorkDays)}${metric('Ngày công thực tế', s.actualWorkDays)}${metric('Đủ ngày / nửa ngày', `${s.fullDays} / ${s.halfDays}`)}${metric('Văn phòng / WFH / công tác', `${s.officeDays} / ${s.wfhDays} / ${s.businessDays}`)}
+          ${metric('Nghỉ phép có duyệt', s.paidLeaveDays)}${metric('Vắng không phép', s.absentDays)}${metric('Thiếu vào / ra', `${s.missingCheckinDays} / ${s.missingCheckoutDays}`)}${metric('Đi muộn', `${s.lateDays} ngày · ${s.lateMinutes} phút`)}
+          ${metric('Về sớm', `${s.earlyDays} ngày · ${s.earlyMinutes} phút`)}${metric('Tổng giờ làm', `${s.totalWorkHours.toFixed(1)} giờ`)}${metric('Tỷ lệ chuyên cần', `${s.attendanceRate}%`)}
+        </div>
+        <div class="att-summary-detail-head"><h4>Chi tiết theo ngày</h4><div class="att-summary-filters"><select id="att-detail-status"><option value="">Mọi trạng thái</option><option value="late">Đi muộn</option><option value="absent">Vắng</option><option value="leave">Nghỉ phép</option></select><select id="att-detail-work"><option value="">Mọi hình thức</option><option value="office">Văn phòng</option><option value="wfh">WFH</option><option value="business">Công tác</option></select><select id="att-detail-exception"><option value="">Mọi ngoại lệ</option><option value="late">Đi muộn</option><option value="early">Về sớm</option><option value="missing">Thiếu check-in/out</option></select></div></div>
+        <div class="table-wrap"><table><thead><tr><th>Ngày</th><th>Thứ</th><th>Hình thức</th><th>Ca</th><th>Vào</th><th>Ra</th><th>Tổng giờ</th><th>Đi muộn</th><th>Về sớm</th><th>Trạng thái</th><th>Ghi chú</th>${isManager ? '<th>Thao tác</th>' : ''}</tr></thead><tbody id="att-detail-rows"></tbody></table></div>`;
+      const renderRows = () => {
+        const status = document.getElementById('att-detail-status').value;
+        const work = document.getElementById('att-detail-work').value;
+        const exception = document.getElementById('att-detail-exception').value;
+        const rows = data.records.filter(r => (!status || r.status === status) && (!work || r.work_type === work) && (!exception || (exception === 'late' && r.late_minutes > 0) || (exception === 'early' && r.early_minutes > 0) || (exception === 'missing' && (!r.checkin_time || !r.checkout_time))));
+        document.getElementById('att-detail-rows').innerHTML = rows.length ? rows.map(r => `<tr><td>${esc(r.date)}</td><td>${esc(new Date(r.date + 'T00:00:00').toLocaleDateString('vi-VN', { weekday: 'short' }))}</td><td>${esc(WORK_TYPE_LABEL[r.work_type] || WORK_TYPE_LABEL.office)}</td><td>${esc(SHIFT_LABEL_SHORT[r.shift] || SHIFT_LABEL_SHORT.full)}</td><td>${esc(r.checkin_time || '—')}</td><td>${esc(r.checkout_time || '—')}</td><td>${r.work_hours ? Number(r.work_hours).toFixed(1) + 'h' : '—'}</td><td>${r.late_minutes ? r.late_minutes + 'p' : '—'}</td><td>${r.early_minutes ? r.early_minutes + 'p' : '—'}</td><td>${statusBadge(r.status)}</td><td>${esc(r.note || '—')}</td>${isManager ? `<td><button class="btn-icon att-summary-edit" data-id="${r.id}" data-checkin="${esc(r.checkin_time || '')}" data-checkout="${esc(r.checkout_time || '')}" data-status="${esc(r.status)}" data-note="${esc(r.note || '')}" title="Sửa">✏️</button></td>` : ''}</tr>`).join('') : `<tr><td colspan="${isManager ? 12 : 11}" class="att-summary-empty">Không có bản ghi phù hợp.</td></tr>`;
+        document.querySelectorAll('.att-summary-edit').forEach(btn => btn.addEventListener('click', () => openEditAttModal(btn.dataset)));
+      };
+      ['att-detail-status', 'att-detail-work', 'att-detail-exception'].forEach(id => document.getElementById(id).addEventListener('change', renderRows));
+      renderRows();
+    }).catch(error => {
+      const content = document.getElementById('att-summary-content');
+      if (content) content.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">${esc(error.message || 'Không thể tải tổng kết chấm công')}</div></div>`;
+    });
+  }
+
+  document.getElementById('btn-my-att-summary')?.addEventListener('click', () => openAttendanceSummary(me.id));
 
   function openEditAttModal(data) {
     openModal('Sửa chấm công', `

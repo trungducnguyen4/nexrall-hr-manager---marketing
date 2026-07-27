@@ -293,7 +293,7 @@ export function openModal(title, bodyHtml, footerHtml = '') {
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = bodyHtml;
   document.getElementById('modal-footer').innerHTML = footerHtml;
-  document.getElementById('modal')?.classList.remove('modal--scroll-fixed', 'modal--project');
+  document.getElementById('modal')?.classList.remove('modal--scroll-fixed', 'modal--project', 'modal--attendance-summary');
   ov.classList.remove('hidden');
 }
 

@@ -9,7 +9,7 @@
 
 // ===================== MIGRATIONS =====================
 let _migrated = false;
-const SCHEMA_VERSION = '2026-07-23-dynamic-departments';
+const SCHEMA_VERSION = '2026-07-27-leave-workflow';
 const SEED_VERSION = '2026-07-22-seed-v1';
 
 async function migrate(env) {
@@ -341,6 +341,15 @@ async function migrate(env) {
     reason TEXT,
     created_at TEXT DEFAULT (datetime('now','localtime'))
   )`); } catch (_) {}
+  // Employee profile: additive migration only, preserving all existing accounts.
+  for (const [column, type] of Object.entries({
+    birth_date:'TEXT', gender:'TEXT', national_id:'TEXT', home_address:'TEXT', emergency_contact_name:'TEXT', emergency_contact_phone:'TEXT',
+    direct_manager_id:'INTEGER', work_location:'TEXT', contract_type:'TEXT', contract_start_date:'TEXT', contract_end_date:'TEXT', contract_signed_date:'TEXT', official_date:'TEXT', termination_date:'TEXT',
+    allowance:'REAL DEFAULT 0', insurance_salary:'REAL DEFAULT 0', bank_account_holder:'TEXT', tax_code:'TEXT', social_insurance_number:'TEXT', insurance_hospital:'TEXT',
+    avatar_url:'TEXT', national_id_document_url:'TEXT', degree_document_url:'TEXT', contract_document_url:'TEXT', personnel_decision_url:'TEXT'
+  })) { try { await env.DB.exec(`ALTER TABLE users ADD COLUMN ${column} ${type}`); } catch (_) {} }
+  for (const [column, type] of Object.entries({ current_approver:'TEXT', approval_level:'INTEGER DEFAULT 1', submitted_at:'TEXT' })) { try { await env.DB.exec(`ALTER TABLE leave_requests ADD COLUMN ${column} ${type}`); } catch (_) {} }
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS leave_approval_history (id INTEGER PRIMARY KEY AUTOINCREMENT, leave_request_id INTEGER NOT NULL, approval_level INTEGER NOT NULL, actor_id INTEGER, actor_name TEXT, action TEXT NOT NULL, note TEXT, created_at TEXT DEFAULT (datetime('now','localtime')))`); } catch (_) {}
   // Asset handover (Bàn giao tài sản cho TTS)
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS asset_handovers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -698,7 +707,7 @@ function isDeptManager(u, ownerDept) {
   return !!u && u.role === 'manager' && !!ownerDept && u.department === ownerDept;
 }
 
-const LIFECYCLE_STATUSES = ['Chờ tiếp nhận', 'Thực tập', 'Thử việc', 'Chính thức', 'Đã nghỉ'];
+const LIFECYCLE_STATUSES = ['Chờ tiếp nhận', 'Thực tập', 'Thử việc', 'Cộng tác viên', 'Chính thức', 'Đã nghỉ'];
 
 // ===================== ĐÁNH GIÁ HIỆU SUẤT — CRITERIA (mirrors src/utils.js EVAL_GROUPS) =====
 // Kept as a compact {code: maxScore} map for server-side score validation only — the full
@@ -1186,11 +1195,14 @@ async function seedLeaveTypes(env) {
     updated_at TEXT DEFAULT (datetime('now','localtime'))
   )`).run();
   const rows = [
-    ['annual', 'Phep nam', 'paid', 1, 0, 0, null, 1],
-    ['sick', 'Om dau', 'paid', 0, 1, 0, null, 1],
-    ['personal', 'Viec ca nhan', 'unpaid', 0, 0, 0, null, 1],
-    ['maternity', 'Thai san', 'paid', 0, 1, 1, null, 1],
-    ['other', 'Khac', 'configurable', 0, 0, 0, null, 1],
+    ['annual', 'Phép năm', 'paid', 1, 0, 0, null, 1],
+    ['sick', 'Nghỉ ốm', 'paid', 0, 1, 0, null, 1],
+    ['personal', 'Nghỉ việc riêng', 'unpaid', 0, 0, 0, null, 1],
+    ['maternity', 'Nghỉ thai sản', 'paid', 0, 1, 1, null, 1],
+    ['unpaid', 'Nghi khong huong luong', 'unpaid', 0, 0, 1, null, 1],
+    ['personal_paid', 'Nghi viec rieng huong luong', 'paid', 0, 0, 0, null, 1],
+    ['compensatory', 'Nghi bu', 'paid', 0, 0, 0, null, 1],
+    ['other', 'Khác', 'configurable', 0, 0, 0, null, 1],
   ];
   await env.DB.batch(rows.map(r => env.DB.prepare(
     'INSERT OR IGNORE INTO leave_types (code,name,paid_policy,deducts_annual_leave,requires_evidence,requires_bod_approval,max_days,is_active) VALUES (?,?,?,?,?,?,?,?)'
@@ -1587,6 +1599,9 @@ export async function handle(request, env) {
 
   const isAdmin = me.role === 'admin';
   const isManager = me.role === 'manager' || isAdmin;
+  // Accept legacy HR/HCNS department labels while retaining the canonical scope.
+  const isAttendanceHcns = normalizeDeptName(me.department) === 'Phòng HCNS';
+  const isAttendanceAdmin = isManager || isAttendanceHcns;
 
   const DB_ADMIN_TABLES = {
     users: { label: 'Users', hidden: ['password_hash'], readonly: ['id', 'created_at'] },
@@ -1713,7 +1728,7 @@ export async function handle(request, env) {
   if (path === '/api/users' && request.method === 'GET') {
     if (!isManager) return json({ error: 'Không có quyền' }, 403);
     const { results } = await env.DB.prepare(
-      'SELECT id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at FROM users ORDER BY id'
+      'SELECT id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at,birth_date,gender,national_id,home_address,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,contract_start_date,contract_end_date,contract_signed_date,official_date,termination_date,allowance,insurance_salary,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url FROM users ORDER BY id'
     ).all();
     return json({ users: results });
   }
@@ -1733,8 +1748,8 @@ export async function handle(request, env) {
       const code = await nextEmployeeCode(env, empType, b.department);
       try {
         const r = await env.DB.prepare(
-          'INSERT INTO users (employee_code,employee_type,full_name,email,password_hash,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)'
-        ).bind(code,empType,b.full_name,b.email,hash,b.role||'employee',normalizeDeptName(b.department||''),b.position||'',b.avatar_color||'#4F46E5',ini,b.phone||'',b.salary||0,b.bank_account||'',b.bank_name||'').run();
+          'INSERT INTO users (employee_code,employee_type,full_name,email,password_hash,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,birth_date,gender,national_id,home_address,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,contract_start_date,contract_end_date,contract_signed_date,official_date,termination_date,allowance,insurance_salary,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
+        ).bind(code,empType,b.full_name,b.email,hash,b.role||'employee',normalizeDeptName(b.department||''),b.position||'',b.avatar_color||'#4F46E5',ini,b.phone||'',b.salary||0,b.bank_account||'',b.bank_name||'',b.birth_date||null,b.gender||'',b.national_id||'',b.home_address||'',b.emergency_contact_name||'',b.emergency_contact_phone||'',b.direct_manager_id||null,b.work_location||'',b.contract_type||'',b.contract_start_date||null,b.contract_end_date||null,b.contract_signed_date||null,b.official_date||null,b.termination_date||null,b.allowance||0,b.insurance_salary||0,b.bank_account_holder||'',b.tax_code||'',b.social_insurance_number||'',b.insurance_hospital||'',b.avatar_url||'',b.national_id_document_url||'',b.degree_document_url||'',b.contract_document_url||'',b.personnel_decision_url||'').run();
         return json({ ok: true, id: r.meta.last_row_id, employee_code: code });
       } catch (e) {
         lastErr = e;
@@ -1753,7 +1768,7 @@ export async function handle(request, env) {
     if (request.method === 'GET') {
       if (!isManager && me.id !== uid) return json({ error: 'Không có quyền' }, 403);
       const row = await env.DB.prepare(
-        'SELECT id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at FROM users WHERE id=?'
+        'SELECT id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at,birth_date,gender,national_id,home_address,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,contract_start_date,contract_end_date,contract_signed_date,official_date,termination_date,allowance,insurance_salary,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url FROM users WHERE id=?'
       ).bind(uid).first();
       if (!row) return json({ error: 'Không tìm thấy' }, 404);
       return json({ user: row });
@@ -1769,9 +1784,9 @@ export async function handle(request, env) {
         extraSql = ', password_hash=?';
         extraBinds = [newHash];
       }
-      const binds = [b.full_name,b.email,b.role||'employee',normalizeDeptName(b.department||''),b.position||'',b.avatar_color||'#4F46E5',ini,b.phone||'',b.salary||0,b.bank_account||'',b.bank_name||'',b.is_active??1,...extraBinds,uid];
+      const binds = [b.full_name,b.email,b.role||'employee',normalizeDeptName(b.department||''),b.position||'',b.avatar_color||'#4F46E5',ini,b.phone||'',b.salary||0,b.bank_account||'',b.bank_name||'',b.is_active??1,b.birth_date||null,b.gender||'',b.national_id||'',b.home_address||'',b.emergency_contact_name||'',b.emergency_contact_phone||'',b.direct_manager_id||null,b.work_location||'',b.contract_type||'',b.contract_start_date||null,b.contract_end_date||null,b.contract_signed_date||null,b.official_date||null,b.termination_date||null,b.allowance||0,b.insurance_salary||0,b.bank_account_holder||'',b.tax_code||'',b.social_insurance_number||'',b.insurance_hospital||'',b.avatar_url||'',b.national_id_document_url||'',b.degree_document_url||'',b.contract_document_url||'',b.personnel_decision_url||'',...extraBinds,uid];
       await env.DB.prepare(
-        `UPDATE users SET full_name=?,email=?,role=?,department=?,position=?,avatar_color=?,avatar_initials=?,phone=?,salary=?,bank_account=?,bank_name=?,is_active=?${extraSql} WHERE id=?`
+        `UPDATE users SET full_name=?,email=?,role=?,department=?,position=?,avatar_color=?,avatar_initials=?,phone=?,salary=?,bank_account=?,bank_name=?,is_active=?,birth_date=?,gender=?,national_id=?,home_address=?,emergency_contact_name=?,emergency_contact_phone=?,direct_manager_id=?,work_location=?,contract_type=?,contract_start_date=?,contract_end_date=?,contract_signed_date=?,official_date=?,termination_date=?,allowance=?,insurance_salary=?,bank_account_holder=?,tax_code=?,social_insurance_number=?,insurance_hospital=?,avatar_url=?,national_id_document_url=?,degree_document_url=?,contract_document_url=?,personnel_decision_url=?${extraSql} WHERE id=?`
       ).bind(...binds).run();
       return json({ ok: true });
     }
@@ -1962,7 +1977,8 @@ export async function handle(request, env) {
     const date = url.searchParams.get('date');
     let q = 'SELECT a.*, u.full_name, u.employee_code, u.department FROM attendance a JOIN users u ON a.user_id=u.id WHERE 1=1';
     const binds = [];
-    if (!isManager) { q += ' AND a.user_id=?'; binds.push(me.id); }
+    if (!isAttendanceAdmin) { q += ' AND a.user_id=?'; binds.push(me.id); }
+    else if (me.role === 'manager' && !isAdmin && !isAttendanceHcns) { q += ' AND u.department=?'; binds.push(me.department); }
     else if (userId) { q += ' AND a.user_id=?'; binds.push(parseInt(userId)); }
     if (date) { q += ' AND a.date=?'; binds.push(date); }
     else if (month && year) {
@@ -1975,6 +1991,49 @@ export async function handle(request, env) {
     const stmt = env.DB.prepare(q);
     const { results } = await (binds.length ? stmt.bind(...binds) : stmt).all();
     return json({ attendance: results });
+  }
+
+  // One row per active employee for the selected attendance period. The users
+  // table is deliberately the source so employees without attendance records
+  // remain visible to Admin/HCNS and department managers.
+  if (path === '/api/attendance/employees' && request.method === 'GET') {
+    if (!isAttendanceAdmin) return json({ error: 'Không có quyền' }, 403);
+    const date = String(url.searchParams.get('date') || '');
+    const month = parseInt(url.searchParams.get('month'));
+    const year = parseInt(url.searchParams.get('year'));
+    let from = String(url.searchParams.get('from') || '');
+    let to = String(url.searchParams.get('to') || '');
+    if (date) {
+      from = date;
+      to = date;
+    } else if (!from || !to) {
+      const now = new Date();
+      const resolvedYear = year || now.getFullYear();
+      const resolvedMonth = month || (now.getMonth() + 1);
+      if (resolvedMonth < 1 || resolvedMonth > 12) return json({ error: 'Tháng không hợp lệ' }, 400);
+      from = attIsoDate(resolvedYear, resolvedMonth, 1);
+      to = attIsoDate(resolvedYear, resolvedMonth, new Date(resolvedYear, resolvedMonth, 0).getDate());
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return json({ error: 'Khoảng ngày không hợp lệ' }, 400);
+    let q = `SELECT u.id AS user_id,u.full_name,u.employee_code,u.department,u.position,
+      COUNT(a.id) AS record_count,
+      COALESCE(SUM(CASE WHEN a.checkin_time IS NOT NULL AND a.checkout_time IS NOT NULL AND a.status NOT IN ('absent','cancelled','rejected') THEN CASE WHEN a.shift IN ('morning','afternoon') THEN 0.5 ELSE 1 END ELSE 0 END),0) AS actual_work_days,
+      COALESCE(SUM(CASE WHEN a.checkin_time IS NOT NULL AND a.checkout_time IS NOT NULL AND a.status NOT IN ('absent','cancelled','rejected') THEN a.work_hours ELSE 0 END),0) AS total_work_hours,
+      COALESCE(SUM(CASE WHEN COALESCE(a.late_minutes,0)>0 THEN 1 ELSE 0 END),0) AS late_days,
+      COALESCE(SUM(CASE WHEN COALESCE(a.late_minutes,0)>0 THEN a.late_minutes ELSE 0 END),0) AS late_minutes,
+      COALESCE(SUM(CASE WHEN a.status NOT IN ('absent','leave','cancelled','rejected') AND a.checkin_time IS NULL THEN 1 ELSE 0 END),0) AS missing_checkin_days,
+      COALESCE(SUM(CASE WHEN a.status NOT IN ('absent','leave','cancelled','rejected') AND a.checkin_time IS NOT NULL AND a.checkout_time IS NULL THEN 1 ELSE 0 END),0) AS missing_checkout_days
+      FROM users u LEFT JOIN attendance a ON a.user_id=u.id AND a.date BETWEEN ? AND ?
+      WHERE u.is_active=1`;
+    const binds = [from, to];
+    if (me.role === 'manager' && !isAdmin && !isAttendanceHcns) { q += ' AND u.department=?'; binds.push(me.department); }
+    q += ' GROUP BY u.id ORDER BY u.full_name COLLATE NOCASE';
+    const { results = [] } = await env.DB.prepare(q).bind(...binds).all();
+    const employees = results.map(row => {
+      const missingDays = Number(row.missing_checkin_days || 0) + Number(row.missing_checkout_days || 0);
+      return { ...row, period_status: !Number(row.record_count) ? 'no_data' : missingDays ? 'incomplete' : Number(row.late_days) ? 'late' : 'complete' };
+    });
+    return json({ period: { from, to }, employees });
   }
 
   if (path === '/api/attendance/today' && request.method === 'GET') {
@@ -2123,6 +2182,62 @@ export async function handle(request, env) {
     }
     const summary = await buildMonthlyWorkSummary(env, targetUserId, month, year);
     return json(summary);
+  }
+
+  // Employee attendance detail for the selected period. Summary is calculated
+  // from the full period query, never from the paginated attendance list.
+  const attendanceEmployeeMatch = path.match(/^\/api\/attendance\/employees\/(\d+)\/summary$/);
+  if (attendanceEmployeeMatch && request.method === 'GET') {
+    const employeeId = parseInt(attendanceEmployeeMatch[1]);
+    const employee = await env.DB.prepare('SELECT id,full_name,employee_code,department,position,is_active FROM users WHERE id=?').bind(employeeId).first();
+    if (!employee) return json({ error: 'Không tìm thấy nhân viên' }, 404);
+    if (employeeId !== me.id) {
+      if (!isAttendanceAdmin) return json({ error: 'Không có quyền' }, 403);
+      if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && employee.department !== me.department) return json({ error: 'Không có quyền xem nhân sự ngoài phòng ban' }, 403);
+    }
+    const month = parseInt(url.searchParams.get('month'));
+    const year = parseInt(url.searchParams.get('year'));
+    let from = String(url.searchParams.get('from') || '');
+    let to = String(url.searchParams.get('to') || '');
+    if (!from || !to) {
+      const now = new Date();
+      const resolvedYear = year || now.getFullYear();
+      const resolvedMonth = month || (now.getMonth() + 1);
+      if (resolvedMonth < 1 || resolvedMonth > 12) return json({ error: 'Tháng không hợp lệ' }, 400);
+      from = attIsoDate(resolvedYear, resolvedMonth, 1);
+      to = attIsoDate(resolvedYear, resolvedMonth, new Date(resolvedYear, resolvedMonth, 0).getDate());
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return json({ error: 'Khoảng ngày không hợp lệ' }, 400);
+    const { results: records = [] } = await env.DB.prepare(
+      'SELECT * FROM attendance WHERE user_id=? AND date BETWEEN ? AND ? ORDER BY date ASC'
+    ).bind(employeeId, from, to).all();
+    let paidLeaveDays = 0;
+    try {
+      const { results: leaves = [] } = await env.DB.prepare(`SELECT lr.start_date,lr.end_date FROM leave_requests lr LEFT JOIN leave_types lt ON lr.type=lt.code WHERE (CAST(lr.user_id AS TEXT)=CAST(? AS TEXT) OR lr.employee_id=?) AND lr.status='approved' AND COALESCE(lt.paid_policy,'paid')='paid' AND date(lr.start_date)<=date(?) AND date(lr.end_date)>=date(?)`).bind(employeeId, employeeId, to, from).all();
+      for (const leave of leaves) paidLeaveDays += attCountBusinessDaysBetween(String(leave.start_date) > from ? String(leave.start_date) : from, String(leave.end_date) < to ? String(leave.end_date) : to);
+    } catch (_) {}
+    const activeRecords = records.filter(r => !['cancelled', 'rejected'].includes(r.status));
+    const complete = activeRecords.filter(r => r.checkin_time && r.checkout_time && r.status !== 'absent');
+    const fullDays = complete.filter(r => r.shift !== 'morning' && r.shift !== 'afternoon').length;
+    const halfDays = complete.length - fullDays;
+    const missingCheckinDays = activeRecords.filter(r => !r.checkin_time && r.status !== 'absent' && r.status !== 'leave').length;
+    const missingCheckoutDays = activeRecords.filter(r => r.checkin_time && !r.checkout_time).length;
+    const lateDays = activeRecords.filter(r => Number(r.late_minutes || 0) > 0).length;
+    const earlyDays = activeRecords.filter(r => Number(r.early_minutes || 0) > 0).length;
+    const totalWorkHours = complete.reduce((sum, r) => sum + Number(r.work_hours || 0), 0);
+    const standardWorkDays = attCountBusinessDaysBetween(from, to);
+    const actualWorkDays = fullDays + halfDays * .5;
+    return json({ employee, period: { from, to }, summary: {
+      standardWorkDays, actualWorkDays, fullDays, halfDays,
+      officeDays: complete.filter(r => (r.work_type || 'office') === 'office').length,
+      wfhDays: complete.filter(r => r.work_type === 'wfh').length,
+      businessDays: complete.filter(r => r.work_type === 'business').length,
+      paidLeaveDays, absentDays: activeRecords.filter(r => r.status === 'absent').length,
+      missingCheckinDays, missingCheckoutDays, lateDays,
+      lateMinutes: activeRecords.reduce((sum, r) => sum + Number(r.late_minutes || 0), 0), earlyDays,
+      earlyMinutes: activeRecords.reduce((sum, r) => sum + Number(r.early_minutes || 0), 0), totalWorkHours,
+      attendanceRate: standardWorkDays ? Number(((actualWorkDays / standardWorkDays) * 100).toFixed(1)) : 0,
+    }, records });
   }
 
   // ── WIFI WHITELIST ───────────────────────────────────────────────
@@ -2950,9 +3065,14 @@ export async function handle(request, env) {
     const typeCode = String(b.type || 'annual').trim();
     const leaveType = await env.DB.prepare('SELECT * FROM leave_types WHERE code=? AND is_active=1').bind(typeCode).first();
     if (!leaveType) return json({ error: 'Loai nghi phep khong hop le hoac da tat' }, 400);
+    const leaveDays = attCountBusinessDaysBetween(b.start_date, b.end_date) || 1;
+    const isHcnsApplicant = normalizeDeptName(me.department) === 'Phòng HCNS';
+    const needsBod = leaveDays >= 3 || typeCode === 'unpaid' || isHcnsApplicant;
+    const currentApprover = isHcnsApplicant ? 'Trưởng phòng HCNS' : 'Quản lý trực tiếp';
     const r = await env.DB.prepare(
-      'INSERT INTO leave_requests (user_id,employee_id,type,start_date,end_date,reason,status) VALUES (?,?,?,?,?,?,?)'
-    ).bind(String(me.id), me.id, typeCode, b.start_date, b.end_date, b.reason||'', 'pending').run();
+      'INSERT INTO leave_requests (user_id,employee_id,type,start_date,end_date,reason,status,current_approver,approval_level,submitted_at) VALUES (?,?,?,?,?,?,?,?,?,datetime(\'now\',\'localtime\'))'
+    ).bind(String(me.id), me.id, typeCode, b.start_date, b.end_date, b.reason||'', 'pending', currentApprover, 1).run();
+    await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(r.meta.last_row_id, 0, me.id, me.full_name, 'submitted', needsBod ? 'Luồng cần Ban Giám đốc phê duyệt cuối' : 'Luồng Quản lý trực tiếp → HCNS').run();
     return json({ ok: true, id: r.meta.last_row_id });
     } catch (e) {
       return json({ error: 'Leave create failed: ' + (e && e.message ? e.message : String(e)) }, 500);
@@ -2974,6 +3094,7 @@ export async function handle(request, env) {
       if (!updates.length) return json({ error: 'Không có dữ liệu cập nhật' }, 400);
       vals.push(id);
       await env.DB.prepare(`UPDATE leave_requests SET ${updates.join(',')} WHERE id=?`).bind(...vals).run();
+      if (b.status !== undefined) await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action) VALUES (?,?,?,?,?)').bind(id, 1, me.id, me.full_name, b.status).run();
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {

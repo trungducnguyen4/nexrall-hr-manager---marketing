@@ -175,6 +175,14 @@ export const api = {
     const q = new URLSearchParams(params).toString();
     return req('GET', '/api/attendance/summary' + (q ? '?' + q : ''));
   },
+  getAttendanceEmployees: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return cachedGet('/api/attendance/employees' + (q ? '?' + q : ''));
+  },
+  getEmployeeAttendanceSummary: (employeeId, params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return req('GET', `/api/attendance/employees/${employeeId}/summary` + (q ? '?' + q : ''));
+  },
   registerAttendance: (body) => req('POST', '/api/attendance/register', body).then(r => { inv('/api/attendance'); return r; }),
   checkin:  (body) => req('POST', '/api/attendance/checkin', body).then(r => { inv('/api/attendance'); return r; }),
   checkout: (body) => req('POST', '/api/attendance/checkout', body).then(r => { inv('/api/attendance'); return r; }),
