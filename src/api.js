@@ -3,9 +3,34 @@
 // ════════════════════════════════════════════════
 
 let _token = null;
+const NATIVE_API_ORIGIN = 'https://nexrall-hr-manager-marketing.netviettv-hr-manager.workers.dev';
+const isNativeApp = () => !!globalThis.Capacitor?.isNativePlatform?.();
+const apiUrl = (path) => isNativeApp() ? NATIVE_API_ORIGIN + path : path;
 
-export function setToken(t) { _token = t; if (t) localStorage.setItem('hr_token', t); else localStorage.removeItem('hr_token'); }
-export function loadToken() { _token = localStorage.getItem('hr_token') || null; return _token; }
+async function nativeTokenStore(value) {
+  const plugin = globalThis.Capacitor?.Plugins?.SecureStoragePlugin;
+  if (!plugin) return false;
+  try {
+    if (value) await plugin.set({ key: 'hr_token', value });
+    else await plugin.remove({ key: 'hr_token' });
+    return true;
+  } catch (_) { return false; }
+}
+
+export async function setToken(t) {
+  _token = t || null;
+  if (isNativeApp()) { await nativeTokenStore(_token); return; }
+  if (_token) localStorage.setItem('hr_token', _token); else localStorage.removeItem('hr_token');
+}
+export async function loadToken() {
+  if (isNativeApp()) {
+    try { _token = (await globalThis.Capacitor?.Plugins?.SecureStoragePlugin?.get({ key: 'hr_token' }))?.value || null; }
+    catch (_) { _token = null; }
+    return _token;
+  }
+  _token = localStorage.getItem('hr_token') || null;
+  return _token;
+}
 export function getToken() { return _token; }
 
 // ════════════════════════════════════════════════
@@ -30,6 +55,7 @@ const CACHE_TTL = {
   '/api/payroll':          30_000,
   '/api/invoices':         30_000,
   '/api/users/basic':      60_000,
+  '/api/integrations/vietqr/banks': 24 * 60 * 60_000,
   '/api/assets':           20_000,
   '/api/eval-periods':     60_000,
   '/api/evaluations':      20_000,
@@ -72,7 +98,7 @@ function headers(extra = {}) {
 async function req(method, path, body) {
   const opts = { method, headers: headers() };
   if (body !== undefined) opts.body = JSON.stringify(body);
-  const res = await fetch(path, opts);
+  const res = await fetch(apiUrl(path), opts);
   const text = await res.text().catch(() => '');
   let data = {};
   if (text) {
@@ -81,6 +107,17 @@ async function req(method, path, body) {
   }
   const message = data.error || data.message || (res.statusText ? `${res.status} ${res.statusText}` : `HTTP ${res.status}`);
   if (!res.ok) throw Object.assign(new Error(message), { status: res.status, data });
+  return data;
+}
+
+async function uploadFile(path, file) {
+  const form = new FormData();
+  form.append('file', file);
+  const h = {};
+  if (_token) h['X-Auth-Token'] = _token;
+  const res = await fetch(apiUrl(path), { method: 'POST', headers: h, body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.error || 'Không thể tải tệp lên'), { status: res.status, data });
   return data;
 }
 
@@ -149,9 +186,14 @@ export const api = {
   getUsers:   () => cachedGet('/api/users'),
   createUser: (d) => req('POST', '/api/users', d).then(r => { inv('/api/users', '/api/employees'); return r; }),
   updateUser: (id, d) => req('PUT', `/api/users/${id}`, d).then(r => { inv('/api/users', '/api/employees', '/api/attendance', '/api/tasks', '/api/invoices'); return r; }),
+  uploadUserDocument: (id, kind, file) => uploadFile(`/api/users/${id}/documents/${kind}`, file).then(r => { inv('/api/users'); return r; }),
+  deleteUserDocument: (id, kind) => req('DELETE', `/api/users/${id}/documents/${kind}`).then(r => { inv('/api/users'); return r; }),
   deleteUser: (id) => req('DELETE', `/api/users/${id}`).then(r => { inv('/api/users', '/api/employees', '/api/attendance', '/api/tasks', '/api/invoices'); return r; }),
   // Safe minimal user fields (for pickers, e.g. Mentor select) — any authenticated user may call
   getUsersBasic: () => cachedGet('/api/users/basic'),
+  // Public reference data is fetched through our Worker so provider calls do
+  // not receive any employee financial or tax information.
+  getVietqrBanks: () => cachedGet('/api/integrations/vietqr/banks'),
   // Lifecycle status (Vòng đời nhân sự) — HCNS/Ban Giám Đốc only (enforced server-side)
   changeLifecycleStatus: (id, status, reason) =>
     req('PUT', `/api/users/${id}/lifecycle`, { status, reason }).then(r => { inv('/api/users'); return r; }),

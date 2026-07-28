@@ -10,3 +10,7 @@ binding = "ASSETS"
 binding = "DB"
 database_name = "nexrall-hr-manager-local"
 database_id = "1e0eeebd-82fa-4c10-a079-97d35308a58b"
+
+[[r2_buckets]]
+binding = "HR_DOCUMENTS"
+bucket_name = "netviet-hr-documents"

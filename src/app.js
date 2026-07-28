@@ -1,7 +1,8 @@
 // ════════════════════════════════════════════════
 //  HR Manager — Main App Entry
 // ════════════════════════════════════════════════
-import { api, setToken, loadToken, clearCache } from './api.js?v=20260722-payroll-export-ux';
+import { api, setToken, loadToken, clearCache } from './api.js?v=20260728-native-security';
+import { initNativeShell, verifyBiometricIfAvailable } from './native.js';
 import { setAvatar, toast, initials, avatarColor, closeModal } from './utils.js?v=20260722-payroll-export-ux';
 import { icon } from './icons.js';
 
@@ -10,10 +11,10 @@ let _viewModules = {};
 async function getView(name) {
   if (!_viewModules[name]) {
     if (name === 'dashboard')    _viewModules[name] = await import('./views/dashboard.js');
-    else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js?v=20260728-overtime');
+    else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js?v=20260728-summary-ux');
     else if (name === 'tasks')       _viewModules[name] = await import('./views/tasks.js?v=20260722-plain-task-groups');
     else if (name === 'invoices')    _viewModules[name] = await import('./views/invoices.js?v=20260728-overtime');
-    else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260722-role-label2');
+    else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260728-private-documents');
     else if (name === 'wifi')        _viewModules[name] = await import('./views/wifi.js');
     else if (name === 'settings')    _viewModules[name] = await import('./views/settings.js?v=20260728-overtime');
     else if (name === 'taskpanel')   _viewModules[name] = await import('./views/taskpanel.js?v=20260722-rich-task-editor');
@@ -76,7 +77,7 @@ loginForm.addEventListener('submit', async (e) => {
   loginError.classList.add('hidden');
   try {
     const { token, user: userData } = await api.login(user, pw);
-    setToken(token);
+    await setToken(token);
     me = userData;
     loginScreen.classList.add('hidden');
     appEl.classList.remove('hidden');
@@ -103,19 +104,20 @@ async function boot() {
   appEl.classList.add('hidden');
   loginScreen.classList.remove('hidden');
 
-  if (!loadToken()) return;
+  if (!await loadToken()) return;
 
   loginBtn.disabled = true;
   loginBtn.textContent = 'Đang kiểm tra phiên...';
   loginError.classList.add('hidden');
   try {
+    await verifyBiometricIfAvailable();
     const { user: userData } = await api.me();
     me = userData;
     loginScreen.classList.add('hidden');
     appEl.classList.remove('hidden');
     initApp();
   } catch (_) {
-    setToken(null);
+    await setToken(null);
     clearCache();
     loginUser.value = '';
     loginPw.value = '';
@@ -162,7 +164,7 @@ function initApp() {
 
   document.getElementById('btn-logout').addEventListener('click', async () => {
     try { await api.logout(); } catch(_) {}
-    setToken(null);
+    await setToken(null);
     me = null;
     // Clear all caches on logout
     clearCache();
@@ -508,4 +510,5 @@ function roleLabel(r) {
 //  START
 // ════════════════════════════════════════════════
 window.onerror = (msg, src, line, col, err) => console.error('APP ERROR:', msg, err);
+initNativeShell();
 boot();

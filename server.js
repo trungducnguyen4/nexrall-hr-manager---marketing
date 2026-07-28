@@ -12,6 +12,41 @@ let _migrated = false;
 const SCHEMA_VERSION = '2026-07-28-overtime-workflow';
 const SEED_VERSION = '2026-07-22-seed-v1';
 
+// VietQR's bank directory is public reference data, but fetching it through
+// the Worker keeps the browser within the app's CSP and gives us one place to
+// handle provider outages.  A short-lived isolate cache is sufficient here;
+// an expired cache is refreshed only when a HR-management user requests it.
+const VIETQR_BANKS_URL = 'https://api.vietqr.io/v2/banks';
+const VIETQR_BANKS_TTL_MS = 24 * 60 * 60 * 1000;
+let _vietqrBanksCache = { data: null, expiresAt: 0 };
+
+async function getVietqrBanks() {
+  if (_vietqrBanksCache.data && Date.now() < _vietqrBanksCache.expiresAt) {
+    return _vietqrBanksCache.data;
+  }
+  const response = await fetch(VIETQR_BANKS_URL, {
+    headers: { Accept: 'application/json' },
+    cf: { cacheTtl: 3600, cacheEverything: true },
+  });
+  if (!response.ok) throw new Error(`VietQR responded ${response.status}`);
+  const payload = await response.json();
+  if (payload?.code !== '00' || !Array.isArray(payload.data)) {
+    throw new Error('VietQR returned an invalid bank directory');
+  }
+  const data = payload.data
+    .filter(bank => bank && bank.shortName && bank.name && bank.bin)
+    .map(bank => ({
+      shortName: String(bank.shortName),
+      name: String(bank.name),
+      code: String(bank.code || ''),
+      bin: String(bank.bin),
+      logo: typeof bank.logo === 'string' && bank.logo.startsWith('https://api.vietqr.io/') ? bank.logo : '',
+    }))
+    .sort((a, b) => a.shortName.localeCompare(b.shortName, 'vi'));
+  _vietqrBanksCache = { data, expiresAt: Date.now() + VIETQR_BANKS_TTL_MS };
+  return data;
+}
+
 async function migrate(env) {
   if (_migrated) return;
   try {
@@ -741,6 +776,19 @@ function isDeptManager(u, ownerDept) {
 
 const LIFECYCLE_STATUSES = ['Chờ tiếp nhận', 'Thực tập', 'Thử việc', 'Cộng tác viên', 'Chính thức', 'Đã nghỉ'];
 
+// Private employee files stay in R2; only this Worker can read the bucket.
+// The DB keeps a stable internal route rather than a public object URL.
+const USER_DOCUMENTS = {
+  avatar: { column: 'avatar_url', label: 'Ảnh chân dung', maxBytes: 5 * 1024 * 1024, types: ['image/jpeg', 'image/png', 'image/webp'] },
+  national_id: { column: 'national_id_document_url', label: 'CCCD', maxBytes: 10 * 1024 * 1024, types: ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'] },
+  degree: { column: 'degree_document_url', label: 'Bằng cấp', maxBytes: 10 * 1024 * 1024, types: ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'] },
+  contract: { column: 'contract_document_url', label: 'Hợp đồng', maxBytes: 10 * 1024 * 1024, types: ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'] },
+  decision: { column: 'personnel_decision_url', label: 'Quyết định nhân sự', maxBytes: 10 * 1024 * 1024, types: ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'] },
+};
+function userDocumentKey(userId, kind) { return `employees/${userId}/${kind}`; }
+function userDocumentRoute(userId, kind) { return `/api/users/${userId}/documents/${kind}`; }
+function isManagedUserDocumentUrl(value, userId, kind) { return value === userDocumentRoute(userId, kind); }
+
 // ===================== ĐÁNH GIÁ HIỆU SUẤT — CRITERIA (mirrors src/utils.js EVAL_GROUPS) =====
 // Kept as a compact {code: maxScore} map for server-side score validation only — the full
 // label/description/scale metadata lives in ONE place (src/utils.js EVAL_GROUPS) and is never
@@ -1100,6 +1148,28 @@ async function buildMonthlyWorkSummary(env, userId, month, year) {
   };
 }
 
+// Best-effort edge throttle.  Cloudflare isolates do not share memory, so this
+// deliberately complements (rather than replaces) an account-level WAF rule.
+// It still stops bursts that hit the same isolate and keeps abusive UI loops
+// from amplifying writes to D1.
+const edgeRateBuckets = new Map();
+function clientIp(request) {
+  return (request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown')
+    .split(',')[0].trim();
+}
+function rateLimit(request, scope, limit, windowMs) {
+  const now = Date.now();
+  const key = `${scope}:${clientIp(request)}`;
+  const bucket = edgeRateBuckets.get(key);
+  if (!bucket || now >= bucket.resetAt) {
+    edgeRateBuckets.set(key, { count: 1, resetAt: now + windowMs });
+    return null;
+  }
+  bucket.count += 1;
+  if (bucket.count <= limit) return null;
+  return Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+}
+
 async function buildMonthlyOvertimeSummary(env, userId, month, year, baseSalary = 0) {
   const mm = String(month).padStart(2, '0');
   const { results = [] } = await env.DB.prepare(
@@ -1352,18 +1422,22 @@ async function seedIfNeeded(env) {
 // Returns { token: string|null, hasAuthHint: boolean }
 // hasAuthHint = true means the request carried an explicit auth attempt (even if malformed/expired)
 // token = the extracted 64-char hex token if found, otherwise null
-function extractHrToken(request) {
+function extractHrToken(request, env = {}) {
   const isHex64 = (s) => /^[0-9a-f]{64}$/i.test((s || '').trim());
 
   // a) X-Auth-Token header (set by HR frontend)
   const xat = (request.headers.get('X-Auth-Token') || '').trim();
   if (xat) return { token: isHex64(xat) ? xat.toLowerCase() : null, hasAuthHint: true };
 
-  // b) ?token= or ?useToken= query param
+  // b) Query-string tokens are disabled in production because URLs are copied
+  // into logs, browser history and analytics.  A temporary local-only switch is
+  // retained for development tooling.
   try {
-    const sp = new URL(request.url).searchParams;
-    const qt = (sp.get('token') || sp.get('useToken') || '').trim();
-    if (qt) return { token: isHex64(qt) ? qt.toLowerCase() : null, hasAuthHint: true };
+    if (env.ALLOW_QUERY_TOKEN === '1') {
+      const sp = new URL(request.url).searchParams;
+      const qt = (sp.get('token') || sp.get('useToken') || '').trim();
+      if (qt) return { token: isHex64(qt) ? qt.toLowerCase() : null, hasAuthHint: true };
+    }
   } catch (_) {}
 
   // c) Authorization header — look for an isolated 64-char hex token
@@ -1420,7 +1494,7 @@ async function getSessionFromToken(token, env) {
 // This prevents a captured-but-failed token (e.g. "undefined", expired, unknown) from accidentally
 // granting admin access via the platform fallback.
 async function resolveSession(request, env) {
-  const { token, hasAuthHint } = extractHrToken(request);
+  const { token, hasAuthHint } = extractHrToken(request, env);
 
   if (!hasAuthHint) return { session: null, explicitBadToken: false };
 
@@ -1492,10 +1566,18 @@ export async function handle(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
 
-  const json = (data, status = 200) =>
+  const json = (data, status = 200, extraHeaders = {}) =>
     new Response(JSON.stringify(data), {
       status,
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store, max-age=0',
+        'X-Content-Type-Options': 'nosniff',
+        'X-Frame-Options': 'DENY',
+        'Referrer-Policy': 'no-referrer',
+        'Permissions-Policy': 'camera=(), microphone=(), geolocation=(self)',
+        ...extraHeaders,
+      },
     });
 
   if (request.method === 'OPTIONS') return new Response(null, { status: 204 });
@@ -1504,7 +1586,8 @@ export async function handle(request, env) {
     await migrate(env);
     await seedIfNeeded(env);
   } catch (e) {
-    return json({ error: 'DB init failed: ' + e.message }, 500);
+    console.error('DB init failed', e);
+    return json({ error: 'Không thể khởi tạo dữ liệu, vui lòng thử lại sau' }, 500);
   }
 
   // ── GET CLIENT IP ────────────────────────────────────────────────
@@ -1513,25 +1596,15 @@ export async function handle(request, env) {
   }
 
   // ── DEBUG: inspect auth headers ─────────────────────────────────
-  if (path === '/api/debug-auth') {
-    const authHdr = request.headers.get('Authorization') || '';
-    const xat = request.headers.get('X-Auth-Token') || '';
-    const { token, hasAuthHint } = extractHrToken(request);
-    const session = token ? await getSessionFromToken(token, env) : null;
-    return json({
-      authorization: authHdr.substring(0, 100),
-      x_auth_token: xat.substring(0, 100),
-      extracted_token: token ? token.substring(0, 10) + '...' : null,
-      has_auth_hint: hasAuthHint,
-      session_user: session ? { id: session.uid, role: session.role, email: session.email } : null,
-      env_user_id: env.USER_ID,
-    });
-  }
+  // Never expose request credentials or platform identity in production.
+  if (path === '/api/debug-auth') return json({ error: 'Không tìm thấy' }, 404);
 
 
 
   // ── AUTH: LOGIN ──────────────────────────────────────────────────
   if (url.pathname === '/api/auth/login' && request.method === 'POST') {
+    const retryAfter = rateLimit(request, 'login', 10, 60 * 1000);
+    if (retryAfter) return json({ error: 'Thử lại sau ít phút', code: 'RATE_LIMITED' }, 429, { 'Retry-After': String(retryAfter) });
     const b = await request.json().catch(() => ({}));
     const { login, password } = b;
     if (!login || !password) return json({ error: 'Vui lòng nhập đầy đủ thông tin' }, 400);
@@ -1555,8 +1628,12 @@ export async function handle(request, env) {
     };
     return new Response(JSON.stringify({ token, user: userData }), {
       headers: {
-        'Content-Type': 'application/json',
-        'Set-Cookie': `hr_token=${token}; Path=/; HttpOnly; Max-Age=28800; SameSite=Lax`,
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store, max-age=0',
+        'X-Content-Type-Options': 'nosniff',
+        'X-Frame-Options': 'DENY',
+        'Referrer-Policy': 'no-referrer',
+        'Set-Cookie': `hr_token=${token}; Path=/; HttpOnly; Secure; Max-Age=28800; SameSite=Lax`,
       },
     });
   }
@@ -1564,7 +1641,7 @@ export async function handle(request, env) {
   // ── AUTH: LOGOUT ─────────────────────────────────────────────────
   if (path === '/api/auth/logout' && request.method === 'POST') {
     // Revoke using all possible token locations — mark revoked AND delete for belt+suspenders
-    const { token } = extractHrToken(request);
+    const { token } = extractHrToken(request, env);
     // Also check body for token (some clients send it in body)
     let bodyToken = null;
     try { const bd = await request.clone().json(); bodyToken = bd.token || null; } catch (_) {}
@@ -1584,14 +1661,7 @@ export async function handle(request, env) {
   // ── AUTH: ME ─────────────────────────────────────────────────────
   if (url.pathname === '/api/auth/me' && request.method === 'GET') {
     const { session, explicitBadToken } = await resolveSession(request, env);
-    if (!session) {
-      if (!explicitBadToken) {
-        // No explicit token → try platform identity
-        const pu = await getPlatformUser(env);
-        if (pu) return json({ user: { id: pu.uid, full_name: pu.full_name, email: pu.email, role: pu.role, department: pu.department, position: pu.position, avatar_color: pu.avatar_color, avatar_initials: pu.avatar_initials, employee_code: pu.employee_code, salary: pu.salary, phone: pu.phone, bank_account: pu.bank_account, bank_name: pu.bank_name, is_active: pu.is_active, lifecycle_status: pu.lifecycle_status } });
-      }
-      return json({ error: 'Chưa đăng nhập', code: 'UNAUTHORIZED' }, 401);
-    }
+    if (!session) return json({ error: 'Chưa đăng nhập', code: 'UNAUTHORIZED' }, 401);
     const userId = session.uid ?? session.id;
     return json({
       user: {
@@ -1608,16 +1678,15 @@ export async function handle(request, env) {
 
   // ── AUTH: CHANGE PASSWORD ────────────────────────────────────────
   if (path === '/api/auth/change-password' && (request.method === 'PUT' || request.method === 'POST')) {
+    const retryAfter = rateLimit(request, 'change-password', 5, 15 * 60 * 1000);
+    if (retryAfter) return json({ error: 'Thử lại sau ít phút', code: 'RATE_LIMITED' }, 429, { 'Retry-After': String(retryAfter) });
     const { session: cpSession, explicitBadToken: cpBad } = await resolveSession(request, env);
     let cpUser = cpSession ? { id: cpSession.uid ?? cpSession.id } : null;
-    if (!cpUser && !cpBad) {
-      const pu = await getPlatformUser(env);
-      if (pu) cpUser = { id: pu.uid };
-    }
     if (!cpUser) return json({ error: 'Chưa đăng nhập' }, 401);
     const b = await request.json().catch(() => ({}));
     const { old_password, new_password } = b;
     if (!old_password || !new_password) return json({ error: 'Thiếu thông tin' }, 400);
+    if (typeof new_password !== 'string' || new_password.length < 10 || new_password.length > 128) return json({ error: 'Mật khẩu mới phải từ 10 đến 128 ký tự' }, 400);
     const user = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(cpUser.id).first();
     if (!user) return json({ error: 'Không tìm thấy tài khoản' }, 404);
     const oldHash = await hashPassword(old_password);
@@ -1646,19 +1715,6 @@ export async function handle(request, env) {
       bank_name: mainSession.bank_name, is_active: mainSession.is_active,
       lifecycle_status: mainSession.lifecycle_status,
     };
-  } else if (!mainBad) {
-    // No explicit token → platform identity fallback
-    const pu = await getPlatformUser(env);
-    if (pu) {
-      me = {
-        id: pu.uid, full_name: pu.full_name, email: pu.email, role: pu.role,
-        department: pu.department, position: pu.position,
-        avatar_color: pu.avatar_color, avatar_initials: pu.avatar_initials,
-        employee_code: pu.employee_code, salary: pu.salary, phone: pu.phone,
-        bank_account: pu.bank_account, bank_name: pu.bank_name, is_active: pu.is_active,
-        lifecycle_status: pu.lifecycle_status,
-      };
-    }
   }
 
   if (!me) {
@@ -1666,38 +1722,43 @@ export async function handle(request, env) {
   }
 
   const isAdmin = me.role === 'admin';
-  const isManager = me.role === 'manager' || isAdmin;
+  const isManager = me.role === 'manager' || isAdmin || isHcns(me);
   // Accept legacy HR/HCNS department labels while retaining the canonical scope.
   const isAttendanceHcns = normalizeDeptName(me.department) === 'Phòng HCNS';
   const isAttendanceAdmin = isManager || isAttendanceHcns;
 
+  // ── INTEGRATIONS: VIETQR BANK DIRECTORY ──────────────────────────
+  // This reference list is intentionally available only to the same roles
+  // that can open the employee management screen.  No employee financial or
+  // tax data is sent to VietQR.
+  if (path === '/api/integrations/vietqr/banks' && request.method === 'GET') {
+    if (!isManager) return json({ error: 'Không có quyền' }, 403);
+    try {
+      const banks = await getVietqrBanks();
+      return json({ banks, source: 'VietQR', cached_until: new Date(_vietqrBanksCache.expiresAt).toISOString() });
+    } catch (error) {
+      console.error('VietQR bank directory unavailable', error);
+      return json({ error: 'Chưa tải được danh sách ngân hàng. Bạn vẫn có thể nhập thủ công.' }, 503);
+    }
+  }
+
   const DB_ADMIN_TABLES = {
-    users: { label: 'Users', hidden: ['password_hash'], readonly: ['id', 'created_at'] },
-    attendance: { label: 'Attendance', readonly: ['id', 'created_at'] },
+    // Database Admin is intentionally restricted to low-risk reference data.
+    // Personnel, attendance, OT, payroll, invoices and evaluations must go
+    // through their domain APIs so approval/audit rules cannot be bypassed.
     wifi_whitelist: { label: 'WiFi Whitelist', readonly: ['id'] },
     tasks: { label: 'Tasks', readonly: ['id', 'created_at', 'updated_at'] },
     subtasks: { label: 'Subtasks', readonly: ['id', 'created_at'] },
     task_comments: { label: 'Task Comments', readonly: ['id', 'created_at'] },
     task_followers: { label: 'Task Followers', readonly: ['id'] },
     task_activity: { label: 'Task Activity', readonly: ['id', 'created_at'] },
-    invoices: { label: 'Invoices', readonly: ['id'] },
-    invoice_history: { label: 'Invoice History', readonly: ['id', 'created_at'] },
-    invoice_review_requests: { label: 'Invoice Review Requests', readonly: ['id', 'created_at', 'updated_at'] },
     settings: { label: 'Settings', readonly: [] },
     departments: { label: 'Departments', readonly: ['id'] },
-    employees: { label: 'Employees', readonly: ['id'] },
-    leave_requests: { label: 'Leave Requests', readonly: ['id', 'created_at'] },
     leave_types: { label: 'Leave Types', readonly: ['id', 'created_at', 'updated_at'] },
     candidates: { label: 'Candidates', readonly: ['id'] },
-    payroll: { label: 'Payroll', readonly: ['id'] },
-    payroll_adjustments: { label: 'Payroll Adjustments', readonly: ['id', 'created_at', 'updated_at'] },
     campaigns: { label: 'Campaigns', readonly: ['id'] },
-    lifecycle_history: { label: 'Lifecycle History', readonly: ['id', 'changed_at'] },
     asset_handovers: { label: 'Asset Handovers', hidden: ['credential_encrypted', 'credential_iv'], readonly: ['id', 'created_at', 'updated_at'] },
     asset_credential_log: { label: 'Asset Credential Log', readonly: ['id', 'viewed_at'] },
-    eval_periods: { label: 'Evaluation Periods', readonly: ['id', 'created_at'] },
-    evaluations: { label: 'Evaluations', readonly: ['id', 'created_at', 'updated_at'] },
-    evaluation_history: { label: 'Evaluation History', readonly: ['id', 'created_at'] },
   };
   const dbAdminTableMatch = path.match(/^\/api\/db-admin\/tables\/([A-Za-z0-9_]+)$/);
   const dbAdminRowMatch = path.match(/^\/api\/db-admin\/tables\/([A-Za-z0-9_]+)\/([^/]+)$/);
@@ -1795,14 +1856,17 @@ export async function handle(request, env) {
   // ── USERS ────────────────────────────────────────────────────────
   if (path === '/api/users' && request.method === 'GET') {
     if (!isManager) return json({ error: 'Không có quyền' }, 403);
-    const { results } = await env.DB.prepare(
-      'SELECT id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at,birth_date,gender,national_id,home_address,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,contract_start_date,contract_end_date,contract_signed_date,official_date,termination_date,allowance,insurance_salary,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url FROM users ORDER BY id'
-    ).all();
+    const hasHrScope = isAdmin || isHcns(me);
+    const baseFields = hasHrScope
+      ? 'id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at,birth_date,gender,national_id,home_address,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,contract_start_date,contract_end_date,contract_signed_date,official_date,termination_date,allowance,insurance_salary,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url'
+      : 'id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,is_active,lifecycle_status,created_at,direct_manager_id,work_location,contract_type,avatar_url';
+    const stmt = env.DB.prepare(`SELECT ${baseFields} FROM users${hasHrScope ? '' : ' WHERE department=?'} ORDER BY id`);
+    const { results } = hasHrScope ? await stmt.all() : await stmt.bind(me.department).all();
     return json({ users: results });
   }
 
   if (path === '/api/users' && request.method === 'POST') {
-    if (!isManager) return json({ error: 'Không có quyền' }, 403);
+    if (!(isAdmin || isHcns(me))) return json({ error: 'Không có quyền' }, 403);
     const b = await request.json();
     if (!b.full_name || !b.email || !b.department) return json({ error: 'Thiếu thông tin bắt buộc' }, 400);
     const pw = b.password || 'Pass@123';
@@ -1830,11 +1894,70 @@ export async function handle(request, env) {
     return json({ error: 'Không thể sinh mã nhân viên, vui lòng thử lại' }, 500);
   }
 
+  // ── USERS: PRIVATE DOCUMENTS (R2) ─────────────────────────────────
+  const userDocumentMatch = path.match(/^\/api\/users\/(\d+)\/documents\/(avatar|national_id|degree|contract|decision)$/);
+  if (userDocumentMatch) {
+    const uid = parseInt(userDocumentMatch[1], 10);
+    const kind = userDocumentMatch[2];
+    const config = USER_DOCUMENTS[kind];
+    const hasHrScope = isAdmin || isHcns(me);
+    const target = await env.DB.prepare('SELECT id,department FROM users WHERE id=?').bind(uid).first();
+    if (!target) return json({ error: 'Không tìm thấy nhân viên' }, 404);
+    if (!env.HR_DOCUMENTS) return json({ error: 'Lưu trữ hồ sơ chưa được cấu hình' }, 503);
+
+    if (request.method === 'GET') {
+      const canReadAvatar = kind === 'avatar' && (hasHrScope || me.id === uid || (isManager && target.department === me.department));
+      if (!hasHrScope && !canReadAvatar && me.id !== uid) return json({ error: 'Không có quyền xem hồ sơ này' }, 403);
+      const object = await env.HR_DOCUMENTS.get(userDocumentKey(uid, kind));
+      if (!object) return json({ error: 'Tệp không tồn tại' }, 404);
+      const disposition = kind === 'avatar' ? 'inline' : 'attachment';
+      return new Response(object.body, {
+        headers: {
+          'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream',
+          'Content-Disposition': `${disposition}; filename="${kind}"`,
+          'Cache-Control': 'private, no-store, max-age=0',
+          'X-Content-Type-Options': 'nosniff',
+          'X-Frame-Options': 'DENY',
+          'Referrer-Policy': 'no-referrer',
+        },
+      });
+    }
+
+    if (!hasHrScope) return json({ error: 'Chỉ HCNS hoặc quản trị viên được tải hồ sơ lên' }, 403);
+    if (request.method === 'DELETE') {
+      await env.HR_DOCUMENTS.delete(userDocumentKey(uid, kind));
+      await env.DB.prepare(`UPDATE users SET ${config.column}='' WHERE id=?`).bind(uid).run();
+      return json({ ok: true });
+    }
+    if (request.method !== 'POST') return json({ error: 'Phương thức không được hỗ trợ' }, 405);
+
+    const retryAfter = rateLimit(request, 'employee-document-upload', 20, 10 * 60 * 1000);
+    if (retryAfter) return json({ error: 'Thử lại sau ít phút', code: 'RATE_LIMITED' }, 429, { 'Retry-After': String(retryAfter) });
+    const form = await request.formData().catch(() => null);
+    const file = form?.get('file');
+    if (!file || typeof file.stream !== 'function') return json({ error: 'Vui lòng chọn tệp để tải lên' }, 400);
+    const contentType = String(file.type || '').toLowerCase();
+    if (!config.types.includes(contentType)) return json({ error: `${config.label} chỉ nhận PDF, JPG, PNG hoặc WebP` }, 400);
+    if (!Number.isFinite(file.size) || file.size < 1 || file.size > config.maxBytes) {
+      return json({ error: `${config.label} vượt giới hạn ${config.maxBytes / 1024 / 1024} MB` }, 400);
+    }
+    await env.HR_DOCUMENTS.put(userDocumentKey(uid, kind), file.stream(), {
+      httpMetadata: { contentType, cacheControl: 'private, no-store' },
+      customMetadata: { uploaded_by: String(me.id), uploaded_at: new Date().toISOString() },
+    });
+    const url = userDocumentRoute(uid, kind);
+    await env.DB.prepare(`UPDATE users SET ${config.column}=? WHERE id=?`).bind(url, uid).run();
+    return json({ ok: true, url, label: config.label });
+  }
+
   const userMatch = path.match(/^\/api\/users\/(\d+)$/);
   if (userMatch) {
     const uid = parseInt(userMatch[1]);
     if (request.method === 'GET') {
+      const target = await env.DB.prepare('SELECT id,department FROM users WHERE id=?').bind(uid).first();
+      if (!target) return json({ error: 'Không tìm thấy' }, 404);
       if (!isManager && me.id !== uid) return json({ error: 'Không có quyền' }, 403);
+      if (isManager && !isAdmin && !isHcns(me) && me.id !== uid && target.department !== me.department) return json({ error: 'Không có quyền' }, 403);
       const row = await env.DB.prepare(
         'SELECT id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at,birth_date,gender,national_id,home_address,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,contract_start_date,contract_end_date,contract_signed_date,official_date,termination_date,allowance,insurance_salary,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url FROM users WHERE id=?'
       ).bind(uid).first();
@@ -1842,8 +1965,17 @@ export async function handle(request, env) {
       return json({ user: row });
     }
     if (request.method === 'PUT') {
-      if (!isManager && me.id !== uid) return json({ error: 'Không có quyền' }, 403);
-      const b = await request.json();
+      const target = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(uid).first();
+      if (!target) return json({ error: 'Không tìm thấy' }, 404);
+      const input = await request.json().catch(() => ({}));
+      const hasHrScope = isAdmin || isHcns(me);
+      const managesDepartment = isManager && !hasHrScope && target.department === me.department;
+      if (!hasHrScope && me.id !== uid && !managesDepartment) return json({ error: 'Không có quyền' }, 403);
+      const protectedFields = ['role','salary','bank_account','bank_name','is_active','lifecycle_status','allowance','insurance_salary','bank_account_holder','tax_code','social_insurance_number','insurance_hospital','reset_password','password_hash'];
+      if (!hasHrScope && protectedFields.some(k => Object.prototype.hasOwnProperty.call(input, k))) return json({ error: 'Không được thay đổi trường bảo mật hoặc lương' }, 403);
+      // The UI sends partial profile payloads in a few flows; merge only after
+      // authorization so absent fields can never zero out personnel data.
+      const b = { ...target, ...input };
       const ini = b.avatar_initials || nameInitials(b.full_name || '');
       let extraSql = '';
       let extraBinds = [];
@@ -2111,9 +2243,11 @@ export async function handle(request, env) {
     const today = vnTodayStr();
     let rows;
     if (isManager) {
-      const r = await env.DB.prepare(
-        'SELECT a.*, u.full_name, u.employee_code, u.department FROM attendance a JOIN users u ON a.user_id=u.id WHERE a.date=? ORDER BY a.checkin_time'
-      ).bind(today).all();
+      const scope = (!isAdmin && !isAttendanceHcns) ? ' AND u.department=?' : '';
+      const stmt = env.DB.prepare(
+        `SELECT a.*, u.full_name, u.employee_code, u.department FROM attendance a JOIN users u ON a.user_id=u.id WHERE a.date=?${scope} ORDER BY a.checkin_time`
+      );
+      const r = scope ? await stmt.bind(today, me.department).all() : await stmt.bind(today).all();
       rows = r.results;
     } else {
       const r = await env.DB.prepare(
@@ -2246,10 +2380,13 @@ export async function handle(request, env) {
   }
 
   if (path === '/api/overtime-requests' && request.method === 'POST') {
+    const retryAfter = rateLimit(request, `overtime:${me.id}`, 10, 24 * 60 * 60 * 1000);
+    if (retryAfter) return json({ error: 'Đã vượt số lần gửi yêu cầu trong ngày', code: 'RATE_LIMITED' }, 429, { 'Retry-After': String(retryAfter) });
     const b = await request.json().catch(() => ({}));
     const attendanceId = parseInt(b.attendance_id);
     const reason = String(b.reason || '').trim();
     if (!attendanceId || !reason) return json({ error: 'Vui lòng nhập lý do làm thêm giờ' }, 400);
+    if (reason.length > 1000) return json({ error: 'Lý do làm thêm giờ không được quá 1000 ký tự' }, 400);
     const record = await env.DB.prepare('SELECT * FROM attendance WHERE id=? AND user_id=?').bind(attendanceId, me.id).first();
     if (!record || !record.checkout_time) return json({ error: 'Không tìm thấy checkout hợp lệ' }, 404);
     const bounds = attShiftBounds(record.work_type || 'office', record.shift || 'full', record.expected_start, record.expected_end);
@@ -2268,6 +2405,8 @@ export async function handle(request, env) {
   const overtimeAction = path.match(/^\/api\/overtime-requests\/(\d+)\/(approve|reject)$/);
   if (overtimeAction && request.method === 'POST') {
     if (!isAttendanceAdmin) return json({ error: 'Không có quyền duyệt làm thêm giờ' }, 403);
+    const retryAfter = rateLimit(request, `overtime-review:${me.id}`, 30, 60 * 60 * 1000);
+    if (retryAfter) return json({ error: 'Đã vượt giới hạn duyệt trong một giờ', code: 'RATE_LIMITED' }, 429, { 'Retry-After': String(retryAfter) });
     const id = parseInt(overtimeAction[1]); const action = overtimeAction[2];
     const requestRow = await env.DB.prepare('SELECT o.*,u.department FROM overtime_requests o JOIN users u ON u.id=o.user_id WHERE o.id=?').bind(id).first();
     if (!requestRow) return json({ error: 'Không tìm thấy yêu cầu làm thêm giờ' }, 404);
@@ -2312,10 +2451,16 @@ export async function handle(request, env) {
   if (attMatch && request.method === 'PUT') {
     if (!isManager) return json({ error: 'Không có quyền' }, 403);
     const aid = parseInt(attMatch[1]);
-    const b = await request.json();
+    const record = await env.DB.prepare('SELECT a.id,u.department FROM attendance a JOIN users u ON u.id=a.user_id WHERE a.id=?').bind(aid).first();
+    if (!record) return json({ error: 'Không tìm thấy chấm công' }, 404);
+    if (!isAdmin && !isAttendanceHcns && record.department !== me.department) return json({ error: 'Không có quyền sửa chấm công ngoài phòng ban' }, 403);
+    const b = await request.json().catch(() => ({}));
+    const allowedStatus = ['present','late','absent','leave','cancelled','rejected'];
+    const status = allowedStatus.includes(b.status) ? b.status : 'present';
+    const workHours = Math.max(0, Math.min(24, Number(b.work_hours) || 0));
     await env.DB.prepare(
       'UPDATE attendance SET checkin_time=?,checkout_time=?,status=?,work_hours=?,note=? WHERE id=?'
-    ).bind(b.checkin_time||null,b.checkout_time||null,b.status||'present',b.work_hours||0,b.note||'',aid).run();
+    ).bind(b.checkin_time||null,b.checkout_time||null,status,workHours,String(b.note||'').slice(0,2000),aid).run();
     return json({ ok: true });
   }
 
@@ -2330,6 +2475,10 @@ export async function handle(request, env) {
     if (qUserId) {
       if (!isManager && parseInt(qUserId) !== me.id) return json({ error: 'Không có quyền' }, 403);
       targetUserId = parseInt(qUserId);
+      if (targetUserId !== me.id && !isAdmin && !isAttendanceHcns) {
+        const target = await env.DB.prepare('SELECT department FROM users WHERE id=?').bind(targetUserId).first();
+        if (!target || target.department !== me.department) return json({ error: 'Không có quyền xem nhân sự ngoài phòng ban' }, 403);
+      }
     }
     const summary = await buildMonthlyWorkSummary(env, targetUserId, month, year);
     return json(summary);
@@ -2894,7 +3043,10 @@ export async function handle(request, env) {
     let q = 'SELECT i.*, u.full_name, u.employee_code, u.department, u.position FROM invoices i JOIN users u ON i.user_id=u.id WHERE 1=1';
     const binds = [];
     if (!isManager) { q += ' AND i.user_id=?'; binds.push(me.id); }
-    else if (userId2) { q += ' AND i.user_id=?'; binds.push(parseInt(userId2)); }
+    else {
+      if (!isAdmin && !isHcns(me)) { q += ' AND u.department=?'; binds.push(me.department); }
+      if (userId2) { q += ' AND i.user_id=?'; binds.push(parseInt(userId2)); }
+    }
     if (month2) { q += ' AND i.month=?'; binds.push(parseInt(month2)); }
     if (year2) { q += ' AND i.year=?'; binds.push(parseInt(year2)); }
     if (status2) { q += ' AND i.status=?'; binds.push(status2); }
@@ -2908,6 +3060,9 @@ export async function handle(request, env) {
     if (!isManager) return json({ error: 'Không có quyền' }, 403);
     const b = await request.json();
     if (!b.user_id || !b.month || !b.year) return json({ error: 'Thiếu thông tin' }, 400);
+    const invoiceUser = await env.DB.prepare('SELECT department FROM users WHERE id=?').bind(b.user_id).first();
+    if (!invoiceUser) return json({ error: 'Không tìm thấy nhân viên' }, 404);
+    if (!isAdmin && !isHcns(me) && invoiceUser.department !== me.department) return json({ error: 'Không có quyền lập phiếu ngoài phòng ban' }, 403);
     const count = await env.DB.prepare('SELECT COUNT(*) as cnt FROM invoices WHERE year=? AND month=?')
       .bind(b.year, b.month).first();
     const seq = String((count?.cnt || 0) + 1).padStart(3, '0');
@@ -2984,6 +3139,10 @@ export async function handle(request, env) {
     const iid = parseInt(invResolveMatch[1]);
     const inv = await env.DB.prepare('SELECT * FROM invoices WHERE id=?').bind(iid).first();
     if (!inv) return json({ error: 'Khong tim thay phieu luong' }, 404);
+    if (!isAdmin && !isHcns(me)) {
+      const invoiceUser = await env.DB.prepare('SELECT department FROM users WHERE id=?').bind(inv.user_id).first();
+      if (!invoiceUser || invoiceUser.department !== me.department) return json({ error: 'Không có quyền xử lý phiếu ngoài phòng ban' }, 403);
+    }
     if (inv.locked_at || inv.status === 'paid') return json({ error: 'Phieu luong da khoa' }, 400);
     const b = await request.json().catch(() => ({}));
     const note = String(b.note || '').trim();
@@ -3011,6 +3170,7 @@ export async function handle(request, env) {
       ).bind(iid).first();
       if (!row) return json({ error: 'Không tìm thấy' }, 404);
       if (!isManager && row.user_id !== me.id) return json({ error: 'Không có quyền' }, 403);
+      if (isManager && !isAdmin && !isHcns(me) && row.user_id !== me.id && row.department !== me.department) return json({ error: 'Không có quyền' }, 403);
       const review = await env.DB.prepare(
         'SELECT * FROM invoice_review_requests WHERE invoice_id=? ORDER BY id DESC LIMIT 1'
       ).bind(iid).first();
@@ -3026,6 +3186,10 @@ export async function handle(request, env) {
       const b = await request.json();
       const existingInv = await env.DB.prepare('SELECT * FROM invoices WHERE id=?').bind(iid).first();
       if (!existingInv) return json({ error: 'Khong tim thay' }, 404);
+      if (!isAdmin && !isHcns(me)) {
+        const invoiceUser = await env.DB.prepare('SELECT department FROM users WHERE id=?').bind(existingInv.user_id).first();
+        if (!invoiceUser || invoiceUser.department !== me.department) return json({ error: 'Không có quyền sửa phiếu ngoài phòng ban' }, 403);
+      }
       if (existingInv.locked_at || existingInv.status === 'paid') return json({ error: 'Phieu luong da khoa, khong the chinh sua' }, 400);
       const base = b.base_salary || 0, bonus = b.bonus || 0;
       const allowance = b.allowance || 0, deduction = b.deduction || 0;
@@ -3048,6 +3212,10 @@ export async function handle(request, env) {
     if (request.method === 'DELETE') {
       if (!isManager) return json({ error: 'Không có quyền' }, 403);
       const existingInv = await env.DB.prepare('SELECT * FROM invoices WHERE id=?').bind(iid).first();
+      if (existingInv && !isAdmin && !isHcns(me)) {
+        const invoiceUser = await env.DB.prepare('SELECT department FROM users WHERE id=?').bind(existingInv.user_id).first();
+        if (!invoiceUser || invoiceUser.department !== me.department) return json({ error: 'Không có quyền xóa phiếu ngoài phòng ban' }, 403);
+      }
       if (existingInv && (existingInv.locked_at || existingInv.status === 'paid')) return json({ error: 'Phieu luong da khoa, khong the xoa' }, 400);
       await env.DB.prepare('DELETE FROM invoices WHERE id=?').bind(iid).run();
       return json({ ok: true });
@@ -3230,7 +3398,8 @@ export async function handle(request, env) {
     await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(r.meta.last_row_id, 0, me.id, me.full_name, 'submitted', needsBod ? 'Luồng cần Ban Giám đốc phê duyệt cuối' : 'Luồng Quản lý trực tiếp → HCNS').run();
     return json({ ok: true, id: r.meta.last_row_id });
     } catch (e) {
-      return json({ error: 'Leave create failed: ' + (e && e.message ? e.message : String(e)) }, 500);
+      console.error('Leave create failed', e);
+      return json({ error: 'Không thể tạo yêu cầu nghỉ phép, vui lòng thử lại sau' }, 500);
     }
   }
   const leaveMatch = path.match(/^\/api\/leave\/(\d+)$/);
@@ -3375,12 +3544,14 @@ export async function handle(request, env) {
   }
 
   if (path === '/api/payroll' && request.method === 'GET') {
+    if (!isManager) return json({ error: 'Không có quyền' }, 403);
     const month = url.searchParams.get('month') || new Date().toISOString().slice(0,7);
-    const { results } = await env.DB.prepare('SELECT * FROM payroll WHERE month=? ORDER BY id DESC').bind(month).all();
+    const stmt = env.DB.prepare(`SELECT * FROM payroll WHERE month=?${(!isAdmin && !isHcns(me)) ? ' AND department=?' : ''} ORDER BY id DESC`);
+    const { results } = (!isAdmin && !isHcns(me)) ? await stmt.bind(month, me.department).all() : await stmt.bind(month).all();
     return json({ payroll: results });
   }
   if (path === '/api/payroll/load' && request.method === 'POST') {
-    if (!isManager) return json({ error: 'Khong co quyen' }, 403);
+    if (!(isAdmin || isHcns(me))) return json({ error: 'Khong co quyen' }, 403);
     const b = await request.json().catch(() => ({}));
     const month = String(b.month || '').trim();
     if (!/^\d{4}-\d{2}$/.test(month)) return json({ error: 'Thieu hoac sai thang bang luong' }, 400);
@@ -3445,7 +3616,7 @@ export async function handle(request, env) {
     });
   }
   if (path === '/api/payroll/batch' && request.method === 'POST') {
-    if (!isManager) return json({ error: 'Khong co quyen' }, 403);
+    if (!(isAdmin || isHcns(me))) return json({ error: 'Khong co quyen' }, 403);
     const b = await request.json().catch(() => ({}));
     const month = String(b.month || '').trim();
     if (!/^\d{4}-\d{2}$/.test(month)) return json({ error: 'Thieu hoac sai thang bang luong' }, 400);
@@ -3487,7 +3658,7 @@ export async function handle(request, env) {
     return json({ ok: true, status: 'draft', created, updated, missing, missing_salary_config: missing, complete: ready, total: users.length, month, estimated_total: estimatedTotal });
   }
   if (path === '/api/payroll/export-payslips' && request.method === 'POST') {
-    if (!isManager) return json({ error: 'Khong co quyen' }, 403);
+    if (!(isAdmin || isHcns(me))) return json({ error: 'Khong co quyen' }, 403);
     const b = await request.json().catch(() => ({}));
     const month = String(b.month || '').trim();
     if (!/^\d{4}-\d{2}$/.test(month)) return json({ error: 'Thieu hoac sai thang bang luong' }, 400);
@@ -3584,10 +3755,12 @@ export async function handle(request, env) {
     }
     return json({ ok: true, month, total: rows.length, created, updated, skipped, skippedRows });
     } catch (e) {
-      return json({ error: 'Export payslips failed: ' + String(e?.message || e) }, 500);
+      console.error('Export payslips failed', e);
+      return json({ error: 'Không thể xuất phiếu lương, vui lòng thử lại sau' }, 500);
     }
   }
   if (path === '/api/payroll' && request.method === 'POST') {
+    if (!(isAdmin || isHcns(me))) return json({ error: 'Không có quyền' }, 403);
     const b = await request.json();
     // Single row creation
     if (b.employee_name && b.month) {
@@ -3617,6 +3790,7 @@ export async function handle(request, env) {
   if (payrollMatch) {
     const id = parseInt(payrollMatch[1]);
     if (request.method === 'PUT') {
+      if (!(isAdmin || isHcns(me))) return json({ error: 'Không có quyền' }, 403);
       const b = await request.json();
       const net = (b.base_salary||0) + (b.kpi_bonus||0) + (b.allowance||0) - (b.deduction||0);
       const dataStatus = Number(b.base_salary || 0) > 0 ? 'ready' : 'missing_salary_config';
@@ -3627,6 +3801,7 @@ export async function handle(request, env) {
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
+      if (!(isAdmin || isHcns(me))) return json({ error: 'Không có quyền' }, 403);
       await env.DB.prepare('DELETE FROM payroll WHERE id=?').bind(id).run();
       return json({ ok: true });
     }

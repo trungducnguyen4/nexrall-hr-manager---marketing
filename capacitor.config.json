@@ -1,0 +1,6 @@
+{
+  "appId": "vn.netviet.hr",
+  "appName": "NetViet HR",
+  "webDir": ".local-public",
+  "ios": { "contentInset": "automatic" }
+}

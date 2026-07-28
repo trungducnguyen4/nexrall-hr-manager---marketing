@@ -424,17 +424,24 @@ export async function renderAttendance(el, me) {
       const content = document.getElementById('att-summary-content');
       if (!content) return;
       const s = data.summary;
-      const metric = (label, value) => `<div class="att-summary-metric"><span>${label}</span><strong>${value}</strong></div>`;
+      const metric = (label, value, tone = '') => `<div class="att-summary-metric ${tone}"><span>${label}</span><strong>${value}</strong></div>`;
       content.innerHTML = `
-        <div class="att-summary-person">
-          <div><div class="att-summary-name">${esc(data.employee.full_name)}</div><div class="att-summary-meta">${esc(data.employee.employee_code || '—')} · ${esc(data.employee.department || 'Chưa có phòng ban')} · ${esc(data.employee.position || 'Nhân viên')}</div></div>
-          <span class="badge ${data.employee.is_active ? 'badge-success' : 'badge-gray'}">${data.employee.is_active ? 'Đang làm việc' : 'Ngừng hoạt động'}</span>
-        </div>
-        <div class="att-summary-period">Kỳ tổng kết: ${esc(data.period.from)} đến ${esc(data.period.to)}</div>
+        <section class="att-summary-hero">
+          <div class="att-summary-person">
+            <div>
+              <div class="att-summary-eyebrow">TỔNG KẾT NHÂN SỰ</div>
+              <div class="att-summary-name">${esc(data.employee.full_name)}</div>
+              <div class="att-summary-meta">${esc(data.employee.employee_code || '—')} · ${esc(data.employee.department || 'Chưa có phòng ban')} · ${esc(data.employee.position || 'Nhân viên')}</div>
+            </div>
+            <span class="badge ${data.employee.is_active ? 'badge-success' : 'badge-gray'}">${data.employee.is_active ? 'Đang làm việc' : 'Ngừng hoạt động'}</span>
+          </div>
+          <div class="att-summary-period"><span>Kỳ tổng kết</span><strong>${esc(data.period.from)} — ${esc(data.period.to)}</strong></div>
+        </section>
+        <div class="att-summary-section-title"><span>Tổng quan kỳ công</span><small>12 chỉ số chấm công</small></div>
         <div class="att-summary-grid">
-          ${metric('Ngày công chuẩn', s.standardWorkDays)}${metric('Ngày công thực tế', s.actualWorkDays)}${metric('Đủ ngày / nửa ngày', `${s.fullDays} / ${s.halfDays}`)}${metric('Văn phòng / WFH / công tác', `${s.officeDays} / ${s.wfhDays} / ${s.businessDays}`)}
-          ${metric('Nghỉ phép có duyệt', s.paidLeaveDays)}${metric('Vắng không phép', s.absentDays)}${metric('Thiếu vào / ra', `${s.missingCheckinDays} / ${s.missingCheckoutDays}`)}${metric('Đi muộn', `${s.lateDays} ngày · ${s.lateMinutes} phút`)}
-          ${metric('Về sớm', `${s.earlyDays} ngày · ${s.earlyMinutes} phút`)}${metric('OT đã duyệt', `${Number(s.approvedOvertimeHours || 0).toFixed(2)} giờ`)}${metric('Tổng giờ làm', `${s.totalWorkHours.toFixed(1)} giờ`)}${metric('Tỷ lệ chuyên cần', `${s.attendanceRate}%`)}
+          ${metric('Ngày công chuẩn', s.standardWorkDays, 'metric-primary')}${metric('Ngày công thực tế', s.actualWorkDays, 'metric-success')}${metric('Đủ ngày / nửa ngày', `${s.fullDays} / ${s.halfDays}`)}${metric('Văn phòng / WFH / công tác', `${s.officeDays} / ${s.wfhDays} / ${s.businessDays}`)}
+          ${metric('Nghỉ phép có duyệt', s.paidLeaveDays)}${metric('Vắng không phép', s.absentDays, s.absentDays ? 'metric-danger' : '')}${metric('Thiếu vào / ra', `${s.missingCheckinDays} / ${s.missingCheckoutDays}`, (s.missingCheckinDays || s.missingCheckoutDays) ? 'metric-warning' : '')}${metric('Đi muộn', `${s.lateDays} ngày · ${s.lateMinutes} phút`, s.lateDays ? 'metric-warning' : '')}
+          ${metric('Về sớm', `${s.earlyDays} ngày · ${s.earlyMinutes} phút`, s.earlyDays ? 'metric-warning' : '')}${metric('OT đã duyệt', `${Number(s.approvedOvertimeHours || 0).toFixed(2)} giờ`, 'metric-primary')}${metric('Tổng giờ làm', `${s.totalWorkHours.toFixed(1)} giờ`)}${metric('Tỷ lệ chuyên cần', `${s.attendanceRate}%`, 'metric-success')}
         </div>
         <div class="att-summary-detail-head"><h4>Chi tiết theo ngày</h4><div class="att-summary-filters"><select id="att-detail-status"><option value="">Mọi trạng thái</option><option value="late">Đi muộn</option><option value="absent">Vắng</option><option value="leave">Nghỉ phép</option></select><select id="att-detail-work"><option value="">Mọi hình thức</option><option value="office">Văn phòng</option><option value="wfh">WFH</option><option value="business">Công tác</option></select><select id="att-detail-exception"><option value="">Mọi ngoại lệ</option><option value="late">Đi muộn</option><option value="early">Về sớm</option><option value="missing">Thiếu check-in/out</option></select></div></div>
         <div class="table-wrap"><table><thead><tr><th>Ngày</th><th>Thứ</th><th>Hình thức</th><th>Ca</th><th>Vào</th><th>Ra</th><th>Tổng giờ</th><th>Đi muộn</th><th>Về sớm</th><th>Trạng thái</th><th>Ghi chú</th>${isManager ? '<th>Thao tác</th>' : ''}</tr></thead><tbody id="att-detail-rows"></tbody></table></div>`;

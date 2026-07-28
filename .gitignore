@@ -1,3 +1,4 @@
 .wrangler/
 .wrangler-local/
 .local-public/
+node_modules/

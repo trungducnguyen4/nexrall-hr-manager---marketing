@@ -102,7 +102,7 @@ export async function renderUsers(el, me) {
     listEl.querySelectorAll('.list-item').forEach(item => {
       item.addEventListener('click', () => {
         const user = allUsers.find(u => u.id === parseInt(item.dataset.uid));
-        if (user) openUserDetail(user, me, loadUsers, allDepartments);
+        if (user) openUserDetail(user, me, loadUsers, allDepartments, allUsers);
       });
     });
     bindPagination(listEl, page => { currentPage = page; renderList(); });
@@ -122,13 +122,13 @@ export async function renderUsers(el, me) {
   loadUsers();
 }
 
-function openUserDetail(user, me, onRefresh = noop, departments = []) {
+function openUserDetail(user, me, onRefresh = noop, departments = [], allUsers = []) {
   onRefresh = safeCb(onRefresh);
   const isAdmin = me.role === 'admin';
   const canChangeLifecycle = isHrOrBod(me);
   openModal(user.full_name, `
-    <div style="text-align:center;margin-bottom:16px;">
-      <div class="avatar avatar-lg" style="background:${esc(user.avatar_color||'#4F46E5')};margin:0 auto 10px;">${esc(user.avatar_initials||initials(user.full_name))}</div>
+    <div class="user-profile-hero">
+      ${user.avatar_url ? `<img class="user-profile-photo" src="${esc(user.avatar_url)}" alt="Ảnh ${esc(user.full_name)}"/>` : `<div class="avatar avatar-lg" style="background:${esc(user.avatar_color||'#4F46E5')};margin:0 auto 10px;">${esc(user.avatar_initials||initials(user.full_name))}</div>`}
       <div style="font-size:16px;font-weight:800;">${esc(user.full_name)}</div>
       <div style="font-size:12px;color:var(--text-2);">${esc(user.position||'')} · ${esc(user.department||'')}</div>
     </div>
@@ -141,16 +141,22 @@ function openUserDetail(user, me, onRefresh = noop, departments = []) {
       <div class="detail-item"><div class="detail-label">STK</div><div class="detail-val" style="font-size:12px;">${esc(user.bank_account||'—')}</div></div>
       <div class="detail-item"><div class="detail-label">Vòng đời nhân sự</div><div class="detail-val">${lifecycleBadge(user.lifecycle_status)}</div></div>
     </div>
+    <div class="user-profile-section"><h4>Thông tin cá nhân</h4><div class="detail-grid"><div class="detail-item"><div class="detail-label">Ngày sinh</div><div class="detail-val">${esc(user.birth_date||'—')}</div></div><div class="detail-item"><div class="detail-label">Giới tính</div><div class="detail-val">${esc(user.gender||'—')}</div></div><div class="detail-item"><div class="detail-label">CCCD</div><div class="detail-val">${esc(user.national_id||'—')}</div></div><div class="detail-item"><div class="detail-label">Địa chỉ</div><div class="detail-val">${esc(user.home_address||'—')}</div></div><div class="detail-item"><div class="detail-label">Liên hệ khẩn cấp</div><div class="detail-val">${esc(user.emergency_contact_name||'—')} ${user.emergency_contact_phone ? `· ${esc(user.emergency_contact_phone)}` : ''}</div></div></div></div>
+    <div class="user-profile-section"><h4>Công việc & hợp đồng</h4><div class="detail-grid"><div class="detail-item"><div class="detail-label">Quản lý trực tiếp</div><div class="detail-val">${esc(allUsers.find(u=>Number(u.id)===Number(user.direct_manager_id))?.full_name||'—')}</div></div><div class="detail-item"><div class="detail-label">Địa điểm làm việc</div><div class="detail-val">${esc(user.work_location||'—')}</div></div><div class="detail-item"><div class="detail-label">Loại hợp đồng</div><div class="detail-val">${esc(user.contract_type||user.lifecycle_status||'—')}</div></div><div class="detail-item"><div class="detail-label">Ngày ký / thời hạn</div><div class="detail-val">${esc(user.contract_signed_date||'—')} ${user.contract_end_date ? `· đến ${esc(user.contract_end_date)}` : ''}</div></div><div class="detail-item"><div class="detail-label">Ngày chính thức</div><div class="detail-val">${esc(user.official_date||'—')}</div></div><div class="detail-item"><div class="detail-label">Ngày nghỉ</div><div class="detail-val">${esc(user.termination_date||'—')}</div></div></div></div>
+    <div class="user-profile-section"><h4>Lương, ngân hàng, thuế & bảo hiểm</h4><div class="detail-grid"><div class="detail-item"><div class="detail-label">Phụ cấp / tổng thu nhập</div><div class="detail-val">${fmtMoney(user.allowance||0)} · ${fmtMoney(Number(user.salary||0)+Number(user.allowance||0))}</div></div><div class="detail-item"><div class="detail-label">Lương đóng BHXH</div><div class="detail-val">${fmtMoney(user.insurance_salary||0)}</div></div><div class="detail-item"><div class="detail-label">Chủ tài khoản</div><div class="detail-val">${esc(user.bank_account_holder||'—')}</div></div><div class="detail-item"><div class="detail-label">Mã số thuế / BHXH</div><div class="detail-val">${esc(user.tax_code||'—')} · ${esc(user.social_insurance_number||'—')}</div></div><div class="detail-item"><div class="detail-label">Nơi KCB BHYT</div><div class="detail-val">${esc(user.insurance_hospital||'—')}</div></div></div></div>
+    <div class="user-profile-section"><h4>Hồ sơ đính kèm</h4><div class="user-document-links">${[['CCCD',user.national_id_document_url],['Bằng cấp',user.degree_document_url],['Hợp đồng',user.contract_document_url],['Quyết định nhân sự',user.personnel_decision_url]].map(([label,url]) => url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${label}</a>` : `<span>${label}: Chưa có</span>`).join('')}</div></div>
   `, `
     <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Đóng</button>
     ${canChangeLifecycle ? `<button class="btn-secondary" id="ud-lifecycle">🔄 Đổi trạng thái</button>` : ''}
     ${isAdmin ? `<button class="btn-danger" id="ud-lock">${user.is_active ? '🔒 Khóa TK' : '🔓 Mở khóa'}</button>` : ''}
     ${isAdmin ? `<button class="btn-primary" id="ud-edit">✏️ Sửa</button>` : ''}
   `);
+  document.getElementById('modal')?.classList.add('modal--scroll-fixed', 'modal--user-detail');
+  document.getElementById('modal')?.classList.add('modal--scroll-fixed', 'modal--user-profile');
 
   document.getElementById('ud-edit')?.addEventListener('click', () => {
     closeModal();
-    openUserForm(user, onRefresh, [], departments);
+    openUserForm(user, onRefresh, allUsers, departments);
   });
   document.getElementById('ud-lock')?.addEventListener('click', async () => {
     try {
@@ -195,6 +201,13 @@ function openLifecycleForm(user, onRefresh = noop) {
 function openUserForm(user, onRefresh = noop, allUsers = [], departments = []) {
   onRefresh = safeCb(onRefresh);
   const isEdit = !!user;
+  const uploadField = (valueId, fileId, label, existing, accept) => `
+    <div class="field document-upload-field">
+      <label>${label}</label>
+      <input type="hidden" id="${valueId}" value="${esc(existing || '')}"/>
+      <input type="file" id="${fileId}" accept="${accept}"/>
+      <div class="document-upload-status">${existing ? 'Đã lưu trên máy chủ · chọn tệp mới để thay thế' : 'Chưa có tệp'}</div>
+    </div>`;
   const departmentNames = [...new Set([
     ...departments.map(d => d.name || d).filter(Boolean),
     ...(user?.department ? [user.department] : []),
@@ -233,16 +246,70 @@ function openUserForm(user, onRefresh = noop, allUsers = [], departments = []) {
       <div class="field"><label>Lương cơ bản</label><input type="number" id="uf-salary" value="${user?.salary||0}"/></div>
     </div>
     <div class="input-row">
-      <div class="field"><label>Ngân hàng</label><input type="text" id="uf-bank" value="${esc(user?.bank_name||'')}"/></div>
-      <div class="field"><label>Số TK</label><input type="text" id="uf-acc" value="${esc(user?.bank_account||'')}"/></div>
+      <div class="field user-bank-field">
+        <label for="uf-bank">Ngân hàng</label>
+        <div class="bank-picker" id="uf-bank-picker">
+          <input type="text" id="uf-bank" value="${esc(user?.bank_name||'')}" placeholder="Tìm ngân hàng" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="uf-bank-options"/>
+          <div class="bank-picker-menu hidden" id="uf-bank-options" role="listbox" aria-label="Danh sách ngân hàng"></div>
+        </div>
+      </div>
+      <div class="field"><label>Số TK</label><input type="text" inputmode="numeric" id="uf-acc" value="${esc(user?.bank_account||'')}" autocomplete="off"/></div>
     </div>
     <div class="field"><label>Màu avatar</label><input type="color" id="uf-color" value="${user?.avatar_color||'#4F46E5'}"/></div>
+    <div class="user-form-section"><h4>Thông tin cá nhân</h4><div class="input-row"><div class="field"><label>Ngày sinh</label><input type="date" id="uf-birth" value="${esc(user?.birth_date||'')}"/></div><div class="field"><label>Giới tính</label><select id="uf-gender"><option value="">-- Chọn --</option>${['Nam','Nữ','Khác'].map(v=>`<option ${user?.gender===v?'selected':''}>${v}</option>`).join('')}</select></div></div><div class="input-row"><div class="field"><label>CCCD</label><input id="uf-national-id" value="${esc(user?.national_id||'')}"/></div>${uploadField('uf-avatar-url', 'uf-avatar-file', 'Ảnh chân dung', user?.avatar_url, 'image/jpeg,image/png,image/webp')}</div><div class="field"><label>Địa chỉ</label><input id="uf-address" value="${esc(user?.home_address||'')}"/></div><div class="input-row"><div class="field"><label>Người liên hệ khẩn cấp</label><input id="uf-emergency-name" value="${esc(user?.emergency_contact_name||'')}"/></div><div class="field"><label>SĐT khẩn cấp</label><input id="uf-emergency-phone" value="${esc(user?.emergency_contact_phone||'')}"/></div></div></div>
+    <div class="user-form-section"><h4>Công việc & hợp đồng</h4><div class="input-row"><div class="field"><label>Quản lý trực tiếp</label><select id="uf-manager"><option value="">-- Chưa phân công --</option>${allUsers.filter(u=>Number(u.id)!==Number(user?.id)).map(u=>`<option value="${u.id}" ${Number(user?.direct_manager_id)===Number(u.id)?'selected':''}>${esc(u.full_name)} · ${esc(u.employee_code||'')}</option>`).join('')}</select></div><div class="field"><label>Địa điểm làm việc</label><input id="uf-location" value="${esc(user?.work_location||'')}"/></div></div><div class="input-row"><div class="field"><label>Loại hợp đồng</label><select id="uf-contract-type"><option value="">-- Chọn --</option>${['Thử việc','Cộng tác viên','Chính thức','Thực tập sinh'].map(v=>`<option ${user?.contract_type===v?'selected':''}>${v}</option>`).join('')}</select></div><div class="field"><label>Ngày ký</label><input type="date" id="uf-contract-signed" value="${esc(user?.contract_signed_date||'')}"/></div></div><div class="input-row"><div class="field"><label>Thời hạn đến</label><input type="date" id="uf-contract-end" value="${esc(user?.contract_end_date||'')}"/></div><div class="field"><label>Ngày chuyển chính thức</label><input type="date" id="uf-official-date" value="${esc(user?.official_date||'')}"/></div></div><div class="field"><label>Ngày nghỉ</label><input type="date" id="uf-termination-date" value="${esc(user?.termination_date||'')}"/></div></div>
+    <div class="user-form-section"><h4>Lương, ngân hàng, thuế & bảo hiểm</h4><div class="input-row"><div class="field"><label>Phụ cấp</label><input type="number" id="uf-allowance" value="${user?.allowance||0}"/></div><div class="field"><label>Lương đóng BHXH</label><input type="number" id="uf-insurance-salary" value="${user?.insurance_salary||0}"/></div></div><div class="field"><label>Chủ tài khoản</label><input id="uf-bank-holder" value="${esc(user?.bank_account_holder||'')}"/></div><div class="input-row"><div class="field"><label>Mã số thuế</label><input id="uf-tax-code" value="${esc(user?.tax_code||'')}"/></div><div class="field"><label>Mã số BHXH</label><input id="uf-social-insurance" value="${esc(user?.social_insurance_number||'')}"/></div></div><div class="field"><label>Nơi đăng ký KCB</label><input id="uf-insurance-hospital" value="${esc(user?.insurance_hospital||'')}"/></div></div>
+    <div class="user-form-section"><h4>Hồ sơ đính kèm</h4><div class="input-row">${uploadField('uf-doc-national', 'uf-doc-national-file', 'CCCD', user?.national_id_document_url, 'application/pdf,image/jpeg,image/png,image/webp')}${uploadField('uf-doc-degree', 'uf-doc-degree-file', 'Bằng cấp', user?.degree_document_url, 'application/pdf,image/jpeg,image/png,image/webp')}</div><div class="input-row">${uploadField('uf-doc-contract', 'uf-doc-contract-file', 'Hợp đồng', user?.contract_document_url, 'application/pdf,image/jpeg,image/png,image/webp')}${uploadField('uf-doc-decision', 'uf-doc-decision-file', 'Quyết định nhân sự', user?.personnel_decision_url, 'application/pdf,image/jpeg,image/png,image/webp')}</div></div>
     ${isEdit ? `<div class="field" style="margin-top:4px;"><label style="display:flex;align-items:center;gap:6px;text-transform:none;font-weight:500;"><input type="checkbox" id="uf-resetpw"/> Reset mật khẩu về Pass@123</label></div>` : ''}
   `, `
     <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Hủy</button>
     ${isEdit ? `<button class="btn-danger" id="uf-del">Xóa</button>` : ''}
     <button class="btn-primary" id="uf-save">Lưu</button>
   `);
+  document.getElementById('modal')?.classList.add('modal--scroll-fixed', 'modal--user-form');
+  document.getElementById('modal-overlay')?.classList.add('modal-overlay--desktop-centered');
+
+  const bankInput = document.getElementById('uf-bank');
+  const bankPicker = document.getElementById('uf-bank-picker');
+  const bankOptions = document.getElementById('uf-bank-options');
+  let bankDirectory = [];
+  const renderBanks = (query = '') => {
+    if (!bankOptions || !bankInput) return;
+    const keyword = String(query).trim().toLocaleLowerCase('vi');
+    const matches = bankDirectory.filter(bank =>
+      !keyword || [bank.shortName, bank.name, bank.code, bank.bin].some(value => String(value || '').toLocaleLowerCase('vi').includes(keyword))
+    ).slice(0, 30);
+    bankOptions.innerHTML = matches.map(bank => `
+      <button type="button" class="bank-picker-option" role="option" data-bank="${esc(bank.shortName)}" aria-selected="${bankInput.value === bank.shortName}">
+        ${bank.logo ? `<img src="${esc(bank.logo)}" alt="" loading="lazy"/>` : '<span class="bank-picker-mark" aria-hidden="true">🏦</span>'}
+        <strong>${esc(bank.shortName)}</strong>
+      </button>`).join('');
+    bankOptions.classList.toggle('hidden', matches.length === 0);
+    bankInput.setAttribute('aria-expanded', matches.length ? 'true' : 'false');
+  };
+  const closeBankMenu = () => {
+    bankOptions?.classList.add('hidden');
+    bankInput?.setAttribute('aria-expanded', 'false');
+  };
+  api.getVietqrBanks().then(({ banks = [] }) => {
+    bankDirectory = banks;
+    if (document.activeElement === bankInput) renderBanks(bankInput.value);
+  }).catch(() => { bankDirectory = []; });
+  bankInput?.addEventListener('focus', () => renderBanks(bankInput.value));
+  bankInput?.addEventListener('input', () => renderBanks(bankInput.value));
+  bankInput?.addEventListener('keydown', event => { if (event.key === 'Escape') closeBankMenu(); });
+  bankOptions?.addEventListener('mousedown', event => {
+    const option = event.target.closest('.bank-picker-option');
+    if (!option || !bankInput) return;
+    event.preventDefault();
+    bankInput.value = option.dataset.bank || '';
+    closeBankMenu();
+  });
+  const dismissBankMenu = event => {
+    if (!bankPicker?.isConnected) { document.removeEventListener('mousedown', dismissBankMenu); return; }
+    if (!bankPicker.contains(event.target)) closeBankMenu();
+  };
+  document.addEventListener('mousedown', dismissBankMenu);
 
   function refreshCodePreview() {
     if (isEdit) return; // existing code never changes on edit
@@ -270,13 +337,46 @@ function openUserForm(user, onRefresh = noop, allUsers = [], departments = []) {
       bank_name: document.getElementById('uf-bank').value,
       bank_account: document.getElementById('uf-acc').value,
       avatar_color: document.getElementById('uf-color').value,
+      birth_date: document.getElementById('uf-birth').value,
+      gender: document.getElementById('uf-gender').value,
+      national_id: document.getElementById('uf-national-id').value,
+      home_address: document.getElementById('uf-address').value,
+      emergency_contact_name: document.getElementById('uf-emergency-name').value,
+      emergency_contact_phone: document.getElementById('uf-emergency-phone').value,
+      direct_manager_id: document.getElementById('uf-manager').value || null,
+      work_location: document.getElementById('uf-location').value,
+      contract_type: document.getElementById('uf-contract-type').value,
+      contract_signed_date: document.getElementById('uf-contract-signed').value,
+      contract_end_date: document.getElementById('uf-contract-end').value,
+      official_date: document.getElementById('uf-official-date').value,
+      termination_date: document.getElementById('uf-termination-date').value,
+      allowance: parseFloat(document.getElementById('uf-allowance').value) || 0,
+      insurance_salary: parseFloat(document.getElementById('uf-insurance-salary').value) || 0,
+      bank_account_holder: document.getElementById('uf-bank-holder').value,
+      tax_code: document.getElementById('uf-tax-code').value,
+      social_insurance_number: document.getElementById('uf-social-insurance').value,
+      insurance_hospital: document.getElementById('uf-insurance-hospital').value,
+      avatar_url: document.getElementById('uf-avatar-url').value,
+      national_id_document_url: document.getElementById('uf-doc-national').value,
+      degree_document_url: document.getElementById('uf-doc-degree').value,
+      contract_document_url: document.getElementById('uf-doc-contract').value,
+      personnel_decision_url: document.getElementById('uf-doc-decision').value,
       is_active: user?.is_active ?? 1,
     };
     if (!isEdit) { const pw = document.getElementById('uf-pw')?.value; if (pw) data.password = pw; }
     if (isEdit) { data.reset_password = document.getElementById('uf-resetpw')?.checked ? 1 : 0; }
     try {
-      if (isEdit) await api.updateUser(user.id, data);
-      else await api.createUser(data);
+      let targetId = user?.id;
+      if (isEdit) await api.updateUser(targetId, data);
+      else targetId = (await api.createUser(data)).id;
+      const uploads = [
+        ['avatar', 'uf-avatar-file'], ['national_id', 'uf-doc-national-file'], ['degree', 'uf-doc-degree-file'],
+        ['contract', 'uf-doc-contract-file'], ['decision', 'uf-doc-decision-file'],
+      ];
+      for (const [kind, fieldId] of uploads) {
+        const file = document.getElementById(fieldId)?.files?.[0];
+        if (file) await api.uploadUserDocument(targetId, kind, file);
+      }
       closeModal(); toast(isEdit ? 'Đã cập nhật' : 'Đã tạo nhân viên', 'success'); onRefresh();
     } catch(e) { toast(e.message, 'error'); }
   });
