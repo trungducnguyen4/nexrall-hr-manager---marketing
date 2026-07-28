@@ -1,4 +1,4 @@
-import { esc, EVAL_GROUPS, EVAL_RATING_SCALE, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtDateTime, noop, safeCb, paginateRows, paginationHTML, bindPagination } from '../utils.js';
+import { esc, EVAL_GROUPS, EVAL_RATING_SCALE, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtDateTime, noop, safeCb, paginateRows, paginationHTML, bindPagination } from '../utils.js?v=20260728-evaluation-policy';
 import { api } from '../api.js';
 
 const REWARD_POLICY = [
@@ -110,18 +110,18 @@ export async function renderEvaluation(el, me) {
           HCNS kiểm tra và người có thẩm quyền phê duyệt.
         </div>
 
-        <!-- 3. Checklist 16 tiêu chí -->
-        <div class="section-title">Checklist 16 tiêu chí</div>
+        <!-- 3. Checklist 14 tiêu chí -->
+        <div class="section-title">Checklist 14 tiêu chí</div>
         <div class="source-tag-row" id="eval-tabs" style="margin-bottom:10px;">
           ${EVAL_GROUPS.map((g, i) => `
-            <button class="filter-chip eval-tab${i===0?' active':''}" data-group="${g.key}" type="button">${g.icon} ${esc(g.label)} · ${g.maxScore}đ</button>
+            <button class="filter-chip eval-tab${i===0?' active':''}" data-group="${g.key}" type="button">${g.icon} ${esc(g.label)}: ${g.maxScore} điểm</button>
           `).join('')}
         </div>
         ${EVAL_GROUPS.map(g => `
           <div class="eval-tab-panel" data-panel="${g.key}" style="${g.key===activeGroup?'':'display:none;'}">
             <div class="table-wrap" style="margin-bottom:8px;">
               <table>
-                <thead><tr><th>Mã</th><th>Tiêu chí</th><th>Mô tả</th><th>Điểm</th><th>Thang tham chiếu</th><th>Ghi chú</th></tr></thead>
+                <thead><tr><th>Mã</th><th>Tiêu chí</th><th>Mô tả</th><th>Điểm tối đa</th><th>Thang điểm tham chiếu</th><th>${esc(g.evidenceHeader || 'Ghi chú')}</th></tr></thead>
                 <tbody>
                   ${g.criteria.map(c => `
                     <tr>
@@ -298,9 +298,10 @@ function adminSectionHtml(periods, evaluations, basicUsers, latestPeriod) {
         <div class="field"><label>Năm</label><input type="number" id="ep-year" value="${new Date().getFullYear()}"></div>
       </div>
       <div class="input-row">
-        <div class="field"><label>Ngày bắt đầu</label><input type="date" id="ep-start"></div>
-        <div class="field"><label>Ngày kết thúc (5–7 ngày)</label><input type="date" id="ep-end"></div>
+        <div class="field"><label>Ngày bắt đầu</label><input type="date" id="ep-start" readonly></div>
+        <div class="field"><label>Ngày kết thúc</label><input type="date" id="ep-end" readonly></div>
       </div>
+      <div style="font-size:12px;color:var(--text-3);margin-top:-4px;margin-bottom:10px;">Kỳ đánh giá cố định: từ ngày 28 tháng trước đến ngày 03 tháng sau.</div>
       <button class="btn-primary btn-sm" id="ep-save">Lưu kỳ đánh giá</button>
     </div>
   </div>
@@ -394,15 +395,29 @@ function wireWorkflowHandlers(el, me, ctx) {
     document.getElementById('eval-period-form-wrap')?.classList.toggle('hidden');
   });
 
+  const syncEvalPeriodDates = () => {
+    const month = parseInt(document.getElementById('ep-month')?.value, 10);
+    const year = parseInt(document.getElementById('ep-year')?.value, 10);
+    if (!month || month < 1 || month > 12 || !year) return;
+    const pad = value => String(value).padStart(2, '0');
+    const startMonth = month === 1 ? 12 : month - 1;
+    const startYear = month === 1 ? year - 1 : year;
+    const endMonth = month === 12 ? 1 : month + 1;
+    const endYear = month === 12 ? year + 1 : year;
+    document.getElementById('ep-start').value = `${startYear}-${pad(startMonth)}-28`;
+    document.getElementById('ep-end').value = `${endYear}-${pad(endMonth)}-03`;
+  };
+  syncEvalPeriodDates();
+  document.getElementById('ep-month')?.addEventListener('input', syncEvalPeriodDates);
+  document.getElementById('ep-year')?.addEventListener('input', syncEvalPeriodDates);
+
   document.getElementById('ep-save')?.addEventListener('click', async () => {
     const month = parseInt(document.getElementById('ep-month').value, 10);
     const year = parseInt(document.getElementById('ep-year').value, 10);
-    const start = document.getElementById('ep-start').value;
-    const end = document.getElementById('ep-end').value;
-    if (!month || !year || !start || !end) { toast('Vui lòng nhập đầy đủ thông tin kỳ đánh giá', 'error'); return; }
+    if (!month || !year) { toast('Vui lòng nhập tháng và năm kỳ đánh giá', 'error'); return; }
     const btn = document.getElementById('ep-save');
     btn.disabled = true;
-    try { await api.createEvalPeriod({ month, year, start_date: start, end_date: end }); toast('Đã mở kỳ đánh giá', 'success'); refresh(); }
+    try { await api.createEvalPeriod({ month, year }); toast('Đã mở kỳ đánh giá', 'success'); refresh(); }
     catch (e) { toast(e.message, 'error'); btn.disabled = false; }
   });
 
@@ -699,6 +714,7 @@ export async function renderEvalReport(el, me, latestPeriod = null) {
           <thead>
             <tr>
               <th>STT</th><th>MÃ NV</th><th>HỌ & TÊN</th><th>PHÒNG BAN</th><th>CHỨC VỤ</th><th>LOẠI NS</th>
+              <th>MENTOR ĐÁNH GIÁ</th><th>TRƯỞNG PHÒNG ĐÁNH GIÁ</th>
               <th style="background:rgba(238,77,45,.12);color:#EE4D2D;">N1 (60đ)</th>
               <th style="background:rgba(29,78,216,.12);color:#1D4ED8;">N2 (25đ)</th>
               <th style="background:rgba(4,120,87,.12);color:#047857;">N3 (15đ)</th>
@@ -715,6 +731,8 @@ export async function renderEvalReport(el, me, latestPeriod = null) {
                 <td>${esc(r.department || '—')}</td>
                 <td>${esc(r.position || '—')}</td>
                 <td><span class="badge badge-gray">${esc(r.lifecycle_status || r.employee_type || '—')}</span></td>
+                <td style="font-size:12px;min-width:150px;">${esc(r.mentor_name || 'Chưa phân công')}</td>
+                <td style="font-size:12px;min-width:170px;">${esc(r.department_head_name || 'Chưa phân công')}</td>
                 <td style="font-weight:700;color:#EE4D2D;">${r.has_evaluation ? r.n1 : '—'}</td>
                 <td style="font-weight:700;color:#1D4ED8;">${r.has_evaluation ? r.n2 : '—'}</td>
                 <td style="font-weight:700;color:#047857;">${r.has_evaluation ? r.n3 : '—'}</td>

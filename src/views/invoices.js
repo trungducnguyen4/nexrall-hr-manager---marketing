@@ -254,6 +254,7 @@ function openInvoiceDetail(invId, isManager, users, onRefresh = noop, me = null)
         <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px;"><span>Lương cơ bản</span><span style="font-weight:600">${fmtMoney(inv.base_salary)}</span></div>
         <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px;color:var(--success)"><span>Thưởng</span><span>+${fmtMoney(inv.bonus)}</span></div>
         <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px;color:var(--success)"><span>Phụ cấp</span><span>+${fmtMoney(inv.allowance)}</span></div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px;color:var(--success)"><span>Làm thêm giờ</span><span>+${fmtMoney(inv.overtime_pay || 0)}</span></div>
         <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px;color:var(--danger)"><span>Khấu trừ</span><span>-${fmtMoney(inv.deduction)}</span></div>
         <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px;color:var(--danger)"><span>Thuế TNCN (10%)</span><span>-${fmtMoney(inv.tax)}</span></div>
         <div style="display:flex;justify-content:space-between;margin-bottom:0;font-size:13px;color:var(--danger)"><span>BHXH/BHYT (8%)</span><span>-${fmtMoney(inv.insurance)}</span></div>
@@ -268,6 +269,7 @@ function openInvoiceDetail(invId, isManager, users, onRefresh = noop, me = null)
         <div class="detail-item"><div class="detail-label">Số phút đi muộn</div><div class="detail-val">${inv.late_minutes ?? '—'}</div></div>
         <div class="detail-item"><div class="detail-label">Số phút về sớm</div><div class="detail-val">${inv.early_leave_minutes ?? '—'}</div></div>
         <div class="detail-item"><div class="detail-label">Thiếu check-in/out</div><div class="detail-val">${inv.missing_checkinout_days ?? '—'}</div></div>
+        <div class="detail-item"><div class="detail-label">OT đã duyệt</div><div class="detail-val">${Number(inv.approved_overtime_minutes || 0) / 60} giờ</div></div>
       </div>
       <div class="source-tag-row">
         <span class="source-tag">Chấm công <span class="badge-auto">Tự động</span></span>

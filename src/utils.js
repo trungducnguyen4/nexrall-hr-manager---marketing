@@ -175,34 +175,32 @@ export function assetStatusBadge(s) {
 // Single source of truth cho trang Đánh giá hiệu suất — không hard-code lại nơi khác.
 export const EVAL_GROUPS = [
   {
-    key: 'chuyen_mon', label: 'Nhóm 1 – Hiệu suất chuyên môn', maxScore: 60, color: '#EE4D2D', icon: '🎯',
+    key: 'chuyen_mon', label: 'Nhóm 1 – Kết quả và năng lực thực hiện công việc', maxScore: 60, color: '#EE4D2D', icon: '🎯', evidenceHeader: 'Căn cứ đánh giá',
     criteria: [
-      { code: 'HS01', name: 'Hoàn thành KPI/Mục tiêu tháng', desc: 'Mức độ hoàn thành các mục tiêu/KPI được giao trong tháng.', max: 12, scale: '12: vượt KPI · 8-11: đạt KPI · 4-7: đạt một phần · 0-3: không đạt', note: 'Đối chiếu số liệu KPI thực tế của tháng đánh giá.' },
-      { code: 'HS02', name: 'Chất lượng sản phẩm/đầu ra', desc: 'Độ chính xác, hoàn thiện của sản phẩm/công việc bàn giao.', max: 10, scale: '9-10: xuất sắc · 6-8: tốt · 3-5: cần sửa nhiều · 0-2: không đạt', note: '' },
-      { code: 'HS03', name: 'Tiến độ, đúng deadline', desc: 'Mức độ hoàn thành công việc đúng hoặc trước hạn.', max: 10, scale: '9-10: luôn đúng hạn · 6-8: trễ ít · 3-5: trễ nhiều lần · 0-2: thường xuyên trễ', note: '' },
-      { code: 'HS04', name: 'Năng lực giải quyết vấn đề', desc: 'Khả năng xử lý tình huống phát sinh, ra quyết định phù hợp.', max: 10, scale: '9-10: chủ động xử lý tốt · 6-8: xử lý được · 3-5: cần hỗ trợ nhiều · 0-2: không xử lý được', note: '' },
-      { code: 'HS05', name: 'Chuyên môn và kỹ thuật', desc: 'Mức độ vững chuyên môn, kỹ năng nghiệp vụ theo vị trí.', max: 10, scale: '9-10: vững chuyên môn · 6-8: đáp ứng · 3-5: còn hạn chế · 0-2: yếu', note: '' },
-      { code: 'HS06', name: 'Hiệu quả làm việc độc lập', desc: 'Khả năng tự tổ chức và hoàn thành công việc không cần giám sát sát sao.', max: 5, scale: '5: rất tốt · 3-4: tốt · 1-2: cần nhắc nhở · 0: kém', note: '' },
-      { code: 'HS07', name: 'Quản lý thời gian và ưu tiên', desc: 'Sắp xếp thứ tự ưu tiên công việc hợp lý, đúng hạn.', max: 3, scale: '3: rất tốt · 2: tốt · 1: trung bình · 0: kém', note: '' },
+      { code: 'HS01', name: 'Hoàn thành KPI/Mục tiêu tháng', desc: 'Mức độ hoàn thành các mục tiêu, KPI được giao trong tháng.', max: 15, scale: '15: ≥110% KPI; 13–14: 100–<110%; 10–12: 80–<100%; 6–9: 60–<80%; 1–5: <60%; 0: Không thực hiện', note: 'Số liệu KPI thực tế' },
+      { code: 'HS02', name: 'Chất lượng sản phẩm/đầu ra', desc: 'Độ chính xác, hoàn thiện và mức độ đáp ứng yêu cầu của công việc bàn giao.', max: 10, scale: '9–10: Chất lượng xuất sắc, hầu như không có lỗi; 7–8: Đáp ứng tốt, có lỗi nhỏ; 4–6: Còn nhiều điểm cần sửa; 1–3: Chất lượng thấp; 0: Không đạt yêu cầu', note: 'Sản phẩm bàn giao, tỷ lệ lỗi, phản hồi của quản lý' },
+      { code: 'HS03', name: 'Quản lý tiến độ, thời gian và ưu tiên công việc', desc: 'Khả năng lập kế hoạch, xác định thứ tự ưu tiên, phân bổ thời gian và hoàn thành đúng hạn.', max: 10, scale: '9–10: Luôn đúng hoặc trước hạn, ưu tiên hợp lý; 7–8: Phần lớn đúng hạn; 4–6: Có chậm hạn, cần nhắc nhở; 1–3: Thường xuyên chậm hoặc bỏ sót; 0: Không kiểm soát được tiến độ', note: 'Tiến độ công việc, số lần chậm hạn, mức độ chủ động' },
+      { code: 'HS04', name: 'Năng lực giải quyết vấn đề', desc: 'Khả năng nhận diện, xử lý tình huống phát sinh và đưa ra phương án phù hợp.', max: 10, scale: '9–10: Chủ động xử lý hiệu quả; 7–8: Xử lý tốt các vấn đề thông thường; 4–6: Cần hỗ trợ trong nhiều trường hợp; 1–3: Khả năng xử lý hạn chế; 0: Không xử lý được', note: 'Tình huống thực tế và kết quả xử lý' },
+      { code: 'HS05', name: 'Chuyên môn và kỹ thuật', desc: 'Mức độ vững chuyên môn, kỹ năng nghiệp vụ theo vị trí.', max: 10, scale: '9–10: Thành thạo, có thể hướng dẫn người khác; 7–8: Đáp ứng tốt yêu cầu; 4–6: Còn hạn chế, cần đào tạo thêm; 1–3: Chuyên môn yếu; 0: Không đáp ứng yêu cầu vị trí', note: 'Chất lượng chuyên môn, kết quả công việc' },
+      { code: 'HS06', name: 'Hiệu quả làm việc độc lập', desc: 'Khả năng tự tổ chức và hoàn thành công việc mà không cần giám sát thường xuyên.', max: 5, scale: '5: Hoàn toàn chủ động; 4: Làm việc độc lập tốt; 2–3: Đôi lúc cần hỗ trợ hoặc nhắc nhở; 1: Phụ thuộc nhiều vào quản lý; 0: Không thể tự hoàn thành công việc', note: 'Mức độ chủ động, số lần cần hỗ trợ' },
     ],
   },
   {
-    key: 'van_hoa', label: 'Nhóm 2 – Văn hóa, thái độ, kỷ luật', maxScore: 25, color: '#1D4ED8', icon: '🤝',
+    key: 'van_hoa', label: 'Nhóm 2 – Văn hóa, thái độ, kỷ luật', maxScore: 25, color: '#1D4ED8', icon: '🤝', evidenceHeader: 'Ghi chú/Minh chứng',
     criteria: [
-      { code: 'VH01', name: 'Thái độ và tinh thần làm việc', desc: 'Tinh thần tích cực, trách nhiệm với công việc chung.', max: 6, scale: '6: rất tốt · 4-5: tốt · 2-3: trung bình · 0-1: kém', note: '' },
-      { code: 'VH02', name: 'Làm việc nhóm và hỗ trợ đồng nghiệp', desc: 'Phối hợp, hỗ trợ đồng nghiệp trong công việc chung.', max: 6, scale: '6: rất tốt · 4-5: tốt · 2-3: trung bình · 0-1: kém', note: '' },
-      { code: 'VH03', name: 'Tuân thủ quy trình và kỷ luật', desc: 'Chấp hành nội quy, quy trình, giờ giấc làm việc.', max: 5, scale: '5: tuân thủ tốt · 3-4: vi phạm nhỏ · 1-2: vi phạm nhiều lần · 0: vi phạm nghiêm trọng', note: 'Đối chiếu dữ liệu chấm công/kỷ luật nếu có.' },
-      { code: 'VH04', name: 'Giao tiếp và báo cáo kịp thời', desc: 'Báo cáo tiến độ, vấn đề phát sinh kịp thời, rõ ràng.', max: 4, scale: '4: rất tốt · 3: tốt · 1-2: chưa đầy đủ · 0: không báo cáo', note: '' },
-      { code: 'VH05', name: 'Cam kết và giữ lời hứa', desc: 'Thực hiện đúng những gì đã cam kết với quản lý/đồng nghiệp.', max: 4, scale: '4: rất tốt · 3: tốt · 1-2: đôi khi thất hứa · 0: thường xuyên thất hứa', note: '' },
+      { code: 'VH01', name: 'Tinh thần trách nhiệm và thái độ làm việc', desc: 'Chủ động, tích cực, nghiêm túc và chịu trách nhiệm đối với công việc được giao.', max: 7, scale: '7: Luôn chủ động, trách nhiệm cao; 5–6: Thực hiện tốt, ít cần nhắc nhở; 3–4: Đáp ứng cơ bản nhưng đôi lúc thiếu chủ động; 1–2: Thường xuyên cần nhắc nhở; 0: Thiếu trách nhiệm nghiêm trọng', note: 'Nhận xét của quản lý, kết quả thực hiện công việc' },
+      { code: 'VH02', name: 'Phối hợp và hỗ trợ đồng nghiệp', desc: 'Hợp tác, chia sẻ thông tin và hỗ trợ các thành viên để hoàn thành mục tiêu chung.', max: 6, scale: '6: Phối hợp rất tốt, chủ động hỗ trợ; 4–5: Hợp tác tốt; 2–3: Phối hợp chưa thường xuyên hoặc còn bị động; 1: Khó phối hợp; 0: Không hợp tác, gây ảnh hưởng công việc chung', note: 'Phản hồi của đồng nghiệp, quản lý và các bộ phận liên quan' },
+      { code: 'VH03', name: 'Tuân thủ nội quy, quy trình và kỷ luật', desc: 'Chấp hành thời gian làm việc, nội quy, quy trình nghiệp vụ và yêu cầu quản lý.', max: 6, scale: '6: Tuân thủ đầy đủ, không vi phạm; 4–5: Có vi phạm nhỏ nhưng khắc phục ngay; 2–3: Vi phạm hoặc bị nhắc nhở nhiều lần; 1: Vi phạm nghiêm trọng; 0: Vi phạm đặc biệt nghiêm trọng hoặc tái phạm', note: 'Dữ liệu chấm công, biên bản và lịch sử nhắc nhở' },
+      { code: 'VH04', name: 'Giao tiếp, báo cáo và thực hiện cam kết', desc: 'Trao đổi rõ ràng, báo cáo kịp thời, thực hiện đúng nội dung và thời hạn đã cam kết.', max: 6, scale: '6: Luôn báo cáo đúng hạn, thực hiện đầy đủ cam kết; 4–5: Cơ bản đầy đủ, đôi lúc cần nhắc; 2–3: Báo cáo chậm hoặc không hoàn thành một số cam kết; 1: Thường xuyên chậm, thiếu báo cáo; 0: Không báo cáo, không thực hiện cam kết, gây ảnh hưởng nghiêm trọng', note: 'Báo cáo công việc, email, lịch sử giao việc và xác nhận tiến độ' },
     ],
   },
   {
-    key: 'sang_tao', label: 'Nhóm 3 – Sáng tạo, cải tiến, chủ động', maxScore: 15, color: '#047857', icon: '💡',
+    key: 'sang_tao', label: 'Nhóm 3 – Sáng tạo, cải tiến, chủ động', maxScore: 15, color: '#047857', icon: '💡', evidenceHeader: 'Căn cứ đánh giá',
     criteria: [
-      { code: 'SK01', name: 'Sáng kiến và đề xuất cải tiến', desc: 'Đưa ra ý tưởng/đề xuất cải tiến quy trình, công việc.', max: 6, scale: '6: nhiều sáng kiến giá trị · 3-5: có đề xuất · 1-2: hiếm khi · 0: không có', note: '' },
-      { code: 'SK02', name: 'Tự học và nâng cao năng lực', desc: 'Chủ động học hỏi, nâng cao kỹ năng chuyên môn.', max: 4, scale: '4: rất chủ động · 2-3: có cố gắng · 1: ít · 0: không', note: '' },
-      { code: 'SK03', name: 'Áp dụng công nghệ và công cụ mới', desc: 'Ứng dụng công cụ/công nghệ mới để tăng hiệu quả công việc.', max: 3, scale: '3: áp dụng tốt · 2: có áp dụng · 1: hạn chế · 0: không', note: '' },
-      { code: 'SK04', name: 'Chủ động và vượt kỳ vọng', desc: 'Chủ động nhận thêm việc, tạo giá trị vượt mong đợi.', max: 2, scale: '2: vượt kỳ vọng · 1: đạt kỳ vọng · 0: chưa đạt', note: '' },
+      { code: 'SK01', name: 'Sáng kiến và đề xuất cải tiến', desc: 'Đưa ra ý tưởng, giải pháp cải tiến quy trình, sản phẩm hoặc phương pháp làm việc.', max: 5, scale: '5: Có sáng kiến giá trị, được áp dụng và tạo hiệu quả; 4: Có đề xuất thiết thực, có khả năng áp dụng; 2–3: Có ý tưởng nhưng tính ứng dụng hoặc hiệu quả còn hạn chế; 1: Ít đề xuất; 0: Không có đề xuất', note: 'Nội dung đề xuất, kết quả áp dụng và xác nhận của quản lý' },
+      { code: 'SK02', name: 'Tự học và nâng cao năng lực', desc: 'Chủ động học hỏi, cập nhật kiến thức và phát triển kỹ năng phục vụ công việc.', max: 4, scale: '4: Chủ động học tập và áp dụng hiệu quả; 3: Có học hỏi thường xuyên, có tiến bộ; 1–2: Có học nhưng chưa đều hoặc ít áp dụng; 0: Không có tinh thần học hỏi', note: 'Khóa học, chứng chỉ, nội dung tự học và kết quả áp dụng' },
+      { code: 'SK03', name: 'Ứng dụng công nghệ và công cụ mới', desc: 'Chủ động sử dụng công nghệ, AI hoặc công cụ phù hợp nhằm nâng cao năng suất và chất lượng công việc.', max: 3, scale: '3: Áp dụng hiệu quả, tạo cải thiện rõ ràng; 2: Có áp dụng và mang lại kết quả; 1: Áp dụng còn hạn chế hoặc cần hỗ trợ; 0: Không áp dụng', note: 'Công cụ đã sử dụng, sản phẩm và hiệu quả thực tế' },
+      { code: 'SK04', name: 'Tinh thần chủ động và tạo giá trị gia tăng', desc: 'Chủ động nhận diện công việc cần thực hiện, đề xuất hỗ trợ và tạo kết quả vượt yêu cầu thông thường.', max: 3, scale: '3: Thường xuyên chủ động, tạo giá trị vượt mong đợi; 2: Chủ động tốt, đôi khi vượt yêu cầu; 1: Hoàn thành yêu cầu nhưng còn bị động; 0: Không chủ động hoặc thường xuyên chờ giao việc', note: 'Kết quả phát sinh ngoài nhiệm vụ chính, phản hồi của quản lý' },
     ],
   },
 ];

@@ -67,6 +67,11 @@ export async function renderAttendance(el, me) {
       </div>
     </div>
 
+    ${canManageAttendance ? `<div class="card" style="margin:14px 0;">
+      <div class="card-header"><div class="card-title">⏱️ Yêu cầu làm thêm giờ</div><select id="ot-status-filter" class="btn-secondary btn-sm"><option value="pending">Chờ duyệt</option><option value="approved">Đã duyệt</option><option value="rejected">Đã từ chối</option><option value="">Tất cả</option></select></div>
+      <div id="ot-request-list">${loadingHTML()}</div>
+    </div>` : ''}
+
     <!-- Filter -->
     <div class="card" style="margin-bottom:14px;">
       <div class="card-header" style="margin-bottom:10px;">
@@ -252,8 +257,17 @@ export async function renderAttendance(el, me) {
     const btnOut = document.getElementById('btn-checkout');
     submitting = true; btnOut.disabled = true; btnOut.textContent = '...';
     try {
-      await api.checkout({});
-      toast('Check out thành công!', 'success');
+      const result = await api.checkout({});
+      if (result.requires_overtime_choice) {
+        openModal('Checkout muộn', `<p>Bạn checkout lúc <b>${esc(result.time)}</b>, muộn hơn giờ kết thúc ca <b>${esc(result.shift_end_time)}</b> ${result.overtime_minutes} phút.</p><p>Chọn “Làm thêm giờ” nếu cần gửi HCNS/quản lý xác nhận. Chỉ thời gian được duyệt mới tính là OT.</p><div class="field"><label>Lý do làm thêm giờ</label><textarea id="ot-reason" rows="3" placeholder="Nhập lý do nếu gửi yêu cầu OT..."></textarea></div>`, `<button class="btn-secondary" id="ot-late-checkout">Checkout trễ</button><button class="btn-primary" id="ot-submit">Gửi yêu cầu làm thêm giờ</button>`);
+        document.getElementById('ot-late-checkout')?.addEventListener('click', () => { closeModal(); toast('Đã ghi nhận checkout trễ, không tạo yêu cầu OT', 'success'); });
+        document.getElementById('ot-submit')?.addEventListener('click', async () => {
+          const reason = document.getElementById('ot-reason')?.value.trim();
+          if (!reason) { toast('Vui lòng nhập lý do làm thêm giờ', 'error'); return; }
+          try { await api.createOvertimeRequest({ attendance_id: result.attendance_id, reason }); closeModal(); toast('Đã gửi yêu cầu làm thêm giờ chờ duyệt', 'success'); loadOvertimeRequests(); }
+          catch (e) { toast(e.message || 'Không thể gửi yêu cầu OT', 'error'); }
+        });
+      } else toast('Check out thành công!', 'success');
       await loadTodayStatus();
       loadHistory();
     } catch(e) {
@@ -265,6 +279,32 @@ export async function renderAttendance(el, me) {
   });
 
   let historyPage = 1;
+
+  async function loadOvertimeRequests() {
+    const list = document.getElementById('ot-request-list');
+    if (!list) return;
+    try {
+      const month = document.getElementById('att-month-filter')?.value || new Date().toISOString().slice(0, 7);
+      const status = document.getElementById('ot-status-filter')?.value || '';
+      const { overtime_requests: rows = [] } = await api.getOvertimeRequests({ month, status });
+      list.innerHTML = rows.length ? `<div class="table-wrap"><table><thead><tr><th>Nhân viên</th><th>Ngày</th><th>Checkout / hết ca</th><th>Đề nghị</th><th>Lý do</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>${rows.map(r => `<tr><td><b>${esc(r.full_name)}</b><br><small>${esc(r.employee_code || '')}</small></td><td>${esc(r.work_date)}</td><td>${esc(r.checkout_time)} / ${esc(r.shift_end_time)}</td><td>${r.requested_minutes} phút${r.approved_minutes != null ? `<br><small>Duyệt: ${r.approved_minutes} phút</small>` : ''}</td><td style="max-width:220px;">${esc(r.reason)}</td><td>${r.status === 'pending' ? '<span class="badge badge-warning">Chờ duyệt</span>' : r.status === 'approved' ? '<span class="badge badge-success">Đã duyệt</span>' : '<span class="badge badge-danger">Từ chối</span>'}</td><td>${r.status === 'pending' ? `<button class="btn-secondary btn-sm ot-decide" data-id="${r.id}" data-minutes="${r.requested_minutes}" data-action="approve">Duyệt</button> <button class="btn-danger btn-sm ot-decide" data-id="${r.id}" data-action="reject">Từ chối</button>` : esc(r.reviewer_name || '—')}</td></tr>`).join('')}</tbody></table></div>` : emptyHTML('⏱️', 'Không có yêu cầu làm thêm giờ');
+      list.querySelectorAll('.ot-decide').forEach(btn => btn.addEventListener('click', () => openOvertimeDecision(btn.dataset)));
+    } catch (e) { list.innerHTML = emptyHTML('⚠️', e.message || 'Không thể tải yêu cầu OT'); }
+  }
+
+  function openOvertimeDecision(data) {
+    const approving = data.action === 'approve';
+    openModal(approving ? 'Duyệt làm thêm giờ' : 'Từ chối làm thêm giờ', `${approving ? `<div class="field"><label>Số phút được duyệt</label><input type="number" id="ot-approved-minutes" min="1" max="${data.minutes}" value="${data.minutes}"/></div>` : ''}<div class="field"><label>${approving ? 'Ghi chú (tuỳ chọn)' : 'Lý do từ chối'}</label><textarea id="ot-review-note" rows="3"></textarea></div>`, `<button class="btn-secondary" id="ot-cancel">Hủy</button><button class="btn-primary" id="ot-confirm">${approving ? 'Duyệt OT' : 'Từ chối'}</button>`);
+    document.getElementById('ot-cancel')?.addEventListener('click', closeModal);
+    document.getElementById('ot-confirm')?.addEventListener('click', async () => {
+      const review_note = document.getElementById('ot-review-note')?.value.trim() || '';
+      if (!approving && !review_note) { toast('Vui lòng nhập lý do từ chối', 'error'); return; }
+      try { await api.decideOvertimeRequest(data.id, data.action, { approved_minutes: approving ? Number(document.getElementById('ot-approved-minutes').value) : 0, review_note }); closeModal(); toast(approving ? 'Đã duyệt làm thêm giờ' : 'Đã từ chối yêu cầu', 'success'); loadOvertimeRequests(); loadHistory(); }
+      catch (e) { toast(e.message || 'Không thể xử lý yêu cầu OT', 'error'); }
+    });
+  }
+  document.getElementById('ot-status-filter')?.addEventListener('change', loadOvertimeRequests);
+  if (canManageAttendance) loadOvertimeRequests();
 
 
 
@@ -345,7 +385,7 @@ export async function renderAttendance(el, me) {
           <table>
             <thead>
               <tr>
-                <th>Ngày</th><th>Hình thức</th><th>Ca đăng ký</th><th>Vào</th><th>Ra</th><th>Giờ làm</th><th>Trạng thái</th><th>Ghi chú</th>
+                <th>Ngày</th><th>Hình thức</th><th>Ca đăng ký</th><th>Vào</th><th>Ra</th><th>Giờ làm</th><th>OT</th><th>Trạng thái</th><th>Ghi chú</th>
               </tr>
             </thead>
             <tbody>
@@ -357,6 +397,7 @@ export async function renderAttendance(el, me) {
                   <td>${esc(a.checkin_time||'—')}</td>
                   <td>${esc(a.checkout_time||'—')}</td>
                   <td>${a.work_hours ? Number(a.work_hours).toFixed(1)+'h' : '—'}</td>
+                  <td>${a.overtime_status === 'approved' ? `<span class="badge badge-success">${Number(a.approved_overtime_minutes || 0) / 60}h duyệt</span>` : a.overtime_status === 'pending' ? '<span class="badge badge-warning">Chờ duyệt</span>' : a.overtime_status === 'rejected' ? '<span class="badge badge-danger">Từ chối</span>' : '—'}</td>
                   <td>${statusWithMinutes(a)}</td>
                   <td style="max-width:140px;">${esc(a.note||'—')}</td>
                 </tr>
@@ -393,7 +434,7 @@ export async function renderAttendance(el, me) {
         <div class="att-summary-grid">
           ${metric('Ngày công chuẩn', s.standardWorkDays)}${metric('Ngày công thực tế', s.actualWorkDays)}${metric('Đủ ngày / nửa ngày', `${s.fullDays} / ${s.halfDays}`)}${metric('Văn phòng / WFH / công tác', `${s.officeDays} / ${s.wfhDays} / ${s.businessDays}`)}
           ${metric('Nghỉ phép có duyệt', s.paidLeaveDays)}${metric('Vắng không phép', s.absentDays)}${metric('Thiếu vào / ra', `${s.missingCheckinDays} / ${s.missingCheckoutDays}`)}${metric('Đi muộn', `${s.lateDays} ngày · ${s.lateMinutes} phút`)}
-          ${metric('Về sớm', `${s.earlyDays} ngày · ${s.earlyMinutes} phút`)}${metric('Tổng giờ làm', `${s.totalWorkHours.toFixed(1)} giờ`)}${metric('Tỷ lệ chuyên cần', `${s.attendanceRate}%`)}
+          ${metric('Về sớm', `${s.earlyDays} ngày · ${s.earlyMinutes} phút`)}${metric('OT đã duyệt', `${Number(s.approvedOvertimeHours || 0).toFixed(2)} giờ`)}${metric('Tổng giờ làm', `${s.totalWorkHours.toFixed(1)} giờ`)}${metric('Tỷ lệ chuyên cần', `${s.attendanceRate}%`)}
         </div>
         <div class="att-summary-detail-head"><h4>Chi tiết theo ngày</h4><div class="att-summary-filters"><select id="att-detail-status"><option value="">Mọi trạng thái</option><option value="late">Đi muộn</option><option value="absent">Vắng</option><option value="leave">Nghỉ phép</option></select><select id="att-detail-work"><option value="">Mọi hình thức</option><option value="office">Văn phòng</option><option value="wfh">WFH</option><option value="business">Công tác</option></select><select id="att-detail-exception"><option value="">Mọi ngoại lệ</option><option value="late">Đi muộn</option><option value="early">Về sớm</option><option value="missing">Thiếu check-in/out</option></select></div></div>
         <div class="table-wrap"><table><thead><tr><th>Ngày</th><th>Thứ</th><th>Hình thức</th><th>Ca</th><th>Vào</th><th>Ra</th><th>Tổng giờ</th><th>Đi muộn</th><th>Về sớm</th><th>Trạng thái</th><th>Ghi chú</th>${isManager ? '<th>Thao tác</th>' : ''}</tr></thead><tbody id="att-detail-rows"></tbody></table></div>`;

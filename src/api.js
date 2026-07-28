@@ -187,6 +187,13 @@ export const api = {
   checkin:  (body) => req('POST', '/api/attendance/checkin', body).then(r => { inv('/api/attendance'); return r; }),
   checkout: (body) => req('POST', '/api/attendance/checkout', body).then(r => { inv('/api/attendance'); return r; }),
   updateAttendance: (id, d) => req('PUT', `/api/attendance/${id}`, d).then(r => { inv('/api/attendance'); return r; }),
+  getOvertimeRequests: (params = {}) => { const q = new URLSearchParams(params).toString(); return req('GET', '/api/overtime-requests' + (q ? '?' + q : '')); },
+  createOvertimeRequest: (d) => req('POST', '/api/overtime-requests', d).then(r => { inv('/api/attendance'); return r; }),
+  decideOvertimeRequest: (id, action, d = {}) => req('POST', `/api/overtime-requests/${id}/${action}`, d).then(r => { inv('/api/attendance', '/api/invoices'); return r; }),
+  getCompanyHolidays: () => req('GET', '/api/company-holidays'),
+  createCompanyHoliday: (d) => req('POST', '/api/company-holidays', d),
+  updateCompanyHoliday: (id, d) => req('PUT', `/api/company-holidays/${id}`, d),
+  deleteCompanyHoliday: (id) => req('DELETE', `/api/company-holidays/${id}`),
 
   // WiFi
   getWifi:    () => cachedGet('/api/wifi-whitelist'),

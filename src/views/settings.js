@@ -33,6 +33,10 @@ export async function renderSettings(el, me) {
       <div class="card-title" style="margin-bottom:14px;">🕐 Cấu hình giờ làm</div>
       <div id="work-settings-body">${loadingHTML()}</div>
     </div>
+    <div class="card" style="margin-top:14px;" id="holiday-settings-card">
+      <div class="card-title" style="margin-bottom:14px;">🎉 Ngày lễ/Tết tính làm thêm giờ</div>
+      <div id="holiday-settings-body">${loadingHTML()}</div>
+    </div>
     ` : ''}
 
     <!-- Profile info -->
@@ -81,10 +85,31 @@ export async function renderSettings(el, me) {
       const { settings } = await api.getSettings();
       renderCompanySettings(settings);
       renderWorkSettings(settings);
+      renderHolidaySettings();
     } catch(e) {
       document.getElementById('company-settings-body').innerHTML = `<div style="color:var(--danger);font-size:13px;">${esc(e.message)}</div>`;
     }
   }
+}
+
+async function renderHolidaySettings() {
+  const el = document.getElementById('holiday-settings-body');
+  if (!el) return;
+  try {
+    const { holidays = [] } = await api.getCompanyHolidays();
+    el.innerHTML = `<div class="input-row"><div class="field"><label>Ngày</label><input type="date" id="holiday-date"/></div><div class="field"><label>Tên ngày lễ/Tết</label><input type="text" id="holiday-name" placeholder="Ví dụ: Quốc khánh"/></div></div><button id="holiday-add" class="btn-primary btn-sm">+ Thêm ngày lễ</button><div class="table-wrap" style="margin-top:12px;"><table><thead><tr><th>Ngày</th><th>Tên</th><th>Trạng thái</th><th></th></tr></thead><tbody>${holidays.length ? holidays.map(h => `<tr><td>${esc(h.holiday_date)}</td><td>${esc(h.name)}</td><td>${Number(h.is_active) ? 'Áp dụng 300%' : 'Tạm tắt'}</td><td><button class="btn-icon holiday-edit" data-id="${h.id}" data-date="${esc(h.holiday_date)}" data-name="${esc(h.name)}" data-active="${Number(h.is_active)}" title="Sửa">✏️</button><button class="btn-icon holiday-delete" data-id="${h.id}" title="Xóa">🗑️</button></td></tr>`).join('') : '<tr><td colspan="4">Chưa có ngày lễ/Tết</td></tr>'}</tbody></table></div>`;
+    document.getElementById('holiday-add')?.addEventListener('click', async () => {
+      const holiday_date = document.getElementById('holiday-date').value; const name = document.getElementById('holiday-name').value.trim();
+      if (!holiday_date || !name) { toast('Vui lòng nhập ngày và tên ngày lễ', 'error'); return; }
+      try { await api.createCompanyHoliday({ holiday_date, name }); toast('Đã thêm ngày lễ', 'success'); renderHolidaySettings(); } catch (e) { toast(e.message, 'error'); }
+    });
+    el.querySelectorAll('.holiday-edit').forEach(btn => btn.addEventListener('click', async () => {
+      const holiday_date = prompt('Ngày (YYYY-MM-DD):', btn.dataset.date); if (holiday_date === null) return;
+      const name = prompt('Tên ngày lễ/Tết:', btn.dataset.name); if (name === null) return;
+      try { await api.updateCompanyHoliday(btn.dataset.id, { holiday_date, name, is_active: Number(btn.dataset.active) === 1 }); toast('Đã cập nhật ngày lễ', 'success'); renderHolidaySettings(); } catch (e) { toast(e.message, 'error'); }
+    }));
+    el.querySelectorAll('.holiday-delete').forEach(btn => btn.addEventListener('click', async () => { if (!confirm('Xóa ngày lễ này?')) return; await api.deleteCompanyHoliday(btn.dataset.id); renderHolidaySettings(); }));
+  } catch (e) { el.innerHTML = `<div style="color:var(--danger);font-size:13px;">${esc(e.message)}</div>`; }
 }
 
 function renderCompanySettings(s) {

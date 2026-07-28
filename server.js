@@ -9,7 +9,7 @@
 
 // ===================== MIGRATIONS =====================
 let _migrated = false;
-const SCHEMA_VERSION = '2026-07-27-leave-workflow';
+const SCHEMA_VERSION = '2026-07-28-overtime-workflow';
 const SEED_VERSION = '2026-07-22-seed-v1';
 
 async function migrate(env) {
@@ -286,12 +286,44 @@ async function migrate(env) {
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN late_minutes INTEGER DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN early_minutes INTEGER DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN registered INTEGER DEFAULT 0'); } catch (_) {}
+  // Overtime requests are kept separately from attendance so the actual checkout
+  // remains immutable evidence and only HCNS/management-approved minutes are paid.
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS overtime_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    attendance_id INTEGER NOT NULL UNIQUE,
+    user_id INTEGER NOT NULL,
+    work_date TEXT NOT NULL,
+    shift_end_time TEXT NOT NULL,
+    checkout_time TEXT NOT NULL,
+    requested_minutes INTEGER NOT NULL,
+    approved_minutes INTEGER,
+    reason TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    reviewer_id INTEGER,
+    reviewer_name TEXT,
+    review_note TEXT,
+    reviewed_at TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_overtime_requests_status_date ON overtime_requests(status,work_date)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_overtime_requests_user_date ON overtime_requests(user_id,work_date)'); } catch (_) {}
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS company_holidays (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    holiday_date TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
   // Invoices: attendance-derived "Dữ liệu công" fields (auto-filled from /api/attendance/summary)
   try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN standard_days INTEGER DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN paid_leave_days INTEGER DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN late_minutes INTEGER DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN early_leave_minutes INTEGER DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN missing_checkinout_days INTEGER DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN approved_overtime_minutes INTEGER DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN overtime_pay REAL DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN locked_at TEXT'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN locked_by INTEGER'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN locked_by_name TEXT'); } catch (_) {}
@@ -715,9 +747,9 @@ const LIFECYCLE_STATUSES = ['Chờ tiếp nhận', 'Thực tập', 'Thử việc
 // duplicated here; this map exists solely so the backend can authoritatively bound-check scores
 // without importing a frontend module into the Worker bundle.
 const EVAL_CRITERIA_MAX = {
-  HS01: 12, HS02: 10, HS03: 10, HS04: 10, HS05: 10, HS06: 5, HS07: 3,
-  VH01: 6, VH02: 6, VH03: 5, VH04: 4, VH05: 4,
-  SK01: 6, SK02: 4, SK03: 3, SK04: 2,
+  HS01: 15, HS02: 10, HS03: 10, HS04: 10, HS05: 10, HS06: 5,
+  VH01: 7, VH02: 6, VH03: 6, VH04: 6,
+  SK01: 5, SK02: 4, SK03: 3, SK04: 3,
 };
 const EVAL_COMMENT_REQUIRED_RATIO = 0.6; // require a written comment when score < 60% of that criterion's max
 const EVAL_CODES = Object.keys(EVAL_CRITERIA_MAX);
@@ -745,7 +777,7 @@ function evalValidatePartial(scores, comments) {
 function evalValidateComplete(scores, comments) {
   for (const code of EVAL_CODES) {
     const v = (scores || {})[code];
-    if (v === undefined || v === null || v === '') return `Vui lòng chấm điểm đầy đủ 16 tiêu chí (còn thiếu ${code})`;
+    if (v === undefined || v === null || v === '') return `Vui lòng chấm điểm đầy đủ 14 tiêu chí (còn thiếu ${code})`;
   }
   return evalValidatePartial(scores, comments);
 }
@@ -1051,6 +1083,7 @@ async function buildMonthlyWorkSummary(env, userId, month, year) {
 
   const standardWorkDays = attCountBusinessDays(year, month);
   const actualWorkDays = fullDays + halfDays * 0.5;
+  const overtime = await buildMonthlyOvertimeSummary(env, userId, month, year);
   return {
     standardWorkDays,
     actualWorkDays,
@@ -1062,7 +1095,42 @@ async function buildMonthlyWorkSummary(env, userId, month, year) {
     paidLeaveDays,
     lateMinutes,
     earlyLeaveMinutes,
+    approvedOvertimeMinutes: overtime.approvedOvertimeMinutes,
+    approvedOvertimeHours: overtime.approvedOvertimeHours,
   };
+}
+
+async function buildMonthlyOvertimeSummary(env, userId, month, year, baseSalary = 0) {
+  const mm = String(month).padStart(2, '0');
+  const { results = [] } = await env.DB.prepare(
+    "SELECT work_date, approved_minutes FROM overtime_requests WHERE user_id=? AND status='approved' AND strftime('%m',work_date)=? AND strftime('%Y',work_date)=?"
+  ).bind(userId, mm, String(year)).all();
+  const { results: holidays = [] } = await env.DB.prepare(
+    "SELECT holiday_date FROM company_holidays WHERE is_active=1 AND strftime('%m',holiday_date)=? AND strftime('%Y',holiday_date)=?"
+  ).bind(mm, String(year)).all();
+  const holidayDates = new Set(holidays.map(h => h.holiday_date));
+  const standardDays = attCountBusinessDays(year, month) || 1;
+  const hourlyRate = Number(baseSalary || 0) / standardDays / 8;
+  let approvedMinutes = 0;
+  let overtimePay = 0;
+  for (const item of results) {
+    const minutes = Math.max(0, Number(item.approved_minutes || 0));
+    const day = new Date(`${item.work_date}T00:00:00`).getDay();
+    const multiplier = holidayDates.has(item.work_date) ? 3 : day === 0 ? 2 : 1.5;
+    approvedMinutes += minutes;
+    overtimePay += (minutes / 60) * hourlyRate * multiplier;
+  }
+  return { approvedOvertimeMinutes: approvedMinutes, approvedOvertimeHours: approvedMinutes / 60, overtimePay: Math.round(overtimePay) };
+}
+
+async function refreshInvoiceOvertime(env, userId, month, year, actor = null) {
+  const invoice = await env.DB.prepare('SELECT * FROM invoices WHERE user_id=? AND month=? AND year=? ORDER BY id DESC LIMIT 1').bind(userId, month, year).first();
+  if (!invoice) return null;
+  const ot = await buildMonthlyOvertimeSummary(env, userId, month, year, invoice.base_salary);
+  const net = Number(invoice.base_salary || 0) + Number(invoice.bonus || 0) + Number(invoice.allowance || 0) + ot.overtimePay - Number(invoice.deduction || 0) - Number(invoice.tax || 0) - Number(invoice.insurance || 0);
+  await env.DB.prepare('UPDATE invoices SET approved_overtime_minutes=?,overtime_pay=?,net_salary=? WHERE id=?').bind(ot.approvedOvertimeMinutes, ot.overtimePay, net, invoice.id).run();
+  if (actor) await env.DB.prepare('INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)').bind(invoice.id, invoice.status, invoice.status, actor.id, actor.full_name || '', `Overtime approval recalculated: ${ot.approvedOvertimeHours.toFixed(2)}h`).run();
+  return ot;
 }
 
 function attShiftBounds(workType, shift, expectedStart, expectedEnd) {
@@ -1975,7 +2043,10 @@ export async function handle(request, env) {
     const month = url.searchParams.get('month');
     const year = url.searchParams.get('year');
     const date = url.searchParams.get('date');
-    let q = 'SELECT a.*, u.full_name, u.employee_code, u.department FROM attendance a JOIN users u ON a.user_id=u.id WHERE 1=1';
+    let q = `SELECT a.*, u.full_name, u.employee_code, u.department,
+      (SELECT status FROM overtime_requests o WHERE o.attendance_id=a.id) AS overtime_status,
+      (SELECT approved_minutes FROM overtime_requests o WHERE o.attendance_id=a.id) AS approved_overtime_minutes
+      FROM attendance a JOIN users u ON a.user_id=u.id WHERE 1=1`;
     const binds = [];
     if (!isAttendanceAdmin) { q += ' AND a.user_id=?'; binds.push(me.id); }
     else if (me.role === 'manager' && !isAdmin && !isAttendanceHcns) { q += ' AND u.department=?'; binds.push(me.department); }
@@ -2154,7 +2225,87 @@ export async function handle(request, env) {
     const workHours = Math.max(0, workMinutes) / 60;
     await env.DB.prepare('UPDATE attendance SET checkout_time=?,checkout_ip=?,work_hours=?,early_minutes=? WHERE id=?')
       .bind(timeStr, ipInfo.ip, workHours, earlyMinutes, record.id).run();
-    return json({ ok: true, time: timeStr, work_hours: workHours, early_minutes: earlyMinutes });
+    const overtimeMinutes = Math.max(0, coMin - attToMinutes(bounds.end));
+    return json({ ok: true, attendance_id: record.id, time: timeStr, work_hours: workHours, early_minutes: earlyMinutes,
+      requires_overtime_choice: overtimeMinutes >= 1, overtime_minutes: overtimeMinutes, shift_end_time: bounds.end });
+  }
+
+  // ── OVERTIME ────────────────────────────────────────────────────
+  if (path === '/api/overtime-requests' && request.method === 'GET') {
+    const month = String(url.searchParams.get('month') || '');
+    const status = String(url.searchParams.get('status') || '');
+    let q = `SELECT o.*,u.full_name,u.employee_code,u.department FROM overtime_requests o JOIN users u ON u.id=o.user_id WHERE 1=1`;
+    const binds = [];
+    if (!isAttendanceAdmin) { q += ' AND o.user_id=?'; binds.push(me.id); }
+    else if (me.role === 'manager' && !isAdmin && !isAttendanceHcns) { q += ' AND u.department=?'; binds.push(me.department); }
+    if (/^\d{4}-\d{2}$/.test(month)) { q += " AND strftime('%Y-%m',o.work_date)=?"; binds.push(month); }
+    if (['pending','approved','rejected'].includes(status)) { q += ' AND o.status=?'; binds.push(status); }
+    q += ' ORDER BY CASE o.status WHEN \'pending\' THEN 0 ELSE 1 END,o.work_date DESC,o.id DESC';
+    const { results = [] } = await (binds.length ? env.DB.prepare(q).bind(...binds) : env.DB.prepare(q)).all();
+    return json({ overtime_requests: results });
+  }
+
+  if (path === '/api/overtime-requests' && request.method === 'POST') {
+    const b = await request.json().catch(() => ({}));
+    const attendanceId = parseInt(b.attendance_id);
+    const reason = String(b.reason || '').trim();
+    if (!attendanceId || !reason) return json({ error: 'Vui lòng nhập lý do làm thêm giờ' }, 400);
+    const record = await env.DB.prepare('SELECT * FROM attendance WHERE id=? AND user_id=?').bind(attendanceId, me.id).first();
+    if (!record || !record.checkout_time) return json({ error: 'Không tìm thấy checkout hợp lệ' }, 404);
+    const bounds = attShiftBounds(record.work_type || 'office', record.shift || 'full', record.expected_start, record.expected_end);
+    const requestedMinutes = Math.max(0, (attToMinutes(record.checkout_time) || 0) - (attToMinutes(bounds.end) || 0));
+    if (requestedMinutes < 1) return json({ error: 'Checkout không muộn hơn giờ kết thúc ca' }, 400);
+    try {
+      const r = await env.DB.prepare('INSERT INTO overtime_requests (attendance_id,user_id,work_date,shift_end_time,checkout_time,requested_minutes,reason,status) VALUES (?,?,?,?,?,?,?,\'pending\')')
+        .bind(record.id, me.id, record.date, bounds.end, record.checkout_time, requestedMinutes, reason).run();
+      return json({ ok: true, id: r.meta.last_row_id, requested_minutes: requestedMinutes });
+    } catch (e) {
+      if (String(e.message || '').includes('UNIQUE')) return json({ error: 'Đã gửi yêu cầu làm thêm giờ cho checkout này' }, 400);
+      throw e;
+    }
+  }
+
+  const overtimeAction = path.match(/^\/api\/overtime-requests\/(\d+)\/(approve|reject)$/);
+  if (overtimeAction && request.method === 'POST') {
+    if (!isAttendanceAdmin) return json({ error: 'Không có quyền duyệt làm thêm giờ' }, 403);
+    const id = parseInt(overtimeAction[1]); const action = overtimeAction[2];
+    const requestRow = await env.DB.prepare('SELECT o.*,u.department FROM overtime_requests o JOIN users u ON u.id=o.user_id WHERE o.id=?').bind(id).first();
+    if (!requestRow) return json({ error: 'Không tìm thấy yêu cầu làm thêm giờ' }, 404);
+    if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && requestRow.department !== me.department) return json({ error: 'Không có quyền duyệt yêu cầu ngoài phòng ban' }, 403);
+    if (requestRow.status !== 'pending') return json({ error: 'Yêu cầu đã được xử lý' }, 400);
+    const b = await request.json().catch(() => ({}));
+    const note = String(b.review_note || '').trim();
+    if (action === 'reject' && !note) return json({ error: 'Vui lòng nhập lý do từ chối' }, 400);
+    const approvedMinutes = action === 'approve' ? Math.min(Math.max(0, parseInt(b.approved_minutes ?? requestRow.requested_minutes) || 0), requestRow.requested_minutes) : 0;
+    if (action === 'approve' && approvedMinutes < 1) return json({ error: 'Số phút được duyệt phải lớn hơn 0' }, 400);
+    const nextStatus = action === 'approve' ? 'approved' : 'rejected';
+    await env.DB.prepare('UPDATE overtime_requests SET status=?,approved_minutes=?,reviewer_id=?,reviewer_name=?,review_note=?,reviewed_at=datetime(\'now\',\'localtime\'),updated_at=datetime(\'now\',\'localtime\') WHERE id=?')
+      .bind(nextStatus, approvedMinutes, me.id, me.full_name || '', note || null, id).run();
+    const d = new Date(`${requestRow.work_date}T00:00:00`);
+    const ot = await refreshInvoiceOvertime(env, requestRow.user_id, d.getMonth() + 1, d.getFullYear(), me);
+    return json({ ok: true, status: nextStatus, approved_minutes: approvedMinutes, overtime: ot });
+  }
+
+  if (path === '/api/company-holidays' && request.method === 'GET') {
+    const { results = [] } = await env.DB.prepare('SELECT * FROM company_holidays ORDER BY holiday_date DESC').all();
+    return json({ holidays: results });
+  }
+  if (path === '/api/company-holidays' && request.method === 'POST') {
+    if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
+    const b = await request.json().catch(() => ({}));
+    const date = String(b.holiday_date || ''), name = String(b.name || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !name) return json({ error: 'Ngày lễ và tên ngày lễ là bắt buộc' }, 400);
+    const r = await env.DB.prepare('INSERT INTO company_holidays (holiday_date,name,is_active) VALUES (?,?,?)').bind(date, name, b.is_active === false ? 0 : 1).run();
+    return json({ ok: true, id: r.meta.last_row_id });
+  }
+  const holidayMatch = path.match(/^\/api\/company-holidays\/(\d+)$/);
+  if (holidayMatch && ['PUT','DELETE'].includes(request.method)) {
+    if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
+    const id = parseInt(holidayMatch[1]);
+    if (request.method === 'DELETE') { await env.DB.prepare('DELETE FROM company_holidays WHERE id=?').bind(id).run(); return json({ ok: true }); }
+    const b = await request.json().catch(() => ({}));
+    await env.DB.prepare('UPDATE company_holidays SET holiday_date=?,name=?,is_active=?,updated_at=datetime(\'now\',\'localtime\') WHERE id=?').bind(String(b.holiday_date || ''), String(b.name || '').trim(), b.is_active === false ? 0 : 1, id).run();
+    return json({ ok: true });
   }
 
   const attMatch = path.match(/^\/api\/attendance\/(\d+)$/);
@@ -2227,6 +2378,7 @@ export async function handle(request, env) {
     const totalWorkHours = complete.reduce((sum, r) => sum + Number(r.work_hours || 0), 0);
     const standardWorkDays = attCountBusinessDaysBetween(from, to);
     const actualWorkDays = fullDays + halfDays * .5;
+    const overtime = await buildMonthlyOvertimeSummary(env, employeeId, Number(from.slice(5, 7)), Number(from.slice(0, 4)));
     return json({ employee, period: { from, to }, summary: {
       standardWorkDays, actualWorkDays, fullDays, halfDays,
       officeDays: complete.filter(r => (r.work_type || 'office') === 'office').length,
@@ -2236,6 +2388,7 @@ export async function handle(request, env) {
       missingCheckinDays, missingCheckoutDays, lateDays,
       lateMinutes: activeRecords.reduce((sum, r) => sum + Number(r.late_minutes || 0), 0), earlyDays,
       earlyMinutes: activeRecords.reduce((sum, r) => sum + Number(r.early_minutes || 0), 0), totalWorkHours,
+      approvedOvertimeMinutes: overtime.approvedOvertimeMinutes, approvedOvertimeHours: overtime.approvedOvertimeHours,
       attendanceRate: standardWorkDays ? Number(((actualWorkDays / standardWorkDays) * 100).toFixed(1)) : 0,
     }, records });
   }
@@ -2765,10 +2918,11 @@ export async function handle(request, env) {
     const deduction = b.deduction || 0;
     const tax = b.tax ?? Math.round((base + bonus) * 0.1);
     const insurance = b.insurance ?? Math.round(base * 0.08);
-    const net = base + bonus + allowance - deduction - tax - insurance;
+    const overtime = await buildMonthlyOvertimeSummary(env, b.user_id, b.month, b.year, base);
+    const net = base + bonus + allowance + overtime.overtimePay - deduction - tax - insurance;
     const r = await env.DB.prepare(
-      'INSERT INTO invoices (invoice_number,user_id,month,year,base_salary,bonus,allowance,deduction,tax,insurance,net_salary,work_days,absent_days,late_days,standard_days,paid_leave_days,late_minutes,early_leave_minutes,missing_checkinout_days,status,note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
-    ).bind(invNum,b.user_id,b.month,b.year,base,bonus,allowance,deduction,tax,insurance,net,b.work_days||0,b.absent_days||0,b.late_days||0,b.standard_days||0,b.paid_leave_days||0,b.late_minutes||0,b.early_leave_minutes||0,b.missing_checkinout_days||0,b.status||'draft',b.note||'').run();
+      'INSERT INTO invoices (invoice_number,user_id,month,year,base_salary,bonus,allowance,deduction,tax,insurance,net_salary,work_days,absent_days,late_days,standard_days,paid_leave_days,late_minutes,early_leave_minutes,missing_checkinout_days,approved_overtime_minutes,overtime_pay,status,note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
+    ).bind(invNum,b.user_id,b.month,b.year,base,bonus,allowance,deduction,tax,insurance,net,b.work_days||0,b.absent_days||0,b.late_days||0,b.standard_days||0,b.paid_leave_days||0,b.late_minutes||0,b.early_leave_minutes||0,b.missing_checkinout_days||0,overtime.approvedOvertimeMinutes,overtime.overtimePay,b.status||'draft',b.note||'').run();
     await env.DB.prepare('INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)')
       .bind(r.meta.last_row_id, null, b.status||'draft', me.id, me.full_name, 'Created invoice').run();
     return json({ ok: true, id: r.meta.last_row_id, invoice_number: invNum });
@@ -2877,13 +3031,14 @@ export async function handle(request, env) {
       const allowance = b.allowance || 0, deduction = b.deduction || 0;
       const tax = b.tax ?? Math.round((base + bonus) * 0.1);
       const insurance = b.insurance ?? Math.round(base * 0.08);
-      const net = base + bonus + allowance - deduction - tax - insurance;
+      const overtime = await buildMonthlyOvertimeSummary(env, existingInv.user_id, existingInv.month, existingInv.year, base);
+      const net = base + bonus + allowance + overtime.overtimePay - deduction - tax - insurance;
       const nextStatus = b.status || existingInv.status || 'draft';
       const lockAt = nextStatus === 'paid' ? nowStr() : null;
       const confirmedAt = nextStatus === 'employee_confirmed' ? (existingInv.employee_confirmed_at || nowStr()) : existingInv.employee_confirmed_at;
       await env.DB.prepare(
-        'UPDATE invoices SET base_salary=?,bonus=?,allowance=?,deduction=?,tax=?,insurance=?,net_salary=?,work_days=?,absent_days=?,late_days=?,standard_days=?,paid_leave_days=?,late_minutes=?,early_leave_minutes=?,missing_checkinout_days=?,status=?,note=?,locked_at=?,locked_by=?,locked_by_name=?,employee_confirmed_at=? WHERE id=?'
-      ).bind(base,bonus,allowance,deduction,tax,insurance,net,b.work_days||0,b.absent_days||0,b.late_days||0,b.standard_days??0,b.paid_leave_days??0,b.late_minutes??0,b.early_leave_minutes??0,b.missing_checkinout_days??0,nextStatus,b.note||'',lockAt,lockAt ? me.id : null,lockAt ? me.full_name : null,confirmedAt,iid).run();
+        'UPDATE invoices SET base_salary=?,bonus=?,allowance=?,deduction=?,tax=?,insurance=?,net_salary=?,work_days=?,absent_days=?,late_days=?,standard_days=?,paid_leave_days=?,late_minutes=?,early_leave_minutes=?,missing_checkinout_days=?,approved_overtime_minutes=?,overtime_pay=?,status=?,note=?,locked_at=?,locked_by=?,locked_by_name=?,employee_confirmed_at=? WHERE id=?'
+      ).bind(base,bonus,allowance,deduction,tax,insurance,net,b.work_days||0,b.absent_days||0,b.late_days||0,b.standard_days??0,b.paid_leave_days??0,b.late_minutes??0,b.early_leave_minutes??0,b.missing_checkinout_days??0,overtime.approvedOvertimeMinutes,overtime.overtimePay,nextStatus,b.note||'',lockAt,lockAt ? me.id : null,lockAt ? me.full_name : null,confirmedAt,iid).run();
       if (nextStatus !== existingInv.status) {
         await env.DB.prepare('INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)')
           .bind(iid, existingInv.status || null, nextStatus, me.id, me.full_name, b.status_note || b.note || null).run();
@@ -3523,10 +3678,18 @@ export async function handle(request, env) {
     if (!isHcns(me) && !isBgd(me)) return json({ error: 'Không có quyền' }, 403);
     const b = await request.json().catch(() => ({}));
     const month = parseInt(b.month), year = parseInt(b.year);
-    const start = String(b.start_date || ''), end = String(b.end_date || '');
-    if (!month || !year || !start || !end) return json({ error: 'Thiếu thông tin kỳ đánh giá' }, 400);
-    const days = Math.round((new Date(end) - new Date(start)) / 86400000) + 1;
-    if (!(days >= 5 && days <= 7)) return json({ error: 'Kỳ đánh giá phải kéo dài từ 5 đến 7 ngày' }, 400);
+    if (!month || month < 1 || month > 12 || !year) return json({ error: 'Tháng/năm kỳ đánh giá không hợp lệ' }, 400);
+
+    // Fixed monthly cycle: from the 28th of the preceding month through the
+    // 3rd of the following month. Derive dates here to keep all new periods
+    // consistent; previously saved periods are preserved as-is.
+    const pad = (value) => String(value).padStart(2, '0');
+    const startMonth = month === 1 ? 12 : month - 1;
+    const startYear = month === 1 ? year - 1 : year;
+    const endMonth = month === 12 ? 1 : month + 1;
+    const endYear = month === 12 ? year + 1 : year;
+    const start = `${startYear}-${pad(startMonth)}-28`;
+    const end = `${endYear}-${pad(endMonth)}-03`;
     try {
       const r = await env.DB.prepare(
         'INSERT INTO eval_periods (month,year,start_date,end_date,created_by,created_by_name) VALUES (?,?,?,?,?,?)'
@@ -3561,9 +3724,9 @@ export async function handle(request, env) {
     ).bind(periodId).all();
     const evalByUser = new Map(evals.map(e => [Number(e.user_id), e]));
 
-    // N1: HS01-HS07 (max 60), N2: VH01-VH05 (max 25), N3: SK01-SK04 (max 15)
-    const N1_CODES = new Set(['HS01','HS02','HS03','HS04','HS05','HS06','HS07']);
-    const N2_CODES = new Set(['VH01','VH02','VH03','VH04','VH05']);
+    // N1: HS01-HS06 (max 60), N2: VH01-VH04 (max 25), N3: SK01-SK04 (max 15)
+    const N1_CODES = new Set(['HS01','HS02','HS03','HS04','HS05','HS06']);
+    const N2_CODES = new Set(['VH01','VH02','VH03','VH04']);
     const N3_CODES = new Set(['SK01','SK02','SK03','SK04']);
 
     function groupScores(evaluation) {
@@ -3580,11 +3743,11 @@ export async function handle(request, env) {
     }
 
     function ratingFor(total) {
-      if (total >= 90) return { label: 'Xuất sắc', cls: 'badge-success', action: 'Tưởng thưởng + Đề xuất thăng tiến' };
-      if (total >= 80) return { label: 'Tốt', cls: 'badge-info', action: 'Duy trì và phát huy' };
+      if (total >= 90) return { label: 'Xuất sắc', cls: 'badge-success', action: 'Xét thưởng, ghi nhận và ưu tiên phát triển' };
+      if (total >= 80) return { label: 'Tốt', cls: 'badge-info', action: 'Duy trì và giao mục tiêu cao hơn' };
       if (total >= 65) return { label: 'Đạt', cls: 'badge-gray', action: 'Đáp ứng yêu cầu, tiếp tục theo dõi' };
-      if (total >= 50) return { label: 'Dưới chuẩn', cls: 'badge-warning', action: 'Phạt 3 ngày lương + Bắt buộc đào tạo lại + Xem xét điều chuyển' };
-      return { label: 'Yếu', cls: 'badge-danger', action: 'Cho nghỉ việc / Dừng thực tập ngay' };
+      if (total >= 50) return { label: 'Dưới chuẩn', cls: 'badge-warning', action: 'Lập kế hoạch cải thiện, đào tạo và đánh giá lại' };
+      return { label: 'Yếu', cls: 'badge-danger', action: 'Cảnh báo hiệu suất, đánh giá lại sau thời hạn cải thiện; xem xét điều chuyển hoặc xử lý hợp đồng theo quy định' };
     }
 
     // Get previous period for comparison
@@ -3622,6 +3785,8 @@ export async function handle(request, env) {
         has_evaluation: !!ev,
         evaluation_id: ev?.id || null,
         status: ev?.status || null,
+        mentor_name: ev?.mentor_name || null,
+        department_head_name: ev?.department_head_name || null,
         n1: ev ? scores.n1 : 0,
         n2: ev ? scores.n2 : 0,
         n3: ev ? scores.n3 : 0,
@@ -3677,11 +3842,11 @@ export async function handle(request, env) {
     const avgScore = scoredCount > 0 ? Math.round(scoreSum / scoredCount) : 0;
 
     const policy = [
-      { grade: 'Xuất sắc', range: '≥ 90 điểm', action: 'Tưởng thưởng + Ưu tiên đề xuất thăng tiến', cls: 'badge-success' },
-      { grade: 'Tốt', range: '80–89 điểm', action: 'Duy trì và phát huy', cls: 'badge-info' },
+      { grade: 'Xuất sắc', range: '≥ 90 điểm', action: 'Xét thưởng, ghi nhận và ưu tiên phát triển', cls: 'badge-success' },
+      { grade: 'Tốt', range: '80–89 điểm', action: 'Duy trì và giao mục tiêu cao hơn', cls: 'badge-info' },
       { grade: 'Đạt', range: '65–79 điểm', action: 'Đáp ứng yêu cầu công việc, tiếp tục theo dõi', cls: 'badge-gray' },
-      { grade: 'Dưới chuẩn', range: '50–64 điểm', action: 'Phạt 3 ngày lương + Bắt buộc đào tạo lại + Xem xét điều chuyển', cls: 'badge-warning' },
-      { grade: 'Yếu', range: '< 50 điểm', action: 'Cho nghỉ việc / Dừng thực tập ngay', cls: 'badge-danger' },
+      { grade: 'Dưới chuẩn', range: '50–64 điểm', action: 'Lập kế hoạch cải thiện, đào tạo và đánh giá lại', cls: 'badge-warning' },
+      { grade: 'Yếu', range: '< 50 điểm', action: 'Cảnh báo hiệu suất, đánh giá lại sau thời hạn cải thiện; xem xét điều chuyển hoặc xử lý hợp đồng theo quy định', cls: 'badge-danger' },
     ];
 
     const dashboard = {

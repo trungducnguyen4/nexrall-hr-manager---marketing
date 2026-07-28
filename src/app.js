@@ -10,19 +10,19 @@ let _viewModules = {};
 async function getView(name) {
   if (!_viewModules[name]) {
     if (name === 'dashboard')    _viewModules[name] = await import('./views/dashboard.js');
-    else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js?v=20260727-employee-summary');
+    else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js?v=20260728-overtime');
     else if (name === 'tasks')       _viewModules[name] = await import('./views/tasks.js?v=20260722-plain-task-groups');
-    else if (name === 'invoices')    _viewModules[name] = await import('./views/invoices.js?v=20260722-payroll-export-ux');
+    else if (name === 'invoices')    _viewModules[name] = await import('./views/invoices.js?v=20260728-overtime');
     else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260722-role-label2');
     else if (name === 'wifi')        _viewModules[name] = await import('./views/wifi.js');
-    else if (name === 'settings')    _viewModules[name] = await import('./views/settings.js');
+    else if (name === 'settings')    _viewModules[name] = await import('./views/settings.js?v=20260728-overtime');
     else if (name === 'taskpanel')   _viewModules[name] = await import('./views/taskpanel.js?v=20260722-rich-task-editor');
     else if (name === 'departments') _viewModules[name] = await import('./views/departments.js');
     else if (name === 'recruitment') _viewModules[name] = await import('./views/recruitment.js');
     else if (name === 'payroll')     _viewModules[name] = await import('./views/payroll.js?v=20260722-payroll-export-ux');
     else if (name === 'leave')       _viewModules[name] = await import('./views/leave.js');
     else if (name === 'campaigns')   _viewModules[name] = await import('./views/campaigns.js');
-    else if (name === 'evaluation')  _viewModules[name] = await import('./views/evaluation.js?v=20260722-reward-policy');
+    else if (name === 'evaluation')  _viewModules[name] = await import('./views/evaluation.js?v=20260728-evaluation-policy');
     else if (name === 'db-admin')    _viewModules[name] = await import('./views/dbadmin.js');
   }
   return _viewModules[name];
