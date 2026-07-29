@@ -29,7 +29,7 @@ export async function renderUsers(el, me) {
   if (!isManager) { el.innerHTML = `<div class="empty-state"><div class="empty-icon">🔒</div><div class="empty-text">Bạn không có quyền truy cập</div></div>`; return; }
 
   el.innerHTML = `
-    <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;">
+    <div class="page-header users-reference-head" style="display:flex;align-items:center;justify-content:space-between;">
       <div>
         <div class="page-title">👥 Nhân viên</div>
         <div class="page-sub">Quản lý tài khoản nhân viên</div>
@@ -86,14 +86,14 @@ export async function renderUsers(el, me) {
     const pageData = paginateRows(users, currentPage);
     currentPage = pageData.page;
     listEl.innerHTML = pageData.rows.map(u => `
-      <div class="list-item" data-uid="${u.id}" style="${!u.is_active?'opacity:.55':''}">
+      <div class="list-item user-reference-row" data-uid="${u.id}" style="${!u.is_active?'opacity:.55':''}">
         <div class="avatar avatar-md" style="background:${esc(u.avatar_color||avatarColor(u.full_name))}">${esc(u.avatar_initials||initials(u.full_name))}</div>
-        <div class="list-item-content">
+        <div class="list-item-content user-reference-identity">
           <div class="list-item-title">${esc(u.full_name)}</div>
           <div class="list-item-sub">${esc(u.position||u.department||'')} · ${esc(u.employee_code||'')}</div>
           <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;">${roleBadge(u.role)}${lifecycleBadge(u.lifecycle_status)}</div>
         </div>
-        <div style="text-align:right;flex-shrink:0;">
+        <div class="user-reference-contact">
           <div style="font-size:12px;color:var(--text-2);margin-bottom:4px;">${esc(u.email)}</div>
           <span class="badge ${u.is_active ? 'badge-success' : 'badge-gray'}" style="font-size:10px;">${u.is_active?'✅ Hoạt động':'⛔ Khóa'}</span>
         </div>

@@ -611,6 +611,29 @@ async function migrate(env) {
     note TEXT,
     created_at TEXT DEFAULT (datetime('now','localtime'))
   )`); } catch (_) {}
+  // KPI theo nhân viên/kỳ tháng. Các bảng này chỉ được thêm mới, không thay đổi dữ liệu cũ.
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS employee_kpi_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, month INTEGER NOT NULL, year INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'DRAFT', created_by INTEGER, created_by_name TEXT,
+    submitted_at TEXT, reviewed_by INTEGER, reviewed_by_name TEXT, reviewed_at TEXT, review_note TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')), updated_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(employee_id, month, year)
+  )`); } catch (_) {}
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS employee_kpi_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, plan_id INTEGER NOT NULL, criterion_code TEXT NOT NULL,
+    title TEXT NOT NULL, description TEXT, unit TEXT NOT NULL DEFAULT 'đơn vị', target_value REAL NOT NULL,
+    actual_value REAL, weight_percent REAL NOT NULL, evidence_url TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')), updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS evaluation_kpi_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, evaluation_id INTEGER NOT NULL, criterion_code TEXT NOT NULL,
+    achievement_percent REAL NOT NULL, automatic_score REAL NOT NULL, details_json TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime')), UNIQUE(evaluation_id, criterion_code)
+  )`); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_employee_kpi_plans_period ON employee_kpi_plans(month,year,status)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_employee_kpi_plans_employee ON employee_kpi_plans(employee_id,year,month)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_employee_kpi_items_plan ON employee_kpi_items(plan_id,criterion_code)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_eval_kpi_snapshots_evaluation ON evaluation_kpi_snapshots(evaluation_id)'); } catch (_) {}
   // HCNS "Ghi chú & kiến nghị" gửi Ban Giám đốc — one note per eval period.
   try { await env.DB.exec(`ALTER TABLE eval_periods ADD COLUMN hr_note TEXT`); } catch (_) {}
   try { await env.DB.exec(`ALTER TABLE eval_periods ADD COLUMN hr_note_by TEXT`); } catch (_) {}
@@ -801,6 +824,7 @@ const EVAL_CRITERIA_MAX = {
 };
 const EVAL_COMMENT_REQUIRED_RATIO = 0.6; // require a written comment when score < 60% of that criterion's max
 const EVAL_CODES = Object.keys(EVAL_CRITERIA_MAX);
+const MANUAL_EVAL_CODES = EVAL_CODES.filter(code => !code.startsWith('HS'));
 
 function evalTotal(scores) {
   let sum = 0;
@@ -809,7 +833,7 @@ function evalTotal(scores) {
 }
 // Validates whatever is present (used for "Lưu nháp" — partial is fine).
 function evalValidatePartial(scores, comments) {
-  for (const code of EVAL_CODES) {
+  for (const code of MANUAL_EVAL_CODES) {
     const v = (scores || {})[code];
     if (v === undefined || v === null || v === '') continue;
     const n = Number(v);
@@ -823,7 +847,7 @@ function evalValidatePartial(scores, comments) {
 }
 // Validates that ALL 16 criteria are filled (used for "Gửi đánh giá").
 function evalValidateComplete(scores, comments) {
-  for (const code of EVAL_CODES) {
+  for (const code of MANUAL_EVAL_CODES) {
     const v = (scores || {})[code];
     if (v === undefined || v === null || v === '') return `Vui lòng chấm điểm đầy đủ 14 tiêu chí (còn thiếu ${code})`;
   }
@@ -1146,6 +1170,49 @@ async function buildMonthlyWorkSummary(env, userId, month, year) {
     approvedOvertimeMinutes: overtime.approvedOvertimeMinutes,
     approvedOvertimeHours: overtime.approvedOvertimeHours,
   };
+}
+
+const KPI_GROUP1_CODES = ['HS01', 'HS02', 'HS03', 'HS04', 'HS05', 'HS06'];
+const KPI_GROUP1_MAX = { HS01: 15, HS02: 10, HS03: 10, HS04: 10, HS05: 10, HS06: 5 };
+function kpiScoreForPercent(percent, maxScore) {
+  if (percent >= 110) return maxScore;
+  if (percent >= 100) return Math.round(maxScore * .9 * 10) / 10;
+  if (percent >= 80) return Math.round(maxScore * .75 * 10) / 10;
+  if (percent >= 60) return Math.round(maxScore * .5 * 10) / 10;
+  if (percent > 0) return Math.round(maxScore * .25 * 10) / 10;
+  return 0;
+}
+function validateKpiItems(items) {
+  if (!Array.isArray(items) || !items.length) return 'Cần khai báo KPI cho 6 tiêu chí Nhóm 1';
+  for (const code of KPI_GROUP1_CODES) {
+    const rows = items.filter(x => x.criterion_code === code);
+    const totalWeight = rows.reduce((s, x) => s + Number(x.weight_percent || 0), 0);
+    if (!rows.length || Math.abs(totalWeight - 100) > .01) return `Tiêu chí ${code} phải có tổng trọng số bằng 100%`;
+  }
+  for (const x of items) {
+    if (!KPI_GROUP1_CODES.includes(x.criterion_code) || !String(x.title || '').trim() || Number(x.target_value) <= 0 || Number(x.weight_percent) <= 0) return 'Dữ liệu KPI không hợp lệ';
+  }
+  return null;
+}
+async function createEvaluationKpiSnapshot(env, evaluationId, employeeId, month, year) {
+  const plan = await env.DB.prepare('SELECT * FROM employee_kpi_plans WHERE employee_id=? AND month=? AND year=? AND status=?')
+    .bind(employeeId, month, year, 'APPROVED').first();
+  if (!plan) return { error: 'Nhân viên chưa có KPI tháng được HCNS duyệt' };
+  const { results: items = [] } = await env.DB.prepare('SELECT * FROM employee_kpi_items WHERE plan_id=? ORDER BY criterion_code,id').bind(plan.id).all();
+  const invalid = validateKpiItems(items);
+  if (invalid) return { error: invalid };
+  if (items.some(x => x.actual_value === null || x.actual_value === undefined)) return { error: 'KPI chưa có kết quả thực tế đầy đủ' };
+  const snapshots = [];
+  for (const code of KPI_GROUP1_CODES) {
+    const rows = items.filter(x => x.criterion_code === code);
+    const pct = rows.reduce((sum, x) => sum + (Number(x.actual_value) / Number(x.target_value)) * Number(x.weight_percent), 0) / 100 * 100;
+    const score = kpiScoreForPercent(pct, KPI_GROUP1_MAX[code]);
+    snapshots.push({ code, achievement_percent: Math.round(pct * 100) / 100, automatic_score: score, details: rows });
+  }
+  for (const s of snapshots) await env.DB.prepare(
+    'INSERT OR REPLACE INTO evaluation_kpi_snapshots (evaluation_id,criterion_code,achievement_percent,automatic_score,details_json) VALUES (?,?,?,?,?)'
+  ).bind(evaluationId, s.code, s.achievement_percent, s.automatic_score, JSON.stringify(s.details)).run();
+  return { snapshots, total: snapshots.reduce((sum, s) => sum + s.automatic_score, 0) };
 }
 
 // Best-effort edge throttle.  Cloudflare isolates do not share memory, so this
@@ -3844,6 +3911,79 @@ export async function handle(request, env) {
     }
   }
 
+  // ── KPI NHÂN VIÊN ───────────────────────────────────────────────────
+  if (path === '/api/kpis/dashboard' && request.method === 'GET') {
+    const month = parseInt(url.searchParams.get('month') || String(new Date().getMonth() + 1));
+    const year = parseInt(url.searchParams.get('year') || String(new Date().getFullYear()));
+    const canViewAll = isHcns(me) || isBgd(me);
+    const rowsSql = canViewAll
+      ? `SELECT u.id employee_id,u.full_name,u.department,u.position,p.id plan_id,p.status,
+           (SELECT COUNT(*) FROM employee_kpi_items i WHERE i.plan_id=p.id) item_count
+         FROM users u LEFT JOIN employee_kpi_plans p ON p.employee_id=u.id AND p.month=? AND p.year=? WHERE u.is_active=1 ORDER BY u.full_name`
+      : `SELECT u.id employee_id,u.full_name,u.department,u.position,p.id plan_id,p.status,
+           (SELECT COUNT(*) FROM employee_kpi_items i WHERE i.plan_id=p.id) item_count
+         FROM users u LEFT JOIN employee_kpi_plans p ON p.employee_id=u.id AND p.month=? AND p.year=? WHERE u.id=?`;
+    const { results = [] } = await env.DB.prepare(rowsSql).bind(...(canViewAll ? [month, year] : [month, year, me.id])).all();
+    for (const row of results) {
+      row.group1_score = null;
+      if (row.plan_id && row.status === 'APPROVED') {
+        const { results: items = [] } = await env.DB.prepare('SELECT criterion_code,target_value,actual_value,weight_percent FROM employee_kpi_items WHERE plan_id=?').bind(row.plan_id).all();
+        if (items.length && items.every(i => i.actual_value !== null)) {
+          row.group1_score = KPI_GROUP1_CODES.reduce((sum, code) => {
+            const rs = items.filter(i => i.criterion_code === code);
+            const pct = rs.reduce((s, i) => s + Number(i.actual_value) / Number(i.target_value) * Number(i.weight_percent), 0) / 100 * 100;
+            return sum + kpiScoreForPercent(pct, KPI_GROUP1_MAX[code]);
+          }, 0);
+        }
+      }
+    }
+    return json({ month, year, kpis: results });
+  }
+  if (path === '/api/kpis' && request.method === 'GET') {
+    const employeeId = parseInt(url.searchParams.get('employee_id') || String(me.id));
+    const month = parseInt(url.searchParams.get('month') || String(new Date().getMonth() + 1));
+    const year = parseInt(url.searchParams.get('year') || String(new Date().getFullYear()));
+    if (employeeId !== me.id && !isHcns(me) && !isBgd(me)) return json({ error: 'Không có quyền' }, 403);
+    const plan = await env.DB.prepare('SELECT * FROM employee_kpi_plans WHERE employee_id=? AND month=? AND year=?').bind(employeeId, month, year).first();
+    const items = plan ? (await env.DB.prepare('SELECT * FROM employee_kpi_items WHERE plan_id=? ORDER BY criterion_code,id').bind(plan.id).all()).results : [];
+    return json({ plan: plan || null, items: items || [] });
+  }
+  if (path === '/api/kpis' && request.method === 'POST') {
+    if (!isHcns(me)) return json({ error: 'Chỉ HCNS được cấu hình KPI' }, 403);
+    const b = await request.json().catch(() => ({})); const employeeId = parseInt(b.employee_id), month = parseInt(b.month), year = parseInt(b.year), items = b.items || [];
+    const error = !employeeId || !month || !year ? 'Thiếu nhân viên hoặc kỳ KPI' : validateKpiItems(items);
+    if (error) return json({ error }, 400);
+    let plan = await env.DB.prepare('SELECT * FROM employee_kpi_plans WHERE employee_id=? AND month=? AND year=?').bind(employeeId, month, year).first();
+    if (plan && ['SUBMITTED','APPROVED'].includes(plan.status)) return json({ error: 'KPI đã gửi/duyệt, không thể sửa trực tiếp' }, 400);
+    if (!plan) { const r = await env.DB.prepare('INSERT INTO employee_kpi_plans (employee_id,month,year,status,created_by,created_by_name) VALUES (?,?,?,?,?,?)').bind(employeeId, month, year, 'DRAFT', me.id, me.full_name).run(); plan = { id: r.meta.last_row_id }; }
+    await env.DB.prepare('DELETE FROM employee_kpi_items WHERE plan_id=?').bind(plan.id).run();
+    for (const item of items) await env.DB.prepare('INSERT INTO employee_kpi_items (plan_id,criterion_code,title,description,unit,target_value,weight_percent) VALUES (?,?,?,?,?,?,?)')
+      .bind(plan.id, item.criterion_code, String(item.title).trim(), String(item.description || '').trim(), String(item.unit || 'đơn vị').trim(), Number(item.target_value), Number(item.weight_percent)).run();
+    return json({ ok: true, id: plan.id });
+  }
+  const kpiActionMatch = path.match(/^\/api\/kpis\/(\d+)\/(submit|review)$/);
+  if (kpiActionMatch && request.method === 'POST') {
+    const planId = parseInt(kpiActionMatch[1]), action = kpiActionMatch[2], b = await request.json().catch(() => ({}));
+    const plan = await env.DB.prepare('SELECT * FROM employee_kpi_plans WHERE id=?').bind(planId).first();
+    if (!plan) return json({ error: 'Không tìm thấy KPI' }, 404);
+    if (action === 'submit') {
+      if (plan.employee_id !== me.id) return json({ error: 'Không có quyền' }, 403);
+      if (!['DRAFT','RETURNED'].includes(plan.status)) return json({ error: 'KPI không ở trạng thái có thể gửi' }, 400);
+      const items = b.items || []; if (!Array.isArray(items) || !items.length) return json({ error: 'Cần nhập kết quả KPI' }, 400);
+      for (const item of items) await env.DB.prepare('UPDATE employee_kpi_items SET actual_value=?, evidence_url=?, updated_at=datetime(\'now\',\'localtime\') WHERE id=? AND plan_id=?')
+        .bind(Number(item.actual_value), String(item.evidence_url || '').trim(), parseInt(item.id), planId).run();
+      const { results = [] } = await env.DB.prepare('SELECT * FROM employee_kpi_items WHERE plan_id=?').bind(planId).all();
+      if (results.some(i => i.actual_value === null)) return json({ error: 'Cần nhập kết quả cho toàn bộ KPI' }, 400);
+      await env.DB.prepare('UPDATE employee_kpi_plans SET status=?,submitted_at=datetime(\'now\',\'localtime\'),updated_at=datetime(\'now\',\'localtime\') WHERE id=?').bind('SUBMITTED', planId).run();
+    } else {
+      if (!isHcns(me)) return json({ error: 'Chỉ HCNS được duyệt KPI' }, 403);
+      const status = b.approve ? 'APPROVED' : 'RETURNED';
+      await env.DB.prepare('UPDATE employee_kpi_plans SET status=?,reviewed_by=?,reviewed_by_name=?,reviewed_at=datetime(\'now\',\'localtime\'),review_note=?,updated_at=datetime(\'now\',\'localtime\') WHERE id=?')
+        .bind(status, me.id, me.full_name, String(b.note || '').trim(), planId).run();
+    }
+    return json({ ok: true });
+  }
+
   // ── ĐÁNH GIÁ HIỆU SUẤT (Performance Evaluation) — TTS workflow ─────
   if (path === '/api/eval-periods' && request.method === 'GET') {
     const { results } = await env.DB.prepare('SELECT * FROM eval_periods ORDER BY year DESC, month DESC').all();
@@ -4067,7 +4207,7 @@ export async function handle(request, env) {
     const period = await env.DB.prepare('SELECT * FROM eval_periods WHERE id=?').bind(periodId).first();
     if (!period) return json({ error: 'Không tìm thấy kỳ đánh giá' }, 404);
     const target = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(userId).first();
-    if (!target || target.lifecycle_status !== 'Thực tập') return json({ error: 'Nhân viên phải đang ở trạng thái Thực tập' }, 400);
+    if (!target || !target.is_active) return json({ error: 'Nhân viên không hợp lệ hoặc đã ngừng hoạt động' }, 400);
     const mentor = await env.DB.prepare('SELECT full_name FROM users WHERE id=?').bind(mentorId).first();
     const deptHead = await env.DB.prepare('SELECT full_name FROM users WHERE id=?').bind(deptHeadId).first();
     const existing = await env.DB.prepare('SELECT * FROM evaluations WHERE period_id=? AND user_id=?').bind(periodId, userId).first();
@@ -4077,11 +4217,18 @@ export async function handle(request, env) {
       }
       await env.DB.prepare('UPDATE evaluations SET mentor_id=?,mentor_name=?,department_head_id=?,department_head_name=?,updated_at=datetime(\'now\',\'localtime\') WHERE id=?')
         .bind(mentorId, mentor?.full_name || '', deptHeadId, deptHead?.full_name || '', existing.id).run();
+      const snapshot = await createEvaluationKpiSnapshot(env, existing.id, userId, period.month, period.year);
+      if (snapshot.error) return json({ error: snapshot.error }, 400);
       return json({ ok: true, id: existing.id });
     }
     const r = await env.DB.prepare(
       'INSERT INTO evaluations (period_id,user_id,mentor_id,mentor_name,department_head_id,department_head_name,status) VALUES (?,?,?,?,?,?,?)'
     ).bind(periodId, userId, mentorId, mentor?.full_name || '', deptHeadId, deptHead?.full_name || '', 'MENTOR_REVIEW').run();
+    const snapshot = await createEvaluationKpiSnapshot(env, r.meta.last_row_id, userId, period.month, period.year);
+    if (snapshot.error) {
+      await env.DB.prepare('DELETE FROM evaluations WHERE id=?').bind(r.meta.last_row_id).run();
+      return json({ error: snapshot.error }, 400);
+    }
     await env.DB.prepare('INSERT INTO evaluation_history (evaluation_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)')
       .bind(r.meta.last_row_id, null, 'MENTOR_REVIEW', me.id, me.full_name, 'Phân công Mentor & Trưởng phòng đánh giá').run();
     return json({ ok: true, id: r.meta.last_row_id });
@@ -4099,7 +4246,8 @@ export async function handle(request, env) {
     const allowed = ev.user_id === me.id || ev.mentor_id === me.id || ev.department_head_id === me.id || isHcns(me) || isBgd(me);
     if (!allowed) return json({ error: 'Không có quyền' }, 403);
     const { results: history } = await env.DB.prepare('SELECT * FROM evaluation_history WHERE evaluation_id=? ORDER BY id ASC').bind(evalId).all();
-    return json({ evaluation: ev, history });
+    const { results: kpi_snapshots } = await env.DB.prepare('SELECT * FROM evaluation_kpi_snapshots WHERE evaluation_id=? ORDER BY criterion_code').bind(evalId).all();
+    return json({ evaluation: ev, history, kpi_snapshots });
   }
 
   const evalActionMatch = path.match(/^\/api\/evaluations\/(\d+)\/action$/);
