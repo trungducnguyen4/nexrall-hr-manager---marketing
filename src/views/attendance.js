@@ -6,9 +6,11 @@ const SHIFT_LABEL = { morning: 'Ca sáng (08:30–12:00)', afternoon: 'Ca chiề
 const SHIFT_LABEL_SHORT = { morning: 'Ca sáng', afternoon: 'Ca chiều', full: 'Cả ngày' };
 const isHcnsDepartment = (department) => ['hcns', 'phong hcns', 'nhan su', 'phong nhan su', 'hanh chinh nhan su', 'hr'].includes(String(department || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim());
 
-export async function renderAttendance(el, me) {
+export async function renderAttendance(el, me, route = {}) {
   const isManager = me.role === 'admin' || me.role === 'manager';
   const canManageAttendance = isManager || isHcnsDepartment(me.department);
+  const routeDate = /^\d{4}-\d{2}-\d{2}$/.test(String(route.segments?.[1] || '')) ? String(route.segments[1]) : '';
+  const routeEmployeeId = Number(route.segments?.[2] || 0);
 
   el.innerHTML = `
     <div class="page-header">
@@ -83,7 +85,7 @@ export async function renderAttendance(el, me) {
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
         <input type="month" id="att-month-filter" class="w-full" style="max-width:180px;" value="${new Date().toISOString().slice(0,7)}"/>
-        <input type="date" id="att-date-filter" class="w-full" style="max-width:170px;" title="Lọc theo ngày cụ thể"/>
+        <input type="date" id="att-date-filter" class="w-full" style="max-width:170px;" title="Lọc theo ngày cụ thể" value="${esc(routeDate)}"/>
           ${canManageAttendance ? `
 
           <input type="text" id="att-search" placeholder="Tìm theo tên, mã nhân viên..." style="min-width:220px;flex:1;"/>
@@ -413,9 +415,9 @@ export async function renderAttendance(el, me) {
     }
   }
 
-  function openAttendanceSummary(employeeId) {
+  function openAttendanceSummary(employeeId, forcedDate = '') {
     const monthValue = document.getElementById('att-month-filter')?.value || new Date().toISOString().slice(0, 7);
-    const dateValue = document.getElementById('att-date-filter')?.value || '';
+    const dateValue = forcedDate || document.getElementById('att-date-filter')?.value || '';
     const params = dateValue ? { from: dateValue, to: dateValue } : { year: monthValue.slice(0, 4), month: monthValue.slice(5, 7) };
     openModal('Tổng kết chấm công nhân viên', `<div id="att-summary-content">${loadingHTML()}</div>`, `<button class="btn-secondary" id="att-summary-close">Đóng</button>`);
     document.getElementById('modal')?.classList.add('modal--scroll-fixed', 'modal--attendance-summary');
@@ -521,5 +523,8 @@ export async function renderAttendance(el, me) {
   });
 
   await loadTodayStatus();
-  loadHistory();
+  await loadHistory();
+  if (routeEmployeeId && (canManageAttendance || routeEmployeeId === Number(me.id))) {
+    openAttendanceSummary(routeEmployeeId, routeDate);
+  }
 }

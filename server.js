@@ -9,7 +9,10 @@
 
 // ===================== MIGRATIONS =====================
 let _migrated = false;
-const SCHEMA_VERSION = '2026-07-28-overtime-workflow';
+// Bump when additive schema changes are introduced. Existing installations may
+// already have the prior version recorded, so they would otherwise skip the
+// KPI table creation below and fail every KPI request at runtime.
+const SCHEMA_VERSION = '2026-07-30-payslip-detail-v1';
 const SEED_VERSION = '2026-07-22-seed-v1';
 
 // VietQR's bank directory is public reference data, but fetching it through
@@ -195,7 +198,8 @@ async function migrate(env) {
       id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT,
       employee_id INTEGER, month TEXT, base_salary REAL DEFAULT 0,
       kpi_bonus REAL DEFAULT 0, allowance REAL DEFAULT 0,
-      deduction REAL DEFAULT 0,
+      deduction REAL DEFAULT 0, overtime_pay REAL DEFAULT 0, tax REAL DEFAULT 0, insurance REAL DEFAULT 0,
+      work_days REAL DEFAULT 0, standard_days REAL DEFAULT 0, note TEXT,
       UNIQUE(user_id, employee_id, month)
     )`,
     `CREATE TABLE IF NOT EXISTS payroll_batches (
@@ -278,6 +282,12 @@ async function migrate(env) {
   try { await env.DB.exec("ALTER TABLE payroll ADD COLUMN data_status TEXT DEFAULT 'ready'"); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN data_warnings TEXT'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN source_synced_at TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN overtime_pay REAL DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN tax REAL DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN insurance REAL DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN work_days REAL DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN standard_days REAL DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN note TEXT'); } catch (_) {}
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS payroll_adjustments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     employee_id INTEGER NOT NULL,
@@ -323,7 +333,7 @@ async function migrate(env) {
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN registered INTEGER DEFAULT 0'); } catch (_) {}
   // Overtime requests are kept separately from attendance so the actual checkout
   // remains immutable evidence and only HCNS/management-approved minutes are paid.
-  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS overtime_requests (
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS overtime_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     attendance_id INTEGER NOT NULL UNIQUE,
     user_id INTEGER NOT NULL,
@@ -340,17 +350,17 @@ async function migrate(env) {
     reviewed_at TEXT,
     created_at TEXT DEFAULT (datetime('now','localtime')),
     updated_at TEXT DEFAULT (datetime('now','localtime'))
-  )`); } catch (_) {}
+  )`).run();
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_overtime_requests_status_date ON overtime_requests(status,work_date)'); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_overtime_requests_user_date ON overtime_requests(user_id,work_date)'); } catch (_) {}
-  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS company_holidays (
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS company_holidays (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     holiday_date TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
     is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT DEFAULT (datetime('now','localtime')),
     updated_at TEXT DEFAULT (datetime('now','localtime'))
-  )`); } catch (_) {}
+  )`).run();
   // Invoices: attendance-derived "Dữ liệu công" fields (auto-filled from /api/attendance/summary)
   try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN standard_days INTEGER DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN paid_leave_days INTEGER DEFAULT 0'); } catch (_) {}
@@ -398,7 +408,7 @@ async function migrate(env) {
     await env.DB.exec("ALTER TABLE users ADD COLUMN lifecycle_status TEXT DEFAULT 'Chờ tiếp nhận'");
     await env.DB.exec("UPDATE users SET lifecycle_status='Chính thức' WHERE lifecycle_status='Chờ tiếp nhận'");
   } catch (_) {}
-  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS lifecycle_history (
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS lifecycle_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
     from_status TEXT,
@@ -407,14 +417,83 @@ async function migrate(env) {
     changed_by_name TEXT,
     reason TEXT,
     created_at TEXT DEFAULT (datetime('now','localtime'))
-  )`); } catch (_) {}
+  )`).run();
   // Employee profile: additive migration only, preserving all existing accounts.
   for (const [column, type] of Object.entries({
     birth_date:'TEXT', gender:'TEXT', national_id:'TEXT', home_address:'TEXT', emergency_contact_name:'TEXT', emergency_contact_phone:'TEXT',
     direct_manager_id:'INTEGER', work_location:'TEXT', contract_type:'TEXT', contract_start_date:'TEXT', contract_end_date:'TEXT', contract_signed_date:'TEXT', official_date:'TEXT', termination_date:'TEXT',
     allowance:'REAL DEFAULT 0', insurance_salary:'REAL DEFAULT 0', bank_account_holder:'TEXT', tax_code:'TEXT', social_insurance_number:'TEXT', insurance_hospital:'TEXT',
-    avatar_url:'TEXT', national_id_document_url:'TEXT', degree_document_url:'TEXT', contract_document_url:'TEXT', personnel_decision_url:'TEXT'
+    avatar_url:'TEXT', national_id_document_url:'TEXT', degree_document_url:'TEXT', contract_document_url:'TEXT', personnel_decision_url:'TEXT',
+    school_name:'TEXT', hire_date:'TEXT', probation_end_date:'TEXT', dependent_count:'INTEGER DEFAULT 0', national_id_expiry_date:'TEXT',
+    updated_at:'TEXT', updated_by:'INTEGER'
   })) { try { await env.DB.exec(`ALTER TABLE users ADD COLUMN ${column} ${type}`); } catch (_) {} }
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS employee_documents (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    category TEXT NOT NULL,
+    title TEXT,
+    original_filename TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL DEFAULT 0,
+    storage_key TEXT NOT NULL UNIQUE,
+    expires_on TEXT,
+    uploaded_by INTEGER,
+    uploaded_by_name TEXT,
+    uploaded_at TEXT DEFAULT (datetime('now','localtime')),
+    deleted_at TEXT,
+    deleted_by INTEGER,
+    deleted_by_name TEXT
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS employee_profile_audit (
+    id TEXT PRIMARY KEY,
+    change_set_id TEXT NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    action TEXT NOT NULL,
+    field_group TEXT NOT NULL,
+    field_name TEXT NOT NULL,
+    old_value TEXT,
+    new_value TEXT,
+    changed_by INTEGER,
+    changed_by_name TEXT,
+    changed_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_employee_documents_user_category ON employee_documents(user_id,category,deleted_at,uploaded_at)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_employee_documents_expiry ON employee_documents(expires_on,deleted_at)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_employee_profile_audit_user_time ON employee_profile_audit(user_id,changed_at DESC)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_users_employee_directory ON users(is_active,lifecycle_status,department,position,contract_type)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_users_contract_dates ON users(contract_end_date,probation_end_date,national_id_expiry_date)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_users_full_name_nocase ON users(full_name COLLATE NOCASE)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_users_department_status ON users(department,lifecycle_status)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_users_contract_type ON users(contract_type)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_users_position ON users(position)'); } catch (_) {}
+  // Preserve the four fixed document slots as normalized metadata. The R2 keys
+  // and legacy columns stay untouched so old links continue to work.
+  try {
+    const { results: legacyDocumentUsers = [] } = await env.DB.prepare(
+      `SELECT id,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url
+       FROM users
+       WHERE trim(coalesce(national_id_document_url,''))<>'' OR trim(coalesce(degree_document_url,''))<>''
+          OR trim(coalesce(contract_document_url,''))<>'' OR trim(coalesce(personnel_decision_url,''))<>''`
+    ).all();
+    const legacyKinds = [
+      ['national_id_document_url','national_id','national_id','CCCD'],
+      ['degree_document_url','degree','degree','Bằng cấp, chứng chỉ'],
+      ['contract_document_url','contract','labor_contract','Hợp đồng lao động'],
+      ['personnel_decision_url','decision','other','Quyết định nhân sự'],
+    ];
+    for (const user of legacyDocumentUsers) {
+      for (const [column, kind, category, title] of legacyKinds) {
+        if (!String(user[column] || '').trim()) continue;
+        const storageKey = `employees/${user.id}/${kind}`;
+        await env.DB.prepare(
+          `INSERT INTO employee_documents
+             (id,user_id,category,title,original_filename,content_type,byte_size,storage_key,uploaded_by_name)
+           SELECT ?,?,?,?,?,'application/octet-stream',0,?,'Dữ liệu legacy'
+           WHERE NOT EXISTS (SELECT 1 FROM employee_documents WHERE storage_key=?)`
+        ).bind(crypto.randomUUID(), user.id, category, title, kind, storageKey, storageKey).run();
+      }
+    }
+  } catch (_) {}
   for (const [column, type] of Object.entries({ current_approver:'TEXT', approval_level:'INTEGER DEFAULT 1', submitted_at:'TEXT' })) { try { await env.DB.exec(`ALTER TABLE leave_requests ADD COLUMN ${column} ${type}`); } catch (_) {} }
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS leave_approval_history (id INTEGER PRIMARY KEY AUTOINCREMENT, leave_request_id INTEGER NOT NULL, approval_level INTEGER NOT NULL, actor_id INTEGER, actor_name TEXT, action TEXT NOT NULL, note TEXT, created_at TEXT DEFAULT (datetime('now','localtime')))`); } catch (_) {}
   // Asset handover (Bàn giao tài sản cho TTS)
@@ -459,7 +538,7 @@ async function migrate(env) {
     created_at TEXT DEFAULT (datetime('now','localtime')),
     updated_at TEXT DEFAULT (datetime('now','localtime'))
   )`); } catch (_) {}
-  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS invoice_history (
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS invoice_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     invoice_id INTEGER NOT NULL,
     from_status TEXT,
@@ -468,7 +547,7 @@ async function migrate(env) {
     changed_by_name TEXT,
     note TEXT,
     created_at TEXT DEFAULT (datetime('now','localtime'))
-  )`); } catch (_) {}
+  )`).run();
   // Tasks: workspace/team/project and managed labels. Safe additive upgrades only.
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS task_workspaces (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -612,28 +691,70 @@ async function migrate(env) {
     created_at TEXT DEFAULT (datetime('now','localtime'))
   )`); } catch (_) {}
   // KPI theo nhân viên/kỳ tháng. Các bảng này chỉ được thêm mới, không thay đổi dữ liệu cũ.
-  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS employee_kpi_plans (
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS employee_kpi_plans (
     id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, month INTEGER NOT NULL, year INTEGER NOT NULL,
     status TEXT NOT NULL DEFAULT 'DRAFT', created_by INTEGER, created_by_name TEXT,
     submitted_at TEXT, reviewed_by INTEGER, reviewed_by_name TEXT, reviewed_at TEXT, review_note TEXT,
     created_at TEXT DEFAULT (datetime('now','localtime')), updated_at TEXT DEFAULT (datetime('now','localtime')),
     UNIQUE(employee_id, month, year)
-  )`); } catch (_) {}
-  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS employee_kpi_items (
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS employee_kpi_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT, plan_id INTEGER NOT NULL, criterion_code TEXT NOT NULL,
     title TEXT NOT NULL, description TEXT, unit TEXT NOT NULL DEFAULT 'đơn vị', target_value REAL NOT NULL,
-    actual_value REAL, weight_percent REAL NOT NULL, evidence_url TEXT,
+    actual_value REAL, actual_text TEXT, manual_score REAL, review_note TEXT, weight_percent REAL NOT NULL, evidence_url TEXT,
     created_at TEXT DEFAULT (datetime('now','localtime')), updated_at TEXT DEFAULT (datetime('now','localtime'))
-  )`); } catch (_) {}
-  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS evaluation_kpi_snapshots (
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS evaluation_kpi_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT, evaluation_id INTEGER NOT NULL, criterion_code TEXT NOT NULL,
     achievement_percent REAL NOT NULL, automatic_score REAL NOT NULL, details_json TEXT NOT NULL,
     created_at TEXT DEFAULT (datetime('now','localtime')), UNIQUE(evaluation_id, criterion_code)
-  )`); } catch (_) {}
+  )`).run();
+  try { await env.DB.exec('ALTER TABLE employee_kpi_items ADD COLUMN affects_group1 INTEGER NOT NULL DEFAULT 1'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE employee_kpi_items ADD COLUMN actual_text TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE employee_kpi_items ADD COLUMN manual_score REAL'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE employee_kpi_items ADD COLUMN review_note TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE employee_kpi_items ADD COLUMN requires_evidence INTEGER NOT NULL DEFAULT 0'); } catch (_) {}
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS kpi_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT,
+    created_by INTEGER, created_by_name TEXT, created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS kpi_template_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, template_id INTEGER NOT NULL, criterion_code TEXT NOT NULL,
+    title TEXT NOT NULL, description TEXT, unit TEXT NOT NULL DEFAULT 'đơn vị', target_value REAL NOT NULL,
+    weight_percent REAL DEFAULT 0, affects_group1 INTEGER NOT NULL DEFAULT 1
+  )`).run();
+  try { await env.DB.exec('ALTER TABLE kpi_template_items ADD COLUMN requires_evidence INTEGER NOT NULL DEFAULT 0'); } catch (_) {}
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS employee_kpi_evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, kpi_item_id INTEGER NOT NULL, label TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
+    created_by INTEGER, created_by_name TEXT, created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_by INTEGER, updated_by_name TEXT, updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS employee_kpi_evidence_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, plan_id INTEGER NOT NULL, kpi_item_id INTEGER NOT NULL,
+    action TEXT NOT NULL, old_value_json TEXT, new_value_json TEXT,
+    changed_by INTEGER, changed_by_name TEXT, created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS employee_kpi_approval_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, plan_id INTEGER NOT NULL, employee_id INTEGER NOT NULL, month INTEGER NOT NULL, year INTEGER NOT NULL,
+    snapshot_json TEXT NOT NULL, approved_by INTEGER, approved_by_name TEXT, approved_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(plan_id)
+  )`).run();
+  // v2 intentionally has no UNIQUE(plan_id): every approval creates an immutable record.
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS employee_kpi_approval_snapshots_v2 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, plan_id INTEGER NOT NULL, employee_id INTEGER NOT NULL, month INTEGER NOT NULL, year INTEGER NOT NULL,
+    snapshot_json TEXT NOT NULL, approved_by INTEGER, approved_by_name TEXT, approved_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  // Preserve legacy single URLs as the first evidence record without touching old KPI rows.
+  try { await env.DB.exec(`INSERT INTO employee_kpi_evidence (kpi_item_id,label,url,created_at,updated_at)
+    SELECT i.id,'Link bằng chứng',i.evidence_url,i.created_at,i.updated_at FROM employee_kpi_items i
+    WHERE trim(coalesce(i.evidence_url,''))<>'' AND NOT EXISTS (SELECT 1 FROM employee_kpi_evidence e WHERE e.kpi_item_id=i.id)`); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_employee_kpi_plans_period ON employee_kpi_plans(month,year,status)'); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_employee_kpi_plans_employee ON employee_kpi_plans(employee_id,year,month)'); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_employee_kpi_items_plan ON employee_kpi_items(plan_id,criterion_code)'); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_eval_kpi_snapshots_evaluation ON evaluation_kpi_snapshots(evaluation_id)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_kpi_evidence_item ON employee_kpi_evidence(kpi_item_id)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_kpi_evidence_audit_plan ON employee_kpi_evidence_audit(plan_id,created_at)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_kpi_snapshot_v2_plan ON employee_kpi_approval_snapshots_v2(plan_id,id DESC)'); } catch (_) {}
   // HCNS "Ghi chú & kiến nghị" gửi Ban Giám đốc — one note per eval period.
   try { await env.DB.exec(`ALTER TABLE eval_periods ADD COLUMN hr_note TEXT`); } catch (_) {}
   try { await env.DB.exec(`ALTER TABLE eval_periods ADD COLUMN hr_note_by TEXT`); } catch (_) {}
@@ -808,9 +929,368 @@ const USER_DOCUMENTS = {
   contract: { column: 'contract_document_url', label: 'Hợp đồng', maxBytes: 10 * 1024 * 1024, types: ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'] },
   decision: { column: 'personnel_decision_url', label: 'Quyết định nhân sự', maxBytes: 10 * 1024 * 1024, types: ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'] },
 };
+const LEGACY_DOCUMENT_CATEGORIES = {
+  national_id: 'national_id',
+  degree: 'degree',
+  contract: 'labor_contract',
+  decision: 'other',
+};
 function userDocumentKey(userId, kind) { return `employees/${userId}/${kind}`; }
 function userDocumentRoute(userId, kind) { return `/api/users/${userId}/documents/${kind}`; }
 function isManagedUserDocumentUrl(value, userId, kind) { return value === userDocumentRoute(userId, kind); }
+
+const EMPLOYEE_DOCUMENT_CATEGORIES = {
+  cv: 'CV ứng viên',
+  national_id: 'CCCD',
+  social_insurance: 'Sổ BHXH/VSSID',
+  labor_contract: 'Hợp đồng lao động',
+  contract_appendix: 'Phụ lục hợp đồng',
+  degree: 'Bằng cấp, chứng chỉ',
+  onboarding_decision: 'Quyết định tiếp nhận',
+  transfer_decision: 'Quyết định điều chuyển',
+  salary_decision: 'Quyết định tăng lương',
+  termination_decision: 'Quyết định thôi việc',
+  internship_agreement: 'Thỏa thuận TTS',
+  other: 'Hồ sơ khác',
+};
+const EMPLOYEE_DOCUMENT_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+const EMPLOYEE_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
+const EMPLOYEE_CONTRACT_TYPES = ['Thử việc', 'HĐCT', 'CTV', 'Thỏa thuận TTS', 'Chính thức', 'Cộng tác viên', 'Thực tập sinh', 'Khác'];
+const EMPLOYEE_PROFILE_FIELDS = {
+  personal: ['full_name','email','phone','birth_date','gender','national_id','national_id_expiry_date','home_address','school_name','emergency_contact_name','emergency_contact_phone'],
+  employment: ['employee_type','position','department','direct_manager_id','work_location'],
+  contract: ['contract_type','hire_date','contract_start_date','contract_end_date','contract_signed_date','probation_end_date','official_date','termination_date'],
+  compensation: ['salary','allowance','insurance_salary','dependent_count','bank_account','bank_name','bank_account_holder','tax_code','social_insurance_number','insurance_hospital'],
+};
+const EMPLOYEE_PROFILE_FIELD_GROUP = Object.fromEntries(
+  Object.entries(EMPLOYEE_PROFILE_FIELDS).flatMap(([group, fields]) => fields.map(field => [field, group]))
+);
+const EMPLOYEE_PROFILE_ALLOWED_FIELDS = new Set(Object.keys(EMPLOYEE_PROFILE_FIELD_GROUP));
+const EMPLOYEE_PROFILE_PROTECTED_FIELDS = new Set([
+  ...EMPLOYEE_PROFILE_FIELDS.contract,
+  ...EMPLOYEE_PROFILE_FIELDS.compensation,
+]);
+const EMPLOYEE_TIMELINE_FIELDS = new Set([
+  'department','position','salary','allowance','contract_type','contract_start_date','contract_end_date',
+  'probation_end_date','official_date','termination_date',
+]);
+
+function employeeDocumentContentMatches(contentType, buffer) {
+  const bytes = new Uint8Array(buffer);
+  if (contentType === 'application/pdf') return bytes.length >= 5 && String.fromCharCode(...bytes.slice(0, 5)) === '%PDF-';
+  if (contentType === 'image/jpeg') return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  if (contentType === 'image/png') return bytes.length >= 8 && [137,80,78,71,13,10,26,10].every((value, index) => bytes[index] === value);
+  if (contentType === 'image/webp') {
+    return bytes.length >= 12
+      && String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF'
+      && String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP';
+  }
+  return false;
+}
+
+function employeeCanAccess(target, me, hasHrScope, isManager) {
+  if (hasHrScope || Number(target.id) === Number(me.id)) return true;
+  return !!isManager && target.department === me.department;
+}
+
+function employeeProfilePermissions(target, me, hasHrScope, isManager) {
+  const self = Number(target.id) === Number(me.id);
+  const sameDepartmentManager = !!isManager && !hasHrScope && target.department === me.department;
+  return {
+    can_view: hasHrScope || self || sameDepartmentManager,
+    can_edit_basic: hasHrScope || self || sameDepartmentManager,
+    can_edit_personal: hasHrScope || self,
+    can_edit_employment: hasHrScope || self || sameDepartmentManager,
+    can_edit_contract: hasHrScope,
+    can_edit_compensation: hasHrScope,
+    can_manage_documents: hasHrScope,
+    can_view_documents: hasHrScope || self,
+    can_view_audit: hasHrScope,
+    can_export: hasHrScope,
+  };
+}
+
+function normalizeEmployeeProfileValue(field, value) {
+  if (['salary','allowance','insurance_salary'].includes(field)) {
+    const number = Number(value || 0);
+    return Number.isFinite(number) && number >= 0 ? number : NaN;
+  }
+  if (field === 'dependent_count') {
+    const number = Number(value || 0);
+    return Number.isInteger(number) && number >= 0 ? number : NaN;
+  }
+  if (field === 'direct_manager_id') return value ? Number(value) : null;
+  if (field === 'department') return normalizeDeptName(String(value || ''));
+  if (field === 'employee_type') return employeeTypeCode(value);
+  if (field.endsWith('_date') || field === 'hire_date' || field === 'national_id_expiry_date') return value || null;
+  return typeof value === 'string' ? value.trim() : value;
+}
+
+function validateEmployeeProfile(profile, changedFields = []) {
+  const changed = new Set(changedFields);
+  if (!String(profile.full_name || '').trim() || !String(profile.email || '').trim() || !String(profile.department || '').trim()) {
+    return 'Họ tên, email và phòng ban là bắt buộc';
+  }
+  const requiredFields = ['full_name','email','phone','birth_date','national_id','home_address','position','department','direct_manager_id','work_location','contract_type','hire_date'];
+  if (requiredFields.some(field => changed.has(field) && !String(profile[field] ?? '').trim())) return 'Không được để trống trường bắt buộc';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(profile.email || ''))) return 'Email không hợp lệ';
+  if (changed.has('phone') && !/^\+?\d{8,15}$/.test(String(profile.phone || ''))) return 'Số điện thoại phải gồm 8 đến 15 chữ số';
+  if (changed.has('national_id') && !/^\d{9}(\d{3})?$/.test(String(profile.national_id || ''))) return 'Số CCCD/CMND phải gồm 9 hoặc 12 chữ số';
+  if (!Number.isInteger(Number(profile.dependent_count || 0)) || Number(profile.dependent_count || 0) < 0) return 'Số người phụ thuộc không hợp lệ';
+  if (profile.direct_manager_id && Number(profile.direct_manager_id) === Number(profile.id)) return 'Quản lý trực tiếp không thể là chính nhân viên';
+  if (changed.has('contract_type') && profile.contract_type && !EMPLOYEE_CONTRACT_TYPES.includes(profile.contract_type)) return 'Loại hợp đồng không hợp lệ';
+  for (const field of changed) {
+    if ((field.endsWith('_date') || field === 'hire_date') && profile[field] && !/^\d{4}-\d{2}-\d{2}$/.test(String(profile[field]))) {
+      return 'Ngày tháng phải có định dạng YYYY-MM-DD';
+    }
+  }
+  const orderedPairs = [
+    ['hire_date','probation_end_date','Ngày kết thúc thử việc phải sau ngày vào làm'],
+    ['hire_date','official_date','Ngày chính thức phải sau ngày vào làm'],
+    ['contract_start_date','contract_end_date','Ngày hết hạn hợp đồng phải sau ngày bắt đầu'],
+    ['hire_date','termination_date','Ngày nghỉ việc phải sau ngày vào làm'],
+  ];
+  for (const [start, end, message] of orderedPairs) {
+    if ((changed.has(start) || changed.has(end)) && profile[start] && profile[end] && String(profile[end]) < String(profile[start])) return message;
+  }
+  if (changed.has('termination_date') && profile.termination_date && profile.lifecycle_status !== 'Đã nghỉ') return 'Chỉ nhập ngày nghỉ việc khi trạng thái là Đã nghỉ';
+  return null;
+}
+
+function employeeAuditStatement(env, { userId, changeSetId, action, group, field, oldValue, newValue, actor }) {
+  return env.DB.prepare(
+    `INSERT INTO employee_profile_audit
+       (id,change_set_id,user_id,action,field_group,field_name,old_value,new_value,changed_by,changed_by_name)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`
+  ).bind(
+    crypto.randomUUID(), changeSetId, userId, action, group, field,
+    oldValue === undefined || oldValue === null ? null : String(oldValue),
+    newValue === undefined || newValue === null ? null : String(newValue),
+    actor?.id || null, actor?.full_name || ''
+  );
+}
+
+function employeeDocumentKey(userId, documentId) {
+  return `employees/${userId}/documents/${documentId}`;
+}
+
+function safeDownloadName(value, fallback = 'document') {
+  const cleaned = String(value || fallback).replace(/[\r\n"\\]/g, '_').slice(0, 180);
+  return cleaned || fallback;
+}
+
+function xmlEscape(value) {
+  return String(value ?? '').replace(/[&<>"']/g, character => ({
+    '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&apos;',
+  })[character]);
+}
+
+function buildEmployeeDirectoryFilter(url, me, hasHrScope) {
+  const conditions = [];
+  const binds = [];
+  if (!hasHrScope) {
+    conditions.push('u.department=?');
+    binds.push(me.department || '');
+  }
+  const search = String(url.searchParams.get('search') || '').trim();
+  if (search) {
+    const value = `%${search}%`;
+    conditions.push(`(u.full_name LIKE ? COLLATE NOCASE OR u.employee_code LIKE ? COLLATE NOCASE
+      OR u.email LIKE ? COLLATE NOCASE OR u.department LIKE ? COLLATE NOCASE OR u.position LIKE ? COLLATE NOCASE)`);
+    binds.push(value, value, value, value, value);
+  }
+  const filters = [
+    ['department','u.department'],
+    ['status','u.lifecycle_status'],
+    ['contract_type','u.contract_type'],
+    ['position','u.position'],
+  ];
+  for (const [param, column] of filters) {
+    const value = String(url.searchParams.get(param) || '').trim();
+    if (!value) continue;
+    conditions.push(`${column}=?`);
+    binds.push(value);
+  }
+  return { where: conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '', binds };
+}
+
+async function buildEmployeeAlerts(env, windowDays = 30) {
+  const { results: employees = [] } = await env.DB.prepare(
+    `SELECT id,employee_code,employee_type,full_name,department,probation_end_date,contract_end_date,national_id_expiry_date
+     FROM users WHERE is_active=1 AND coalesce(lifecycle_status,'')<>'Đã nghỉ' ORDER BY full_name`
+  ).all();
+  const { results: documents = [] } = await env.DB.prepare(
+    `SELECT user_id,category,expires_on FROM employee_documents WHERE deleted_at IS NULL`
+  ).all();
+  const documentsByUser = new Map();
+  for (const document of documents) {
+    if (!documentsByUser.has(Number(document.user_id))) documentsByUser.set(Number(document.user_id), []);
+    documentsByUser.get(Number(document.user_id)).push(document);
+  }
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  const daysUntil = date => {
+    if (!date) return null;
+    const parsed = new Date(`${date}T00:00:00Z`);
+    return Number.isFinite(parsed.getTime()) ? Math.ceil((parsed.getTime() - today.getTime()) / 86400000) : null;
+  };
+  const alerts = [];
+  const dateFields = [
+    ['probation_end_date','probation_due','Sắp hết thử việc','employment'],
+    ['contract_end_date','contract_due','Sắp hết hạn hợp đồng','employment'],
+    ['national_id_expiry_date','national_id_due','CCCD sắp hết hạn','overview'],
+  ];
+  for (const employee of employees) {
+    for (const [field, type, label, tab] of dateFields) {
+      const remaining = daysUntil(employee[field]);
+      if (remaining === null || remaining > windowDays) continue;
+      alerts.push({
+        id: `${type}-${employee.id}`,
+        type,
+        module: 'employee_profile',
+        module_label: 'Hồ sơ nhân viên',
+        severity: remaining < 0 ? 'danger' : remaining <= 7 ? 'warning' : 'info',
+        employee_id: employee.id,
+        employee_code: employee.employee_code,
+        employee_name: employee.full_name,
+        department: employee.department,
+        due_date: employee[field],
+        days_until: remaining,
+        occurred_on: employee[field],
+        title: label,
+        message: remaining < 0 ? `${label} đã quá hạn ${Math.abs(remaining)} ngày` : `${label} còn ${remaining} ngày`,
+        action_url: `#/users/${employee.id}/${tab}`,
+        action_label: 'Mở hồ sơ',
+      });
+    }
+    const employeeDocuments = documentsByUser.get(Number(employee.id)) || [];
+    const categories = new Set(employeeDocuments.map(document => document.category));
+    const required = employee.employee_type === 'TTS'
+      ? [['cv','CV ứng viên'],['national_id','CCCD'],['internship_agreement','Thỏa thuận TTS']]
+      : [['cv','CV ứng viên'],['national_id','CCCD'],['labor_contract','Hợp đồng lao động']];
+    const missing = required.filter(([category]) => {
+      if (employee.employee_type === 'TTS' && category === 'internship_agreement' && categories.has('labor_contract')) return false;
+      return !categories.has(category);
+    }).map(([, label]) => label);
+    if (missing.length) {
+      alerts.push({
+        id: `missing-documents-${employee.id}`,
+        type: 'missing_documents',
+        module: 'employee_profile',
+        module_label: 'Hồ sơ nhân viên',
+        severity: 'warning',
+        employee_id: employee.id,
+        employee_code: employee.employee_code,
+        employee_name: employee.full_name,
+        department: employee.department,
+        missing,
+        title: 'Hồ sơ còn thiếu',
+        message: `Thiếu hồ sơ: ${missing.join(', ')}`,
+        action_url: `#/users/${employee.id}/documents`,
+        action_label: 'Bổ sung tài liệu',
+      });
+    }
+    for (const document of employeeDocuments) {
+      const remaining = daysUntil(document.expires_on);
+      if (remaining === null || remaining > windowDays) continue;
+      alerts.push({
+        id: `document-due-${employee.id}-${document.category}`,
+        type: 'document_due',
+        module: 'employee_profile',
+        module_label: 'Hồ sơ nhân viên',
+        severity: remaining < 0 ? 'danger' : remaining <= 7 ? 'warning' : 'info',
+        employee_id: employee.id,
+        employee_code: employee.employee_code,
+        employee_name: employee.full_name,
+        department: employee.department,
+        due_date: document.expires_on,
+        days_until: remaining,
+        occurred_on: document.expires_on,
+        title: 'Tài liệu sắp hết hạn',
+        message: `${EMPLOYEE_DOCUMENT_CATEGORIES[document.category] || 'Tài liệu'} ${remaining < 0 ? `đã quá hạn ${Math.abs(remaining)} ngày` : `còn ${remaining} ngày`}`,
+        action_url: `#/users/${employee.id}/documents`,
+        action_label: 'Xem tài liệu',
+      });
+    }
+  }
+  return alerts;
+}
+
+async function buildAttendanceNotifications(env, me, { windowDays = 30, isAdmin = false, isHcnsScope = false } = {}) {
+  const conditions = [`date(a.date) >= date('now','localtime',?)`];
+  const binds = [`-${windowDays - 1} day`];
+  if (!isAdmin && !isHcnsScope && me.role === 'manager') {
+    conditions.push('u.department=?');
+    binds.push(me.department || '');
+  } else if (!isAdmin && !isHcnsScope) {
+    conditions.push('a.user_id=?');
+    binds.push(me.id);
+  }
+  const { results: rows = [] } = await env.DB.prepare(
+    `SELECT a.*,u.full_name,u.employee_code,u.department,
+       (SELECT o.status FROM overtime_requests o WHERE o.attendance_id=a.id LIMIT 1) AS overtime_status,
+       CASE WHEN EXISTS (
+         SELECT 1 FROM leave_requests lr
+         WHERE lr.status='approved'
+           AND (lr.employee_id=a.user_id OR CAST(lr.user_id AS TEXT)=CAST(a.user_id AS TEXT))
+           AND date(a.date) BETWEEN date(lr.start_date) AND date(lr.end_date)
+       ) THEN 1 ELSE 0 END AS has_approved_leave
+     FROM attendance a JOIN users u ON u.id=a.user_id
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY a.date DESC,a.id DESC`
+  ).bind(...binds).all();
+  const notifications = [];
+  for (const row of rows) {
+    const base = {
+      module: 'attendance',
+      module_label: 'Chấm công',
+      employee_id: row.user_id,
+      employee_code: row.employee_code,
+      employee_name: row.full_name,
+      department: row.department,
+      occurred_on: row.date,
+      action_url: `#/attendance/${row.date}/${row.user_id}`,
+      action_label: 'Xem chấm công',
+      attendance_id: row.id,
+    };
+    if (Number(row.late_minutes || 0) > 0) {
+      notifications.push({
+        ...base,
+        id: `attendance-late-${row.id}`,
+        type: 'attendance_late',
+        severity: 'warning',
+        title: 'Đi làm muộn',
+        message: `${row.full_name} check-in muộn ${Number(row.late_minutes)} phút lúc ${row.checkin_time || 'chưa rõ'}`,
+      });
+    }
+    if (row.checkout_time) {
+      const bounds = attShiftBounds(row.work_type || 'office', row.shift || 'full', row.expected_start, row.expected_end);
+      const checkoutLateMinutes = Math.max(0, (attToMinutes(row.checkout_time) || 0) - (attToMinutes(bounds.end) || 0));
+      if (checkoutLateMinutes > 0) {
+        notifications.push({
+          ...base,
+          id: `attendance-checkout-late-${row.id}`,
+          type: 'attendance_checkout_late',
+          severity: row.overtime_status === 'approved' ? 'info' : 'warning',
+          title: 'Checkout trễ',
+          message: `${row.full_name} checkout trễ ${checkoutLateMinutes} phút lúc ${row.checkout_time}${row.overtime_status ? `, OT ${row.overtime_status === 'approved' ? 'đã duyệt' : row.overtime_status === 'pending' ? 'đang chờ duyệt' : 'đã từ chối'}` : ''}`,
+          overtime_status: row.overtime_status || null,
+        });
+      }
+    }
+    if (row.status === 'absent' && !Number(row.has_approved_leave) && !String(row.note || '').trim()) {
+      notifications.push({
+        ...base,
+        id: `attendance-unexcused-absence-${row.id}`,
+        type: 'attendance_unexcused_absence',
+        severity: 'danger',
+        title: 'Vắng không có lý do',
+        message: `${row.full_name} được ghi nhận vắng nhưng chưa có lý do hoặc đơn nghỉ được duyệt`,
+      });
+    }
+  }
+  return notifications;
+}
 
 // ===================== ĐÁNH GIÁ HIỆU SUẤT — CRITERIA (mirrors src/utils.js EVAL_GROUPS) =====
 // Kept as a compact {code: maxScore} map for server-side score validation only — the full
@@ -1185,14 +1665,61 @@ function kpiScoreForPercent(percent, maxScore) {
 function validateKpiItems(items) {
   if (!Array.isArray(items) || !items.length) return 'Cần khai báo KPI cho 6 tiêu chí Nhóm 1';
   for (const code of KPI_GROUP1_CODES) {
-    const rows = items.filter(x => x.criterion_code === code);
+    const rows = items.filter(x => x.criterion_code === code && Number(x.affects_group1) !== 0);
     const totalWeight = rows.reduce((s, x) => s + Number(x.weight_percent || 0), 0);
     if (!rows.length || Math.abs(totalWeight - 100) > .01) return `Tiêu chí ${code} phải có tổng trọng số bằng 100%`;
   }
   for (const x of items) {
-    if (!KPI_GROUP1_CODES.includes(x.criterion_code) || !String(x.title || '').trim() || Number(x.target_value) <= 0 || Number(x.weight_percent) <= 0) return 'Dữ liệu KPI không hợp lệ';
+    const scored = Number(x.affects_group1) !== 0;
+    const textUnit = String(x.unit || '').toLowerCase() === 'text';
+    if ((!KPI_GROUP1_CODES.includes(x.criterion_code) && scored) || !String(x.title || '').trim() || (!textUnit && Number(x.target_value) <= 0) || (scored && Number(x.weight_percent) <= 0)) return 'Dữ liệu KPI không hợp lệ';
   }
   return null;
+}
+function normalizeEvidence(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  return value.map(row => ({ label: String(row?.label || '').trim().slice(0, 160), url: String(row?.url || '').trim() }))
+    .filter(row => row.url)
+    .filter(row => {
+      try { const u = new URL(row.url); if (!/^https?:$/.test(u.protocol) || seen.has(u.href)) return false; seen.add(u.href); return true; }
+      catch (_) { return false; }
+    });
+}
+async function attachKpiEvidence(env, items) {
+  for (const item of items || []) {
+    const { results = [] } = await env.DB.prepare('SELECT id,label,url,created_by,created_by_name,created_at,updated_by,updated_by_name,updated_at FROM employee_kpi_evidence WHERE kpi_item_id=? ORDER BY id').bind(item.id).all();
+    item.evidence = results;
+    if (!results.length && String(item.evidence_url || '').trim()) item.evidence = [{ id: `legacy-${item.id}`, label: 'Link bằng chứng', url: item.evidence_url }];
+  }
+  return items;
+}
+async function replaceKpiEvidence(env, plan, item, evidence, me, action = 'replace') {
+  const normalized = normalizeEvidence(evidence);
+  if (Array.isArray(evidence) && evidence.filter(x => x?.url).length !== normalized.length) throw new Error('Mỗi link bằng chứng phải là URL http hoặc https hợp lệ');
+  const { results: oldRows = [] } = await env.DB.prepare('SELECT label,url FROM employee_kpi_evidence WHERE kpi_item_id=? ORDER BY id').bind(item.id).all();
+  const oldValue = JSON.stringify(oldRows);
+  const newValue = JSON.stringify(normalized);
+  if (oldValue === newValue) return false;
+  await env.DB.prepare('DELETE FROM employee_kpi_evidence WHERE kpi_item_id=?').bind(item.id).run();
+  for (const link of normalized) await env.DB.prepare('INSERT INTO employee_kpi_evidence (kpi_item_id,label,url,created_by,created_by_name,updated_by,updated_by_name) VALUES (?,?,?,?,?,?,?)')
+    .bind(item.id, link.label, link.url, me.id, me.full_name || '', me.id, me.full_name || '').run();
+  await env.DB.prepare('INSERT INTO employee_kpi_evidence_audit (plan_id,kpi_item_id,action,old_value_json,new_value_json,changed_by,changed_by_name) VALUES (?,?,?,?,?,?,?)')
+    .bind(plan.id, item.id, action, oldValue, newValue, me.id, me.full_name || '').run();
+  return true;
+}
+function kpiItemScore(item) {
+  if (Number(item.affects_group1) === 0) return null;
+  if (String(item.unit || '').toLowerCase() === 'text') return Number(item.manual_score || 0);
+  return null;
+}
+function group1Total(items) {
+  return KPI_GROUP1_CODES.reduce((sum, code) => {
+    const rows = items.filter(item => item.criterion_code === code && Number(item.affects_group1) !== 0);
+    if (rows.some(item => String(item.unit || '').toLowerCase() === 'text')) return sum + rows.reduce((n, item) => n + Number(item.manual_score || 0), 0);
+    const pct = rows.reduce((n, item) => n + (Number(item.actual_value || 0) / Number(item.target_value || 1)) * Number(item.weight_percent || 0), 0);
+    return sum + kpiScoreForPercent(pct, KPI_GROUP1_MAX[code]);
+  }, 0);
 }
 async function createEvaluationKpiSnapshot(env, evaluationId, employeeId, month, year) {
   const plan = await env.DB.prepare('SELECT * FROM employee_kpi_plans WHERE employee_id=? AND month=? AND year=? AND status=?')
@@ -1201,12 +1728,13 @@ async function createEvaluationKpiSnapshot(env, evaluationId, employeeId, month,
   const { results: items = [] } = await env.DB.prepare('SELECT * FROM employee_kpi_items WHERE plan_id=? ORDER BY criterion_code,id').bind(plan.id).all();
   const invalid = validateKpiItems(items);
   if (invalid) return { error: invalid };
-  if (items.some(x => x.actual_value === null || x.actual_value === undefined)) return { error: 'KPI chưa có kết quả thực tế đầy đủ' };
+  if (items.filter(x => Number(x.affects_group1) !== 0).some(x => String(x.unit).toLowerCase() === 'text' ? !String(x.actual_text || '').trim() || x.manual_score === null : x.actual_value === null || x.actual_value === undefined)) return { error: 'KPI tính điểm chưa có kết quả hoặc điểm HCNS đầy đủ' };
   const snapshots = [];
   for (const code of KPI_GROUP1_CODES) {
     const rows = items.filter(x => x.criterion_code === code);
-    const pct = rows.reduce((sum, x) => sum + (Number(x.actual_value) / Number(x.target_value)) * Number(x.weight_percent), 0) / 100 * 100;
-    const score = kpiScoreForPercent(pct, KPI_GROUP1_MAX[code]);
+    const textRows = rows.filter(x => String(x.unit).toLowerCase() === 'text');
+    const pct = textRows.length ? 0 : rows.reduce((sum, x) => sum + (Number(x.actual_value) / Number(x.target_value)) * Number(x.weight_percent), 0) / 100 * 100;
+    const score = textRows.length ? textRows.reduce((sum, x) => sum + Number(x.manual_score || 0), 0) : kpiScoreForPercent(pct, KPI_GROUP1_MAX[code]);
     snapshots.push({ code, achievement_percent: Math.round(pct * 100) / 100, automatic_score: score, details: rows });
   }
   for (const s of snapshots) await env.DB.prepare(
@@ -1430,7 +1958,8 @@ async function seedIfNeeded(env) {
   if (_seeded) return;
   try {
     const row = await env.DB.prepare("SELECT setting_value FROM settings WHERE setting_key='seed_version'").first();
-    if (row?.setting_value === SEED_VERSION) {
+    const admin = await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND is_active=1 LIMIT 1").first();
+    if (row?.setting_value === SEED_VERSION && admin?.id) {
       _seeded = true;
       return;
     }
@@ -1920,13 +2449,588 @@ export async function handle(request, env) {
     return json({ ok: true });
   }
 
-  // ── USERS ────────────────────────────────────────────────────────
+  // ── EMPLOYEE PROFILE DIRECTORY ───────────────────────────────────
+  if (path === '/api/users/directory' && request.method === 'GET') {
+    if (!isManager) return json({ error: 'Không có quyền' }, 403);
+    const hasHrScope = isAdmin || isHcns(me);
+    const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
+    const pageSize = Math.min(100, Math.max(5, parseInt(url.searchParams.get('page_size') || '20', 10)));
+    const { where, binds } = buildEmployeeDirectoryFilter(url, me, hasHrScope);
+    const totalRow = await env.DB.prepare(`SELECT COUNT(*) AS total FROM users u${where}`).bind(...binds).first();
+    const { results: users = [] } = await env.DB.prepare(
+      `SELECT u.id,u.employee_code,u.employee_type,u.full_name,u.email,u.department,u.position,
+              u.avatar_color,u.avatar_initials,u.avatar_url,u.is_active,u.lifecycle_status,
+              u.contract_type,u.contract_end_date,u.probation_end_date,u.national_id_expiry_date
+       FROM users u${where}
+       ORDER BY u.full_name COLLATE NOCASE,u.id
+       LIMIT ? OFFSET ?`
+    ).bind(...binds, pageSize, (page - 1) * pageSize).all();
+    const scopeWhere = hasHrScope ? '' : ' WHERE department=?';
+    const scopeBinds = hasHrScope ? [] : [me.department || ''];
+    const [departments, positions, contractTypes, statuses] = await Promise.all([
+      env.DB.prepare(`SELECT DISTINCT department AS value FROM users${scopeWhere} ORDER BY department`).bind(...scopeBinds).all(),
+      env.DB.prepare(`SELECT DISTINCT position AS value FROM users${scopeWhere} ORDER BY position`).bind(...scopeBinds).all(),
+      env.DB.prepare(`SELECT DISTINCT contract_type AS value FROM users${scopeWhere} ORDER BY contract_type`).bind(...scopeBinds).all(),
+      env.DB.prepare(`SELECT DISTINCT lifecycle_status AS value FROM users${scopeWhere} ORDER BY lifecycle_status`).bind(...scopeBinds).all(),
+    ]);
+    const values = result => (result.results || []).map(row => row.value).filter(Boolean);
+    return json({
+      users,
+      pagination: { page, page_size: pageSize, total: Number(totalRow?.total || 0), pages: Math.max(1, Math.ceil(Number(totalRow?.total || 0) / pageSize)) },
+      filter_options: {
+        departments: values(departments),
+        positions: values(positions),
+        contract_types: values(contractTypes),
+        statuses: values(statuses),
+      },
+    });
+  }
+
+  if (path === '/api/users/export.xls' && request.method === 'GET') {
+    const hasHrScope = isAdmin || isHcns(me);
+    if (!hasHrScope) return json({ error: 'Chỉ HCNS hoặc Admin được xuất dữ liệu' }, 403);
+    const { where, binds } = buildEmployeeDirectoryFilter(url, me, true);
+    const { results: rows = [] } = await env.DB.prepare(
+      `SELECT u.employee_code,u.full_name,u.employee_type,u.email,u.phone,u.department,u.position,
+              u.lifecycle_status,u.contract_type,u.hire_date,u.contract_end_date,u.salary,u.allowance,
+              u.insurance_salary,u.dependent_count,u.bank_account,u.bank_name,u.social_insurance_number
+       FROM users u${where} ORDER BY u.full_name COLLATE NOCASE`
+    ).bind(...binds).all();
+    const columns = [
+      ['Mã nhân viên','employee_code'],['Họ và tên','full_name'],['Loại nhân sự','employee_type'],
+      ['Email','email'],['Số điện thoại','phone'],['Phòng ban','department'],['Vị trí','position'],
+      ['Trạng thái','lifecycle_status'],['Loại hợp đồng','contract_type'],['Ngày vào làm','hire_date'],
+      ['Hết hạn hợp đồng','contract_end_date'],['Lương cơ bản','salary'],['Phụ cấp','allowance'],
+      ['Lương đóng BHXH','insurance_salary'],['Người phụ thuộc','dependent_count'],
+      ['Số tài khoản','bank_account'],['Ngân hàng','bank_name'],['Số BHXH','social_insurance_number'],
+    ];
+    const cell = value => `<Cell><Data ss:Type="${typeof value === 'number' ? 'Number' : 'String'}">${xmlEscape(value ?? '')}</Data></Cell>`;
+    const workbook = `<?xml version="1.0" encoding="UTF-8"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+ <Styles><Style ss:ID="Header"><Font ss:Bold="1"/><Interior ss:Color="#FDE9E4" ss:Pattern="Solid"/></Style></Styles>
+ <Worksheet ss:Name="Nhân viên"><Table>
+  <Row>${columns.map(([label]) => `<Cell ss:StyleID="Header"><Data ss:Type="String">${xmlEscape(label)}</Data></Cell>`).join('')}</Row>
+  ${rows.map(row => `<Row>${columns.map(([, key]) => cell(row[key])).join('')}</Row>`).join('')}
+ </Table></Worksheet>
+</Workbook>`;
+    const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    return new Response(workbook, {
+      headers: {
+        'Content-Type': 'application/vnd.ms-excel; charset=utf-8',
+        'Content-Disposition': `attachment; filename="danh-sach-nhan-vien-${date}.xls"`,
+        'Cache-Control': 'private, no-store, max-age=0',
+        'X-Content-Type-Options': 'nosniff',
+      },
+    });
+  }
+
+  if (path === '/api/users/alerts' && request.method === 'GET') {
+    const hasHrScope = isAdmin || isHcns(me);
+    if (!hasHrScope) return json({ error: 'Chỉ HCNS hoặc Admin được xem cảnh báo' }, 403);
+    const windowDays = Math.min(90, Math.max(1, parseInt(url.searchParams.get('window') || '30', 10)));
+    const { results: employees = [] } = await env.DB.prepare(
+      `SELECT id,employee_code,employee_type,full_name,department,probation_end_date,contract_end_date,national_id_expiry_date
+       FROM users WHERE is_active=1 AND coalesce(lifecycle_status,'')<>'Đã nghỉ' ORDER BY full_name`
+    ).all();
+    const { results: documents = [] } = await env.DB.prepare(
+      `SELECT user_id,category,expires_on FROM employee_documents WHERE deleted_at IS NULL`
+    ).all();
+    const documentsByUser = new Map();
+    for (const document of documents) {
+      if (!documentsByUser.has(Number(document.user_id))) documentsByUser.set(Number(document.user_id), []);
+      documentsByUser.get(Number(document.user_id)).push(document);
+    }
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const daysUntil = date => {
+      if (!date) return null;
+      const parsed = new Date(`${date}T00:00:00Z`);
+      return Number.isFinite(parsed.getTime()) ? Math.ceil((parsed.getTime() - today.getTime()) / 86400000) : null;
+    };
+    const alerts = [];
+    const dateFields = [
+      ['probation_end_date','probation_due','Sắp hết thử việc'],
+      ['contract_end_date','contract_due','Sắp hết hạn hợp đồng'],
+      ['national_id_expiry_date','national_id_due','CCCD sắp hết hạn'],
+    ];
+    for (const employee of employees) {
+      for (const [field, type, label] of dateFields) {
+        const remaining = daysUntil(employee[field]);
+        if (remaining === null || remaining > windowDays) continue;
+        alerts.push({
+          id: `${type}-${employee.id}`,
+          type,
+          severity: remaining < 0 ? 'danger' : remaining <= 7 ? 'warning' : 'info',
+          employee_id: employee.id,
+          employee_code: employee.employee_code,
+          employee_name: employee.full_name,
+          department: employee.department,
+          due_date: employee[field],
+          days_until: remaining,
+          message: remaining < 0 ? `${label} đã quá hạn ${Math.abs(remaining)} ngày` : `${label} còn ${remaining} ngày`,
+        });
+      }
+      const employeeDocuments = documentsByUser.get(Number(employee.id)) || [];
+      const categories = new Set(employeeDocuments.map(document => document.category));
+      const required = employee.employee_type === 'TTS'
+        ? [['cv','CV ứng viên'],['national_id','CCCD'],['internship_agreement','Thỏa thuận TTS']]
+        : [['cv','CV ứng viên'],['national_id','CCCD'],['labor_contract','Hợp đồng lao động']];
+      const missing = required.filter(([category]) => {
+        if (employee.employee_type === 'TTS' && category === 'internship_agreement' && categories.has('labor_contract')) return false;
+        return !categories.has(category);
+      }).map(([, label]) => label);
+      if (missing.length) {
+        alerts.push({
+          id: `missing-documents-${employee.id}`,
+          type: 'missing_documents',
+          severity: 'warning',
+          employee_id: employee.id,
+          employee_code: employee.employee_code,
+          employee_name: employee.full_name,
+          department: employee.department,
+          missing,
+          message: `Thiếu hồ sơ: ${missing.join(', ')}`,
+        });
+      }
+      for (const document of employeeDocuments) {
+        const remaining = daysUntil(document.expires_on);
+        if (remaining === null || remaining > windowDays) continue;
+        alerts.push({
+          id: `document-due-${employee.id}-${document.category}`,
+          type: 'document_due',
+          severity: remaining < 0 ? 'danger' : remaining <= 7 ? 'warning' : 'info',
+          employee_id: employee.id,
+          employee_code: employee.employee_code,
+          employee_name: employee.full_name,
+          department: employee.department,
+          due_date: document.expires_on,
+          days_until: remaining,
+          message: `${EMPLOYEE_DOCUMENT_CATEGORIES[document.category] || 'Tài liệu'} ${remaining < 0 ? `đã quá hạn ${Math.abs(remaining)} ngày` : `còn ${remaining} ngày`}`,
+        });
+      }
+    }
+    alerts.sort((a, b) => (a.days_until ?? 9999) - (b.days_until ?? 9999) || a.employee_name.localeCompare(b.employee_name, 'vi'));
+    return json({
+      alerts,
+      total: alerts.length,
+      summary: alerts.reduce((summary, alert) => {
+        summary[alert.type] = (summary[alert.type] || 0) + 1;
+        return summary;
+      }, {}),
+      window_days: windowDays,
+    });
+  }
+
+  if (path === '/api/notifications' && request.method === 'GET') {
+    const windowDays = Math.min(90, Math.max(1, parseInt(url.searchParams.get('window') || '30', 10)));
+    const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
+    const pageSize = Math.min(100, Math.max(10, parseInt(url.searchParams.get('page_size') || '25', 10)));
+    const hasHrScope = isAdmin || isHcns(me);
+    const notifications = [
+      ...(hasHrScope ? await buildEmployeeAlerts(env, windowDays) : []),
+      ...await buildAttendanceNotifications(env, me, {
+        windowDays,
+        isAdmin,
+        isHcnsScope: isAttendanceHcns,
+      }),
+    ];
+    const moduleFilter = String(url.searchParams.get('module') || '').trim();
+    const typeFilter = String(url.searchParams.get('type') || '').trim();
+    const severityFilter = String(url.searchParams.get('severity') || '').trim();
+    const search = String(url.searchParams.get('search') || '').trim().toLocaleLowerCase('vi');
+    const filtered = notifications.filter(notification => {
+      if (moduleFilter && notification.module !== moduleFilter) return false;
+      if (typeFilter && notification.type !== typeFilter) return false;
+      if (severityFilter && notification.severity !== severityFilter) return false;
+      if (search) {
+        const haystack = [
+          notification.title, notification.message, notification.employee_name,
+          notification.employee_code, notification.department, notification.module_label,
+        ].join(' ').toLocaleLowerCase('vi');
+        if (!haystack.includes(search)) return false;
+      }
+      return true;
+    });
+    const severityRank = { danger: 0, warning: 1, info: 2 };
+    filtered.sort((a, b) =>
+      (severityRank[a.severity] ?? 9) - (severityRank[b.severity] ?? 9)
+      || String(b.occurred_on || b.due_date || '').localeCompare(String(a.occurred_on || a.due_date || ''))
+      || String(a.employee_name || '').localeCompare(String(b.employee_name || ''), 'vi')
+    );
+    const total = filtered.length;
+    const paginated = filtered.slice((page - 1) * pageSize, page * pageSize);
+    const values = key => [...new Set(notifications.map(item => item[key]).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), 'vi'));
+    return json({
+      notifications: paginated,
+      total,
+      active_total: notifications.length,
+      pagination: { page, page_size: pageSize, total, pages: Math.max(1, Math.ceil(total / pageSize)) },
+      summary: {
+        danger: notifications.filter(item => item.severity === 'danger').length,
+        warning: notifications.filter(item => item.severity === 'warning').length,
+        info: notifications.filter(item => item.severity === 'info').length,
+        employee_profile: notifications.filter(item => item.module === 'employee_profile').length,
+        attendance: notifications.filter(item => item.module === 'attendance').length,
+      },
+      filter_options: {
+        modules: values('module').map(value => ({
+          value,
+          label: notifications.find(item => item.module === value)?.module_label || value,
+        })),
+        types: values('type'),
+        severities: values('severity'),
+      },
+      window_days: windowDays,
+    });
+  }
+
+  const employeeProfileMatch = path.match(/^\/api\/users\/(\d+)\/profile$/);
+  if (employeeProfileMatch) {
+    const userId = parseInt(employeeProfileMatch[1], 10);
+    const target = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(userId).first();
+    if (!target) return json({ error: 'Không tìm thấy nhân viên' }, 404);
+    const hasHrScope = isAdmin || isHcns(me);
+    const permissions = employeeProfilePermissions(target, me, hasHrScope, isManager);
+    if (!permissions.can_view) return json({ error: 'Không có quyền xem hồ sơ' }, 403);
+
+    if (request.method === 'GET') {
+      const profile = { ...target };
+      delete profile.password_hash;
+      const isSelf = Number(me.id) === userId;
+      if (!hasHrScope && !isSelf) {
+        for (const field of [...EMPLOYEE_PROFILE_FIELDS.contract, ...EMPLOYEE_PROFILE_FIELDS.compensation]) delete profile[field];
+        for (const field of ['birth_date','gender','national_id','national_id_expiry_date','home_address','school_name','emergency_contact_name','emergency_contact_phone']) {
+          delete profile[field];
+        }
+        delete profile.tax_code;
+        delete profile.social_insurance_number;
+        delete profile.national_id_document_url;
+        delete profile.degree_document_url;
+        delete profile.contract_document_url;
+        delete profile.personnel_decision_url;
+      }
+      let completion = null;
+      if (permissions.can_view_documents) {
+        const requiredFields = [
+          'full_name','email','phone','birth_date','national_id','home_address','position','department',
+          'direct_manager_id','work_location','contract_type','hire_date',
+        ];
+        const requiredDocuments = target.employee_type === 'TTS'
+          ? ['cv','national_id','internship_agreement']
+          : ['cv','national_id','labor_contract'];
+        const { results: documentRows = [] } = await env.DB.prepare(
+          'SELECT DISTINCT category FROM employee_documents WHERE user_id=? AND deleted_at IS NULL'
+        ).bind(userId).all();
+        const categories = new Set(documentRows.map(row => row.category));
+        const completedFields = requiredFields.filter(field => String(target[field] ?? '').trim()).length;
+        const completedDocuments = requiredDocuments.filter(category => {
+          if (target.employee_type === 'TTS' && category === 'internship_agreement' && categories.has('labor_contract')) return true;
+          return categories.has(category);
+        }).length;
+        completion = {
+          percent: Math.round(((completedFields + completedDocuments) / (requiredFields.length + requiredDocuments.length)) * 100),
+          completed_fields: completedFields,
+          required_fields: requiredFields.length,
+          completed_documents: completedDocuments,
+          required_documents: requiredDocuments.length,
+        };
+      }
+      return json({
+        user: profile,
+        permissions,
+        completion,
+        metadata: {
+          document_categories: EMPLOYEE_DOCUMENT_CATEGORIES,
+          contract_types: target.contract_type && !EMPLOYEE_CONTRACT_TYPES.includes(target.contract_type)
+            ? [...EMPLOYEE_CONTRACT_TYPES, target.contract_type]
+            : EMPLOYEE_CONTRACT_TYPES,
+          lifecycle_statuses: LIFECYCLE_STATUSES,
+        },
+      });
+    }
+
+    if (request.method !== 'PATCH') return json({ error: 'Phương thức không được hỗ trợ' }, 405);
+    if (!permissions.can_edit_basic) return json({ error: 'Không có quyền sửa hồ sơ' }, 403);
+    const input = await request.json().catch(() => ({}));
+    const changes = {};
+    for (const [field, rawValue] of Object.entries(input)) {
+      if (!EMPLOYEE_PROFILE_ALLOWED_FIELDS.has(field)) continue;
+      const group = EMPLOYEE_PROFILE_FIELD_GROUP[field];
+      if (group === 'personal' && !permissions.can_edit_personal) return json({ error: 'Không có quyền sửa thông tin cá nhân' }, 403);
+      if (group === 'employment' && !permissions.can_edit_employment) return json({ error: 'Không có quyền sửa thông tin công việc' }, 403);
+      if ((EMPLOYEE_PROFILE_PROTECTED_FIELDS.has(field) || field === 'employee_type') && !hasHrScope) {
+        return json({ error: 'Chỉ HCNS hoặc Admin được sửa hợp đồng, lương, ngân hàng và BHXH' }, 403);
+      }
+      changes[field] = normalizeEmployeeProfileValue(field, rawValue);
+      if (typeof changes[field] === 'number' && !Number.isFinite(changes[field])) return json({ error: `Giá trị ${field} không hợp lệ` }, 400);
+    }
+    if (!Object.keys(changes).length) return json({ ok: true, unchanged: true });
+    const merged = { ...target, ...changes };
+    if (merged.employee_type !== 'TTS' && merged.school_name) {
+      changes.school_name = '';
+      merged.school_name = '';
+    }
+    const actualChanges = Object.entries(changes).filter(([field, value]) => String(target[field] ?? '') !== String(value ?? ''));
+    if (!actualChanges.length) return json({ ok: true, unchanged: true });
+    const validationError = validateEmployeeProfile(merged, actualChanges.map(([field]) => field));
+    if (validationError) return json({ error: validationError }, 400);
+    if (changes.email && changes.email !== target.email) {
+      const duplicate = await env.DB.prepare('SELECT id FROM users WHERE lower(email)=lower(?) AND id<>? LIMIT 1').bind(changes.email, userId).first();
+      if (duplicate) return json({ error: 'Email đã tồn tại' }, 409);
+    }
+    if (merged.direct_manager_id) {
+      const manager = await env.DB.prepare('SELECT id FROM users WHERE id=? AND is_active=1').bind(merged.direct_manager_id).first();
+      if (!manager) return json({ error: 'Quản lý trực tiếp không tồn tại hoặc đã khóa' }, 400);
+    }
+    const changeSetId = crypto.randomUUID();
+    const assignments = actualChanges.map(([field]) => `${field}=?`).join(',');
+    const statements = [
+      env.DB.prepare(`UPDATE users SET ${assignments},updated_at=datetime('now','localtime'),updated_by=? WHERE id=?`)
+        .bind(...actualChanges.map(([, value]) => value), me.id, userId),
+      ...actualChanges.map(([field, value]) => employeeAuditStatement(env, {
+        userId,
+        changeSetId,
+        action: 'update',
+        group: EMPLOYEE_PROFILE_FIELD_GROUP[field] || 'profile',
+        field,
+        oldValue: target[field],
+        newValue: value,
+        actor: me,
+      })),
+    ];
+    await env.DB.batch(statements);
+    return json({ ok: true, change_set_id: changeSetId, changed_fields: actualChanges.map(([field]) => field) });
+  }
+
+  const employeeAuditMatch = path.match(/^\/api\/users\/(\d+)\/audit$/);
+  if (employeeAuditMatch && request.method === 'GET') {
+    const hasHrScope = isAdmin || isHcns(me);
+    if (!hasHrScope) return json({ error: 'Chỉ HCNS hoặc Admin được xem nhật ký' }, 403);
+    const userId = parseInt(employeeAuditMatch[1], 10);
+    const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
+    const pageSize = Math.min(100, Math.max(10, parseInt(url.searchParams.get('page_size') || '30', 10)));
+    const total = await env.DB.prepare('SELECT COUNT(*) AS total FROM employee_profile_audit WHERE user_id=?').bind(userId).first();
+    const { results: audit = [] } = await env.DB.prepare(
+      `SELECT * FROM employee_profile_audit WHERE user_id=? ORDER BY changed_at DESC,id DESC LIMIT ? OFFSET ?`
+    ).bind(userId, pageSize, (page - 1) * pageSize).all();
+    return json({ audit, pagination: { page, page_size: pageSize, total: Number(total?.total || 0) } });
+  }
+
+  const employeeTimelineMatch = path.match(/^\/api\/users\/(\d+)\/timeline$/);
+  if (employeeTimelineMatch && request.method === 'GET') {
+    const userId = parseInt(employeeTimelineMatch[1], 10);
+    const target = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(userId).first();
+    if (!target) return json({ error: 'Không tìm thấy nhân viên' }, 404);
+    const hasHrScope = isAdmin || isHcns(me);
+    if (!employeeCanAccess(target, me, hasHrScope, isManager)) return json({ error: 'Không có quyền xem hồ sơ' }, 403);
+    const events = [];
+    const datedFields = [
+      ['hire_date','onboarding','Ngày vào làm'],
+      ['probation_end_date','probation','Kết thúc thử việc'],
+      ['official_date','official','Chuyển chính thức'],
+      ['termination_date','termination','Nghỉ việc'],
+    ];
+    for (const [field, type, title] of datedFields) {
+      if (target[field]) events.push({ id: `${field}-${userId}`, type, title, event_date: target[field], source: 'profile' });
+    }
+    const { results: lifecycle = [] } = await env.DB.prepare(
+      `SELECT id,from_status,to_status,changed_by_name,reason,
+              created_at AS event_date
+       FROM lifecycle_history WHERE user_id=? ORDER BY id`
+    ).bind(userId).all();
+    for (const row of lifecycle) events.push({
+      id: `lifecycle-${row.id}`,
+      type: 'lifecycle',
+      title: `Chuyển trạng thái sang ${row.to_status}`,
+      description: row.reason || '',
+      actor_name: row.changed_by_name || '',
+      event_date: row.event_date,
+      source: 'lifecycle',
+    });
+    const auditFields = [...EMPLOYEE_TIMELINE_FIELDS].filter(field => hasHrScope || !['salary','allowance'].includes(field));
+    if (auditFields.length) {
+      const placeholders = auditFields.map(() => '?').join(',');
+      const { results: auditEvents = [] } = await env.DB.prepare(
+        `SELECT id,field_name,old_value,new_value,changed_by_name,changed_at
+         FROM employee_profile_audit WHERE user_id=? AND field_name IN (${placeholders}) ORDER BY changed_at`
+      ).bind(userId, ...auditFields).all();
+      for (const row of auditEvents) events.push({
+        id: `audit-${row.id}`,
+        type: row.field_name === 'department' ? 'transfer' : row.field_name === 'salary' ? 'salary' : 'profile_change',
+        title: row.field_name === 'department' ? 'Điều chuyển phòng ban'
+          : row.field_name === 'salary' ? 'Điều chỉnh lương'
+          : `Cập nhật ${row.field_name}`,
+        description: `${row.old_value || 'Chưa có'} → ${row.new_value || 'Chưa có'}`,
+        actor_name: row.changed_by_name || '',
+        event_date: row.changed_at,
+        source: 'audit',
+      });
+    }
+    const { results: documentEvents = [] } = await env.DB.prepare(
+      `SELECT id,category,title,uploaded_by_name,uploaded_at,deleted_at,deleted_by_name
+       FROM employee_documents WHERE user_id=? ORDER BY uploaded_at`
+    ).bind(userId).all();
+    for (const document of documentEvents) {
+      events.push({
+        id: `document-upload-${document.id}`,
+        type: 'document',
+        title: `Thêm ${EMPLOYEE_DOCUMENT_CATEGORIES[document.category] || document.title || 'tài liệu'}`,
+        actor_name: document.uploaded_by_name || '',
+        event_date: document.uploaded_at,
+        source: 'document',
+      });
+      if (document.deleted_at) events.push({
+        id: `document-delete-${document.id}`,
+        type: 'document_deleted',
+        title: `Xóa ${EMPLOYEE_DOCUMENT_CATEGORIES[document.category] || document.title || 'tài liệu'}`,
+        actor_name: document.deleted_by_name || '',
+        event_date: document.deleted_at,
+        source: 'document',
+      });
+    }
+    events.sort((a, b) => String(b.event_date || '').localeCompare(String(a.event_date || '')));
+    return json({ timeline: events });
+  }
+
+  const employeeDocumentsMatch = path.match(/^\/api\/users\/(\d+)\/documents$/);
+  if (employeeDocumentsMatch) {
+    const userId = parseInt(employeeDocumentsMatch[1], 10);
+    const target = await env.DB.prepare('SELECT id,department FROM users WHERE id=?').bind(userId).first();
+    if (!target) return json({ error: 'Không tìm thấy nhân viên' }, 404);
+    const hasHrScope = isAdmin || isHcns(me);
+    const canView = hasHrScope || Number(me.id) === userId;
+    if (request.method === 'GET') {
+      if (!canView) return json({ error: 'Không có quyền xem tài liệu' }, 403);
+      const { results: documents = [] } = await env.DB.prepare(
+        `SELECT id,user_id,category,title,original_filename,content_type,byte_size,expires_on,
+                uploaded_by,uploaded_by_name,uploaded_at
+         FROM employee_documents WHERE user_id=? AND deleted_at IS NULL ORDER BY uploaded_at DESC`
+      ).bind(userId).all();
+      return json({
+        documents: documents.map(document => ({
+          ...document,
+          category_label: EMPLOYEE_DOCUMENT_CATEGORIES[document.category] || document.category,
+          preview_url: `/api/users/${userId}/documents/${document.id}?disposition=inline`,
+          download_url: `/api/users/${userId}/documents/${document.id}?disposition=attachment`,
+        })),
+        categories: EMPLOYEE_DOCUMENT_CATEGORIES,
+        can_manage: hasHrScope,
+      });
+    }
+    if (request.method !== 'POST') return json({ error: 'Phương thức không được hỗ trợ' }, 405);
+    if (!hasHrScope) return json({ error: 'Chỉ HCNS hoặc Admin được thêm tài liệu' }, 403);
+    if (!env.HR_DOCUMENTS) return json({ error: 'Lưu trữ hồ sơ chưa được cấu hình' }, 503);
+    const retryAfter = rateLimit(request, 'employee-document-upload', 30, 10 * 60 * 1000);
+    if (retryAfter) return json({ error: 'Thử lại sau ít phút', code: 'RATE_LIMITED' }, 429, { 'Retry-After': String(retryAfter) });
+    const form = await request.formData().catch(() => null);
+    const file = form?.get('file');
+    const category = String(form?.get('category') || '');
+    const title = String(form?.get('title') || '').trim().slice(0, 160);
+    const expiresOn = String(form?.get('expires_on') || '').trim() || null;
+    if (!Object.prototype.hasOwnProperty.call(EMPLOYEE_DOCUMENT_CATEGORIES, category)) return json({ error: 'Danh mục tài liệu không hợp lệ' }, 400);
+    if (!file || typeof file.stream !== 'function') return json({ error: 'Vui lòng chọn tệp để tải lên' }, 400);
+    const contentType = String(file.type || '').toLowerCase();
+    if (!EMPLOYEE_DOCUMENT_TYPES.includes(contentType)) return json({ error: 'Chỉ nhận PDF, JPG, PNG hoặc WebP' }, 400);
+    if (!Number.isFinite(file.size) || file.size < 1 || file.size > EMPLOYEE_DOCUMENT_MAX_BYTES) return json({ error: 'Tệp vượt giới hạn 10 MB' }, 400);
+    if (expiresOn && !/^\d{4}-\d{2}-\d{2}$/.test(expiresOn)) return json({ error: 'Ngày hết hạn không hợp lệ' }, 400);
+    const fileBuffer = await file.arrayBuffer();
+    if (!employeeDocumentContentMatches(contentType, fileBuffer)) return json({ error: 'Nội dung tệp không khớp với định dạng đã khai báo' }, 400);
+    const documentId = crypto.randomUUID();
+    const storageKey = employeeDocumentKey(userId, documentId);
+    await env.HR_DOCUMENTS.put(storageKey, fileBuffer, {
+      httpMetadata: { contentType, cacheControl: 'private, no-store' },
+      customMetadata: { uploaded_by: String(me.id), uploaded_at: new Date().toISOString(), category },
+    });
+    try {
+      await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO employee_documents
+             (id,user_id,category,title,original_filename,content_type,byte_size,storage_key,expires_on,uploaded_by,uploaded_by_name)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+        ).bind(documentId, userId, category, title, safeDownloadName(file.name), contentType, file.size, storageKey, expiresOn, me.id, me.full_name || ''),
+        employeeAuditStatement(env, {
+          userId,
+          changeSetId: crypto.randomUUID(),
+          action: 'document_upload',
+          group: 'documents',
+          field: category,
+          oldValue: null,
+          newValue: file.name,
+          actor: me,
+        }),
+      ]);
+    } catch (error) {
+      await env.HR_DOCUMENTS.delete(storageKey).catch(() => {});
+      throw error;
+    }
+    return json({ ok: true, id: documentId });
+  }
+
+  const employeeDocumentMatch = path.match(/^\/api\/users\/(\d+)\/documents\/([0-9a-fA-F-]{36})$/);
+  if (employeeDocumentMatch) {
+    const userId = parseInt(employeeDocumentMatch[1], 10);
+    const documentId = employeeDocumentMatch[2];
+    const document = await env.DB.prepare(
+      `SELECT d.*,u.department FROM employee_documents d JOIN users u ON u.id=d.user_id
+       WHERE d.id=? AND d.user_id=?`
+    ).bind(documentId, userId).first();
+    if (!document || document.deleted_at) return json({ error: 'Tài liệu không tồn tại' }, 404);
+    const hasHrScope = isAdmin || isHcns(me);
+    const canView = hasHrScope || Number(me.id) === userId;
+    if (!canView) return json({ error: 'Không có quyền xem tài liệu' }, 403);
+    if (!env.HR_DOCUMENTS) return json({ error: 'Lưu trữ hồ sơ chưa được cấu hình' }, 503);
+    if (request.method === 'GET') {
+      const object = await env.HR_DOCUMENTS.get(document.storage_key);
+      if (!object) return json({ error: 'Tệp không tồn tại trên kho lưu trữ' }, 404);
+      const disposition = url.searchParams.get('disposition') === 'attachment' ? 'attachment' : 'inline';
+      const filename = safeDownloadName(document.original_filename);
+      return new Response(object.body, {
+        headers: {
+          'Content-Type': (
+            document.content_type && document.content_type !== 'application/octet-stream'
+              ? document.content_type
+              : object.httpMetadata?.contentType
+          ) || 'application/octet-stream',
+          'Content-Disposition': `${disposition}; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+          'Cache-Control': 'private, no-store, max-age=0',
+          'X-Content-Type-Options': 'nosniff',
+          'Referrer-Policy': 'no-referrer',
+        },
+      });
+    }
+    if (request.method !== 'DELETE') return json({ error: 'Phương thức không được hỗ trợ' }, 405);
+    if (!hasHrScope) return json({ error: 'Chỉ HCNS hoặc Admin được xóa tài liệu' }, 403);
+    await env.HR_DOCUMENTS.delete(document.storage_key);
+    const changeSetId = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE employee_documents
+         SET deleted_at=datetime('now','localtime'),deleted_by=?,deleted_by_name=?
+         WHERE id=? AND deleted_at IS NULL`
+      ).bind(me.id, me.full_name || '', documentId),
+      employeeAuditStatement(env, {
+        userId,
+        changeSetId,
+        action: 'document_delete',
+        group: 'documents',
+        field: document.category,
+        oldValue: document.original_filename,
+        newValue: null,
+        actor: me,
+      }),
+    ]);
+    return json({ ok: true });
+  }
+
+  // ── USERS (legacy-compatible account APIs) ───────────────────────
   if (path === '/api/users' && request.method === 'GET') {
     if (!isManager) return json({ error: 'Không có quyền' }, 403);
     const hasHrScope = isAdmin || isHcns(me);
     const baseFields = hasHrScope
-      ? 'id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at,birth_date,gender,national_id,home_address,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,contract_start_date,contract_end_date,contract_signed_date,official_date,termination_date,allowance,insurance_salary,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url'
-      : 'id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,is_active,lifecycle_status,created_at,direct_manager_id,work_location,contract_type,avatar_url';
+      ? 'id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at,birth_date,gender,national_id,national_id_expiry_date,home_address,school_name,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,hire_date,contract_start_date,contract_end_date,contract_signed_date,probation_end_date,official_date,termination_date,allowance,insurance_salary,dependent_count,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url,updated_at,updated_by'
+      : 'id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,is_active,lifecycle_status,created_at,direct_manager_id,work_location,avatar_url';
     const stmt = env.DB.prepare(`SELECT ${baseFields} FROM users${hasHrScope ? '' : ' WHERE department=?'} ORDER BY id`);
     const { results } = hasHrScope ? await stmt.all() : await stmt.bind(me.department).all();
     return json({ users: results });
@@ -1935,11 +3039,30 @@ export async function handle(request, env) {
   if (path === '/api/users' && request.method === 'POST') {
     if (!(isAdmin || isHcns(me))) return json({ error: 'Không có quyền' }, 403);
     const b = await request.json();
-    if (!b.full_name || !b.email || !b.department) return json({ error: 'Thiếu thông tin bắt buộc' }, 400);
+    if (!b.full_name || !b.email || !b.phone || !b.birth_date || !b.national_id || !b.home_address ||
+        !b.department || !b.position || !b.direct_manager_id || !b.work_location || !b.contract_type || !b.hire_date) {
+      return json({ error: 'Vui lòng nhập đầy đủ các trường bắt buộc' }, 400);
+    }
     const pw = b.password || 'Pass@123';
     const hash = await hashPassword(pw);
     const ini = b.avatar_initials || nameInitials(b.full_name);
     const empType = employeeTypeCode(b.employee_type);
+    const candidate = {
+      ...b,
+      id: null,
+      employee_type: empType,
+      department: normalizeDeptName(b.department || ''),
+      dependent_count: Number(b.dependent_count || 0),
+      lifecycle_status: b.lifecycle_status || 'Chờ tiếp nhận',
+      school_name: empType === 'TTS' ? String(b.school_name || '').trim() : '',
+    };
+    const validationError = validateEmployeeProfile(candidate, [
+      'full_name','email','department','direct_manager_id','contract_type','hire_date','contract_start_date',
+      'contract_end_date','probation_end_date','official_date','termination_date','dependent_count',
+    ]);
+    if (validationError) return json({ error: validationError }, 400);
+    const manager = await env.DB.prepare('SELECT id FROM users WHERE id=? AND is_active=1').bind(b.direct_manager_id).first();
+    if (!manager) return json({ error: 'Quản lý trực tiếp không tồn tại hoặc đã khóa' }, 400);
     // Server generates + confirms the official code (never trust a client-sent one).
     // Retry a few times in case two requests race on the same next sequence number.
     let lastErr;
@@ -1949,7 +3072,20 @@ export async function handle(request, env) {
         const r = await env.DB.prepare(
           'INSERT INTO users (employee_code,employee_type,full_name,email,password_hash,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,birth_date,gender,national_id,home_address,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,contract_start_date,contract_end_date,contract_signed_date,official_date,termination_date,allowance,insurance_salary,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
         ).bind(code,empType,b.full_name,b.email,hash,b.role||'employee',normalizeDeptName(b.department||''),b.position||'',b.avatar_color||'#4F46E5',ini,b.phone||'',b.salary||0,b.bank_account||'',b.bank_name||'',b.birth_date||null,b.gender||'',b.national_id||'',b.home_address||'',b.emergency_contact_name||'',b.emergency_contact_phone||'',b.direct_manager_id||null,b.work_location||'',b.contract_type||'',b.contract_start_date||null,b.contract_end_date||null,b.contract_signed_date||null,b.official_date||null,b.termination_date||null,b.allowance||0,b.insurance_salary||0,b.bank_account_holder||'',b.tax_code||'',b.social_insurance_number||'',b.insurance_hospital||'',b.avatar_url||'',b.national_id_document_url||'',b.degree_document_url||'',b.contract_document_url||'',b.personnel_decision_url||'').run();
-        return json({ ok: true, id: r.meta.last_row_id, employee_code: code });
+        const newUserId = r.meta.last_row_id;
+        await env.DB.prepare(
+          `UPDATE users SET school_name=?,hire_date=?,probation_end_date=?,dependent_count=?,national_id_expiry_date=?,
+             updated_at=datetime('now','localtime'),updated_by=? WHERE id=?`
+        ).bind(
+          empType === 'TTS' ? String(b.school_name || '').trim() : '',
+          b.hire_date || null,
+          b.probation_end_date || null,
+          Math.max(0, parseInt(b.dependent_count || 0, 10) || 0),
+          b.national_id_expiry_date || null,
+          me.id,
+          newUserId
+        ).run();
+        return json({ ok: true, id: newUserId, employee_code: code });
       } catch (e) {
         lastErr = e;
         if (e.message.includes('UNIQUE') && e.message.includes('employee_code')) continue; // race on code, retry with next seq
@@ -1968,7 +3104,7 @@ export async function handle(request, env) {
     const kind = userDocumentMatch[2];
     const config = USER_DOCUMENTS[kind];
     const hasHrScope = isAdmin || isHcns(me);
-    const target = await env.DB.prepare('SELECT id,department FROM users WHERE id=?').bind(uid).first();
+    const target = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(uid).first();
     if (!target) return json({ error: 'Không tìm thấy nhân viên' }, 404);
     if (!env.HR_DOCUMENTS) return json({ error: 'Lưu trữ hồ sơ chưa được cấu hình' }, 503);
 
@@ -1993,7 +3129,30 @@ export async function handle(request, env) {
     if (!hasHrScope) return json({ error: 'Chỉ HCNS hoặc quản trị viên được tải hồ sơ lên' }, 403);
     if (request.method === 'DELETE') {
       await env.HR_DOCUMENTS.delete(userDocumentKey(uid, kind));
-      await env.DB.prepare(`UPDATE users SET ${config.column}='' WHERE id=?`).bind(uid).run();
+      const changeSetId = crypto.randomUUID();
+      const statements = [
+        env.DB.prepare(`UPDATE users SET ${config.column}='',updated_at=datetime('now','localtime'),updated_by=? WHERE id=?`).bind(me.id, uid),
+        employeeAuditStatement(env, {
+          userId: uid,
+          changeSetId,
+          action: 'legacy_document_delete',
+          group: 'documents',
+          field: kind,
+          oldValue: config.label,
+          newValue: null,
+          actor: me,
+        }),
+      ];
+      if (kind !== 'avatar') {
+        statements.push(
+          env.DB.prepare(
+            `UPDATE employee_documents
+             SET deleted_at=datetime('now','localtime'),deleted_by=?,deleted_by_name=?
+             WHERE storage_key=? AND deleted_at IS NULL`
+          ).bind(me.id, me.full_name || '', userDocumentKey(uid, kind))
+        );
+      }
+      await env.DB.batch(statements);
       return json({ ok: true });
     }
     if (request.method !== 'POST') return json({ error: 'Phương thức không được hỗ trợ' }, 405);
@@ -2008,12 +3167,45 @@ export async function handle(request, env) {
     if (!Number.isFinite(file.size) || file.size < 1 || file.size > config.maxBytes) {
       return json({ error: `${config.label} vượt giới hạn ${config.maxBytes / 1024 / 1024} MB` }, 400);
     }
-    await env.HR_DOCUMENTS.put(userDocumentKey(uid, kind), file.stream(), {
+    const fileBuffer = await file.arrayBuffer();
+    if (!employeeDocumentContentMatches(contentType, fileBuffer)) return json({ error: 'Nội dung tệp không khớp với định dạng đã khai báo' }, 400);
+    await env.HR_DOCUMENTS.put(userDocumentKey(uid, kind), fileBuffer, {
       httpMetadata: { contentType, cacheControl: 'private, no-store' },
       customMetadata: { uploaded_by: String(me.id), uploaded_at: new Date().toISOString() },
     });
     const url = userDocumentRoute(uid, kind);
-    await env.DB.prepare(`UPDATE users SET ${config.column}=? WHERE id=?`).bind(url, uid).run();
+    const changeSetId = crypto.randomUUID();
+    const statements = [
+      env.DB.prepare(`UPDATE users SET ${config.column}=?,updated_at=datetime('now','localtime'),updated_by=? WHERE id=?`).bind(url, me.id, uid),
+      employeeAuditStatement(env, {
+        userId: uid,
+        changeSetId,
+        action: 'legacy_document_upload',
+        group: 'documents',
+        field: kind,
+        oldValue: target[config.column] || null,
+        newValue: String(file.name || config.label),
+        actor: me,
+      }),
+    ];
+    if (kind !== 'avatar') {
+      statements.push(
+        env.DB.prepare(
+          `INSERT INTO employee_documents
+             (id,user_id,category,title,original_filename,content_type,byte_size,storage_key,uploaded_by,uploaded_by_name)
+           VALUES (?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(storage_key) DO UPDATE SET
+             category=excluded.category,title=excluded.title,original_filename=excluded.original_filename,
+             content_type=excluded.content_type,byte_size=excluded.byte_size,uploaded_by=excluded.uploaded_by,
+             uploaded_by_name=excluded.uploaded_by_name,uploaded_at=datetime('now','localtime'),
+             deleted_at=NULL,deleted_by=NULL,deleted_by_name=NULL`
+        ).bind(
+          crypto.randomUUID(), uid, LEGACY_DOCUMENT_CATEGORIES[kind], config.label,
+          String(file.name || kind), contentType, file.size, userDocumentKey(uid, kind), me.id, me.full_name || ''
+        )
+      );
+    }
+    await env.DB.batch(statements);
     return json({ ok: true, url, label: config.label });
   }
 
@@ -2026,7 +3218,7 @@ export async function handle(request, env) {
       if (!isManager && me.id !== uid) return json({ error: 'Không có quyền' }, 403);
       if (isManager && !isAdmin && !isHcns(me) && me.id !== uid && target.department !== me.department) return json({ error: 'Không có quyền' }, 403);
       const row = await env.DB.prepare(
-        'SELECT id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at,birth_date,gender,national_id,home_address,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,contract_start_date,contract_end_date,contract_signed_date,official_date,termination_date,allowance,insurance_salary,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url FROM users WHERE id=?'
+        'SELECT id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at,birth_date,gender,national_id,national_id_expiry_date,home_address,school_name,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,hire_date,contract_start_date,contract_end_date,contract_signed_date,probation_end_date,official_date,termination_date,allowance,insurance_salary,dependent_count,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url,updated_at,updated_by FROM users WHERE id=?'
       ).bind(uid).first();
       if (!row) return json({ error: 'Không tìm thấy' }, 404);
       return json({ user: row });
@@ -2038,11 +3230,32 @@ export async function handle(request, env) {
       const hasHrScope = isAdmin || isHcns(me);
       const managesDepartment = isManager && !hasHrScope && target.department === me.department;
       if (!hasHrScope && me.id !== uid && !managesDepartment) return json({ error: 'Không có quyền' }, 403);
-      const protectedFields = ['role','salary','bank_account','bank_name','is_active','lifecycle_status','allowance','insurance_salary','bank_account_holder','tax_code','social_insurance_number','insurance_hospital','reset_password','password_hash'];
+      const protectedFields = ['role','employee_type','salary','bank_account','bank_name','is_active','lifecycle_status','allowance','insurance_salary','dependent_count','bank_account_holder','tax_code','social_insurance_number','insurance_hospital','contract_type','hire_date','contract_start_date','contract_end_date','contract_signed_date','probation_end_date','official_date','termination_date','reset_password','password_hash'];
       if (!hasHrScope && protectedFields.some(k => Object.prototype.hasOwnProperty.call(input, k))) return json({ error: 'Không được thay đổi trường bảo mật hoặc lương' }, 403);
       // The UI sends partial profile payloads in a few flows; merge only after
       // authorization so absent fields can never zero out personnel data.
       const b = { ...target, ...input };
+      const legacyTrackedFields = [
+        'full_name','email','department','position','phone','birth_date','gender','national_id','home_address',
+        'emergency_contact_name','emergency_contact_phone','direct_manager_id','work_location','contract_type',
+        'contract_start_date','contract_end_date','contract_signed_date','official_date','termination_date','salary',
+        'allowance','insurance_salary','bank_account','bank_name','bank_account_holder','tax_code',
+        'social_insurance_number','insurance_hospital',
+      ];
+      const legacyChanges = legacyTrackedFields
+        .filter(field => Object.prototype.hasOwnProperty.call(input, field))
+        .filter(field => String(target[field] ?? '') !== String(b[field] ?? ''))
+        .map(field => [field, b[field]]);
+      const validationError = validateEmployeeProfile(b, legacyChanges.map(([field]) => field));
+      if (validationError) return json({ error: validationError }, 400);
+      if (legacyChanges.some(([field]) => field === 'email')) {
+        const duplicate = await env.DB.prepare('SELECT id FROM users WHERE lower(email)=lower(?) AND id<>? LIMIT 1').bind(b.email, uid).first();
+        if (duplicate) return json({ error: 'Email đã tồn tại' }, 409);
+      }
+      if (legacyChanges.some(([field]) => field === 'direct_manager_id') && b.direct_manager_id) {
+        const manager = await env.DB.prepare('SELECT id FROM users WHERE id=? AND is_active=1').bind(b.direct_manager_id).first();
+        if (!manager) return json({ error: 'Quản lý trực tiếp không tồn tại hoặc đã khóa' }, 400);
+      }
       const ini = b.avatar_initials || nameInitials(b.full_name || '');
       let extraSql = '';
       let extraBinds = [];
@@ -2051,17 +3264,29 @@ export async function handle(request, env) {
         extraSql = ', password_hash=?';
         extraBinds = [newHash];
       }
-      const binds = [b.full_name,b.email,b.role||'employee',normalizeDeptName(b.department||''),b.position||'',b.avatar_color||'#4F46E5',ini,b.phone||'',b.salary||0,b.bank_account||'',b.bank_name||'',b.is_active??1,b.birth_date||null,b.gender||'',b.national_id||'',b.home_address||'',b.emergency_contact_name||'',b.emergency_contact_phone||'',b.direct_manager_id||null,b.work_location||'',b.contract_type||'',b.contract_start_date||null,b.contract_end_date||null,b.contract_signed_date||null,b.official_date||null,b.termination_date||null,b.allowance||0,b.insurance_salary||0,b.bank_account_holder||'',b.tax_code||'',b.social_insurance_number||'',b.insurance_hospital||'',b.avatar_url||'',b.national_id_document_url||'',b.degree_document_url||'',b.contract_document_url||'',b.personnel_decision_url||'',...extraBinds,uid];
-      await env.DB.prepare(
-        `UPDATE users SET full_name=?,email=?,role=?,department=?,position=?,avatar_color=?,avatar_initials=?,phone=?,salary=?,bank_account=?,bank_name=?,is_active=?,birth_date=?,gender=?,national_id=?,home_address=?,emergency_contact_name=?,emergency_contact_phone=?,direct_manager_id=?,work_location=?,contract_type=?,contract_start_date=?,contract_end_date=?,contract_signed_date=?,official_date=?,termination_date=?,allowance=?,insurance_salary=?,bank_account_holder=?,tax_code=?,social_insurance_number=?,insurance_hospital=?,avatar_url=?,national_id_document_url=?,degree_document_url=?,contract_document_url=?,personnel_decision_url=?${extraSql} WHERE id=?`
-      ).bind(...binds).run();
-      return json({ ok: true });
+      const binds = [b.full_name,b.email,b.role||'employee',normalizeDeptName(b.department||''),b.position||'',b.avatar_color||'#4F46E5',ini,b.phone||'',b.salary||0,b.bank_account||'',b.bank_name||'',b.is_active??1,b.birth_date||null,b.gender||'',b.national_id||'',b.home_address||'',b.emergency_contact_name||'',b.emergency_contact_phone||'',b.direct_manager_id||null,b.work_location||'',b.contract_type||'',b.contract_start_date||null,b.contract_end_date||null,b.contract_signed_date||null,b.official_date||null,b.termination_date||null,b.allowance||0,b.insurance_salary||0,b.bank_account_holder||'',b.tax_code||'',b.social_insurance_number||'',b.insurance_hospital||'',b.avatar_url||'',b.national_id_document_url||'',b.degree_document_url||'',b.contract_document_url||'',b.personnel_decision_url||'',...extraBinds,me.id,uid];
+      const changeSetId = crypto.randomUUID();
+      await env.DB.batch([
+        env.DB.prepare(
+          `UPDATE users SET full_name=?,email=?,role=?,department=?,position=?,avatar_color=?,avatar_initials=?,phone=?,salary=?,bank_account=?,bank_name=?,is_active=?,birth_date=?,gender=?,national_id=?,home_address=?,emergency_contact_name=?,emergency_contact_phone=?,direct_manager_id=?,work_location=?,contract_type=?,contract_start_date=?,contract_end_date=?,contract_signed_date=?,official_date=?,termination_date=?,allowance=?,insurance_salary=?,bank_account_holder=?,tax_code=?,social_insurance_number=?,insurance_hospital=?,avatar_url=?,national_id_document_url=?,degree_document_url=?,contract_document_url=?,personnel_decision_url=?${extraSql},updated_at=datetime('now','localtime'),updated_by=? WHERE id=?`
+        ).bind(...binds),
+        ...legacyChanges.map(([field, value]) => employeeAuditStatement(env, {
+          userId: uid,
+          changeSetId,
+          action: 'legacy_update',
+          group: EMPLOYEE_PROFILE_FIELD_GROUP[field] || 'profile',
+          field,
+          oldValue: target[field],
+          newValue: value,
+          actor: me,
+        })),
+      ]);
+      return json({ ok: true, change_set_id: changeSetId });
     }
     if (request.method === 'DELETE') {
       if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
       if (uid === me.id) return json({ error: 'Không thể xóa tài khoản đang dùng' }, 400);
-      await env.DB.prepare('DELETE FROM users WHERE id=?').bind(uid).run();
-      return json({ ok: true });
+      return json({ error: 'Không hỗ trợ xóa nhân viên. Hãy chuyển trạng thái sang Đã nghỉ hoặc khóa tài khoản.', code: 'HARD_DELETE_DISABLED' }, 409);
     }
   }
 
@@ -2096,10 +3321,21 @@ export async function handle(request, env) {
     const target = await env.DB.prepare('SELECT id, lifecycle_status FROM users WHERE id=?').bind(luid).first();
     if (!target) return json({ error: 'Không tìm thấy nhân viên' }, 404);
     const fromStatus = target.lifecycle_status || 'Chính thức';
+    const changeSetId = crypto.randomUUID();
     await env.DB.batch([
       env.DB.prepare('UPDATE users SET lifecycle_status=? WHERE id=?').bind(newStatus, luid),
       env.DB.prepare('INSERT INTO lifecycle_history (user_id,from_status,to_status,changed_by,changed_by_name,reason) VALUES (?,?,?,?,?,?)')
         .bind(luid, fromStatus, newStatus, me.id, me.full_name, reason),
+      employeeAuditStatement(env, {
+        userId: luid,
+        changeSetId,
+        action: 'lifecycle',
+        group: 'employment',
+        field: 'lifecycle_status',
+        oldValue: fromStatus,
+        newValue: newStatus,
+        actor: me,
+      }),
     ]);
     return json({ ok: true });
   }
@@ -3233,7 +4469,7 @@ export async function handle(request, env) {
     const iid = parseInt(invMatch[1]);
     if (request.method === 'GET') {
       const row = await env.DB.prepare(
-        'SELECT i.*, u.full_name, u.employee_code, u.department, u.position, u.bank_account, u.bank_name FROM invoices i JOIN users u ON i.user_id=u.id WHERE i.id=?'
+        'SELECT i.*, u.full_name, u.employee_code, u.department, u.position, u.contract_type, u.bank_account, u.bank_name FROM invoices i JOIN users u ON i.user_id=u.id WHERE i.id=?'
       ).bind(iid).first();
       if (!row) return json({ error: 'Không tìm thấy' }, 404);
       if (!isManager && row.user_id !== me.id) return json({ error: 'Không có quyền' }, 403);
@@ -3613,7 +4849,9 @@ export async function handle(request, env) {
   if (path === '/api/payroll' && request.method === 'GET') {
     if (!isManager) return json({ error: 'Không có quyền' }, 403);
     const month = url.searchParams.get('month') || new Date().toISOString().slice(0,7);
-    const stmt = env.DB.prepare(`SELECT * FROM payroll WHERE month=?${(!isAdmin && !isHcns(me)) ? ' AND department=?' : ''} ORDER BY id DESC`);
+    const stmt = env.DB.prepare(`SELECT p.*, u.position, u.contract_type
+      FROM payroll p LEFT JOIN users u ON u.id=p.employee_id
+      WHERE p.month=?${(!isAdmin && !isHcns(me)) ? ' AND p.department=?' : ''} ORDER BY p.id DESC`);
     const { results } = (!isAdmin && !isHcns(me)) ? await stmt.bind(month, me.department).all() : await stmt.bind(month).all();
     return json({ payroll: results });
   }
@@ -3831,12 +5069,12 @@ export async function handle(request, env) {
     const b = await request.json();
     // Single row creation
     if (b.employee_name && b.month) {
-      const net = (b.base_salary||0) + (b.kpi_bonus||0) + (b.allowance||0) - (b.deduction||0);
+      const net = (b.base_salary||0) + (b.kpi_bonus||0) + (b.allowance||0) + (b.overtime_pay||0) - (b.deduction||0) - (b.tax||0) - (b.insurance||0);
       const dataStatus = Number(b.base_salary || 0) > 0 ? 'ready' : 'missing_salary_config';
       const dataWarnings = dataStatus === 'ready' ? '' : 'Thiếu cấu hình lương';
       const r = await env.DB.prepare(
-        "INSERT INTO payroll (user_id,employee_id,employee_name,employee_code,department,month,base_salary,kpi_bonus,allowance,deduction,net_salary,data_status,data_warnings,source_synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))"
-      ).bind(String(me.id), b.employee_id||null, b.employee_name, b.employee_code||'', b.department||'', b.month, b.base_salary||0, b.kpi_bonus||0, b.allowance||0, b.deduction||0, net, dataStatus, dataWarnings).run();
+        "INSERT INTO payroll (user_id,employee_id,employee_name,employee_code,department,month,base_salary,kpi_bonus,allowance,deduction,overtime_pay,tax,insurance,work_days,standard_days,note,net_salary,data_status,data_warnings,source_synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))"
+      ).bind(String(me.id), b.employee_id||null, b.employee_name, b.employee_code||'', b.department||'', b.month, b.base_salary||0, b.kpi_bonus||0, b.allowance||0, b.deduction||0, b.overtime_pay||0, b.tax||0, b.insurance||0, b.work_days||0, b.standard_days||0, b.note||'', net, dataStatus, dataWarnings).run();
       return json({ ok: true, id: r.meta.last_row_id });
     }
     // Batch creation (legacy)
@@ -3859,12 +5097,12 @@ export async function handle(request, env) {
     if (request.method === 'PUT') {
       if (!(isAdmin || isHcns(me))) return json({ error: 'Không có quyền' }, 403);
       const b = await request.json();
-      const net = (b.base_salary||0) + (b.kpi_bonus||0) + (b.allowance||0) - (b.deduction||0);
+      const net = (b.base_salary||0) + (b.kpi_bonus||0) + (b.allowance||0) + (b.overtime_pay||0) - (b.deduction||0) - (b.tax||0) - (b.insurance||0);
       const dataStatus = Number(b.base_salary || 0) > 0 ? 'ready' : 'missing_salary_config';
       const dataWarnings = dataStatus === 'ready' ? '' : 'Thiếu cấu hình lương';
       await env.DB.prepare(
-        "UPDATE payroll SET employee_name=?,employee_code=?,department=?,month=?,base_salary=?,kpi_bonus=?,allowance=?,deduction=?,net_salary=?,data_status=?,data_warnings=?,source_synced_at=datetime('now','localtime') WHERE id=?"
-      ).bind(b.employee_name||'', b.employee_code||'', b.department||'', b.month||'', b.base_salary||0, b.kpi_bonus||0, b.allowance||0, b.deduction||0, net, dataStatus, dataWarnings, id).run();
+        "UPDATE payroll SET employee_name=?,employee_code=?,department=?,month=?,base_salary=?,kpi_bonus=?,allowance=?,deduction=?,overtime_pay=?,tax=?,insurance=?,work_days=?,standard_days=?,note=?,net_salary=?,data_status=?,data_warnings=?,source_synced_at=datetime('now','localtime') WHERE id=?"
+      ).bind(b.employee_name||'', b.employee_code||'', b.department||'', b.month||'', b.base_salary||0, b.kpi_bonus||0, b.allowance||0, b.deduction||0, b.overtime_pay||0, b.tax||0, b.insurance||0, b.work_days||0, b.standard_days||0, b.note||'', net, dataStatus, dataWarnings, id).run();
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
@@ -3911,30 +5149,65 @@ export async function handle(request, env) {
     }
   }
 
+  // ── KPI TEMPLATE ────────────────────────────────────────────────────
+  if (path === '/api/kpi-templates' && request.method === 'GET') {
+    if (!isHcns(me)) return json({ error: 'Không có quyền' }, 403);
+    const { results: templates = [] } = await env.DB.prepare('SELECT * FROM kpi_templates ORDER BY id DESC').all();
+    for (const t of templates) t.items = (await env.DB.prepare('SELECT * FROM kpi_template_items WHERE template_id=? ORDER BY id').bind(t.id).all()).results || [];
+    return json({ templates });
+  }
+  if (path === '/api/kpi-templates' && request.method === 'POST') {
+    if (!isHcns(me)) return json({ error: 'Không có quyền' }, 403);
+    const b = await request.json().catch(() => ({})); const items = b.items || [];
+    const error = !String(b.name || '').trim() ? 'Cần nhập tên template' : validateKpiItems(items);
+    if (error) return json({ error }, 400);
+    const r = await env.DB.prepare('INSERT INTO kpi_templates (name,description,created_by,created_by_name) VALUES (?,?,?,?)').bind(String(b.name).trim(), String(b.description || '').trim(), me.id, me.full_name).run();
+    for (const item of items) await env.DB.prepare('INSERT INTO kpi_template_items (template_id,criterion_code,title,description,unit,target_value,weight_percent,affects_group1,requires_evidence) VALUES (?,?,?,?,?,?,?,?,?)')
+      .bind(r.meta.last_row_id, item.criterion_code, String(item.title).trim(), String(item.description || '').trim(), String(item.unit || 'đơn vị').trim(), Number(item.target_value), Number(item.weight_percent || 0), Number(item.affects_group1) === 0 ? 0 : 1, Number(item.requires_evidence) ? 1 : 0).run();
+    return json({ ok: true, id: r.meta.last_row_id });
+  }
+  const templateApplyMatch = path.match(/^\/api\/kpi-templates\/(\d+)\/apply$/);
+  if (templateApplyMatch && request.method === 'POST') {
+    if (!isHcns(me)) return json({ error: 'Không có quyền' }, 403);
+    const b = await request.json().catch(() => ({})); const templateId = parseInt(templateApplyMatch[1]); const employeeIds = [...new Set((b.employee_ids || []).map(Number).filter(Boolean))];
+    const month = parseInt(b.month), year = parseInt(b.year);
+    if (!employeeIds.length || !month || !year) return json({ error: 'Cần chọn nhân viên và kỳ KPI' }, 400);
+    const { results: items = [] } = await env.DB.prepare('SELECT * FROM kpi_template_items WHERE template_id=? ORDER BY id').bind(templateId).all();
+    const error = validateKpiItems(items); if (error) return json({ error }, 400);
+    const created = [], skipped = [];
+    for (const employeeId of employeeIds) {
+      const employee = await env.DB.prepare('SELECT id,full_name FROM users WHERE id=? AND is_active=1').bind(employeeId).first(); if (!employee) { skipped.push({ employee_id: employeeId, reason: 'Không hợp lệ' }); continue; }
+      const existing = await env.DB.prepare('SELECT status FROM employee_kpi_plans WHERE employee_id=? AND month=? AND year=?').bind(employeeId, month, year).first();
+      if (existing) { skipped.push({ employee_id: employeeId, name: employee.full_name, reason: 'Đã có KPI ' + existing.status }); continue; }
+      const plan = await env.DB.prepare('INSERT INTO employee_kpi_plans (employee_id,month,year,status,created_by,created_by_name) VALUES (?,?,?,?,?,?)').bind(employeeId, month, year, 'DRAFT', me.id, me.full_name).run();
+      for (const item of items) await env.DB.prepare('INSERT INTO employee_kpi_items (plan_id,criterion_code,title,description,unit,target_value,weight_percent,affects_group1,requires_evidence) VALUES (?,?,?,?,?,?,?,?,?)')
+        .bind(plan.meta.last_row_id, item.criterion_code, item.title, item.description, item.unit, item.target_value, item.weight_percent, item.affects_group1, Number(item.requires_evidence) ? 1 : 0).run();
+      created.push({ employee_id: employeeId, name: employee.full_name });
+    }
+    return json({ ok: true, created, skipped });
+  }
+
   // ── KPI NHÂN VIÊN ───────────────────────────────────────────────────
   if (path === '/api/kpis/dashboard' && request.method === 'GET') {
     const month = parseInt(url.searchParams.get('month') || String(new Date().getMonth() + 1));
     const year = parseInt(url.searchParams.get('year') || String(new Date().getFullYear()));
     const canViewAll = isHcns(me) || isBgd(me);
     const rowsSql = canViewAll
-      ? `SELECT u.id employee_id,u.full_name,u.department,u.position,p.id plan_id,p.status,
-           (SELECT COUNT(*) FROM employee_kpi_items i WHERE i.plan_id=p.id) item_count
+      ? `SELECT u.id employee_id,u.full_name,u.department,u.position,p.id plan_id,p.status
          FROM users u LEFT JOIN employee_kpi_plans p ON p.employee_id=u.id AND p.month=? AND p.year=? WHERE u.is_active=1 ORDER BY u.full_name`
-      : `SELECT u.id employee_id,u.full_name,u.department,u.position,p.id plan_id,p.status,
-           (SELECT COUNT(*) FROM employee_kpi_items i WHERE i.plan_id=p.id) item_count
+      : `SELECT u.id employee_id,u.full_name,u.department,u.position,p.id plan_id,p.status
          FROM users u LEFT JOIN employee_kpi_plans p ON p.employee_id=u.id AND p.month=? AND p.year=? WHERE u.id=?`;
     const { results = [] } = await env.DB.prepare(rowsSql).bind(...(canViewAll ? [month, year] : [month, year, me.id])).all();
     for (const row of results) {
       row.group1_score = null;
+      row.item_count = 0;
+      if (row.plan_id) {
+        const itemCount = await env.DB.prepare('SELECT COUNT(*) AS count FROM employee_kpi_items WHERE plan_id=?').bind(row.plan_id).first();
+        row.item_count = Number(itemCount?.count || 0);
+      }
       if (row.plan_id && row.status === 'APPROVED') {
-        const { results: items = [] } = await env.DB.prepare('SELECT criterion_code,target_value,actual_value,weight_percent FROM employee_kpi_items WHERE plan_id=?').bind(row.plan_id).all();
-        if (items.length && items.every(i => i.actual_value !== null)) {
-          row.group1_score = KPI_GROUP1_CODES.reduce((sum, code) => {
-            const rs = items.filter(i => i.criterion_code === code);
-            const pct = rs.reduce((s, i) => s + Number(i.actual_value) / Number(i.target_value) * Number(i.weight_percent), 0) / 100 * 100;
-            return sum + kpiScoreForPercent(pct, KPI_GROUP1_MAX[code]);
-          }, 0);
-        }
+        const { results: items = [] } = await env.DB.prepare('SELECT * FROM employee_kpi_items WHERE plan_id=?').bind(row.plan_id).all();
+        if (items.length) row.group1_score = group1Total(items);
       }
     }
     return json({ month, year, kpis: results });
@@ -3946,6 +5219,8 @@ export async function handle(request, env) {
     if (employeeId !== me.id && !isHcns(me) && !isBgd(me)) return json({ error: 'Không có quyền' }, 403);
     const plan = await env.DB.prepare('SELECT * FROM employee_kpi_plans WHERE employee_id=? AND month=? AND year=?').bind(employeeId, month, year).first();
     const items = plan ? (await env.DB.prepare('SELECT * FROM employee_kpi_items WHERE plan_id=? ORDER BY criterion_code,id').bind(plan.id).all()).results : [];
+    await attachKpiEvidence(env, items);
+    if (plan?.status === 'APPROVED') plan.group1_total = group1Total(items);
     return json({ plan: plan || null, items: items || [] });
   }
   if (path === '/api/kpis' && request.method === 'POST') {
@@ -3957,9 +5232,30 @@ export async function handle(request, env) {
     if (plan && ['SUBMITTED','APPROVED'].includes(plan.status)) return json({ error: 'KPI đã gửi/duyệt, không thể sửa trực tiếp' }, 400);
     if (!plan) { const r = await env.DB.prepare('INSERT INTO employee_kpi_plans (employee_id,month,year,status,created_by,created_by_name) VALUES (?,?,?,?,?,?)').bind(employeeId, month, year, 'DRAFT', me.id, me.full_name).run(); plan = { id: r.meta.last_row_id }; }
     await env.DB.prepare('DELETE FROM employee_kpi_items WHERE plan_id=?').bind(plan.id).run();
-    for (const item of items) await env.DB.prepare('INSERT INTO employee_kpi_items (plan_id,criterion_code,title,description,unit,target_value,weight_percent) VALUES (?,?,?,?,?,?,?)')
-      .bind(plan.id, item.criterion_code, String(item.title).trim(), String(item.description || '').trim(), String(item.unit || 'đơn vị').trim(), Number(item.target_value), Number(item.weight_percent)).run();
+    for (const item of items) await env.DB.prepare('INSERT INTO employee_kpi_items (plan_id,criterion_code,title,description,unit,target_value,weight_percent,affects_group1,requires_evidence) VALUES (?,?,?,?,?,?,?,?,?)')
+      .bind(plan.id, item.criterion_code, String(item.title).trim(), String(item.description || '').trim(), String(item.unit || 'đơn vị').trim(), Number(item.target_value), Number(item.weight_percent || 0), Number(item.affects_group1) === 0 ? 0 : 1, Number(item.requires_evidence) ? 1 : 0).run();
     return json({ ok: true, id: plan.id });
+  }
+  const kpiEvidenceMatch = path.match(/^\/api\/kpis\/(\d+)\/evidence$/);
+  if (kpiEvidenceMatch && request.method === 'POST') {
+    if (!isHcns(me)) return json({ error: 'Chỉ HCNS/Admin được cập nhật link bằng chứng' }, 403);
+    const planId = parseInt(kpiEvidenceMatch[1]), b = await request.json().catch(() => ({}));
+    const plan = await env.DB.prepare('SELECT * FROM employee_kpi_plans WHERE id=?').bind(planId).first();
+    if (!plan) return json({ error: 'Không tìm thấy KPI' }, 404);
+    const item = await env.DB.prepare('SELECT * FROM employee_kpi_items WHERE id=? AND plan_id=?').bind(parseInt(b.item_id), planId).first();
+    if (!item) return json({ error: 'Không tìm thấy chỉ tiêu KPI' }, 404);
+    const changed = await replaceKpiEvidence(env, plan, item, b.evidence || [], me, 'hr_replace');
+    if (changed && ['SUBMITTED','APPROVED'].includes(plan.status)) await env.DB.prepare("UPDATE employee_kpi_plans SET status='RETURNED',reviewed_by=?,reviewed_by_name=?,reviewed_at=datetime('now','localtime'),review_note=?,updated_at=datetime('now','localtime') WHERE id=?")
+      .bind(me.id, me.full_name || '', 'HCNS đã cập nhật link bằng chứng, vui lòng xác nhận và gửi lại KPI.', planId).run();
+    return json({ ok: true, requires_employee_confirmation: changed && ['SUBMITTED','APPROVED'].includes(plan.status) });
+  }
+  const kpiSnapshotMatch = path.match(/^\/api\/kpis\/(\d+)\/snapshot$/);
+  if (kpiSnapshotMatch && request.method === 'GET') {
+    if (!isHcns(me)) return json({ error: 'Chỉ HCNS/Admin được in phiếu KPI' }, 403);
+    const snapshot = await env.DB.prepare('SELECT * FROM employee_kpi_approval_snapshots_v2 WHERE plan_id=? ORDER BY id DESC LIMIT 1').bind(parseInt(kpiSnapshotMatch[1])).first();
+    if (!snapshot) return json({ error: 'KPI chưa được duyệt hoặc chưa có phiếu chốt' }, 404);
+    const { results: audit = [] } = await env.DB.prepare('SELECT * FROM employee_kpi_evidence_audit WHERE plan_id=? ORDER BY created_at,id').bind(snapshot.plan_id).all();
+    return json({ snapshot: { ...snapshot, payload: JSON.parse(snapshot.snapshot_json) }, audit });
   }
   const kpiActionMatch = path.match(/^\/api\/kpis\/(\d+)\/(submit|review)$/);
   if (kpiActionMatch && request.method === 'POST') {
@@ -3968,15 +5264,50 @@ export async function handle(request, env) {
     if (!plan) return json({ error: 'Không tìm thấy KPI' }, 404);
     if (action === 'submit') {
       if (plan.employee_id !== me.id) return json({ error: 'Không có quyền' }, 403);
-      if (!['DRAFT','RETURNED'].includes(plan.status)) return json({ error: 'KPI không ở trạng thái có thể gửi' }, 400);
+      // Nhân viên có thể điều chỉnh KPI đã duyệt. Lần gửi tiếp theo phải được
+      // HCNS duyệt lại, do đó trạng thái luôn quay về SUBMITTED bên dưới.
+      if (!['DRAFT','RETURNED','APPROVED'].includes(plan.status)) return json({ error: 'KPI không ở trạng thái có thể gửi' }, 400);
       const items = b.items || []; if (!Array.isArray(items) || !items.length) return json({ error: 'Cần nhập kết quả KPI' }, 400);
-      for (const item of items) await env.DB.prepare('UPDATE employee_kpi_items SET actual_value=?, evidence_url=?, updated_at=datetime(\'now\',\'localtime\') WHERE id=? AND plan_id=?')
-        .bind(Number(item.actual_value), String(item.evidence_url || '').trim(), parseInt(item.id), planId).run();
+      for (const item of items) {
+        const current = await env.DB.prepare('SELECT * FROM employee_kpi_items WHERE id=? AND plan_id=?').bind(parseInt(item.id), planId).first();
+        if (!current) return json({ error: 'Có chỉ tiêu KPI không hợp lệ' }, 400);
+        const isText = String(current?.unit || '').toLowerCase() === 'text';
+        await env.DB.prepare('UPDATE employee_kpi_items SET actual_value=?,actual_text=?, evidence_url=?, updated_at=datetime(\'now\',\'localtime\') WHERE id=? AND plan_id=?')
+          .bind(isText ? null : Number(item.actual_value), isText ? String(item.actual_text || '').trim() : null, String(item.evidence_url || '').trim(), parseInt(item.id), planId).run();
+        await replaceKpiEvidence(env, plan, current, item.evidence || [], me, 'employee_submit');
+      }
       const { results = [] } = await env.DB.prepare('SELECT * FROM employee_kpi_items WHERE plan_id=?').bind(planId).all();
-      if (results.some(i => i.actual_value === null)) return json({ error: 'Cần nhập kết quả cho toàn bộ KPI' }, 400);
+      if (results.some(i => String(i.unit).toLowerCase() === 'text' ? !String(i.actual_text || '').trim() : i.actual_value === null)) return json({ error: 'Cần nhập kết quả cho toàn bộ KPI' }, 400);
+      for (const item of results.filter(i => Number(i.requires_evidence))) {
+        const count = await env.DB.prepare('SELECT COUNT(*) count FROM employee_kpi_evidence WHERE kpi_item_id=?').bind(item.id).first();
+        if (!Number(count?.count || 0)) return json({ error: `Chỉ tiêu “${item.title}” cần ít nhất một link bằng chứng` }, 400);
+      }
       await env.DB.prepare('UPDATE employee_kpi_plans SET status=?,submitted_at=datetime(\'now\',\'localtime\'),updated_at=datetime(\'now\',\'localtime\') WHERE id=?').bind('SUBMITTED', planId).run();
     } else {
       if (!isHcns(me)) return json({ error: 'Chỉ HCNS được duyệt KPI' }, 403);
+      if (b.approve) {
+        const { results: textItems = [] } = await env.DB.prepare("SELECT id,criterion_code FROM employee_kpi_items WHERE plan_id=? AND lower(unit)='text'").bind(planId).all();
+        const manualScores = b.manual_scores || {};
+        for (const item of textItems) {
+          const score = Number(manualScores[item.id]);
+          if (!Number.isFinite(score) || score < 0 || score > KPI_GROUP1_MAX[item.criterion_code]) return json({ error: `Điểm HCNS cho ${item.criterion_code} phải từ 0 đến ${KPI_GROUP1_MAX[item.criterion_code]}` }, 400);
+          await env.DB.prepare('UPDATE employee_kpi_items SET manual_score=? WHERE id=? AND plan_id=?').bind(score, item.id, planId).run();
+        }
+        await env.DB.prepare('UPDATE employee_kpi_items SET review_note=NULL WHERE plan_id=?').bind(planId).run();
+        const { results: approvedItems = [] } = await env.DB.prepare('SELECT * FROM employee_kpi_items WHERE plan_id=? ORDER BY criterion_code,id').bind(planId).all();
+        await attachKpiEvidence(env, approvedItems);
+        const employee = await env.DB.prepare('SELECT id,full_name,employee_code,department,position FROM users WHERE id=?').bind(plan.employee_id).first();
+        const payload = { plan: { ...plan, status: 'APPROVED', reviewed_by: me.id, reviewed_by_name: me.full_name, approved_at: new Date().toISOString() }, employee, items: approvedItems, group1_total: group1Total(approvedItems) };
+        await env.DB.prepare('INSERT INTO employee_kpi_approval_snapshots_v2 (plan_id,employee_id,month,year,snapshot_json,approved_by,approved_by_name,approved_at) VALUES (?,?,?,?,?,?,?,datetime(\'now\',\'localtime\'))')
+          .bind(planId, plan.employee_id, plan.month, plan.year, JSON.stringify(payload), me.id, me.full_name || '').run();
+      } else {
+        const itemNotes = b.item_notes || {};
+        const notes = Object.entries(itemNotes).filter(([, note]) => String(note || '').trim());
+        if (!notes.length && !String(b.note || '').trim()) return json({ error: 'Hãy ghi yêu cầu chỉnh sửa cho ít nhất một tiêu chí hoặc ghi chú chung' }, 400);
+        await env.DB.prepare('UPDATE employee_kpi_items SET review_note=NULL WHERE plan_id=?').bind(planId).run();
+        for (const [itemId, note] of notes) await env.DB.prepare('UPDATE employee_kpi_items SET review_note=? WHERE id=? AND plan_id=?')
+          .bind(String(note).trim(), parseInt(itemId), planId).run();
+      }
       const status = b.approve ? 'APPROVED' : 'RETURNED';
       await env.DB.prepare('UPDATE employee_kpi_plans SET status=?,reviewed_by=?,reviewed_by_name=?,reviewed_at=datetime(\'now\',\'localtime\'),review_note=?,updated_at=datetime(\'now\',\'localtime\') WHERE id=?')
         .bind(status, me.id, me.full_name, String(b.note || '').trim(), planId).run();
@@ -4245,9 +5576,14 @@ export async function handle(request, env) {
     if (!ev) return json({ error: 'Không tìm thấy phiếu đánh giá' }, 404);
     const allowed = ev.user_id === me.id || ev.mentor_id === me.id || ev.department_head_id === me.id || isHcns(me) || isBgd(me);
     if (!allowed) return json({ error: 'Không có quyền' }, 403);
-    const { results: history } = await env.DB.prepare('SELECT * FROM evaluation_history WHERE evaluation_id=? ORDER BY id ASC').bind(evalId).all();
-    const { results: kpi_snapshots } = await env.DB.prepare('SELECT * FROM evaluation_kpi_snapshots WHERE evaluation_id=? ORDER BY criterion_code').bind(evalId).all();
-    return json({ evaluation: ev, history, kpi_snapshots });
+    try {
+      const { results: history } = await env.DB.prepare('SELECT * FROM evaluation_history WHERE evaluation_id=? ORDER BY id ASC').bind(evalId).all();
+      const { results: kpi_snapshots } = await env.DB.prepare('SELECT * FROM evaluation_kpi_snapshots WHERE evaluation_id=? ORDER BY criterion_code').bind(evalId).all();
+      return json({ evaluation: ev, history, kpi_snapshots });
+    } catch (error) {
+      console.error('Evaluation detail load failed', { evalId, userId: me.id, message: String(error?.message || error) });
+      return json({ error: 'Không thể tải dữ liệu chi tiết của phiếu đánh giá. Vui lòng thử lại sau.', code: 'EVALUATION_DETAIL_LOAD_FAILED' }, 500);
+    }
   }
 
   const evalActionMatch = path.match(/^\/api\/evaluations\/(\d+)\/action$/);

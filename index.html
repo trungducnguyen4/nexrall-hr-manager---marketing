@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
   <title>NetViet HR – Marketing</title>
   <link rel="icon" type="image/png" href="/favicon.png?v=20260722-netviettv"/>
-  <link rel="stylesheet" href="/styles/main.css?v=20260728-private-documents"/>
+  <link rel="stylesheet" href="/styles/main.css?v=20260730-payslip-detail-v1"/>
 </head>
 <body>
 
@@ -64,6 +64,9 @@
       <a href="#/dashboard" class="nav-item" data-nav="dashboard">
         <span class="nav-icon">🏠</span><span>Dashboard</span>
       </a>
+      <a href="#/notifications" class="nav-item" data-nav="notifications">
+        <span class="nav-icon" data-icon="bell"></span><span>Thông báo</span>
+      </a>
 
       <!-- HR Section -->
       <div class="nav-section-label">Nhân sự</div>
@@ -111,7 +114,7 @@
         <span class="nav-icon">⚙️</span><span>Cài đặt</span>
       </a>
       <a href="#/db-admin" class="nav-item hidden" data-nav="db-admin" id="db-admin-nav-item">
-        <span class="nav-icon">???</span><span>Database Admin</span>
+        <span class="nav-icon">🗂️</span><span>Database Admin</span>
       </a>
     </nav>
 
@@ -135,6 +138,9 @@
         <div id="header-date" class="header-date"></div>
         <div id="header-clock" class="header-clock"></div>
       </div>
+      <button id="employee-alert-button" class="header-alert-button hidden" aria-label="Mở trung tâm thông báo">
+        <span id="employee-alert-icon"></span><span id="employee-alert-count" class="hidden">0</span>
+      </button>
       <button id="header-av-btn" class="avatar-btn" aria-label="Tài khoản">
         <div id="header-av" class="avatar avatar-sm"></div>
       </button>
@@ -170,6 +176,6 @@
 <!-- ═══════════════════ TOAST ═══════════════════ -->
 <div id="toast-container" aria-live="polite"></div>
 
-<script type="module" src="/src/app.js?v=20260728-private-documents"></script>
+<script type="module" src="/src/app.js?v=20260730-payslip-detail-v2"></script>
 </body>
 </html>

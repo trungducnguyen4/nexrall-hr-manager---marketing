@@ -1,4 +1,5 @@
 import { esc, lifecycleBadge } from '../utils.js';
+import { api } from '../api.js';
 
 const quickActions = [
   ['#/attendance', 'clock3', 'Chấm công', 'lavender'],
@@ -50,7 +51,7 @@ export async function renderDashboard(el, me) {
 
         <div class="dash-bottom-grid">
           <article class="reference-panel"><div class="reference-panel-head"><h2><span data-icon="calendarDays"></span> Lịch làm việc</h2><span class="date-range">28/07 - 03/08/2026</span><a href="#/tasks">Xem tất cả <span data-icon="arrowRight"></span></a></div><div class="reference-empty">Tuần này chưa có lịch làm việc được lên kế hoạch.</div></article>
-          <article class="reference-panel"><div class="reference-panel-head"><h2><span data-icon="bell"></span> Thông báo</h2><a href="#/settings">Xem tất cả <span data-icon="arrowRight"></span></a></div><div class="reference-empty">Không có thông báo mới</div></article>
+          <article class="reference-panel"><div class="reference-panel-head"><h2><span data-icon="bell"></span> Thông báo</h2><a href="#/notifications">Xem tất cả <span data-icon="arrowRight"></span></a></div><div id="dashboard-notifications" class="reference-empty">Đang tải thông báo...</div></article>
         </div>
       </div>
 
@@ -59,4 +60,19 @@ export async function renderDashboard(el, me) {
         <footer>Cập nhật: 29/07/2026</footer>
       </aside>
     </section>`;
+
+  const notificationHost = document.getElementById('dashboard-notifications');
+  try {
+    const data = await api.getNotifications({ window: 30, page: 1, page_size: 10 });
+    const items = (data.notifications || []).slice(0, 3);
+    if (!notificationHost) return;
+    notificationHost.className = items.length ? 'reference-notification-list' : 'reference-empty';
+    notificationHost.innerHTML = items.length ? items.map(item => `
+      <a href="${esc(item.action_url || '#/notifications')}" class="reference-notification-item">
+        <span class="${esc(item.severity || 'info')}"></span>
+        <div><strong>${esc(item.title || 'Thông báo')}</strong><small>${esc(item.employee_name || item.message || '')}</small></div>
+      </a>`).join('') : 'Không có thông báo cần xử lý';
+  } catch (_) {
+    if (notificationHost) notificationHost.textContent = 'Không thể tải thông báo';
+  }
 }

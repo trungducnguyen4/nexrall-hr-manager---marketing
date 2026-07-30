@@ -121,6 +121,34 @@ async function uploadFile(path, file) {
   return data;
 }
 
+async function uploadForm(path, fields = {}, file = null) {
+  const form = new FormData();
+  Object.entries(fields).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') form.append(key, value);
+  });
+  if (file) form.append('file', file);
+  const h = {};
+  if (_token) h['X-Auth-Token'] = _token;
+  const res = await fetch(apiUrl(path), { method: 'POST', headers: h, body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.error || 'Không thể tải tệp lên'), { status: res.status, data });
+  return data;
+}
+
+async function fetchBlob(path) {
+  const h = {};
+  if (_token) h['X-Auth-Token'] = _token;
+  const res = await fetch(apiUrl(path), { headers: h });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw Object.assign(new Error(data.error || 'Không thể tải dữ liệu'), { status: res.status, data });
+  }
+  return {
+    blob: await res.blob(),
+    filename: decodeURIComponent((res.headers.get('Content-Disposition') || '').match(/filename\*=UTF-8''([^;]+)/i)?.[1] || ''),
+  };
+}
+
 // Cached GET — returns cached value immediately if fresh, else fetches.
 // If stale but present: returns stale data instantly AND kicks off bg refresh.
 async function cachedGet(path) {
@@ -172,6 +200,7 @@ export const api = {
   get:    (path) => cachedGet(path),
   post:   (path, body) => req('POST', path, body),
   put:    (path, body) => req('PUT', path, body),
+  patch:  (path, body) => req('PATCH', path, body),
   delete: (path) => req('DELETE', path),
 
   // Auth (never cached)
@@ -184,6 +213,34 @@ export const api = {
   // Users — user records are JOINed into attendance, tasks, and invoices
   // (full_name, department, position), so writes must cross-invalidate those caches too.
   getUsers:   () => cachedGet('/api/users'),
+  getEmployeeDirectory: (params = {}) => {
+    const q = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== '' && value !== null && value !== undefined)).toString();
+    return req('GET', '/api/users/directory' + (q ? '?' + q : ''));
+  },
+  getEmployeeProfile: (id) => req('GET', `/api/users/${id}/profile`),
+  updateEmployeeProfile: (id, data) =>
+    req('PATCH', `/api/users/${id}/profile`, data).then(r => { inv('/api/users', '/api/employees', '/api/attendance', '/api/tasks', '/api/invoices'); return r; }),
+  getEmployeeTimeline: (id) => req('GET', `/api/users/${id}/timeline`),
+  getEmployeeAudit: (id, params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return req('GET', `/api/users/${id}/audit` + (q ? '?' + q : ''));
+  },
+  getEmployeeDocuments: (id) => req('GET', `/api/users/${id}/documents`),
+  uploadEmployeeDocument: (id, data, file) =>
+    uploadForm(`/api/users/${id}/documents`, data, file).then(r => { inv('/api/users'); return r; }),
+  deleteEmployeeDocument: (id, documentId) =>
+    req('DELETE', `/api/users/${id}/documents/${documentId}`).then(r => { inv('/api/users'); return r; }),
+  getEmployeeDocumentBlob: (id, documentId, disposition = 'inline') =>
+    fetchBlob(`/api/users/${id}/documents/${documentId}?disposition=${encodeURIComponent(disposition)}`),
+  getEmployeeAlerts: (windowDays = 30) => req('GET', `/api/users/alerts?window=${encodeURIComponent(windowDays)}`),
+  getNotifications: (params = {}) => {
+    const q = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== '' && value !== null && value !== undefined)).toString();
+    return req('GET', '/api/notifications' + (q ? '?' + q : ''));
+  },
+  exportEmployeeDirectory: (params = {}) => {
+    const q = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== '' && value !== null && value !== undefined)).toString();
+    return fetchBlob('/api/users/export.xls' + (q ? '?' + q : ''));
+  },
   createUser: (d) => req('POST', '/api/users', d).then(r => { inv('/api/users', '/api/employees'); return r; }),
   updateUser: (id, d) => req('PUT', `/api/users/${id}`, d).then(r => { inv('/api/users', '/api/employees', '/api/attendance', '/api/tasks', '/api/invoices'); return r; }),
   uploadUserDocument: (id, kind, file) => uploadFile(`/api/users/${id}/documents/${kind}`, file).then(r => { inv('/api/users'); return r; }),

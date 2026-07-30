@@ -1,5 +1,6 @@
 import { api } from '../api.js?v=20260722-payroll-export-ux';
 import { esc, fmtMoney, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js?v=20260722-payroll-export-ux';
+import { payslipDetailHTML, hydratePayslipAttendance, preparePayslipModal } from './payslip-detail.js';
 
 function formatMonth(month) {
   if (!/^\d{4}-\d{2}$/.test(month || '')) return month || '';
@@ -355,7 +356,7 @@ export async function renderPayroll(el, me) {
               ${pageData.rows.map(p => {
                 const net = (p.base_salary || 0) + (p.kpi_bonus || 0) + (p.allowance || 0) - (p.deduction || 0);
                 return `
-                  <tr>
+                  <tr class="payroll-row" data-pid="${p.id}" tabindex="0" role="button" aria-label="Mở phiếu lương của ${esc(p.employee_name || 'nhân viên')}">
                     <td>
                       <span style="font-weight:600;">${esc(p.employee_name || '—')}</span><br>
                       <span style="font-size:11px;color:var(--text-3);">${esc(p.employee_code || '')}</span><br>
@@ -381,13 +382,15 @@ export async function renderPayroll(el, me) {
       `;
 
       tableEl.querySelectorAll('.pay-edit').forEach(btn => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', event => {
+          event.stopPropagation();
           const p = payrolls.find(x => x.id === parseInt(btn.dataset.pid));
           if (p) openPayrollLineForm(p, loadPayroll, month);
         });
       });
       tableEl.querySelectorAll('.pay-del').forEach(btn => {
-        btn.addEventListener('click', async () => {
+        btn.addEventListener('click', async event => {
+          event.stopPropagation();
           if (!confirm('Xóa dòng lương này?')) return;
           try {
             await api.deletePayroll(btn.dataset.pid);
@@ -395,6 +398,23 @@ export async function renderPayroll(el, me) {
             loadPayroll();
           } catch (e) {
             toast(e.message, 'error');
+          }
+        });
+      });
+      tableEl.querySelectorAll('.payroll-row').forEach(row => {
+        const open = () => {
+          const payroll = payrolls.find(item => item.id === Number(row.dataset.pid));
+          if (!payroll) return;
+          openModal('Chi tiết phiếu lương', payslipDetailHTML(payroll, { source: 'payroll' }), '<button class="btn-secondary w-full" id="payslip-close">Đóng</button>');
+          preparePayslipModal();
+          document.getElementById('payslip-close')?.addEventListener('click', closeModal);
+          hydratePayslipAttendance();
+        };
+        row.addEventListener('click', open);
+        row.addEventListener('keydown', event => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            open();
           }
         });
       });

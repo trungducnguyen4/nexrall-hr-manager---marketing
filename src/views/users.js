@@ -1,389 +1,812 @@
 import { api } from '../api.js';
-import { esc, roleBadge, setAvatar, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtMoney, initials, avatarColor, DEPT_CODE, lifecycleBadge, LIFECYCLE_STATUSES, noop, safeCb, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js';
+import {
+  esc, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtMoney, fmtDate,
+  fmtDateTime, initials, avatarColor, lifecycleBadge, LIFECYCLE_STATUSES, safeCb,
+} from '../utils.js';
+import { icon } from '../icons.js';
+import { navigate, invalidateView } from '../app.js';
 
-// Preview-only: mirrors server's nextEmployeeCode() logic (server always re-computes
-// and confirms the official code on save; this is just live UI feedback).
-function previewEmployeeCode(allUsers, type, department) {
-  const deptCode = DEPT_CODE[department] || 'KHAC';
-  if (!type || !department) return '';
-  const prefix = `${type}-${deptCode}-`;
-  let maxSeq = 0;
-  (allUsers||[]).forEach(u => {
-    const code = String(u.employee_code||'');
-    if (code.startsWith(prefix)) {
-      const n = parseInt(code.slice(prefix.length), 10);
-      if (!isNaN(n)) maxSeq = Math.max(maxSeq, n);
+const FIELD_LABELS = {
+  full_name: 'Họ và tên', email: 'Email', phone: 'Số điện thoại', birth_date: 'Ngày sinh',
+  gender: 'Giới tính', national_id: 'Số CCCD', national_id_expiry_date: 'Hạn CCCD',
+  home_address: 'Địa chỉ liên hệ', school_name: 'Trường học',
+  emergency_contact_name: 'Người liên hệ khẩn cấp', emergency_contact_phone: 'SĐT khẩn cấp',
+  employee_type: 'Loại nhân sự', position: 'Vị trí', department: 'Phòng ban',
+  direct_manager_id: 'Quản lý trực tiếp', work_location: 'Địa điểm làm việc',
+  contract_type: 'Loại hợp đồng', hire_date: 'Ngày vào làm',
+  contract_start_date: 'Ngày bắt đầu hợp đồng', contract_end_date: 'Ngày hết hạn hợp đồng',
+  contract_signed_date: 'Ngày ký hợp đồng', probation_end_date: 'Ngày kết thúc thử việc',
+  official_date: 'Ngày chính thức', termination_date: 'Ngày nghỉ việc',
+  salary: 'Lương cơ bản', allowance: 'Phụ cấp', insurance_salary: 'Lương đóng BHXH',
+  dependent_count: 'Số người phụ thuộc', bank_account: 'Số tài khoản', bank_name: 'Ngân hàng',
+  bank_account_holder: 'Chủ tài khoản', tax_code: 'Mã số thuế',
+  social_insurance_number: 'Số BHXH', insurance_hospital: 'Nơi đăng ký KCB BHYT',
+  lifecycle_status: 'Trạng thái nhân sự',
+};
+
+const REQUIRED_PROFILE_FIELDS = [
+  'full_name', 'email', 'phone', 'birth_date', 'national_id', 'home_address',
+  'position', 'department', 'direct_manager_id', 'work_location', 'contract_type', 'hire_date',
+];
+
+const TAB_ITEMS = [
+  ['overview', 'Tổng quan'],
+  ['employment', 'Công việc & hợp đồng'],
+  ['compensation', 'Lương & BHXH'],
+  ['documents', 'Tài liệu'],
+  ['timeline', 'Timeline'],
+  ['audit', 'Nhật ký'],
+];
+
+function isHr(user) {
+  return user?.role === 'admin' || user?.department === 'Phòng HCNS';
+}
+
+function avatarMarkup(user, size = 'md') {
+  const fallback = `<span class="avatar avatar-${size}" style="background:${esc(user.avatar_color || avatarColor(user.full_name))}">${esc(user.avatar_initials || initials(user.full_name))}</span>`;
+  if (!user.avatar_url) return fallback;
+  return `<span class="employee-avatar-wrap">${fallback}<img class="employee-avatar-img avatar-${size}" src="${esc(user.avatar_url)}" alt="Ảnh đại diện ${esc(user.full_name)}" loading="lazy" onerror="this.remove()"/></span>`;
+}
+
+function valueOrEmpty(value, formatter = null) {
+  if (value === null || value === undefined || value === '') return '<span class="profile-empty-value">Chưa cập nhật</span>';
+  return esc(formatter ? formatter(value) : value);
+}
+
+function downloadBlob(blob, filename) {
+  const href = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = href;
+  link.download = filename || 'download';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 1000);
+}
+
+function detailItem(label, value, formatter = null) {
+  return `<div class="employee-detail-item"><dt>${esc(label)}</dt><dd>${valueOrEmpty(value, formatter)}</dd></div>`;
+}
+
+function profileCompletion(user) {
+  const filled = REQUIRED_PROFILE_FIELDS.filter(field => user[field] !== null && user[field] !== undefined && String(user[field]).trim() !== '').length;
+  return Math.round((filled / REQUIRED_PROFILE_FIELDS.length) * 100);
+}
+
+function bindUnsavedWarning(cancelButtonId) {
+  const modalBody = document.getElementById('modal-body');
+  const closeButton = document.getElementById('modal-close');
+  const cancelButton = document.getElementById(cancelButtonId);
+  let dirty = false;
+  let committed = false;
+  const markDirty = () => { dirty = true; };
+  const beforeUnload = event => {
+    if (!dirty || committed) return;
+    event.preventDefault();
+    event.returnValue = '';
+  };
+  const cleanup = () => {
+    modalBody?.removeEventListener('input', markDirty);
+    modalBody?.removeEventListener('change', markDirty);
+    closeButton?.removeEventListener('click', confirmClose, true);
+    cancelButton?.removeEventListener('click', confirmClose, true);
+    window.removeEventListener('beforeunload', beforeUnload);
+  };
+  const confirmClose = event => {
+    if (dirty && !committed && !confirm('Bạn có thay đổi chưa lưu. Bạn có chắc muốn đóng?')) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
     }
-  });
-  return prefix + String(maxSeq + 1).padStart(3, '0');
+    cleanup();
+  };
+  modalBody?.addEventListener('input', markDirty);
+  modalBody?.addEventListener('change', markDirty);
+  closeButton?.addEventListener('click', confirmClose, true);
+  cancelButton?.addEventListener('click', confirmClose, true);
+  window.addEventListener('beforeunload', beforeUnload);
+  return {
+    commit() {
+      committed = true;
+      cleanup();
+    },
+  };
 }
 
-// HCNS (Phòng HCNS) and Ban Giám Đốc are DEPARTMENTS (not roles) that may edit lifecycle status.
-function isHrOrBod(u) {
-  return u.role === 'admin' || u.department === 'Phòng HCNS' || u.department === 'Ban Giám Đốc';
+export async function renderUsers(el, me, route = {}) {
+  const employeeId = Number(route.segments?.[1] || 0);
+  if (employeeId) return renderEmployeeProfile(el, me, employeeId, route);
+  return renderEmployeeDirectory(el, me);
 }
 
-export async function renderUsers(el, me) {
-  const isAdmin = me.role === 'admin';
-  const isManager = me.role === 'manager' || isAdmin;
-  if (!isManager) { el.innerHTML = `<div class="empty-state"><div class="empty-icon">🔒</div><div class="empty-text">Bạn không có quyền truy cập</div></div>`; return; }
+async function renderEmployeeDirectory(el, me) {
+  const canOpen = me.role === 'admin' || me.role === 'manager' || me.department === 'Phòng HCNS';
+  if (!canOpen) {
+    el.innerHTML = emptyHTML('', 'Bạn không có quyền truy cập danh sách nhân viên');
+    return;
+  }
+
+  const state = {
+    search: '', department: '', status: '', contract_type: '', position: '',
+    page: 1, page_size: 20, loading: false, request: 0,
+  };
+  let searchTimer = null;
+  let filterOptions = { departments: [], positions: [], contract_types: [], statuses: [] };
 
   el.innerHTML = `
-    <div class="page-header users-reference-head" style="display:flex;align-items:center;justify-content:space-between;">
-      <div>
-        <div class="page-title">👥 Nhân viên</div>
-        <div class="page-sub">Quản lý tài khoản nhân viên</div>
+    <section class="employee-directory">
+      <header class="employee-page-header">
+        <div>
+          <p class="employee-page-kicker">Quản lý nhân sự</p>
+          <h1>Hồ sơ nhân viên</h1>
+          <p>Theo dõi thông tin cá nhân, hợp đồng, lương và hồ sơ đính kèm.</p>
+        </div>
+        <div class="employee-header-actions">
+          ${isHr(me) ? `<button class="btn-secondary" id="employee-export">${icon('arrowDown', 'sm')} Xuất Excel</button>` : ''}
+          ${isHr(me) ? `<button class="btn-primary" id="employee-create">${icon('plus', 'sm')} Thêm nhân viên</button>` : ''}
+        </div>
+      </header>
+      <div class="employee-toolbar" aria-label="Tìm kiếm và lọc nhân viên">
+        <label class="employee-search">
+          <span class="sr-only">Tìm kiếm nhân viên</span>
+          ${icon('search', 'sm')}
+          <input id="employee-search" type="search" placeholder="Tìm theo tên, mã, email, phòng ban hoặc vị trí" autocomplete="off"/>
+        </label>
+        <select id="employee-filter-department" aria-label="Lọc theo phòng ban"><option value="">Tất cả phòng ban</option></select>
+        <select id="employee-filter-status" aria-label="Lọc theo trạng thái"><option value="">Tất cả trạng thái</option></select>
+        <select id="employee-filter-contract" aria-label="Lọc theo loại hợp đồng"><option value="">Tất cả hợp đồng</option></select>
+        <select id="employee-filter-position" aria-label="Lọc theo vị trí"><option value="">Tất cả vị trí</option></select>
+        <button class="btn-secondary btn-sm" id="employee-filter-reset">${icon('refreshCw', 'sm')} Xóa lọc</button>
       </div>
-      ${isAdmin ? `<button id="btn-new-user" class="btn-primary btn-sm">+ Thêm</button>` : ''}
-    </div>
+      <div id="employee-directory-result">${loadingHTML()}</div>
+    </section>`;
 
-    <div class="search-bar"><input type="text" id="user-search" placeholder="Tìm kiếm nhân viên..."/></div>
-    <div class="filter-bar" id="user-dept-filter">
-      <span class="filter-chip active" data-dept="">Tất cả</span>
-    </div>
-    <div id="user-list">${loadingHTML()}</div>
-  `;
+  const optionHtml = (values, selected) => values.map(value =>
+    `<option value="${esc(value)}" ${value === selected ? 'selected' : ''}>${esc(value)}</option>`
+  ).join('');
 
-  let allUsers = [];
-  let allDepartments = [];
-  let currentPage = 1;
-
-  async function loadUsers() {
-    const listEl = document.getElementById('user-list');
-    if (!listEl) return;
-    listEl.innerHTML = loadingHTML();
-    try {
-      const [usersRes, deptsRes] = await Promise.allSettled([api.getUsers(), api.getDepartments()]);
-      if (usersRes.status === 'rejected') throw usersRes.reason;
-      allUsers = usersRes.value.users || [];
-      allDepartments = deptsRes.status === 'fulfilled' ? (deptsRes.value.departments || []) : [];
-      // Populate dept filter
-      const depts = [...new Set([
-        ...allDepartments.map(d => d.name).filter(Boolean),
-        ...allUsers.map(u => u.department).filter(Boolean),
-      ])];
-      const filterBar = document.getElementById('user-dept-filter');
-      filterBar.innerHTML = '<span class="filter-chip active" data-dept="">Táº¥t cáº£</span>';
-      depts.forEach(d => {
-        const chip = document.createElement('span');
-        chip.className = 'filter-chip';
-        chip.dataset.dept = d;
-        chip.textContent = d;
-        filterBar.appendChild(chip);
-      });
-      renderList();
-    } catch(e) { listEl.innerHTML = emptyHTML('⚠️', e.message); }
+  function syncFilterOptions() {
+    const definitions = [
+      ['employee-filter-department', 'Tất cả phòng ban', filterOptions.departments, state.department],
+      ['employee-filter-status', 'Tất cả trạng thái', filterOptions.statuses, state.status],
+      ['employee-filter-contract', 'Tất cả hợp đồng', filterOptions.contract_types, state.contract_type],
+      ['employee-filter-position', 'Tất cả vị trí', filterOptions.positions, state.position],
+    ];
+    definitions.forEach(([id, label, values, selected]) => {
+      const select = document.getElementById(id);
+      if (select) select.innerHTML = `<option value="">${label}</option>${optionHtml(values, selected)}`;
+    });
   }
 
-  function renderList() {
-    const listEl = document.getElementById('user-list');
-    if (!listEl) return;
-    const search = document.getElementById('user-search')?.value || '';
-    const activeDept = document.querySelector('#user-dept-filter .filter-chip.active')?.dataset.dept || '';
-    let users = filterByDepartment(allUsers, activeDept, ['department']);
-    users = filterBySearch(users, search, ['full_name', 'email', 'employee_code']);
-    if (!users.length) { listEl.innerHTML = emptyHTML('👥', 'Không tìm thấy nhân viên'); return; }
-    const pageData = paginateRows(users, currentPage);
-    currentPage = pageData.page;
-    listEl.innerHTML = pageData.rows.map(u => `
-      <div class="list-item user-reference-row" data-uid="${u.id}" style="${!u.is_active?'opacity:.55':''}">
-        <div class="avatar avatar-md" style="background:${esc(u.avatar_color||avatarColor(u.full_name))}">${esc(u.avatar_initials||initials(u.full_name))}</div>
-        <div class="list-item-content user-reference-identity">
-          <div class="list-item-title">${esc(u.full_name)}</div>
-          <div class="list-item-sub">${esc(u.position||u.department||'')} · ${esc(u.employee_code||'')}</div>
-          <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;">${roleBadge(u.role)}${lifecycleBadge(u.lifecycle_status)}</div>
-        </div>
-        <div class="user-reference-contact">
-          <div style="font-size:12px;color:var(--text-2);margin-bottom:4px;">${esc(u.email)}</div>
-          <span class="badge ${u.is_active ? 'badge-success' : 'badge-gray'}" style="font-size:10px;">${u.is_active?'✅ Hoạt động':'⛔ Khóa'}</span>
-        </div>
+  async function loadDirectory() {
+    const result = document.getElementById('employee-directory-result');
+    if (!result) return;
+    const requestId = ++state.request;
+    state.loading = true;
+    result.setAttribute('aria-busy', 'true');
+    if (!result.querySelector('.employee-data-table')) result.innerHTML = loadingHTML();
+    try {
+      const response = await api.getEmployeeDirectory(state);
+      if (requestId !== state.request || !result.isConnected) return;
+      filterOptions = response.filter_options || filterOptions;
+      syncFilterOptions();
+      renderRows(response.users || [], response.pagination || {});
+    } catch (error) {
+      if (requestId === state.request) result.innerHTML = emptyHTML('', error.message, 'Thử tải lại trang hoặc kiểm tra quyền truy cập.');
+    } finally {
+      if (requestId === state.request) {
+        state.loading = false;
+        result.removeAttribute('aria-busy');
+      }
+    }
+  }
+
+  function renderRows(users, pagination) {
+    const result = document.getElementById('employee-directory-result');
+    if (!result) return;
+    if (!users.length) {
+      result.innerHTML = emptyHTML('', 'Không tìm thấy nhân viên', 'Hãy thay đổi từ khóa hoặc bộ lọc.');
+      return;
+    }
+    result.innerHTML = `
+      <div class="employee-table-wrap">
+        <table class="employee-data-table">
+          <thead><tr>
+            <th>Nhân viên</th><th>Loại nhân sự</th><th>Phòng ban</th><th>Vị trí</th>
+            <th>Hợp đồng</th><th>Trạng thái</th><th><span class="sr-only">Mở hồ sơ</span></th>
+          </tr></thead>
+          <tbody>${users.map(user => `
+            <tr data-user-id="${user.id}" tabindex="0" role="link" aria-label="Mở hồ sơ ${esc(user.full_name)}">
+              <td data-label="Nhân viên">
+                <div class="employee-table-person">${avatarMarkup(user)}
+                  <div><strong>${esc(user.full_name)}</strong><span>${esc(user.employee_code || '')}<br/>${esc(user.email || '')}</span></div>
+                </div>
+              </td>
+              <td data-label="Loại nhân sự"><span class="employee-type-badge">${user.employee_type === 'TTS' ? 'Thực tập sinh' : 'Nhân viên'}</span></td>
+              <td data-label="Phòng ban">${valueOrEmpty(user.department)}</td>
+              <td data-label="Vị trí">${valueOrEmpty(user.position)}</td>
+              <td data-label="Hợp đồng"><strong class="employee-cell-primary">${valueOrEmpty(user.contract_type)}</strong>${user.contract_end_date ? `<span class="employee-cell-secondary">Đến ${esc(fmtDate(user.contract_end_date))}</span>` : ''}</td>
+              <td data-label="Trạng thái">${lifecycleBadge(user.lifecycle_status)}</td>
+              <td class="employee-row-action">${icon('arrowRight', 'sm')}</td>
+            </tr>`).join('')}</tbody>
+        </table>
       </div>
-    `).join('') + paginationHTML(pageData);
-    listEl.querySelectorAll('.list-item').forEach(item => {
-      item.addEventListener('click', () => {
-        const user = allUsers.find(u => u.id === parseInt(item.dataset.uid));
-        if (user) openUserDetail(user, me, loadUsers, allDepartments, allUsers);
+      <footer class="employee-pagination">
+        <span>${pagination.total || 0} nhân sự, trang ${pagination.page || 1}/${pagination.pages || 1}</span>
+        <div>
+          <button class="btn-secondary btn-sm" id="employee-prev" ${(pagination.page || 1) <= 1 ? 'disabled' : ''}>Trước</button>
+          <button class="btn-secondary btn-sm" id="employee-next" ${(pagination.page || 1) >= (pagination.pages || 1) ? 'disabled' : ''}>Sau</button>
+        </div>
+      </footer>`;
+    result.querySelectorAll('tbody tr[data-user-id]').forEach(row => {
+      const open = () => navigate(`#/users/${row.dataset.userId}`);
+      row.addEventListener('click', open);
+      row.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); }
       });
     });
-    bindPagination(listEl, page => { currentPage = page; renderList(); });
+    document.getElementById('employee-prev')?.addEventListener('click', () => { state.page--; loadDirectory(); });
+    document.getElementById('employee-next')?.addEventListener('click', () => { state.page++; loadDirectory(); });
   }
 
-  document.getElementById('user-search').addEventListener('input', () => { currentPage = 1; renderList(); });
-  document.getElementById('user-dept-filter').addEventListener('click', (e) => {
-    const chip = e.target.closest('.filter-chip');
-    if (!chip) return;
-    document.querySelectorAll('#user-dept-filter .filter-chip').forEach(c => c.classList.remove('active'));
-    chip.classList.add('active');
-    renderList();
+  document.getElementById('employee-search')?.addEventListener('input', event => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      state.search = event.target.value.trim();
+      state.page = 1;
+      loadDirectory();
+    }, 280);
   });
-
-  document.getElementById('btn-new-user')?.addEventListener('click', () => openUserForm(null, loadUsers, allUsers, allDepartments));
-
-  loadUsers();
-}
-
-function openUserDetail(user, me, onRefresh = noop, departments = [], allUsers = []) {
-  onRefresh = safeCb(onRefresh);
-  const isAdmin = me.role === 'admin';
-  const canChangeLifecycle = isHrOrBod(me);
-  openModal(user.full_name, `
-    <div class="user-profile-hero">
-      ${user.avatar_url ? `<img class="user-profile-photo" src="${esc(user.avatar_url)}" alt="Ảnh ${esc(user.full_name)}"/>` : `<div class="avatar avatar-lg" style="background:${esc(user.avatar_color||'#4F46E5')};margin:0 auto 10px;">${esc(user.avatar_initials||initials(user.full_name))}</div>`}
-      <div style="font-size:16px;font-weight:800;">${esc(user.full_name)}</div>
-      <div style="font-size:12px;color:var(--text-2);">${esc(user.position||'')} · ${esc(user.department||'')}</div>
-    </div>
-    <div class="detail-grid">
-      <div class="detail-item"><div class="detail-label">Mã NV</div><div class="detail-val">${esc(user.employee_code)}</div></div>
-      <div class="detail-item"><div class="detail-label">Email</div><div class="detail-val" style="font-size:12px;word-break:break-all;">${esc(user.email)}</div></div>
-      <div class="detail-item"><div class="detail-label">Điện thoại</div><div class="detail-val">${esc(user.phone||'—')}</div></div>
-      <div class="detail-item"><div class="detail-label">Lương</div><div class="detail-val">${fmtMoney(user.salary)}</div></div>
-      <div class="detail-item"><div class="detail-label">Ngân hàng</div><div class="detail-val" style="font-size:12px;">${esc(user.bank_name||'—')}</div></div>
-      <div class="detail-item"><div class="detail-label">STK</div><div class="detail-val" style="font-size:12px;">${esc(user.bank_account||'—')}</div></div>
-      <div class="detail-item"><div class="detail-label">Vòng đời nhân sự</div><div class="detail-val">${lifecycleBadge(user.lifecycle_status)}</div></div>
-    </div>
-    <div class="user-profile-section"><h4>Thông tin cá nhân</h4><div class="detail-grid"><div class="detail-item"><div class="detail-label">Ngày sinh</div><div class="detail-val">${esc(user.birth_date||'—')}</div></div><div class="detail-item"><div class="detail-label">Giới tính</div><div class="detail-val">${esc(user.gender||'—')}</div></div><div class="detail-item"><div class="detail-label">CCCD</div><div class="detail-val">${esc(user.national_id||'—')}</div></div><div class="detail-item"><div class="detail-label">Địa chỉ</div><div class="detail-val">${esc(user.home_address||'—')}</div></div><div class="detail-item"><div class="detail-label">Liên hệ khẩn cấp</div><div class="detail-val">${esc(user.emergency_contact_name||'—')} ${user.emergency_contact_phone ? `· ${esc(user.emergency_contact_phone)}` : ''}</div></div></div></div>
-    <div class="user-profile-section"><h4>Công việc & hợp đồng</h4><div class="detail-grid"><div class="detail-item"><div class="detail-label">Quản lý trực tiếp</div><div class="detail-val">${esc(allUsers.find(u=>Number(u.id)===Number(user.direct_manager_id))?.full_name||'—')}</div></div><div class="detail-item"><div class="detail-label">Địa điểm làm việc</div><div class="detail-val">${esc(user.work_location||'—')}</div></div><div class="detail-item"><div class="detail-label">Loại hợp đồng</div><div class="detail-val">${esc(user.contract_type||user.lifecycle_status||'—')}</div></div><div class="detail-item"><div class="detail-label">Ngày ký / thời hạn</div><div class="detail-val">${esc(user.contract_signed_date||'—')} ${user.contract_end_date ? `· đến ${esc(user.contract_end_date)}` : ''}</div></div><div class="detail-item"><div class="detail-label">Ngày chính thức</div><div class="detail-val">${esc(user.official_date||'—')}</div></div><div class="detail-item"><div class="detail-label">Ngày nghỉ</div><div class="detail-val">${esc(user.termination_date||'—')}</div></div></div></div>
-    <div class="user-profile-section"><h4>Lương, ngân hàng, thuế & bảo hiểm</h4><div class="detail-grid"><div class="detail-item"><div class="detail-label">Phụ cấp / tổng thu nhập</div><div class="detail-val">${fmtMoney(user.allowance||0)} · ${fmtMoney(Number(user.salary||0)+Number(user.allowance||0))}</div></div><div class="detail-item"><div class="detail-label">Lương đóng BHXH</div><div class="detail-val">${fmtMoney(user.insurance_salary||0)}</div></div><div class="detail-item"><div class="detail-label">Chủ tài khoản</div><div class="detail-val">${esc(user.bank_account_holder||'—')}</div></div><div class="detail-item"><div class="detail-label">Mã số thuế / BHXH</div><div class="detail-val">${esc(user.tax_code||'—')} · ${esc(user.social_insurance_number||'—')}</div></div><div class="detail-item"><div class="detail-label">Nơi KCB BHYT</div><div class="detail-val">${esc(user.insurance_hospital||'—')}</div></div></div></div>
-    <div class="user-profile-section"><h4>Hồ sơ đính kèm</h4><div class="user-document-links">${[['CCCD',user.national_id_document_url],['Bằng cấp',user.degree_document_url],['Hợp đồng',user.contract_document_url],['Quyết định nhân sự',user.personnel_decision_url]].map(([label,url]) => url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${label}</a>` : `<span>${label}: Chưa có</span>`).join('')}</div></div>
-  `, `
-    <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Đóng</button>
-    ${canChangeLifecycle ? `<button class="btn-secondary" id="ud-lifecycle">🔄 Đổi trạng thái</button>` : ''}
-    ${isAdmin ? `<button class="btn-danger" id="ud-lock">${user.is_active ? '🔒 Khóa TK' : '🔓 Mở khóa'}</button>` : ''}
-    ${isAdmin ? `<button class="btn-primary" id="ud-edit">✏️ Sửa</button>` : ''}
-  `);
-  document.getElementById('modal')?.classList.add('modal--scroll-fixed', 'modal--user-detail');
-  document.getElementById('modal')?.classList.add('modal--scroll-fixed', 'modal--user-profile');
-
-  document.getElementById('ud-edit')?.addEventListener('click', () => {
-    closeModal();
-    openUserForm(user, onRefresh, allUsers, departments);
+  [
+    ['employee-filter-department', 'department'],
+    ['employee-filter-status', 'status'],
+    ['employee-filter-contract', 'contract_type'],
+    ['employee-filter-position', 'position'],
+  ].forEach(([id, field]) => document.getElementById(id)?.addEventListener('change', event => {
+    state[field] = event.target.value;
+    state.page = 1;
+    loadDirectory();
+  }));
+  document.getElementById('employee-filter-reset')?.addEventListener('click', () => {
+    Object.assign(state, { search: '', department: '', status: '', contract_type: '', position: '', page: 1 });
+    const search = document.getElementById('employee-search');
+    if (search) search.value = '';
+    syncFilterOptions();
+    loadDirectory();
   });
-  document.getElementById('ud-lock')?.addEventListener('click', async () => {
+  document.getElementById('employee-export')?.addEventListener('click', async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
     try {
-      await api.updateUser(user.id, { ...user, is_active: user.is_active ? 0 : 1 });
-      closeModal(); toast(user.is_active ? 'Đã khóa tài khoản' : 'Đã mở khóa', 'success'); onRefresh();
-    } catch(e) { toast(e.message, 'error'); }
+      const { blob, filename } = await api.exportEmployeeDirectory(state);
+      downloadBlob(blob, filename || 'danh-sach-nhan-vien.xls');
+      toast('Đã xuất danh sách nhân viên', 'success');
+    } catch (error) { toast(error.message, 'error'); }
+    finally { button.disabled = false; }
   });
-  document.getElementById('ud-lifecycle')?.addEventListener('click', () => {
-    closeModal();
-    openLifecycleForm(user, onRefresh);
-  });
-}
-
-function openLifecycleForm(user, onRefresh = noop) {
-  onRefresh = safeCb(onRefresh);
-  openModal(`Đổi trạng thái — ${user.full_name}`, `
-    <div class="field"><label>Trạng thái hiện tại</label><div style="margin:4px 0;">${lifecycleBadge(user.lifecycle_status)}</div></div>
-    <div class="field"><label>Trạng thái mới *</label>
-      <select id="lf-status">
-        ${LIFECYCLE_STATUSES.map(s => `<option value="${esc(s)}" ${user.lifecycle_status===s?'selected':''}>${esc(s)}</option>`).join('')}
-      </select>
-    </div>
-    <div class="field"><label>Lý do *</label><textarea id="lf-reason" rows="3" placeholder="Nhập lý do thay đổi trạng thái..."></textarea></div>
-  `, `
-    <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Hủy</button>
-    <button class="btn-primary" id="lf-save">Lưu</button>
-  `);
-
-  document.getElementById('lf-save').addEventListener('click', async () => {
-    const status = document.getElementById('lf-status').value;
-    const reason = document.getElementById('lf-reason').value.trim();
-    if (!reason) { toast('Vui lòng nhập lý do', 'error'); return; }
-    const btn = document.getElementById('lf-save');
-    btn.disabled = true;
+  document.getElementById('employee-create')?.addEventListener('click', async () => {
     try {
-      await api.changeLifecycleStatus(user.id, status, reason);
-      closeModal(); toast('Đã cập nhật trạng thái', 'success'); onRefresh();
-    } catch(e) { toast(e.message, 'error'); btn.disabled = false; }
+      const [people, departments] = await Promise.all([api.getUsersBasic(), api.getDepartments()]);
+      openCreateEmployee(people.users || [], departments.departments || [], () => {
+        state.page = 1;
+        loadDirectory();
+      });
+    } catch (error) { toast(error.message, 'error'); }
   });
+
+  el._cleanup = () => clearTimeout(searchTimer);
+  await loadDirectory();
 }
 
-function openUserForm(user, onRefresh = noop, allUsers = [], departments = []) {
-  onRefresh = safeCb(onRefresh);
-  const isEdit = !!user;
-  const uploadField = (valueId, fileId, label, existing, accept) => `
-    <div class="field document-upload-field">
-      <label>${label}</label>
-      <input type="hidden" id="${valueId}" value="${esc(existing || '')}"/>
-      <input type="file" id="${fileId}" accept="${accept}"/>
-      <div class="document-upload-status">${existing ? 'Đã lưu trên máy chủ · chọn tệp mới để thay thế' : 'Chưa có tệp'}</div>
-    </div>`;
-  const departmentNames = [...new Set([
-    ...departments.map(d => d.name || d).filter(Boolean),
-    ...(user?.department ? [user.department] : []),
-  ])].sort((a, b) => String(a).localeCompare(String(b), 'vi'));
-  openModal(isEdit ? 'Sửa nhân viên' : 'Thêm nhân viên', `
-    <div class="input-row">
-      <div class="field"><label>Loại nhân sự *</label>
-        <select id="uf-emptype" ${isEdit ? 'disabled' : ''}>
-          <option value="NV" ${(!user||(user.employee_type||'NV')==='NV')?'selected':''}>Nhân viên (NV)</option>
-          <option value="TTS" ${user?.employee_type==='TTS'?'selected':''}>Thực tập sinh (TTS)</option>
-        </select>
-      </div>
-      <div class="field"><label>Vai trò</label>
-        <select id="uf-role">
-          <option value="employee" ${(!user||user.role==='employee')?'selected':''}>Nhân viên</option>
-          <option value="manager" ${user?.role==='manager'?'selected':''}>Nhân sự</option>
-          <option value="admin" ${user?.role==='admin'?'selected':''}>Admin</option>
-        </select>
-      </div>
-    </div>
-    <div class="field"><label>Mã NV${!isEdit ? ' <span style="font-weight:400;color:var(--text-2);font-size:12px;">(tự động sinh khi lưu)</span>' : ''}</label><input type="text" id="uf-code" value="${esc(user?.employee_code||'')}" placeholder="-- chọn loại + phòng ban --" readonly disabled/></div>
-    <div class="field"><label>Họ tên *</label><input type="text" id="uf-name" value="${esc(user?.full_name||'')}" placeholder="Nguyễn Văn A"/></div>
-    <div class="field"><label>Email *</label><input type="email" id="uf-email" value="${esc(user?.email||'')}" placeholder="email@company.com"/></div>
-    ${!isEdit ? `<div class="field"><label>Mật khẩu</label><input type="password" id="uf-pw" placeholder="Mặc định: Pass@123"/></div>` : ''}
-    <div class="input-row">
-      <div class="field"><label>Phòng ban *</label>
-        <select id="uf-dept">
-          <option value="">-- Chọn phòng ban --</option>
-          ${departmentNames.map(d => `<option value="${esc(d)}" ${user?.department===d?'selected':''}>${esc(d)}</option>`).join('')}
-        </select>
-      </div>
-      <div class="field"><label>Vị trí</label><input type="text" id="uf-pos" value="${esc(user?.position||'')}" placeholder="Designer"/></div>
-    </div>
-    <div class="input-row">
-      <div class="field"><label>Điện thoại</label><input type="tel" id="uf-phone" value="${esc(user?.phone||'')}"/></div>
-      <div class="field"><label>Lương cơ bản</label><input type="number" id="uf-salary" value="${user?.salary||0}"/></div>
-    </div>
-    <div class="input-row">
-      <div class="field user-bank-field">
-        <label for="uf-bank">Ngân hàng</label>
-        <div class="bank-picker" id="uf-bank-picker">
-          <input type="text" id="uf-bank" value="${esc(user?.bank_name||'')}" placeholder="Tìm ngân hàng" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="uf-bank-options"/>
-          <div class="bank-picker-menu hidden" id="uf-bank-options" role="listbox" aria-label="Danh sách ngân hàng"></div>
+async function renderEmployeeProfile(el, me, employeeId, route = {}) {
+  el.innerHTML = `<section class="employee-profile-page">${loadingHTML()}</section>`;
+  let response;
+  let basicUsers = [];
+  let departments = [];
+  try {
+    const [profileResult, usersResult, departmentsResult] = await Promise.allSettled([
+      api.getEmployeeProfile(employeeId), api.getUsersBasic(), api.getDepartments(),
+    ]);
+    if (profileResult.status === 'rejected') throw profileResult.reason;
+    response = profileResult.value;
+    basicUsers = usersResult.status === 'fulfilled' ? (usersResult.value.users || []) : [];
+    departments = departmentsResult.status === 'fulfilled' ? (departmentsResult.value.departments || []) : [];
+  } catch (error) {
+    el.innerHTML = `<section class="employee-profile-page"><button class="employee-back-link" id="employee-back">${icon('arrowLeft', 'sm')} Danh sách nhân viên</button>${emptyHTML('', error.message)}</section>`;
+    document.getElementById('employee-back')?.addEventListener('click', () => navigate('#/users'));
+    return;
+  }
+
+  const user = response.user;
+  const permissions = response.permissions || {};
+  const metadata = response.metadata || {};
+  const completion = response.completion?.percent ?? (Number(me.id) === Number(user.id) ? profileCompletion(user) : null);
+  const requestedTab = String(route.segments?.[2] || 'overview');
+  const availableTabs = TAB_ITEMS.filter(([key]) => key !== 'audit' || permissions.can_view_audit)
+    .filter(([key]) => key !== 'compensation' || Object.prototype.hasOwnProperty.call(user, 'salary'))
+    .map(([key]) => key);
+  let activeTab = availableTabs.includes(requestedTab) ? requestedTab : 'overview';
+
+  el.innerHTML = `
+    <section class="employee-profile-page" id="employee-print-root">
+      <button class="employee-back-link print-hidden" id="employee-back">${icon('arrowLeft', 'sm')} Danh sách nhân viên</button>
+      <header class="employee-profile-header">
+        <div class="employee-profile-identity">
+          <div class="employee-profile-avatar">${avatarMarkup(user, 'lg')}${permissions.can_manage_documents ? `<button class="employee-avatar-edit print-hidden" id="employee-avatar-edit" aria-label="Cập nhật ảnh đại diện">${icon('pencil', 'xs')}</button>` : ''}</div>
+          <div>
+            <div class="employee-profile-meta">${esc(user.employee_code || '')} <span>${user.employee_type === 'TTS' ? 'Thực tập sinh' : 'Nhân viên'}</span></div>
+            <h1>${esc(user.full_name)}</h1>
+            <p>${esc(user.position || 'Chưa cập nhật vị trí')}<br class="profile-mobile-break"/> <span>${esc(user.department || 'Chưa cập nhật phòng ban')}</span></p>
+          </div>
         </div>
-      </div>
-      <div class="field"><label>Số TK</label><input type="text" inputmode="numeric" id="uf-acc" value="${esc(user?.bank_account||'')}" autocomplete="off"/></div>
-    </div>
-    <div class="field"><label>Màu avatar</label><input type="color" id="uf-color" value="${user?.avatar_color||'#4F46E5'}"/></div>
-    <div class="user-form-section"><h4>Thông tin cá nhân</h4><div class="input-row"><div class="field"><label>Ngày sinh</label><input type="date" id="uf-birth" value="${esc(user?.birth_date||'')}"/></div><div class="field"><label>Giới tính</label><select id="uf-gender"><option value="">-- Chọn --</option>${['Nam','Nữ','Khác'].map(v=>`<option ${user?.gender===v?'selected':''}>${v}</option>`).join('')}</select></div></div><div class="input-row"><div class="field"><label>CCCD</label><input id="uf-national-id" value="${esc(user?.national_id||'')}"/></div>${uploadField('uf-avatar-url', 'uf-avatar-file', 'Ảnh chân dung', user?.avatar_url, 'image/jpeg,image/png,image/webp')}</div><div class="field"><label>Địa chỉ</label><input id="uf-address" value="${esc(user?.home_address||'')}"/></div><div class="input-row"><div class="field"><label>Người liên hệ khẩn cấp</label><input id="uf-emergency-name" value="${esc(user?.emergency_contact_name||'')}"/></div><div class="field"><label>SĐT khẩn cấp</label><input id="uf-emergency-phone" value="${esc(user?.emergency_contact_phone||'')}"/></div></div></div>
-    <div class="user-form-section"><h4>Công việc & hợp đồng</h4><div class="input-row"><div class="field"><label>Quản lý trực tiếp</label><select id="uf-manager"><option value="">-- Chưa phân công --</option>${allUsers.filter(u=>Number(u.id)!==Number(user?.id)).map(u=>`<option value="${u.id}" ${Number(user?.direct_manager_id)===Number(u.id)?'selected':''}>${esc(u.full_name)} · ${esc(u.employee_code||'')}</option>`).join('')}</select></div><div class="field"><label>Địa điểm làm việc</label><input id="uf-location" value="${esc(user?.work_location||'')}"/></div></div><div class="input-row"><div class="field"><label>Loại hợp đồng</label><select id="uf-contract-type"><option value="">-- Chọn --</option>${['Thử việc','Cộng tác viên','Chính thức','Thực tập sinh'].map(v=>`<option ${user?.contract_type===v?'selected':''}>${v}</option>`).join('')}</select></div><div class="field"><label>Ngày ký</label><input type="date" id="uf-contract-signed" value="${esc(user?.contract_signed_date||'')}"/></div></div><div class="input-row"><div class="field"><label>Thời hạn đến</label><input type="date" id="uf-contract-end" value="${esc(user?.contract_end_date||'')}"/></div><div class="field"><label>Ngày chuyển chính thức</label><input type="date" id="uf-official-date" value="${esc(user?.official_date||'')}"/></div></div><div class="field"><label>Ngày nghỉ</label><input type="date" id="uf-termination-date" value="${esc(user?.termination_date||'')}"/></div></div>
-    <div class="user-form-section"><h4>Lương, ngân hàng, thuế & bảo hiểm</h4><div class="input-row"><div class="field"><label>Phụ cấp</label><input type="number" id="uf-allowance" value="${user?.allowance||0}"/></div><div class="field"><label>Lương đóng BHXH</label><input type="number" id="uf-insurance-salary" value="${user?.insurance_salary||0}"/></div></div><div class="field"><label>Chủ tài khoản</label><input id="uf-bank-holder" value="${esc(user?.bank_account_holder||'')}"/></div><div class="input-row"><div class="field"><label>Mã số thuế</label><input id="uf-tax-code" value="${esc(user?.tax_code||'')}"/></div><div class="field"><label>Mã số BHXH</label><input id="uf-social-insurance" value="${esc(user?.social_insurance_number||'')}"/></div></div><div class="field"><label>Nơi đăng ký KCB</label><input id="uf-insurance-hospital" value="${esc(user?.insurance_hospital||'')}"/></div></div>
-    <div class="user-form-section"><h4>Hồ sơ đính kèm</h4><div class="input-row">${uploadField('uf-doc-national', 'uf-doc-national-file', 'CCCD', user?.national_id_document_url, 'application/pdf,image/jpeg,image/png,image/webp')}${uploadField('uf-doc-degree', 'uf-doc-degree-file', 'Bằng cấp', user?.degree_document_url, 'application/pdf,image/jpeg,image/png,image/webp')}</div><div class="input-row">${uploadField('uf-doc-contract', 'uf-doc-contract-file', 'Hợp đồng', user?.contract_document_url, 'application/pdf,image/jpeg,image/png,image/webp')}${uploadField('uf-doc-decision', 'uf-doc-decision-file', 'Quyết định nhân sự', user?.personnel_decision_url, 'application/pdf,image/jpeg,image/png,image/webp')}</div></div>
-    ${isEdit ? `<div class="field" style="margin-top:4px;"><label style="display:flex;align-items:center;gap:6px;text-transform:none;font-weight:500;"><input type="checkbox" id="uf-resetpw"/> Reset mật khẩu về Pass@123</label></div>` : ''}
-  `, `
-    <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Hủy</button>
-    ${isEdit ? `<button class="btn-danger" id="uf-del">Xóa</button>` : ''}
-    <button class="btn-primary" id="uf-save">Lưu</button>
-  `);
-  document.getElementById('modal')?.classList.add('modal--scroll-fixed', 'modal--user-form');
-  document.getElementById('modal-overlay')?.classList.add('modal-overlay--desktop-centered');
+        <div class="employee-profile-actions print-hidden">
+          <button class="btn-secondary" id="employee-print">${icon('fileText', 'sm')} Xuất PDF</button>
+          ${isHr(me) ? `<button class="btn-secondary" id="employee-lifecycle">${icon('refreshCw', 'sm')} Đổi trạng thái</button>` : ''}
+        </div>
+        <div class="employee-profile-status">
+          <div>${lifecycleBadge(user.lifecycle_status)}</div>
+          ${completion === null ? '' : `<div class="employee-completion"><strong>${completion}%</strong><span>hoàn thiện hồ sơ</span></div>`}
+        </div>
+      </header>
+      <nav class="employee-profile-tabs print-hidden" aria-label="Nội dung hồ sơ">
+        ${TAB_ITEMS.filter(([key]) => availableTabs.includes(key))
+          .map(([key, label]) => `<button data-profile-tab="${key}" class="${key === activeTab ? 'active' : ''}">${esc(label)}</button>`).join('')}
+      </nav>
+      <div id="employee-profile-content"></div>
+    </section>`;
 
-  const bankInput = document.getElementById('uf-bank');
-  const bankPicker = document.getElementById('uf-bank-picker');
-  const bankOptions = document.getElementById('uf-bank-options');
-  let bankDirectory = [];
-  const renderBanks = (query = '') => {
-    if (!bankOptions || !bankInput) return;
-    const keyword = String(query).trim().toLocaleLowerCase('vi');
-    const matches = bankDirectory.filter(bank =>
-      !keyword || [bank.shortName, bank.name, bank.code, bank.bin].some(value => String(value || '').toLocaleLowerCase('vi').includes(keyword))
-    ).slice(0, 30);
-    bankOptions.innerHTML = matches.map(bank => `
-      <button type="button" class="bank-picker-option" role="option" data-bank="${esc(bank.shortName)}" aria-selected="${bankInput.value === bank.shortName}">
-        ${bank.logo ? `<img src="${esc(bank.logo)}" alt="" loading="lazy"/>` : '<span class="bank-picker-mark" aria-hidden="true">🏦</span>'}
-        <strong>${esc(bank.shortName)}</strong>
-      </button>`).join('');
-    bankOptions.classList.toggle('hidden', matches.length === 0);
-    bankInput.setAttribute('aria-expanded', matches.length ? 'true' : 'false');
-  };
-  const closeBankMenu = () => {
-    bankOptions?.classList.add('hidden');
-    bankInput?.setAttribute('aria-expanded', 'false');
-  };
-  api.getVietqrBanks().then(({ banks = [] }) => {
-    bankDirectory = banks;
-    if (document.activeElement === bankInput) renderBanks(bankInput.value);
-  }).catch(() => { bankDirectory = []; });
-  bankInput?.addEventListener('focus', () => renderBanks(bankInput.value));
-  bankInput?.addEventListener('input', () => renderBanks(bankInput.value));
-  bankInput?.addEventListener('keydown', event => { if (event.key === 'Escape') closeBankMenu(); });
-  bankOptions?.addEventListener('mousedown', event => {
-    const option = event.target.closest('.bank-picker-option');
-    if (!option || !bankInput) return;
-    event.preventDefault();
-    bankInput.value = option.dataset.bank || '';
-    closeBankMenu();
-  });
-  const dismissBankMenu = event => {
-    if (!bankPicker?.isConnected) { document.removeEventListener('mousedown', dismissBankMenu); return; }
-    if (!bankPicker.contains(event.target)) closeBankMenu();
-  };
-  document.addEventListener('mousedown', dismissBankMenu);
+  const managerName = () => basicUsers.find(item => Number(item.id) === Number(user.direct_manager_id))?.full_name || '';
 
-  function refreshCodePreview() {
-    if (isEdit) return; // existing code never changes on edit
-    const type = document.getElementById('uf-emptype').value;
-    const dept = document.getElementById('uf-dept').value;
-    document.getElementById('uf-code').value = previewEmployeeCode(allUsers, type, dept) || '';
+  function renderTab() {
+    const content = document.getElementById('employee-profile-content');
+    if (!content) return;
+    document.querySelectorAll('[data-profile-tab]').forEach(button => button.classList.toggle('active', button.dataset.profileTab === activeTab));
+    if (activeTab === 'overview') {
+      content.innerHTML = `
+        <div class="employee-profile-section-head"><div><h2>Thông tin cá nhân</h2><p>Thông tin nhận diện và liên hệ của nhân viên.</p></div>
+          ${permissions.can_edit_personal ? `<button class="btn-secondary btn-sm print-hidden" id="employee-edit-personal">${icon('pencil', 'sm')} Chỉnh sửa</button>` : ''}</div>
+        <dl class="employee-detail-grid">
+          ${detailItem('Mã nhân viên', user.employee_code)}
+          ${detailItem('Họ và tên', user.full_name)}
+          ${detailItem('Email', user.email)}
+          ${detailItem('Số điện thoại', user.phone)}
+          ${Object.prototype.hasOwnProperty.call(user, 'birth_date') ? detailItem('Ngày sinh', user.birth_date, fmtDate) : ''}
+          ${Object.prototype.hasOwnProperty.call(user, 'national_id') ? detailItem('Số CCCD', user.national_id) : ''}
+          ${Object.prototype.hasOwnProperty.call(user, 'national_id_expiry_date') ? detailItem('Hạn CCCD', user.national_id_expiry_date, fmtDate) : ''}
+          ${Object.prototype.hasOwnProperty.call(user, 'home_address') ? detailItem('Địa chỉ liên hệ', user.home_address) : ''}
+          ${user.employee_type === 'TTS' && Object.prototype.hasOwnProperty.call(user, 'school_name') ? detailItem('Trường học', user.school_name) : ''}
+          ${Object.prototype.hasOwnProperty.call(user, 'emergency_contact_name') ? detailItem('Liên hệ khẩn cấp', [user.emergency_contact_name, user.emergency_contact_phone].filter(Boolean).join(' - ')) : ''}
+        </dl>`;
+      document.getElementById('employee-edit-personal')?.addEventListener('click', () =>
+        openProfileEditor(user, 'personal', { permissions, departments, basicUsers, metadata }, refreshProfile)
+      );
+      return;
+    }
+    if (activeTab === 'employment') {
+      content.innerHTML = `
+        <div class="employee-profile-section-head"><div><h2>Công việc & hợp đồng</h2><p>Thông tin điều động, quản lý và hiệu lực hợp đồng.</p></div>
+          ${permissions.can_edit_employment ? `<button class="btn-secondary btn-sm print-hidden" id="employee-edit-employment">${icon('pencil', 'sm')} Chỉnh sửa</button>` : ''}</div>
+        <dl class="employee-detail-grid">
+          ${detailItem('Loại nhân sự', user.employee_type === 'TTS' ? 'Thực tập sinh' : 'Nhân viên')}
+          ${detailItem('Vị trí', user.position)}
+          ${detailItem('Phòng ban', user.department)}
+          ${detailItem('Quản lý trực tiếp', managerName())}
+          ${detailItem('Địa điểm làm việc', user.work_location)}
+          ${detailItem('Loại hợp đồng', user.contract_type)}
+          ${detailItem('Ngày vào làm', user.hire_date, fmtDate)}
+          ${detailItem('Ngày bắt đầu hợp đồng', user.contract_start_date, fmtDate)}
+          ${detailItem('Ngày ký hợp đồng', user.contract_signed_date, fmtDate)}
+          ${detailItem('Ngày hết hạn hợp đồng', user.contract_end_date, fmtDate)}
+          ${detailItem('Kết thúc thử việc', user.probation_end_date, fmtDate)}
+          ${detailItem('Ngày chính thức', user.official_date, fmtDate)}
+          ${user.lifecycle_status === 'Đã nghỉ' ? detailItem('Ngày nghỉ việc', user.termination_date, fmtDate) : ''}
+        </dl>`;
+      document.getElementById('employee-edit-employment')?.addEventListener('click', () =>
+        openProfileEditor(user, 'employment', { permissions, departments, basicUsers, metadata }, refreshProfile)
+      );
+      return;
+    }
+    if (activeTab === 'compensation') {
+      content.innerHTML = `
+        <div class="employee-profile-section-head"><div><h2>Lương, ngân hàng & BHXH</h2><p>Dữ liệu nhạy cảm, chỉ HCNS và Admin được cập nhật.</p></div>
+          ${permissions.can_edit_compensation ? `<button class="btn-secondary btn-sm print-hidden" id="employee-edit-compensation">${icon('pencil', 'sm')} Chỉnh sửa</button>` : ''}</div>
+        <dl class="employee-detail-grid">
+          ${detailItem('Lương cơ bản', user.salary, fmtMoney)}
+          ${detailItem('Phụ cấp', user.allowance, fmtMoney)}
+          ${detailItem('Tổng thu nhập', Number(user.salary || 0) + Number(user.allowance || 0), fmtMoney)}
+          ${detailItem('Lương đóng BHXH', user.insurance_salary, fmtMoney)}
+          ${detailItem('Số người phụ thuộc', user.dependent_count)}
+          ${detailItem('Số tài khoản', user.bank_account)}
+          ${detailItem('Ngân hàng', user.bank_name)}
+          ${detailItem('Chủ tài khoản', user.bank_account_holder)}
+          ${detailItem('Mã số thuế', user.tax_code)}
+          ${detailItem('Số BHXH', user.social_insurance_number)}
+          ${detailItem('Nơi đăng ký KCB BHYT', user.insurance_hospital)}
+        </dl>`;
+      document.getElementById('employee-edit-compensation')?.addEventListener('click', () =>
+        openProfileEditor(user, 'compensation', { permissions, departments, basicUsers, metadata }, refreshProfile)
+      );
+      return;
+    }
+    if (activeTab === 'documents') return renderDocumentsTab(content, user, permissions);
+    if (activeTab === 'timeline') return renderTimelineTab(content, user);
+    if (activeTab === 'audit') return renderAuditTab(content, user);
   }
-  document.getElementById('uf-emptype')?.addEventListener('change', refreshCodePreview);
-  document.getElementById('uf-dept').addEventListener('change', refreshCodePreview);
-  refreshCodePreview();
 
-  document.getElementById('uf-save').addEventListener('click', async () => {
-    const name = document.getElementById('uf-name').value.trim();
-    const email = document.getElementById('uf-email').value.trim();
-    const department = document.getElementById('uf-dept').value;
-    if (!name || !email || !department) { toast('Vui lòng điền đầy đủ thông tin bắt buộc', 'error'); return; }
-    const data = {
-      full_name: name, email,
-      employee_type: document.getElementById('uf-emptype').value,
-      role: document.getElementById('uf-role').value,
-      department,
-      position: document.getElementById('uf-pos').value,
-      phone: document.getElementById('uf-phone').value,
-      salary: parseFloat(document.getElementById('uf-salary').value) || 0,
-      bank_name: document.getElementById('uf-bank').value,
-      bank_account: document.getElementById('uf-acc').value,
-      avatar_color: document.getElementById('uf-color').value,
-      birth_date: document.getElementById('uf-birth').value,
-      gender: document.getElementById('uf-gender').value,
-      national_id: document.getElementById('uf-national-id').value,
-      home_address: document.getElementById('uf-address').value,
-      emergency_contact_name: document.getElementById('uf-emergency-name').value,
-      emergency_contact_phone: document.getElementById('uf-emergency-phone').value,
-      direct_manager_id: document.getElementById('uf-manager').value || null,
-      work_location: document.getElementById('uf-location').value,
-      contract_type: document.getElementById('uf-contract-type').value,
-      contract_signed_date: document.getElementById('uf-contract-signed').value,
-      contract_end_date: document.getElementById('uf-contract-end').value,
-      official_date: document.getElementById('uf-official-date').value,
-      termination_date: document.getElementById('uf-termination-date').value,
-      allowance: parseFloat(document.getElementById('uf-allowance').value) || 0,
-      insurance_salary: parseFloat(document.getElementById('uf-insurance-salary').value) || 0,
-      bank_account_holder: document.getElementById('uf-bank-holder').value,
-      tax_code: document.getElementById('uf-tax-code').value,
-      social_insurance_number: document.getElementById('uf-social-insurance').value,
-      insurance_hospital: document.getElementById('uf-insurance-hospital').value,
-      avatar_url: document.getElementById('uf-avatar-url').value,
-      national_id_document_url: document.getElementById('uf-doc-national').value,
-      degree_document_url: document.getElementById('uf-doc-degree').value,
-      contract_document_url: document.getElementById('uf-doc-contract').value,
-      personnel_decision_url: document.getElementById('uf-doc-decision').value,
-      is_active: user?.is_active ?? 1,
-    };
-    if (!isEdit) { const pw = document.getElementById('uf-pw')?.value; if (pw) data.password = pw; }
-    if (isEdit) { data.reset_password = document.getElementById('uf-resetpw')?.checked ? 1 : 0; }
-    try {
-      let targetId = user?.id;
-      if (isEdit) await api.updateUser(targetId, data);
-      else targetId = (await api.createUser(data)).id;
-      const uploads = [
-        ['avatar', 'uf-avatar-file'], ['national_id', 'uf-doc-national-file'], ['degree', 'uf-doc-degree-file'],
-        ['contract', 'uf-doc-contract-file'], ['decision', 'uf-doc-decision-file'],
-      ];
-      for (const [kind, fieldId] of uploads) {
-        const file = document.getElementById(fieldId)?.files?.[0];
-        if (file) await api.uploadUserDocument(targetId, kind, file);
-      }
-      closeModal(); toast(isEdit ? 'Đã cập nhật' : 'Đã tạo nhân viên', 'success'); onRefresh();
-    } catch(e) { toast(e.message, 'error'); }
+  async function refreshProfile() {
+    invalidateView('users');
+    window.dispatchEvent(new Event('hashchange'));
+  }
+
+  document.getElementById('employee-back')?.addEventListener('click', () => navigate('#/users'));
+  document.querySelectorAll('[data-profile-tab]').forEach(button => button.addEventListener('click', () => {
+    activeTab = button.dataset.profileTab;
+    renderTab();
+  }));
+  document.getElementById('employee-print')?.addEventListener('click', () => {
+    const content = document.getElementById('employee-profile-content');
+    if (!content) return;
+    const previousTab = activeTab;
+    content.innerHTML = `
+      <div class="employee-profile-section-head"><div><h2>Thông tin cá nhân</h2></div></div>
+      <dl class="employee-detail-grid">
+        ${detailItem('Mã nhân viên', user.employee_code)}${detailItem('Họ và tên', user.full_name)}
+        ${detailItem('Email', user.email)}${detailItem('Số điện thoại', user.phone)}
+        ${detailItem('Ngày sinh', user.birth_date, fmtDate)}${detailItem('Số CCCD', user.national_id)}
+        ${detailItem('Hạn CCCD', user.national_id_expiry_date, fmtDate)}${detailItem('Địa chỉ liên hệ', user.home_address)}
+        ${user.employee_type === 'TTS' ? detailItem('Trường học', user.school_name) : ''}
+      </dl>
+      <div class="employee-profile-section-head employee-print-section"><div><h2>Công việc & hợp đồng</h2></div></div>
+      <dl class="employee-detail-grid">
+        ${detailItem('Vị trí', user.position)}${detailItem('Phòng ban', user.department)}
+        ${detailItem('Quản lý trực tiếp', managerName())}${detailItem('Địa điểm làm việc', user.work_location)}
+        ${detailItem('Loại hợp đồng', user.contract_type)}${detailItem('Ngày vào làm', user.hire_date, fmtDate)}
+        ${detailItem('Ngày hết hạn hợp đồng', user.contract_end_date, fmtDate)}${detailItem('Ngày chính thức', user.official_date, fmtDate)}
+        ${user.lifecycle_status === 'Đã nghỉ' ? detailItem('Ngày nghỉ việc', user.termination_date, fmtDate) : ''}
+      </dl>
+      ${Object.prototype.hasOwnProperty.call(user, 'salary') ? `
+        <div class="employee-profile-section-head employee-print-section"><div><h2>Lương & BHXH</h2></div></div>
+        <dl class="employee-detail-grid">
+          ${detailItem('Lương cơ bản', user.salary, fmtMoney)}${detailItem('Phụ cấp', user.allowance, fmtMoney)}
+          ${detailItem('Lương đóng BHXH', user.insurance_salary, fmtMoney)}${detailItem('Số người phụ thuộc', user.dependent_count)}
+          ${detailItem('Ngân hàng', user.bank_name)}${detailItem('Số tài khoản', user.bank_account)}
+          ${detailItem('Số BHXH', user.social_insurance_number)}${detailItem('Nơi đăng ký KCB BHYT', user.insurance_hospital)}
+        </dl>` : ''}`;
+    window.print();
+    setTimeout(() => { activeTab = previousTab; renderTab(); }, 0);
   });
+  document.getElementById('employee-lifecycle')?.addEventListener('click', () => openLifecycleEditor(user, refreshProfile));
+  document.getElementById('employee-avatar-edit')?.addEventListener('click', () => openAvatarEditor(user, refreshProfile));
+  renderTab();
+}
 
-  document.getElementById('uf-del')?.addEventListener('click', async () => {
-    if (!confirm(`Xóa nhân viên "${user.full_name}"? Hành động này không thể hoàn tác.`)) return;
-    try { await api.deleteUser(user.id); closeModal(); toast('Đã xóa', 'success'); onRefresh(); }
-    catch(e) { toast(e.message, 'error'); }
+async function renderDocumentsTab(content, user, permissions) {
+  content.innerHTML = `<div class="employee-profile-section-head"><div><h2>Hồ sơ đính kèm</h2><p>PDF, JPG, PNG hoặc WebP, tối đa 10 MB mỗi tệp.</p></div>
+    ${permissions.can_manage_documents ? `<button class="btn-primary btn-sm print-hidden" id="employee-document-add">${icon('plus', 'sm')} Thêm tài liệu</button>` : ''}</div>
+    <div id="employee-documents-list">${loadingHTML()}</div>`;
+  const list = document.getElementById('employee-documents-list');
+  try {
+    const response = await api.getEmployeeDocuments(user.id);
+    const documents = response.documents || [];
+    if (!documents.length) {
+      list.innerHTML = emptyHTML('', 'Chưa có tài liệu', permissions.can_manage_documents ? 'Chọn “Thêm tài liệu” để tải hồ sơ lên.' : '');
+    } else {
+      list.innerHTML = `<div class="employee-document-list">${documents.map(document => `
+        <article class="employee-document-row">
+          <div class="employee-document-icon">${icon('fileText', 'md')}</div>
+          <div class="employee-document-info"><strong>${esc(document.title || document.category_label)}</strong>
+            <span>${esc(document.original_filename)}<br/>${Math.max(1, Math.round(Number(document.byte_size || 0) / 1024))} KB, tải lên ${esc(fmtDateTime(document.uploaded_at))}</span>
+            ${document.expires_on ? `<em>Hết hạn ${esc(fmtDate(document.expires_on))}</em>` : ''}
+          </div>
+          <div class="employee-document-actions print-hidden">
+            <button class="btn-secondary btn-sm" data-doc-preview="${document.id}">${icon('eye', 'sm')} Xem</button>
+            <button class="btn-secondary btn-sm" data-doc-download="${document.id}">${icon('arrowDown', 'sm')} Tải</button>
+            ${permissions.can_manage_documents ? `<button class="btn-danger btn-sm" data-doc-delete="${document.id}" data-doc-name="${esc(document.original_filename)}">${icon('trash2', 'sm')} Xóa</button>` : ''}
+          </div>
+        </article>`).join('')}</div>`;
+    }
+    list.querySelectorAll('[data-doc-preview]').forEach(button => button.addEventListener('click', async () => {
+      const previewWindow = window.open('', '_blank');
+      if (previewWindow) previewWindow.opener = null;
+      button.disabled = true;
+      try {
+        const { blob } = await api.getEmployeeDocumentBlob(user.id, button.dataset.docPreview, 'inline');
+        const href = URL.createObjectURL(blob);
+        if (previewWindow) previewWindow.location.replace(href);
+        else window.location.assign(href);
+        setTimeout(() => URL.revokeObjectURL(href), 60000);
+      } catch (error) {
+        previewWindow?.close();
+        toast(error.message, 'error');
+      }
+      finally { button.disabled = false; }
+    }));
+    list.querySelectorAll('[data-doc-download]').forEach(button => button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        const document = documents.find(item => item.id === button.dataset.docDownload);
+        const { blob, filename } = await api.getEmployeeDocumentBlob(user.id, button.dataset.docDownload, 'attachment');
+        downloadBlob(blob, filename || document?.original_filename || 'tai-lieu');
+      } catch (error) { toast(error.message, 'error'); }
+      finally { button.disabled = false; }
+    }));
+    list.querySelectorAll('[data-doc-delete]').forEach(button => button.addEventListener('click', async () => {
+      if (!confirm(`Xóa tài liệu "${button.dataset.docName}"? Tệp sẽ bị xóa khỏi kho lưu trữ và thao tác được ghi vào nhật ký.`)) return;
+      button.disabled = true;
+      try {
+        await api.deleteEmployeeDocument(user.id, button.dataset.docDelete);
+        toast('Đã xóa tài liệu', 'success');
+        renderDocumentsTab(content, user, permissions);
+      } catch (error) { toast(error.message, 'error'); button.disabled = false; }
+    }));
+    document.getElementById('employee-document-add')?.addEventListener('click', () =>
+      openDocumentUpload(user, response.categories || {}, () => renderDocumentsTab(content, user, permissions))
+    );
+  } catch (error) {
+    list.innerHTML = emptyHTML('', error.message);
+  }
+}
+
+async function renderTimelineTab(content, user) {
+  content.innerHTML = `<div class="employee-profile-section-head"><div><h2>Timeline nhân sự</h2><p>Lịch sử từ ngày vào làm đến các thay đổi nhân sự.</p></div></div>
+    <div id="employee-timeline">${loadingHTML()}</div>`;
+  const target = document.getElementById('employee-timeline');
+  try {
+    const { timeline = [] } = await api.getEmployeeTimeline(user.id);
+    target.innerHTML = timeline.length ? `<ol class="employee-timeline">${timeline.map(event => `
+      <li><div class="employee-timeline-date">${esc(fmtDateTime(event.event_date))}</div>
+        <div><strong>${esc(event.title)}</strong>${event.description ? `<p>${esc(event.description)}</p>` : ''}
+        ${event.actor_name ? `<span>Thực hiện bởi ${esc(event.actor_name)}</span>` : ''}</div></li>`).join('')}</ol>`
+      : emptyHTML('', 'Chưa có sự kiện trong timeline');
+  } catch (error) { target.innerHTML = emptyHTML('', error.message); }
+}
+
+async function renderAuditTab(content, user) {
+  content.innerHTML = `<div class="employee-profile-section-head"><div><h2>Nhật ký thay đổi</h2><p>Mỗi trường chỉnh sửa được ghi cùng người thực hiện và thời gian.</p></div></div>
+    <div id="employee-audit">${loadingHTML()}</div>`;
+  const target = document.getElementById('employee-audit');
+  try {
+    const { audit = [] } = await api.getEmployeeAudit(user.id);
+    target.innerHTML = audit.length ? `<div class="employee-audit-list">${audit.map(entry => `
+      <article><div><strong>${esc(FIELD_LABELS[entry.field_name] || entry.field_name)}</strong>
+        <span>${esc(entry.changed_by_name || 'Hệ thống')}, ${esc(fmtDateTime(entry.changed_at))}</span></div>
+        <div class="employee-audit-change"><span>${valueOrEmpty(entry.old_value)}</span>${icon('arrowRight', 'sm')}<strong>${valueOrEmpty(entry.new_value)}</strong></div>
+      </article>`).join('')}</div>` : emptyHTML('', 'Chưa có thay đổi được ghi nhận');
+  } catch (error) { target.innerHTML = emptyHTML('', error.message); }
+}
+
+function openProfileEditor(user, section, context, onSaved) {
+  onSaved = safeCb(onSaved);
+  const { permissions, departments, basicUsers, metadata } = context;
+  const departmentNames = departments.map(item => item.name).filter(Boolean);
+  const field = (id, label, type = 'text', value = '', extra = '') => `
+    <label class="field"><span>${esc(label)}</span><input id="${id}" type="${type}" value="${esc(value ?? '')}" ${extra}/><small class="field-error" data-error-for="${id}"></small></label>`;
+  let body = '';
+  if (section === 'personal') {
+    body = `<div class="employee-edit-grid">
+      ${field('ep-full-name','Họ và tên *','text',user.full_name,'required')}
+      ${field('ep-email','Email *','email',user.email,'required')}
+      ${field('ep-phone','Số điện thoại *','tel',user.phone,'required inputmode="tel"')}
+      ${field('ep-birth','Ngày sinh *','date',user.birth_date,'required')}
+      <label class="field"><span>Giới tính</span><select id="ep-gender"><option value="">Chọn</option>${['Nam','Nữ','Khác'].map(value => `<option ${user.gender === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
+      ${field('ep-national-id','Số CCCD *','text',user.national_id,'required inputmode="numeric"')}
+      ${field('ep-national-expiry','Hạn CCCD','date',user.national_id_expiry_date)}
+      ${field('ep-address','Địa chỉ liên hệ *','text',user.home_address,'required')}
+      ${user.employee_type === 'TTS' ? field('ep-school','Trường học','text',user.school_name) : ''}
+      ${field('ep-emergency-name','Người liên hệ khẩn cấp','text',user.emergency_contact_name)}
+      ${field('ep-emergency-phone','SĐT khẩn cấp','tel',user.emergency_contact_phone)}
+    </div>`;
+  } else if (section === 'employment') {
+    body = `<div class="employee-edit-grid">
+      ${permissions.can_edit_contract ? `<label class="field"><span>Loại nhân sự *</span><select id="ep-type"><option value="NV" ${user.employee_type !== 'TTS' ? 'selected' : ''}>Nhân viên</option><option value="TTS" ${user.employee_type === 'TTS' ? 'selected' : ''}>Thực tập sinh</option></select></label>` : ''}
+      ${field('ep-position','Vị trí *','text',user.position,'required')}
+      <label class="field"><span>Phòng ban *</span><select id="ep-department" required><option value="">Chọn phòng ban</option>${departmentNames.map(value => `<option value="${esc(value)}" ${user.department === value ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select></label>
+      <label class="field"><span>Quản lý trực tiếp *</span><select id="ep-manager" required><option value="">Chọn quản lý</option>${basicUsers.filter(item => Number(item.id) !== Number(user.id)).map(item => `<option value="${item.id}" ${Number(user.direct_manager_id) === Number(item.id) ? 'selected' : ''}>${esc(item.full_name)} - ${esc(item.position || '')}</option>`).join('')}</select></label>
+      ${field('ep-location','Địa điểm làm việc *','text',user.work_location,'required')}
+      ${permissions.can_edit_contract ? `<label class="field"><span>Loại hợp đồng *</span><select id="ep-contract-type" required><option value="">Chọn hợp đồng</option>${(metadata.contract_types || []).map(value => `<option value="${esc(value)}" ${user.contract_type === value ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select></label>
+      ${field('ep-hire-date','Ngày vào làm *','date',user.hire_date,'required')}
+      ${field('ep-contract-start','Ngày bắt đầu hợp đồng','date',user.contract_start_date)}
+      ${field('ep-contract-signed','Ngày ký hợp đồng','date',user.contract_signed_date)}
+      ${field('ep-contract-end','Ngày hết hạn hợp đồng','date',user.contract_end_date)}
+      ${field('ep-probation-end','Ngày kết thúc thử việc','date',user.probation_end_date)}
+      ${field('ep-official-date','Ngày chính thức','date',user.official_date)}
+      ${user.lifecycle_status === 'Đã nghỉ' ? field('ep-termination-date','Ngày nghỉ việc','date',user.termination_date) : ''}` : ''}
+    </div>`;
+  } else {
+    body = `<div class="employee-edit-grid">
+      ${field('ep-salary','Lương cơ bản','number',user.salary,'min="0" step="1000"')}
+      ${field('ep-allowance','Phụ cấp','number',user.allowance,'min="0" step="1000"')}
+      ${field('ep-insurance-salary','Lương đóng BHXH','number',user.insurance_salary,'min="0" step="1000"')}
+      ${field('ep-dependent-count','Số người phụ thuộc','number',user.dependent_count,'min="0" step="1"')}
+      ${field('ep-bank-account','Số tài khoản','text',user.bank_account,'inputmode="numeric"')}
+      ${field('ep-bank-name','Ngân hàng','text',user.bank_name)}
+      ${field('ep-bank-holder','Chủ tài khoản','text',user.bank_account_holder)}
+      ${field('ep-tax-code','Mã số thuế','text',user.tax_code)}
+      ${field('ep-social-insurance','Số BHXH','text',user.social_insurance_number)}
+      ${field('ep-insurance-hospital','Nơi đăng ký KCB BHYT','text',user.insurance_hospital)}
+    </div>`;
+  }
+  openModal(`Chỉnh sửa ${section === 'personal' ? 'thông tin cá nhân' : section === 'employment' ? 'công việc & hợp đồng' : 'lương & BHXH'}`, body, `
+    <button class="btn-secondary" id="ep-cancel">Hủy</button><button class="btn-primary" id="ep-save">Lưu thay đổi</button>`);
+  document.getElementById('modal')?.classList.add('modal--employee-editor');
+  document.getElementById('ep-cancel')?.addEventListener('click', closeModal);
+  const unsavedGuard = bindUnsavedWarning('ep-cancel');
+  document.getElementById('ep-save')?.addEventListener('click', async event => {
+    const value = id => document.getElementById(id)?.value?.trim() ?? '';
+    let data;
+    if (section === 'personal') data = {
+      full_name: value('ep-full-name'), email: value('ep-email'), phone: value('ep-phone'),
+      birth_date: value('ep-birth'), gender: value('ep-gender'), national_id: value('ep-national-id'),
+      national_id_expiry_date: value('ep-national-expiry'), home_address: value('ep-address'),
+      school_name: value('ep-school'), emergency_contact_name: value('ep-emergency-name'),
+      emergency_contact_phone: value('ep-emergency-phone'),
+    };
+    else if (section === 'employment') data = {
+      ...(permissions.can_edit_contract ? { employee_type: value('ep-type') } : {}),
+      position: value('ep-position'), department: value('ep-department'),
+      direct_manager_id: value('ep-manager') || null, work_location: value('ep-location'),
+      ...(permissions.can_edit_contract ? {
+        contract_type: value('ep-contract-type'), hire_date: value('ep-hire-date'),
+        contract_start_date: value('ep-contract-start'), contract_signed_date: value('ep-contract-signed'),
+        contract_end_date: value('ep-contract-end'), probation_end_date: value('ep-probation-end'),
+        official_date: value('ep-official-date'), termination_date: value('ep-termination-date'),
+      } : {}),
+    };
+    else data = {
+      salary: Number(value('ep-salary') || 0), allowance: Number(value('ep-allowance') || 0),
+      insurance_salary: Number(value('ep-insurance-salary') || 0), dependent_count: Number(value('ep-dependent-count') || 0),
+      bank_account: value('ep-bank-account'), bank_name: value('ep-bank-name'),
+      bank_account_holder: value('ep-bank-holder'), tax_code: value('ep-tax-code'),
+      social_insurance_number: value('ep-social-insurance'), insurance_hospital: value('ep-insurance-hospital'),
+    };
+    const required = [...document.querySelectorAll('#modal-body [required]')];
+    let invalid = false;
+    required.forEach(input => {
+      const error = document.querySelector(`[data-error-for="${input.id}"]`);
+      if (!input.value.trim()) { invalid = true; input.setAttribute('aria-invalid', 'true'); if (error) error.textContent = 'Trường này là bắt buộc'; }
+      else { input.removeAttribute('aria-invalid'); if (error) error.textContent = ''; }
+    });
+    if (invalid) return;
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await api.updateEmployeeProfile(user.id, data);
+      unsavedGuard.commit();
+      closeModal();
+      toast('Đã cập nhật hồ sơ', 'success');
+      onSaved();
+    } catch (error) { toast(error.message, 'error'); button.disabled = false; }
+  });
+}
+
+function openDocumentUpload(user, categories, onSaved) {
+  const categoryOptions = Object.entries(categories).map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join('');
+  openModal('Thêm tài liệu', `
+    <div class="employee-edit-grid">
+      <label class="field"><span>Danh mục *</span><select id="document-category" required><option value="">Chọn danh mục</option>${categoryOptions}</select></label>
+      <label class="field"><span>Tên hiển thị</span><input id="document-title" type="text" maxlength="160"/></label>
+      <label class="field"><span>Ngày hết hạn</span><input id="document-expiry" type="date"/></label>
+      <label class="field employee-file-field"><span>Tệp *</span><input id="document-file" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" required/><small>PDF, JPG, PNG hoặc WebP, tối đa 10 MB.</small></label>
+    </div>`, `<button class="btn-secondary" id="document-cancel">Hủy</button><button class="btn-primary" id="document-save">Tải lên</button>`);
+  document.getElementById('document-cancel')?.addEventListener('click', closeModal);
+  const unsavedGuard = bindUnsavedWarning('document-cancel');
+  document.getElementById('document-save')?.addEventListener('click', async event => {
+    const category = document.getElementById('document-category').value;
+    const file = document.getElementById('document-file').files?.[0];
+    if (!category || !file) { toast('Vui lòng chọn danh mục và tệp', 'error'); return; }
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await api.uploadEmployeeDocument(user.id, {
+        category,
+        title: document.getElementById('document-title').value.trim(),
+        expires_on: document.getElementById('document-expiry').value,
+      }, file);
+      unsavedGuard.commit();
+      closeModal();
+      toast('Đã thêm tài liệu', 'success');
+      onSaved();
+    } catch (error) { toast(error.message, 'error'); button.disabled = false; }
+  });
+}
+
+function openLifecycleEditor(user, onSaved) {
+  openModal('Đổi trạng thái nhân sự', `
+    <label class="field"><span>Trạng thái mới *</span><select id="employee-lifecycle-value">${LIFECYCLE_STATUSES.map(status => `<option value="${esc(status)}" ${status === user.lifecycle_status ? 'selected' : ''}>${esc(status)}</option>`).join('')}</select></label>
+    <label class="field"><span>Lý do *</span><textarea id="employee-lifecycle-reason" rows="4" placeholder="Nhập lý do thay đổi trạng thái"></textarea></label>`,
+    `<button class="btn-secondary" id="employee-lifecycle-cancel">Hủy</button><button class="btn-primary" id="employee-lifecycle-save">Lưu</button>`);
+  document.getElementById('employee-lifecycle-cancel')?.addEventListener('click', closeModal);
+  document.getElementById('employee-lifecycle-save')?.addEventListener('click', async event => {
+    const reason = document.getElementById('employee-lifecycle-reason').value.trim();
+    if (!reason) { toast('Vui lòng nhập lý do', 'error'); return; }
+    event.currentTarget.disabled = true;
+    try {
+      await api.changeLifecycleStatus(user.id, document.getElementById('employee-lifecycle-value').value, reason);
+      closeModal();
+      toast('Đã cập nhật trạng thái', 'success');
+      onSaved();
+    } catch (error) { toast(error.message, 'error'); event.currentTarget.disabled = false; }
+  });
+}
+
+function openAvatarEditor(user, onSaved) {
+  openModal('Cập nhật ảnh đại diện', `
+    <label class="field employee-file-field"><span>Ảnh chân dung</span><input id="employee-avatar-file" type="file" accept="image/jpeg,image/png,image/webp"/><small>JPG, PNG hoặc WebP, tối đa 5 MB.</small></label>`,
+    `<button class="btn-secondary" id="employee-avatar-cancel">Hủy</button><button class="btn-primary" id="employee-avatar-save">Tải ảnh lên</button>`);
+  document.getElementById('employee-avatar-cancel')?.addEventListener('click', closeModal);
+  document.getElementById('employee-avatar-save')?.addEventListener('click', async event => {
+    const file = document.getElementById('employee-avatar-file').files?.[0];
+    if (!file) { toast('Vui lòng chọn ảnh', 'error'); return; }
+    event.currentTarget.disabled = true;
+    try {
+      await api.uploadUserDocument(user.id, 'avatar', file);
+      closeModal();
+      toast('Đã cập nhật ảnh đại diện', 'success');
+      onSaved();
+    } catch (error) { toast(error.message, 'error'); event.currentTarget.disabled = false; }
+  });
+}
+
+function openCreateEmployee(users, departments, onSaved) {
+  const departmentOptions = departments.map(item => item.name).filter(Boolean).map(value => `<option value="${esc(value)}">${esc(value)}</option>`).join('');
+  const managerOptions = users.map(item => `<option value="${item.id}">${esc(item.full_name)} - ${esc(item.position || '')}</option>`).join('');
+  const input = (id, label, type = 'text', required = false) => `<label class="field"><span>${esc(label)}${required ? ' *' : ''}</span><input id="${id}" type="${type}" ${required ? 'required' : ''}/></label>`;
+  openModal('Thêm nhân viên', `
+    <div class="employee-create-form">
+      <h4>Thông tin cá nhân</h4><div class="employee-edit-grid">
+        ${input('new-name','Họ và tên','text',true)}${input('new-email','Email','email',true)}
+        ${input('new-phone','Số điện thoại','tel',true)}${input('new-birth','Ngày sinh','date',true)}
+        ${input('new-national-id','Số CCCD','text',true)}${input('new-national-expiry','Hạn CCCD','date')}
+        ${input('new-address','Địa chỉ liên hệ','text',true)}
+        <label class="field"><span>Loại nhân sự *</span><select id="new-type"><option value="NV">Nhân viên</option><option value="TTS">Thực tập sinh</option></select></label>
+        <label class="field hidden" id="new-school-field"><span>Trường học</span><input id="new-school" type="text"/></label>
+      </div>
+      <h4>Công việc & hợp đồng</h4><div class="employee-edit-grid">
+        ${input('new-position','Vị trí','text',true)}
+        <label class="field"><span>Phòng ban *</span><select id="new-department" required><option value="">Chọn phòng ban</option>${departmentOptions}</select></label>
+        <label class="field"><span>Quản lý trực tiếp *</span><select id="new-manager" required><option value="">Chọn quản lý</option>${managerOptions}</select></label>
+        ${input('new-location','Địa điểm làm việc','text',true)}
+        <label class="field"><span>Loại hợp đồng *</span><select id="new-contract-type" required><option value="">Chọn hợp đồng</option>${['Thử việc','HĐCT','CTV','Thỏa thuận TTS','Khác'].map(value => `<option>${value}</option>`).join('')}</select></label>
+        ${input('new-hire-date','Ngày vào làm','date',true)}${input('new-probation-end','Ngày kết thúc thử việc','date')}
+        ${input('new-contract-end','Ngày hết hạn hợp đồng','date')}${input('new-official-date','Ngày chính thức','date')}
+      </div>
+      <h4>Lương, ngân hàng & BHXH</h4><div class="employee-edit-grid">
+        ${input('new-salary','Lương cơ bản','number')}${input('new-allowance','Phụ cấp','number')}
+        ${input('new-insurance-salary','Lương đóng BHXH','number')}${input('new-dependent-count','Số người phụ thuộc','number')}
+        ${input('new-bank-account','Số tài khoản')}${input('new-bank-name','Ngân hàng')}
+        ${input('new-social-insurance','Số BHXH')}${input('new-insurance-hospital','Nơi đăng ký KCB BHYT')}
+      </div>
+    </div>`, `<button class="btn-secondary" id="new-cancel">Hủy</button><button class="btn-primary" id="new-save">Tạo nhân viên</button>`);
+  document.getElementById('modal')?.classList.add('modal--employee-create');
+  document.getElementById('new-cancel')?.addEventListener('click', closeModal);
+  const unsavedGuard = bindUnsavedWarning('new-cancel');
+  document.getElementById('new-type')?.addEventListener('change', event => document.getElementById('new-school-field').classList.toggle('hidden', event.target.value !== 'TTS'));
+  document.getElementById('new-save')?.addEventListener('click', async event => {
+    const required = [...document.querySelectorAll('#modal-body [required]')];
+    const missing = required.find(input => !input.value.trim());
+    if (missing) { missing.focus(); toast('Vui lòng nhập đầy đủ các trường bắt buộc', 'error'); return; }
+    const value = id => document.getElementById(id)?.value?.trim() || '';
+    const data = {
+      full_name: value('new-name'), email: value('new-email'), phone: value('new-phone'),
+      birth_date: value('new-birth'), national_id: value('new-national-id'),
+      national_id_expiry_date: value('new-national-expiry'), home_address: value('new-address'),
+      employee_type: value('new-type'), school_name: value('new-school'), position: value('new-position'),
+      department: value('new-department'), direct_manager_id: value('new-manager'), work_location: value('new-location'),
+      contract_type: value('new-contract-type'), hire_date: value('new-hire-date'),
+      probation_end_date: value('new-probation-end'), contract_end_date: value('new-contract-end'),
+      official_date: value('new-official-date'), role: 'employee',
+      salary: Number(value('new-salary') || 0), allowance: Number(value('new-allowance') || 0),
+      insurance_salary: Number(value('new-insurance-salary') || 0), dependent_count: Number(value('new-dependent-count') || 0),
+      bank_account: value('new-bank-account'), bank_name: value('new-bank-name'),
+      social_insurance_number: value('new-social-insurance'), insurance_hospital: value('new-insurance-hospital'),
+    };
+    event.currentTarget.disabled = true;
+    try {
+      await api.createUser(data);
+      unsavedGuard.commit();
+      closeModal();
+      toast('Đã tạo nhân viên', 'success');
+      onSaved();
+    } catch (error) { toast(error.message, 'error'); event.currentTarget.disabled = false; }
   });
 }

@@ -22,8 +22,9 @@ export default {
       try {
         return await handle(request, env);
       } catch (error) {
-        console.error('Unhandled API error', error);
-        return new Response(JSON.stringify({ error: 'Máy chủ đang gặp sự cố, vui lòng thử lại sau' }), {
+        const errorId = crypto.randomUUID();
+        console.error('Unhandled API error', { errorId, path: url.pathname, message: String(error?.message || error), stack: error?.stack });
+        return new Response(JSON.stringify({ error: `Không thể xử lý yêu cầu. Mã tham chiếu: ${errorId}`, code: 'UNEXPECTED_API_ERROR', error_id: errorId }), {
           status: 500,
           headers: {
             'Content-Type': 'application/json; charset=utf-8',

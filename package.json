@@ -6,7 +6,8 @@
     "ios:add": "cap add ios",
     "ios:sync": "cap sync ios",
     "ios:open": "cap open ios",
-    "security:production": "powershell -ExecutionPolicy Bypass -File tests/pentest-production.ps1"
+    "security:production": "powershell -ExecutionPolicy Bypass -File tests/pentest-production.ps1",
+    "test:employee-profile": "node tests/employee-profile-smoke.mjs"
   },
   "dependencies": {
     "@capacitor/app": "^8.0.0",

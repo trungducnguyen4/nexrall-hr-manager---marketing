@@ -1,6 +1,6 @@
 import { api } from '../api.js?v=20260722-payroll-export-ux';
 import { esc, fmtMoney, fmtDateTime, invStatusBadge, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js?v=20260722-payroll-export-ux';
-import { navigate } from '../app.js?v=20260722-payroll-export-ux';
+import { payslipDetailHTML, hydratePayslipAttendance, preparePayslipModal } from './payslip-detail.js';
 
 export async function renderInvoices(el, me) {
   const isManager = me.role === 'admin' || me.role === 'manager';
@@ -231,7 +231,7 @@ function openResolveReviewModal(inv, onRefresh = noop) {
 function openInvoiceDetail(invId, isManager, users, onRefresh = noop, me = null) {
   onRefresh = safeCb(onRefresh);
   openModal('Chi tiết phiếu lương', loadingHTML(), '');
-  document.getElementById('modal')?.classList.add('modal--scroll-fixed');
+  preparePayslipModal();
   api.getInvoice(invId).then(({ invoice: inv }) => {
     document.getElementById('modal-body').innerHTML = `
       <div style="text-align:center;padding:8px 0 16px;">
@@ -291,10 +291,8 @@ function openInvoiceDetail(invId, isManager, users, onRefresh = noop, me = null)
         <div class="workflow-row"><span class="wf-label">Thời gian thao tác</span><span class="wf-val">${inv.created_at ? fmtDateTime(inv.created_at) : '—'}</span></div>
       </div>
     `;
-    document.getElementById('inv-view-attendance')?.addEventListener('click', () => {
-      closeModal();
-      navigate('#/attendance');
-    });
+    document.getElementById('modal-body').innerHTML = payslipDetailHTML(inv, { source: 'invoice' });
+    hydratePayslipAttendance();
     if (isManager && !(inv.locked_at || inv.status === 'paid')) {
       document.getElementById('modal-footer').innerHTML = `
         <button class="btn-danger" id="inv-del-btn">Xóa</button>

@@ -10,20 +10,21 @@ import { icon } from './icons.js';
 let _viewModules = {};
 async function getView(name) {
   if (!_viewModules[name]) {
-    if (name === 'dashboard')    _viewModules[name] = await import('./views/dashboard.js');
-    else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js?v=20260728-summary-ux');
+    if (name === 'dashboard')    _viewModules[name] = await import('./views/dashboard.js?v=20260730-notification-center-v1');
+    else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js?v=20260730-notification-center-v1');
     else if (name === 'tasks')       _viewModules[name] = await import('./views/tasks.js?v=20260722-plain-task-groups');
-    else if (name === 'invoices')    _viewModules[name] = await import('./views/invoices.js?v=20260728-overtime');
-    else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260728-private-documents');
+    else if (name === 'invoices')    _viewModules[name] = await import('./views/invoices.js?v=20260730-payslip-detail-v1');
+    else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260730-notification-center-v1');
     else if (name === 'wifi')        _viewModules[name] = await import('./views/wifi.js');
     else if (name === 'settings')    _viewModules[name] = await import('./views/settings.js?v=20260728-overtime');
     else if (name === 'taskpanel')   _viewModules[name] = await import('./views/taskpanel.js?v=20260722-rich-task-editor');
     else if (name === 'departments') _viewModules[name] = await import('./views/departments.js');
     else if (name === 'recruitment') _viewModules[name] = await import('./views/recruitment.js');
-    else if (name === 'payroll')     _viewModules[name] = await import('./views/payroll.js?v=20260722-payroll-export-ux');
+    else if (name === 'payroll')     _viewModules[name] = await import('./views/payroll.js?v=20260730-payslip-detail-v2');
     else if (name === 'leave')       _viewModules[name] = await import('./views/leave.js');
     else if (name === 'campaigns')   _viewModules[name] = await import('./views/campaigns.js');
     else if (name === 'evaluation')  _viewModules[name] = await import('./views/evaluation.js?v=20260728-evaluation-policy');
+    else if (name === 'notifications') _viewModules[name] = await import('./views/notifications.js?v=20260730-notification-center-v1');
     else if (name === 'db-admin')    _viewModules[name] = await import('./views/dbadmin.js');
   }
   return _viewModules[name];
@@ -132,6 +133,21 @@ async function boot() {
 // ════════════════════════════════════════════════
 //  APP INIT
 // ════════════════════════════════════════════════
+async function refreshEmployeeAlertBadge() {
+  const iconHost = document.getElementById('employee-alert-icon');
+  const countHost = document.getElementById('employee-alert-count');
+  if (iconHost && !iconHost.firstElementChild) iconHost.innerHTML = icon('bell', 'sm');
+  if (!countHost) return;
+  try {
+    const response = await api.getNotifications({ window: 30, page: 1, page_size: 10 });
+    const count = Number(response.active_total || 0);
+    countHost.textContent = count > 99 ? '99+' : String(count);
+    countHost.classList.toggle('hidden', count < 1);
+  } catch (_) {
+    countHost.classList.add('hidden');
+  }
+}
+
 function initApp() {
   normalizeIcons(document);
   setAvatar(document.getElementById('sidebar-av'), me.full_name, me.avatar_color, me.avatar_initials);
@@ -140,10 +156,14 @@ function initApp() {
   setAvatar(document.getElementById('header-av'), me.full_name, me.avatar_color, me.avatar_initials);
 
   // Admin nav visibility
-  const isManager = me.role === 'admin' || me.role === 'manager';
+  const isManager = me.role === 'admin' || me.role === 'manager' || me.department === 'Phòng HCNS';
   const adminNav = document.getElementById('admin-nav');
   if (!isManager) adminNav.style.display = 'none';
+  else adminNav.style.display = '';
   document.getElementById('db-admin-nav-item')?.classList.toggle('hidden', me.role !== 'admin');
+  const alertButton = document.getElementById('employee-alert-button');
+  alertButton?.classList.remove('hidden');
+  refreshEmployeeAlertBadge();
 
   if (_appInitialized) {
     route();
@@ -157,6 +177,7 @@ function initApp() {
   document.getElementById('sidebar-close').addEventListener('click', closeSidebar);
   sidebarOverlay.addEventListener('click', closeSidebar);
   document.getElementById('header-av-btn').addEventListener('click', () => navigate('#/settings'));
+  document.getElementById('employee-alert-button')?.addEventListener('click', () => navigate('#/notifications'));
 
   document.querySelectorAll('.nav-item[data-nav]').forEach(link => {
     link.addEventListener('click', closeSidebar);
@@ -352,27 +373,29 @@ iconObserver.observe(document.documentElement, { childList: true, subtree: true 
 async function route() {
   const routeGeneration = ++_routeGeneration;
   const hash = location.hash || '#/dashboard';
-  const path = hash.replace('#/', '').split('/')[0] || 'dashboard';
+  const routeKey = hash.replace('#/', '').replace(/^\/+|\/+$/g, '') || 'dashboard';
+  const segments = routeKey.split('/').filter(Boolean);
+  const path = segments[0] || 'dashboard';
 
   document.querySelectorAll('.nav-item[data-nav]').forEach(link => {
     link.classList.toggle('active', link.dataset.nav === path);
   });
 
   // Hide the currently visible view node (keep it alive in DOM)
-  if (_currentView && _currentView !== path) {
+  if (_currentView && _currentView !== routeKey) {
     const prev = _viewCache.get(_currentView);
     if (prev) prev.node.style.display = 'none';
   }
 
   const now = Date.now();
-  const cached = _viewCache.get(path);
+  const cached = _viewCache.get(routeKey);
   const isFresh = cached && !NO_CACHE_VIEWS.has(path) && (now - cached.ts) < VIEW_CACHE_TTL;
 
   if (isFresh) {
     // Instant — just show the cached node, no fetch needed
     cached.node.style.display = '';
     _contentCleanup = cached.cleanup || null;
-    _currentView = path;
+    _currentView = routeKey;
     return;
   }
 
@@ -380,30 +403,30 @@ async function route() {
   if (cached) {
     if (cached.cleanup) cached.cleanup();
     cached.node.remove();
-    _viewCache.delete(path);
+    _viewCache.delete(routeKey);
   }
 
   if (NO_CACHE_VIEWS.has(path)) {
     contentEl.querySelectorAll(':scope > .view-container').forEach(node => node.remove());
     _viewCache.clear();
   }
-  contentEl.querySelectorAll(`:scope > .view-container[data-view="${CSS.escape(path)}"]`).forEach(node => node.remove());
+  contentEl.querySelectorAll(`:scope > .view-container[data-view="${CSS.escape(routeKey)}"]`).forEach(node => node.remove());
 
   // Create a fresh container node for this view
   const viewNode = document.createElement('div');
   viewNode.className = 'view-container';
-  viewNode.dataset.view = path;
+  viewNode.dataset.view = routeKey;
   contentEl.appendChild(viewNode);
 
   // Hide all other cached view nodes
   _viewCache.forEach((entry, name) => {
-    if (name !== path) entry.node.style.display = 'none';
+    if (name !== routeKey) entry.node.style.display = 'none';
   });
   contentEl.querySelectorAll(':scope > .view-container').forEach(node => {
-    if (node !== viewNode && node.dataset.view !== path) node.style.display = 'none';
+    if (node !== viewNode && node.dataset.view !== routeKey) node.style.display = 'none';
   });
 
-  _currentView = path;
+  _currentView = routeKey;
 
   try {
     const mod = await getView(path);
@@ -413,7 +436,7 @@ async function route() {
     }
     const fnName = 'render' + path.split('-').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join('');
     if (mod && typeof mod[fnName] === 'function') {
-      await mod[fnName](viewNode, me);
+      await mod[fnName](viewNode, me, { hash, routeKey, segments });
       if (routeGeneration !== _routeGeneration) {
         if (viewNode._cleanup) viewNode._cleanup();
         viewNode.remove();
@@ -422,15 +445,15 @@ async function route() {
       const cleanup = viewNode._cleanup || null;
       viewNode._cleanup = null;
       _contentCleanup = cleanup;
-      _viewCache.set(path, { node: viewNode, cleanup, ts: Date.now() });
+      _viewCache.set(routeKey, { node: viewNode, cleanup, ts: Date.now() });
     } else {
       viewNode.innerHTML = `<div class="empty-state"><div class="empty-icon">404</div><div class="empty-text">Trang không tìm thấy</div></div>`;
-      _viewCache.set(path, { node: viewNode, cleanup: null, ts: Date.now() });
+      _viewCache.set(routeKey, { node: viewNode, cleanup: null, ts: Date.now() });
     }
   } catch(e) {
     console.error('Route error:', e);
     viewNode.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
-    _viewCache.set(path, { node: viewNode, cleanup: null, ts: Date.now() });
+    _viewCache.set(routeKey, { node: viewNode, cleanup: null, ts: Date.now() });
   }
 }
 
@@ -447,11 +470,11 @@ function _destroyAllViews() {
 
 // Invalidate a specific view's DOM cache so it re-renders fresh on next visit
 export function invalidateView(name) {
-  const entry = _viewCache.get(name);
-  if (entry) {
+  for (const [key, entry] of _viewCache.entries()) {
+    if (key !== name && !key.startsWith(`${name}/`)) continue;
     if (entry.cleanup) entry.cleanup();
     entry.node.remove();
-    _viewCache.delete(name);
+    _viewCache.delete(key);
   }
 }
 

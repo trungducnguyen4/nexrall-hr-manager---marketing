@@ -135,7 +135,7 @@ export function roleBadge(r) {
 }
 
 // ── Vòng đời nhân sự (lifecycle status) ─────────────────────────
-export const LIFECYCLE_STATUSES = ['Chờ tiếp nhận', 'Thực tập', 'Thử việc', 'Chính thức', 'Đã nghỉ'];
+export const LIFECYCLE_STATUSES = ['Chờ tiếp nhận', 'Thực tập', 'Thử việc', 'Cộng tác viên', 'Chính thức', 'Đã nghỉ'];
 
 export function lifecycleBadge(status) {
   const map = {
@@ -291,7 +291,7 @@ export function openModal(title, bodyHtml, footerHtml = '') {
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = bodyHtml;
   document.getElementById('modal-footer').innerHTML = footerHtml;
-  document.getElementById('modal')?.classList.remove('modal--scroll-fixed', 'modal--project', 'modal--attendance-summary', 'modal--user-detail', 'modal--user-profile', 'modal--user-form');
+  document.getElementById('modal')?.classList.remove('modal--scroll-fixed', 'modal--project', 'modal--attendance-summary', 'modal--user-detail', 'modal--user-profile', 'modal--user-form', 'modal--payslip');
   ov?.classList.remove('modal-overlay--desktop-centered');
   ov.classList.remove('hidden');
 }
