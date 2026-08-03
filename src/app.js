@@ -12,7 +12,7 @@ async function getView(name) {
   if (!_viewModules[name]) {
     if (name === 'dashboard')    _viewModules[name] = await import('./views/dashboard.js?v=20260730-notification-center-v1');
     else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js?v=20260730-notification-center-v1');
-    else if (name === 'tasks')       _viewModules[name] = await import('./views/tasks.js?v=20260722-plain-task-groups');
+    else if (name === 'tasks')       _viewModules[name] = await import('./views/tasks.js?v=20260803-task-status-actions');
     else if (name === 'invoices')    _viewModules[name] = await import('./views/invoices.js?v=20260730-payslip-detail-v1');
     else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260730-notification-center-v1');
     else if (name === 'wifi')        _viewModules[name] = await import('./views/wifi.js');
@@ -24,6 +24,7 @@ async function getView(name) {
     else if (name === 'leave')       _viewModules[name] = await import('./views/leave.js');
     else if (name === 'campaigns')   _viewModules[name] = await import('./views/campaigns.js');
     else if (name === 'evaluation')  _viewModules[name] = await import('./views/evaluation.js?v=20260728-evaluation-policy');
+    else if (name === 'kpis')        _viewModules[name] = await import('./views/kpis.js?v=20260730-manual-kpi');
     else if (name === 'notifications') _viewModules[name] = await import('./views/notifications.js?v=20260730-notification-center-v1');
     else if (name === 'db-admin')    _viewModules[name] = await import('./views/dbadmin.js');
   }

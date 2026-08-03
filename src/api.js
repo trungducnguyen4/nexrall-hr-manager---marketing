@@ -447,4 +447,15 @@ export const api = {
     const q = new URLSearchParams(params).toString();
     return cachedGet('/api/evaluations/dashboard' + (q ? '?' + q : ''));
   },
+  // KPI theo nhân viên: giữ các thao tác thủ công (nhập kết quả, minh chứng và HCNS chấm KPI văn bản).
+  getKpiDashboard: (params = {}) => { const q = new URLSearchParams(params).toString(); return cachedGet('/api/kpis/dashboard' + (q ? '?' + q : '')); },
+  getKpis: (params = {}) => { const q = new URLSearchParams(params).toString(); return cachedGet('/api/kpis' + (q ? '?' + q : '')); },
+  saveKpis: (data) => req('POST', '/api/kpis', data).then(r => { inv('/api/kpis'); return r; }),
+  submitKpis: (id, items) => req('POST', `/api/kpis/${id}/submit`, { items }).then(r => { inv('/api/kpis'); return r; }),
+  reviewKpis: (id, approve, note = '', manual_scores = {}, item_notes = {}) => req('POST', `/api/kpis/${id}/review`, { approve, note, manual_scores, item_notes }).then(r => { inv('/api/kpis'); return r; }),
+  saveKpiEvidence: (planId, itemId, evidence) => req('POST', `/api/kpis/${planId}/evidence`, { item_id: itemId, evidence }).then(r => { inv('/api/kpis'); return r; }),
+  getKpiSnapshot: (planId) => req('GET', `/api/kpis/${planId}/snapshot`),
+  getKpiTemplates: () => cachedGet('/api/kpi-templates'),
+  saveKpiTemplate: (data) => req('POST', '/api/kpi-templates', data).then(r => { inv('/api/kpi-templates'); return r; }),
+  applyKpiTemplate: (id, data) => req('POST', `/api/kpi-templates/${id}/apply`, data).then(r => { inv('/api/kpis'); return r; }),
 };

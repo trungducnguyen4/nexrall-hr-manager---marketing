@@ -323,13 +323,15 @@ export async function renderTasks(el, me) {
       const group = groups.find(g => String(g.id) === btn.dataset.addTaskGroup) || defaultGroup;
       openTaskForm(null, users, me, loadBoard, { project, groups, labels, selectedGroupId: group.id, departments });
     }));
-    board.querySelectorAll('[data-move-task]').forEach(sel => sel.addEventListener('change', async () => {
-      const taskId = sel.dataset.moveTask;
-      const groupId = parseInt(sel.value) || null;
+    board.querySelectorAll('[data-task-status]').forEach(btn => btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      const taskId = btn.dataset.taskStatus;
+      const status = btn.dataset.status;
       const task = tasks.find(t => String(t.id) === String(taskId));
+      if (!task || task.status === status) return;
       try {
-        await api.updateTask(taskId, { ...minimalTaskPayload(task), group_id: groupId, team_project_id: selectedProjectId });
-        toast('Đã chuyển nhóm', 'success');
+        await api.updateTask(taskId, { ...minimalTaskPayload(task), status, group_id: task.group_id || null, team_project_id: selectedProjectId });
+        toast('Đã cập nhật trạng thái công việc', 'success');
         loadBoard();
       } catch (e) { toast(e.message, 'error'); }
     }));
@@ -403,9 +405,15 @@ export async function renderTasks(el, me) {
           ${t.due_date ? `<span style="font-size:11px;color:var(--text-2)">Hạn: ${esc(t.due_date)}</span>` : ''}
           ${Number(t.subtask_total) > 0 ? `<span style="font-size:11px;color:var(--text-2)">Subtask: ${Number(t.subtask_done)||0}/${Number(t.subtask_total)||0}</span>` : ''}
         </div>
-        <select data-move-task="${t.id}" style="margin-top:8px;width:100%;font-size:12px;padding:6px 8px;">
-          ${groups.map(g => `<option value="${g.id}" ${String(t.group_id || groups[0]?.id || '') === String(g.id) ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}
-        </select>
+        <div class="task-status-actions" aria-label="Cập nhật trạng thái công việc">
+          ${[
+            ['todo', 'Chờ làm'],
+            ['in-progress', 'Đang làm'],
+            ['review', 'Review'],
+            ['done', 'Hoàn thành'],
+            ['cancelled', 'Hủy'],
+          ].map(([status, label]) => `<button type="button" class="task-status-action ${t.status === status ? 'active' : ''}" data-task-status="${t.id}" data-status="${status}" aria-pressed="${t.status === status}">${label}</button>`).join('')}
+        </div>
       </div>
     `;
   }
