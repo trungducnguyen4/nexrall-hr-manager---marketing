@@ -20,7 +20,7 @@ async function getView(name) {
     else if (name === 'taskpanel')   _viewModules[name] = await import('./views/taskpanel.js?v=20260722-rich-task-editor');
     else if (name === 'departments') _viewModules[name] = await import('./views/departments.js');
     else if (name === 'recruitment') _viewModules[name] = await import('./views/recruitment.js');
-    else if (name === 'payroll')     _viewModules[name] = await import('./views/payroll.js?v=20260730-payslip-detail-v2');
+    else if (name === 'payroll')     _viewModules[name] = await import('./views/payroll.js?v=20260803-payroll-table-v2');
     else if (name === 'leave')       _viewModules[name] = await import('./views/leave.js');
     else if (name === 'campaigns')   _viewModules[name] = await import('./views/campaigns.js');
     else if (name === 'evaluation')  _viewModules[name] = await import('./views/evaluation.js?v=20260728-evaluation-policy');

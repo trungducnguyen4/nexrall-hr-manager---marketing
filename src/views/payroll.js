@@ -1,5 +1,5 @@
 import { api } from '../api.js?v=20260722-payroll-export-ux';
-import { esc, fmtMoney, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js?v=20260722-payroll-export-ux';
+import { esc, fmtMoney, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination, avatarColor, initials } from '../utils.js?v=20260722-payroll-export-ux';
 import { payslipDetailHTML, hydratePayslipAttendance, preparePayslipModal } from './payslip-detail.js';
 
 function formatMonth(month) {
@@ -10,10 +10,60 @@ function formatMonth(month) {
 
 function payrollStatusBadge(p) {
   const status = p.data_status || (Number(p.base_salary || 0) > 0 ? 'ready' : 'missing_salary_config');
-  if (status === 'missing_salary_config') {
-    return `<span style="display:inline-block;margin-top:4px;padding:3px 8px;border-radius:999px;background:#FEF3C7;color:#92400E;font-size:11px;font-weight:700;">Thiếu cấu hình lương</span>`;
-  }
-  return `<span style="display:inline-block;margin-top:4px;padding:3px 8px;border-radius:999px;background:#D1FAE5;color:#065F46;font-size:11px;font-weight:700;">Đủ dữ liệu</span>`;
+  return status === 'missing_salary_config'
+    ? '<span class="payroll-badge payroll-badge--warn">Thiếu cấu hình lương</span>'
+    : '<span class="payroll-badge payroll-badge--ok">Đủ dữ liệu</span>';
+}
+
+function payrollReady(p) {
+  return (p.data_status || (Number(p.base_salary || 0) > 0 ? 'ready' : 'missing_salary_config')) === 'ready';
+}
+
+function payrollMoney(value, ready) {
+  const n = Number(value || 0);
+  // Always show non-zero amounts (e.g. deductions applied via adjustments)
+  // even when the payroll row is missing salary config.
+  if (n === 0) return '—';
+  return fmtMoney(n);
+}
+
+// Memoize row HTML per row signature so editing one row doesn't re-render all rows.
+const payrollRowCache = new Map();
+function payrollRowHTML(p) {
+  const ready = payrollReady(p);
+  const net = (p.base_salary || 0) + (p.kpi_bonus || 0) + (p.allowance || 0) - (p.deduction || 0);
+  const sig = [p.id, p.employee_name, p.employee_code, p.department, p.base_salary, p.kpi_bonus, p.allowance, p.deduction, p.data_status, ready].join('|');
+  const cached = payrollRowCache.get(p.id);
+  if (cached && cached.sig === sig) return cached.html;
+  const color = avatarColor(p.employee_name || '?');
+  const ini = initials(p.employee_name || '?');
+  const html = `
+    <tr class="payroll-row" data-pid="${p.id}" tabindex="0" role="button" aria-label="Mở phiếu lương của ${esc(p.employee_name || 'nhân viên')}">
+      <td class="payroll-col-employee" data-label="Nhân viên">
+        <div class="payroll-employee">
+          <span class="payroll-avatar" style="background:${color};">${ini}</span>
+          <div class="payroll-employee-main">
+            <div class="payroll-employee-name">${esc(p.employee_name || '—')}</div>
+            <div class="payroll-employee-code">${esc(p.employee_code || '')}</div>
+            ${payrollStatusBadge(p)}
+          </div>
+        </div>
+      </td>
+      <td class="payroll-col-dept" data-label="Phòng ban"><span class="payroll-dept">${esc(p.department || '—')}</span></td>
+      <td class="payroll-col-money" data-label="Lương CB">${payrollMoney(p.base_salary, ready)}</td>
+      <td class="payroll-col-money payroll-col-money--pos" data-label="KPI Bonus">${payrollMoney(p.kpi_bonus, ready)}</td>
+      <td class="payroll-col-money payroll-col-money--pos" data-label="Phụ cấp">${payrollMoney(p.allowance, ready)}</td>
+      <td class="payroll-col-money payroll-col-money--neg" data-label="Khấu trừ">${payrollMoney(p.deduction, ready)}</td>
+      <td class="payroll-col-money payroll-col-net" data-label="Thực lĩnh"><strong>${payrollMoney(net, ready)}</strong></td>
+      <td class="payroll-col-actions" data-label="">
+        <button class="btn-xs btn-secondary pay-edit" data-pid="${p.id}" title="Sửa dòng lương" style="margin-right:4px;">✏️</button>
+        <button class="btn-xs btn-danger pay-del" data-pid="${p.id}" title="Xóa dòng lương">🗑</button>
+      </td>
+    </tr>
+  `;
+  payrollRowCache.set(p.id, { sig, html });
+  if (payrollRowCache.size > 500) payrollRowCache.delete(payrollRowCache.keys().next().value);
+  return html;
 }
 
 export async function renderPayroll(el, me) {
@@ -338,43 +388,22 @@ export async function renderPayroll(el, me) {
       if (statusEl && !options.keepStatus) statusEl.textContent = `Đã tải ${payrolls.length} dòng bảng lương tháng ${month}. Đang hiển thị ${filtered.length} dòng phù hợp.`;
 
       tableEl.innerHTML = `
-        <div class="table-wrap" style="border:none;border-radius:var(--radius);">
-          <table>
+        <div class="table-wrap payroll-table-wrap">
+          <table class="payroll-table">
             <thead>
               <tr>
-                <th>Nhân viên</th>
-                <th>Phòng ban</th>
-                <th>Lương CB</th>
-                <th>KPI Bonus</th>
-                <th>Phụ cấp</th>
-                <th>Khấu trừ</th>
-                <th>Thực lĩnh</th>
-                <th></th>
+                <th class="payroll-col-employee">Nhân viên</th>
+                <th class="payroll-col-dept">Phòng ban</th>
+                <th class="payroll-col-money">Lương CB</th>
+                <th class="payroll-col-money">KPI Bonus</th>
+                <th class="payroll-col-money">Phụ cấp</th>
+                <th class="payroll-col-money">Khấu trừ</th>
+                <th class="payroll-col-money payroll-col-net">Thực lĩnh</th>
+                <th class="payroll-col-actions">Thao tác</th>
               </tr>
             </thead>
             <tbody>
-              ${pageData.rows.map(p => {
-                const net = (p.base_salary || 0) + (p.kpi_bonus || 0) + (p.allowance || 0) - (p.deduction || 0);
-                return `
-                  <tr class="payroll-row" data-pid="${p.id}" tabindex="0" role="button" aria-label="Mở phiếu lương của ${esc(p.employee_name || 'nhân viên')}">
-                    <td>
-                      <span style="font-weight:600;">${esc(p.employee_name || '—')}</span><br>
-                      <span style="font-size:11px;color:var(--text-3);">${esc(p.employee_code || '')}</span><br>
-                      ${payrollStatusBadge(p)}
-                    </td>
-                    <td style="font-size:12px;color:var(--text-2);">${esc(p.department || '—')}</td>
-                    <td>${fmtMoney(p.base_salary)}</td>
-                    <td style="color:var(--success);">+${fmtMoney(p.kpi_bonus)}</td>
-                    <td style="color:var(--info);">+${fmtMoney(p.allowance)}</td>
-                    <td style="color:var(--danger);">-${fmtMoney(p.deduction)}</td>
-                    <td><strong style="color:var(--primary);font-size:13px;">${fmtMoney(net)}</strong></td>
-                    <td>
-                      <button class="btn-xs btn-secondary pay-edit" data-pid="${p.id}" style="margin-right:4px;">✏️</button>
-                      <button class="btn-xs btn-danger pay-del" data-pid="${p.id}">🗑</button>
-                    </td>
-                  </tr>
-                `;
-              }).join('')}
+              ${pageData.rows.map(p => payrollRowHTML(p)).join('')}
             </tbody>
           </table>
         </div>
@@ -429,80 +458,240 @@ export async function renderPayroll(el, me) {
   loadPayroll();
 }
 
+function formatMoneyInput(value) {
+  const n = Number(value || 0);
+  return n === 0 ? '' : n.toLocaleString('vi-VN');
+}
+
+function unformatMoneyInput(str) {
+  return parseInt(String(str || '').replace(/[^0-9]/g, ''), 10) || 0;
+}
+
 function openPayrollLineForm(pay, onRefresh = noop, currentMonth = '') {
   onRefresh = safeCb(onRefresh);
   const now = new Date();
   const defMonth = currentMonth || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const isEdit = !!pay;
+  const isReady = pay ? (pay.data_status || (Number(pay.base_salary || 0) > 0 ? 'ready' : 'missing_salary_config')) === 'ready' : false;
+  const color = avatarColor(pay?.employee_name || '?');
+  const ini = initials(pay?.employee_name || '?');
+
+  const baseVal = Number(pay?.base_salary || 0);
+  const kpiVal = Number(pay?.kpi_bonus || 0);
+  const allowVal = Number(pay?.allowance || 0);
+  const deductVal = Number(pay?.deduction || 0);
 
   openModal(isEdit ? 'Sửa dòng lương' : 'Thêm dòng lương thủ công', `
-    <div class="input-row">
-      <div class="field"><label>Nhân viên (tên)</label>
-        <input type="text" id="pf-emp" value="${esc(pay?.employee_name || '')}" placeholder="Tên nhân viên"/>
-      </div>
-      <div class="field"><label>Tháng</label>
-        <input type="month" id="pf-month" value="${pay?.month || defMonth}"/>
-      </div>
-    </div>
-    <div class="input-row">
-      <div class="field"><label>Lương cơ bản (VNĐ)</label>
-        <input type="number" id="pf-base" value="${pay?.base_salary || 0}" min="0" step="100000"/>
-      </div>
-      <div class="field"><label>KPI bonus (VNĐ)</label>
-        <input type="number" id="pf-kpi" value="${pay?.kpi_bonus || 0}" min="0" step="100000"/>
+    <!-- Employee Info Card -->
+    <div class="payedit-emp">
+      <span class="payedit-avatar" style="background:${color};">${ini}</span>
+      <div class="payedit-emp-info">
+        <div class="payedit-emp-name">${esc(pay?.employee_name || '—')}</div>
+        <div class="payedit-emp-meta">${esc(pay?.employee_code || '')} · ${esc(pay?.department || '—')}</div>
+        <span class="payroll-badge ${isReady ? 'payroll-badge--ok' : 'payroll-badge--warn'}">${isReady ? 'Đủ dữ liệu' : 'Thiếu cấu hình lương'}</span>
       </div>
     </div>
-    <div class="input-row">
-      <div class="field"><label>Phụ cấp (VNĐ)</label>
-        <input type="number" id="pf-allow" value="${pay?.allowance || 0}" min="0" step="100000"/>
-      </div>
-      <div class="field"><label>Khấu trừ (VNĐ)</label>
-        <input type="number" id="pf-deduct" value="${pay?.deduction || 0}" min="0" step="100000"/>
+
+    <!-- Period -->
+    <div class="payedit-section">
+      <div class="payedit-section-title">Kỳ lương</div>
+      <div class="field">
+        <input type="month" id="pf-month" value="${pay?.month || defMonth}" style="max-width:200px;"/>
       </div>
     </div>
-    <div id="pf-preview" style="background:linear-gradient(135deg,var(--primary),#8B5CF6);border-radius:10px;padding:14px;color:#fff;margin-top:6px;">
-      <div style="font-size:12px;opacity:.8;">Thực nhận dự kiến</div>
-      <div id="pf-net" style="font-size:22px;font-weight:800;">0 ₫</div>
+
+    <!-- Income -->
+    <div class="payedit-section">
+      <div class="payedit-section-title">Khoản thu nhập</div>
+      <div class="payedit-grid">
+        <div class="field">
+          <label>Lương cơ bản</label>
+          <input type="text" id="pf-base" class="payedit-money" value="${formatMoneyInput(baseVal)}" placeholder="0" inputmode="numeric"/>
+        </div>
+        <div class="field">
+          <label>KPI bonus</label>
+          <input type="text" id="pf-kpi" class="payedit-money" value="${formatMoneyInput(kpiVal)}" placeholder="0" inputmode="numeric"/>
+        </div>
+        <div class="field">
+          <label>Phụ cấp</label>
+          <input type="text" id="pf-allow" class="payedit-money" value="${formatMoneyInput(allowVal)}" placeholder="0" inputmode="numeric"/>
+        </div>
+      </div>
+    </div>
+
+    <!-- Deductions -->
+    <div class="payedit-section">
+      <div class="payedit-section-title">Khoản khấu trừ</div>
+      <div class="payedit-grid">
+        <div class="field">
+          <label>Khấu trừ</label>
+          <input type="text" id="pf-deduct" class="payedit-money" value="${formatMoneyInput(deductVal)}" placeholder="0" inputmode="numeric"/>
+        </div>
+      </div>
+    </div>
+
+    <!-- Warnings -->
+    <div id="pf-warnings" style="display:none;"></div>
+
+    <!-- Summary -->
+    <div class="payedit-summary" id="pf-summary-box">
+      <div class="payedit-summary-row">
+        <span>Tổng thu nhập</span>
+        <span id="pf-total-income">0 ₫</span>
+      </div>
+      <div class="payedit-summary-row">
+        <span>Tổng khấu trừ</span>
+        <span id="pf-total-deduct" class="payedit-summary-val--neg">0 ₫</span>
+      </div>
+      <div class="payedit-summary-divider"></div>
+      <div class="payedit-summary-row payedit-summary-row--net">
+        <span>Thực nhận dự kiến</span>
+        <span id="pf-net">0 ₫</span>
+      </div>
+      <div class="payedit-formula">= Lương CB + KPI bonus + Phụ cấp − Khấu trừ</div>
     </div>
   `, `
     <button class="btn-secondary" id="pf-cancel">Hủy</button>
-    <button class="btn-primary" id="pf-save">Lưu</button>
+    <button class="btn-primary" id="pf-save">Lưu thay đổi</button>
   `);
 
+  // Apply payroll-edit modal class
+  const modalEl = document.getElementById('modal');
+  modalEl?.classList.add('modal--payroll-edit');
+
   document.getElementById('pf-cancel').addEventListener('click', closeModal);
-  function updateNet() {
-    const base = parseFloat(document.getElementById('pf-base').value) || 0;
-    const kpi = parseFloat(document.getElementById('pf-kpi').value) || 0;
-    const allow = parseFloat(document.getElementById('pf-allow').value) || 0;
-    const deduct = parseFloat(document.getElementById('pf-deduct').value) || 0;
-    const net = base + kpi + allow - deduct;
-    const out = document.getElementById('pf-net');
-    if (out) out.textContent = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(net);
+
+  function readInputs() {
+    return {
+      base: unformatMoneyInput(document.getElementById('pf-base').value),
+      kpi: unformatMoneyInput(document.getElementById('pf-kpi').value),
+      allow: unformatMoneyInput(document.getElementById('pf-allow').value),
+      deduct: unformatMoneyInput(document.getElementById('pf-deduct').value),
+    };
   }
-  ['pf-base', 'pf-kpi', 'pf-allow', 'pf-deduct'].forEach(id => document.getElementById(id)?.addEventListener('input', updateNet));
+
+  function writeBack(vals) {
+    document.getElementById('pf-base').value = formatMoneyInput(vals.base);
+    document.getElementById('pf-kpi').value = formatMoneyInput(vals.kpi);
+    document.getElementById('pf-allow').value = formatMoneyInput(vals.allow);
+    document.getElementById('pf-deduct').value = formatMoneyInput(vals.deduct);
+  }
+
+  function updateNet() {
+    const v = readInputs();
+    const totalIncome = v.base + v.kpi + v.allow;
+    const net = totalIncome - v.deduct;
+
+    document.getElementById('pf-total-income').textContent = fmtMoney(totalIncome);
+    document.getElementById('pf-total-deduct').textContent = fmtMoney(v.deduct);
+    const netEl = document.getElementById('pf-net');
+    netEl.textContent = fmtMoney(net);
+    const summaryBox = document.getElementById('pf-summary-box');
+
+    // Color the net based on sign
+    if (net < 0) {
+      netEl.style.color = 'var(--danger)';
+      summaryBox.style.borderColor = '#FECACA';
+    } else if (net > 0) {
+      netEl.style.color = 'var(--success)';
+      summaryBox.style.borderColor = 'var(--border)';
+    } else {
+      netEl.style.color = 'var(--text-2)';
+      summaryBox.style.borderColor = 'var(--border)';
+    }
+
+    // Warnings
+    const warnings = document.getElementById('pf-warnings');
+    let warningHtml = '';
+    const saveBtn = document.getElementById('pf-save');
+
+    if (v.base <= 0 && !isReady) {
+      warningHtml += `<div class="payedit-warn"><span>⚠️</span> Nhân viên chưa có lương cơ bản. Cần <a href="#/users${pay ? '/' + pay.employee_id : ''}" target="_blank">cấu hình lương</a> trước khi chốt bảng lương.</div>`;
+    }
+    if (net < 0) {
+      warningHtml += `<div class="payedit-warn payedit-warn--error"><span>❌</span> Thực nhận đang âm. Vui lòng kiểm tra lại lương cơ bản hoặc khoản khấu trừ.</div>`;
+    }
+    if (v.deduct > totalIncome && totalIncome > 0) {
+      warningHtml += `<div class="payedit-warn"><span>⚠️</span> Khấu trừ lớn hơn tổng thu nhập.</div>`;
+    }
+
+    warnings.innerHTML = warningHtml;
+    warnings.style.display = warningHtml ? 'grid' : 'none';
+
+    // Disable save if base <= 0 (missing salary config) or net < 0
+    const invalid = (v.base <= 0 && !isReady) || net < 0;
+    saveBtn.disabled = invalid;
+    saveBtn.style.opacity = invalid ? '0.5' : '1';
+  }
+
+  // Money input formatting: show formatted while typing
+  ['pf-base', 'pf-kpi', 'pf-allow', 'pf-deduct'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('input', () => {
+      const raw = el.value.replace(/[^0-9]/g, '');
+      const n = parseInt(raw, 10) || 0;
+      const cursor = el.selectionStart;
+      const before = el.value;
+      el.value = n === 0 && raw === '' ? '' : n.toLocaleString('vi-VN');
+      // Restore cursor
+      const diff = el.value.length - before.length;
+      if (diff !== 0 && cursor !== null) {
+        el.setSelectionRange(cursor + diff, cursor + diff);
+      }
+      updateNet();
+    });
+    el.addEventListener('blur', () => {
+      const n = unformatMoneyInput(el.value);
+      el.value = n === 0 ? '' : n.toLocaleString('vi-VN');
+      updateNet();
+    });
+    el.addEventListener('keydown', (e) => {
+      // Allow: backspace, delete, tab, escape, enter, arrows, home, end
+      const allowed = [8, 46, 9, 27, 13, 37, 38, 39, 40, 35, 36];
+      if (allowed.includes(e.keyCode) || (e.ctrlKey || e.metaKey)) return;
+      // Only allow digits
+      if (e.key.length === 1 && !/[0-9]/.test(e.key)) {
+        e.preventDefault();
+      }
+    });
+  });
   updateNet();
 
+  let saving = false;
   document.getElementById('pf-save').addEventListener('click', async () => {
-    const employee_name = document.getElementById('pf-emp').value.trim();
+    if (saving) return;
+    const v = readInputs();
+    const net = v.base + v.kpi + v.allow - v.deduct;
     const month = document.getElementById('pf-month').value;
-    const base_salary = parseFloat(document.getElementById('pf-base').value) || 0;
-    const kpi_bonus = parseFloat(document.getElementById('pf-kpi').value) || 0;
-    const allowance = parseFloat(document.getElementById('pf-allow').value) || 0;
-    const deduction = parseFloat(document.getElementById('pf-deduct').value) || 0;
-    const net_salary = base_salary + kpi_bonus + allowance - deduction;
-    if (!employee_name || !month) {
-      toast('Vui lòng điền đầy đủ thông tin', 'error');
-      return;
-    }
+    if (!month) { toast('Vui lòng chọn tháng lương', 'error'); return; }
+    if ((v.base <= 0 && !isReady) || net < 0) { toast('Không thể lưu khi dữ liệu không hợp lệ', 'error'); return; }
+
+    saving = true;
+    const saveBtn = document.getElementById('pf-save');
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Đang lưu...';
+
     try {
-      const data = { employee_name, month, base_salary, kpi_bonus, allowance, deduction, net_salary };
+      const data = {
+        employee_name: pay?.employee_name || '',
+        month,
+        base_salary: v.base,
+        kpi_bonus: v.kpi,
+        allowance: v.allow,
+        deduction: v.deduct,
+        net_salary: net,
+      };
       if (isEdit) await api.updatePayroll(pay.id, data);
       else await api.createPayroll(data);
       closeModal();
       toast(isEdit ? 'Đã cập nhật dòng lương' : 'Đã thêm dòng lương thủ công', 'success');
       onRefresh();
     } catch (e) {
-      toast(e.message, 'error');
+      toast(e.message || 'Không thể cập nhật dòng lương. Vui lòng thử lại.', 'error');
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Lưu thay đổi';
+      saving = false;
     }
   });
 }
