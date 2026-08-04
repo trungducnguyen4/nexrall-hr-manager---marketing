@@ -313,7 +313,7 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
     departments = departmentsResult.status === 'fulfilled' ? (departmentsResult.value.departments || []) : [];
   } catch (error) {
     el.innerHTML = `<section class="employee-profile-page"><button class="employee-back-link" id="employee-back">${icon('arrowLeft', 'sm')} Danh sách nhân viên</button>${emptyHTML('', error.message)}</section>`;
-    document.getElementById('employee-back')?.addEventListener('click', () => navigate('#/users'));
+    el.querySelector('#employee-back')?.addEventListener('click', () => navigate('#/users'));
     return;
   }
 
@@ -332,7 +332,7 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
       <button class="employee-back-link print-hidden" id="employee-back">${icon('arrowLeft', 'sm')} Danh sách nhân viên</button>
       <header class="employee-profile-header">
         <div class="employee-profile-identity">
-          <div class="employee-profile-avatar">${avatarMarkup(user, 'lg')}${permissions.can_manage_documents ? `<button class="employee-avatar-edit print-hidden" id="employee-avatar-edit" aria-label="Cập nhật ảnh đại diện">${icon('pencil', 'xs')}</button>` : ''}</div>
+          <div class="employee-profile-avatar">${avatarMarkup(user, 'lg')}${permissions.can_manage_avatar ? `<button class="employee-avatar-edit print-hidden" id="employee-avatar-edit" aria-label="Cập nhật ảnh đại diện">${icon('pencil', 'xs')}</button>` : ''}</div>
           <div>
             <div class="employee-profile-meta">${esc(user.employee_code || '')} <span>${user.employee_type === 'TTS' ? 'Thực tập sinh' : 'Nhân viên'}</span></div>
             <h1>${esc(user.full_name)}</h1>
@@ -355,12 +355,14 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
       <div id="employee-profile-content"></div>
     </section>`;
 
+  const $ = selector => el.querySelector(selector);
+  const $$ = selector => el.querySelectorAll(selector);
   const managerName = () => basicUsers.find(item => Number(item.id) === Number(user.direct_manager_id))?.full_name || '';
 
   function renderTab() {
-    const content = document.getElementById('employee-profile-content');
+    const content = $('#employee-profile-content');
     if (!content) return;
-    document.querySelectorAll('[data-profile-tab]').forEach(button => button.classList.toggle('active', button.dataset.profileTab === activeTab));
+    $$('[data-profile-tab]').forEach(button => button.classList.toggle('active', button.dataset.profileTab === activeTab));
     if (activeTab === 'overview') {
       content.innerHTML = `
         <div class="employee-profile-section-head"><div><h2>Thông tin cá nhân</h2><p>Thông tin nhận diện và liên hệ của nhân viên.</p></div>
@@ -377,7 +379,7 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
           ${user.employee_type === 'TTS' && Object.prototype.hasOwnProperty.call(user, 'school_name') ? detailItem('Trường học', user.school_name) : ''}
           ${Object.prototype.hasOwnProperty.call(user, 'emergency_contact_name') ? detailItem('Liên hệ khẩn cấp', [user.emergency_contact_name, user.emergency_contact_phone].filter(Boolean).join(' - ')) : ''}
         </dl>`;
-      document.getElementById('employee-edit-personal')?.addEventListener('click', () =>
+      $('#employee-edit-personal')?.addEventListener('click', () =>
         openProfileEditor(user, 'personal', { permissions, departments, basicUsers, metadata }, refreshProfile)
       );
       return;
@@ -401,7 +403,7 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
           ${detailItem('Ngày chính thức', user.official_date, fmtDate)}
           ${user.lifecycle_status === 'Đã nghỉ' ? detailItem('Ngày nghỉ việc', user.termination_date, fmtDate) : ''}
         </dl>`;
-      document.getElementById('employee-edit-employment')?.addEventListener('click', () =>
+      $('#employee-edit-employment')?.addEventListener('click', () =>
         openProfileEditor(user, 'employment', { permissions, departments, basicUsers, metadata }, refreshProfile)
       );
       return;
@@ -423,7 +425,7 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
           ${detailItem('Số BHXH', user.social_insurance_number)}
           ${detailItem('Nơi đăng ký KCB BHYT', user.insurance_hospital)}
         </dl>`;
-      document.getElementById('employee-edit-compensation')?.addEventListener('click', () =>
+      $('#employee-edit-compensation')?.addEventListener('click', () =>
         openProfileEditor(user, 'compensation', { permissions, departments, basicUsers, metadata }, refreshProfile)
       );
       return;
@@ -438,13 +440,13 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
     window.dispatchEvent(new Event('hashchange'));
   }
 
-  document.getElementById('employee-back')?.addEventListener('click', () => navigate('#/users'));
-  document.querySelectorAll('[data-profile-tab]').forEach(button => button.addEventListener('click', () => {
+  $('#employee-back')?.addEventListener('click', () => navigate('#/users'));
+  $$('[data-profile-tab]').forEach(button => button.addEventListener('click', () => {
     activeTab = button.dataset.profileTab;
     renderTab();
   }));
-  document.getElementById('employee-print')?.addEventListener('click', () => {
-    const content = document.getElementById('employee-profile-content');
+  $('#employee-print')?.addEventListener('click', () => {
+    const content = $('#employee-profile-content');
     if (!content) return;
     const previousTab = activeTab;
     content.innerHTML = `
@@ -475,8 +477,8 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
     window.print();
     setTimeout(() => { activeTab = previousTab; renderTab(); }, 0);
   });
-  document.getElementById('employee-lifecycle')?.addEventListener('click', () => openLifecycleEditor(user, refreshProfile));
-  document.getElementById('employee-avatar-edit')?.addEventListener('click', () => openAvatarEditor(user, refreshProfile));
+  $('#employee-lifecycle')?.addEventListener('click', () => openLifecycleEditor(user, refreshProfile));
+  $('#employee-avatar-edit')?.addEventListener('click', () => openAvatarEditor(user, refreshProfile));
   renderTab();
 }
 
@@ -484,7 +486,7 @@ async function renderDocumentsTab(content, user, permissions) {
   content.innerHTML = `<div class="employee-profile-section-head"><div><h2>Hồ sơ đính kèm</h2><p>PDF, JPG, PNG hoặc WebP, tối đa 10 MB mỗi tệp.</p></div>
     ${permissions.can_manage_documents ? `<button class="btn-primary btn-sm print-hidden" id="employee-document-add">${icon('plus', 'sm')} Thêm tài liệu</button>` : ''}</div>
     <div id="employee-documents-list">${loadingHTML()}</div>`;
-  const list = document.getElementById('employee-documents-list');
+  const list = content.querySelector('#employee-documents-list');
   try {
     const response = await api.getEmployeeDocuments(user.id);
     const documents = response.documents || [];
@@ -539,7 +541,7 @@ async function renderDocumentsTab(content, user, permissions) {
         renderDocumentsTab(content, user, permissions);
       } catch (error) { toast(error.message, 'error'); button.disabled = false; }
     }));
-    document.getElementById('employee-document-add')?.addEventListener('click', () =>
+    content.querySelector('#employee-document-add')?.addEventListener('click', () =>
       openDocumentUpload(user, response.categories || {}, () => renderDocumentsTab(content, user, permissions))
     );
   } catch (error) {
@@ -550,7 +552,7 @@ async function renderDocumentsTab(content, user, permissions) {
 async function renderTimelineTab(content, user) {
   content.innerHTML = `<div class="employee-profile-section-head"><div><h2>Timeline nhân sự</h2><p>Lịch sử từ ngày vào làm đến các thay đổi nhân sự.</p></div></div>
     <div id="employee-timeline">${loadingHTML()}</div>`;
-  const target = document.getElementById('employee-timeline');
+  const target = content.querySelector('#employee-timeline');
   try {
     const { timeline = [] } = await api.getEmployeeTimeline(user.id);
     target.innerHTML = timeline.length ? `<ol class="employee-timeline">${timeline.map(event => `
@@ -564,7 +566,7 @@ async function renderTimelineTab(content, user) {
 async function renderAuditTab(content, user) {
   content.innerHTML = `<div class="employee-profile-section-head"><div><h2>Nhật ký thay đổi</h2><p>Mỗi trường chỉnh sửa được ghi cùng người thực hiện và thời gian.</p></div></div>
     <div id="employee-audit">${loadingHTML()}</div>`;
-  const target = document.getElementById('employee-audit');
+  const target = content.querySelector('#employee-audit');
   try {
     const { audit = [] } = await api.getEmployeeAudit(user.id);
     target.innerHTML = audit.length ? `<div class="employee-audit-list">${audit.map(entry => `
@@ -730,20 +732,65 @@ function openLifecycleEditor(user, onSaved) {
 }
 
 function openAvatarEditor(user, onSaved) {
-  openModal('Cập nhật ảnh đại diện', `
-    <label class="field employee-file-field"><span>Ảnh chân dung</span><input id="employee-avatar-file" type="file" accept="image/jpeg,image/png,image/webp"/><small>JPG, PNG hoặc WebP, tối đa 5 MB.</small></label>`,
-    `<button class="btn-secondary" id="employee-avatar-cancel">Hủy</button><button class="btn-primary" id="employee-avatar-save">Tải ảnh lên</button>`);
-  document.getElementById('employee-avatar-cancel')?.addEventListener('click', closeModal);
-  document.getElementById('employee-avatar-save')?.addEventListener('click', async event => {
-    const file = document.getElementById('employee-avatar-file').files?.[0];
-    if (!file) { toast('Vui lòng chọn ảnh', 'error'); return; }
-    event.currentTarget.disabled = true;
+  let cropper = null, objectUrl = null, initialZoom = 1;
+  const dispose = () => { cropper?.destroy(); cropper = null; if (objectUrl) URL.revokeObjectURL(objectUrl); objectUrl = null; };
+  const close = () => { dispose(); closeModal(); };
+  openModal('Cắt ảnh đại diện', `
+    <p class="avatar-crop-intro">Chọn vùng ảnh bạn muốn sử dụng làm ảnh đại diện.</p>
+    <label class="field employee-file-field"><span>Chọn ảnh chân dung</span><input id="employee-avatar-file" type="file" accept="image/jpeg,image/png,image/webp"/><small>JPG, PNG hoặc WebP, tối đa 5 MB.</small></label>
+    <section id="avatar-cropper" class="avatar-cropper hidden">
+      <div class="avatar-crop-workspace"><div class="avatar-crop-stage"><img id="avatar-crop-image" alt="Ảnh cần cắt"/></div><aside class="avatar-crop-preview"><span>Xem trước</span><div id="avatar-crop-preview-image" class="avatar-crop-preview-image"></div></aside></div>
+      <label class="avatar-crop-zoom"><span>Thu nhỏ</span><input id="avatar-crop-zoom" type="range" min="0" max="100" value="0"/><span>Phóng to</span></label>
+      <p class="avatar-crop-help">Kéo ảnh trong khung vuông. Preview tròn là phần ảnh sẽ hiển thị sau khi lưu.</p>
+    </section>`,
+    `<button class="btn-secondary" id="employee-avatar-cancel">Hủy</button><button class="btn-secondary" id="employee-avatar-reset" disabled>Đặt lại</button><button class="btn-primary" id="employee-avatar-save" disabled>Lưu ảnh</button>`);
+  document.getElementById('modal')?.classList.add('modal--avatar-crop');
+  const fileInput = document.getElementById('employee-avatar-file');
+  const cropperHost = document.getElementById('avatar-cropper');
+  const image = document.getElementById('avatar-crop-image');
+  const preview = document.getElementById('avatar-crop-preview-image');
+  const zoom = document.getElementById('avatar-crop-zoom');
+  const save = document.getElementById('employee-avatar-save');
+  const reset = document.getElementById('employee-avatar-reset');
+  const updatePreview = () => {
+    if (!cropper) return;
+    const canvas = cropper.getCroppedCanvas({ width: 192, height: 192, imageSmoothingQuality: 'high' });
+    if (canvas) preview.style.backgroundImage = `url(${canvas.toDataURL('image/webp', .9)})`;
+  };
+  const resetCrop = () => {
+    if (!cropper) return;
+    cropper.reset(); zoom.value = '0'; initialZoom = cropper.getImageData().width / cropper.getImageData().naturalWidth; updatePreview();
+  };
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) { toast('Chỉ nhận ảnh JPG, PNG hoặc WebP', 'error'); fileInput.value = ''; return; }
+    if (file.size > 5 * 1024 * 1024) { toast('Ảnh tối đa 5 MB', 'error'); fileInput.value = ''; return; }
+    dispose(); objectUrl = URL.createObjectURL(file); image.src = objectUrl;
+    image.onload = () => {
+      if (!globalThis.Cropper) { toast('Không thể tải công cụ crop ảnh', 'error'); return; }
+      cropper = new globalThis.Cropper(image, {
+        aspectRatio: 1, viewMode: 1, dragMode: 'move', autoCropArea: 1, responsive: true,
+        background: false, guides: false, center: true, highlight: false, movable: true, zoomable: true,
+        ready() { initialZoom = cropper.getImageData().width / cropper.getImageData().naturalWidth; cropperHost.classList.remove('hidden'); reset.disabled = false; save.disabled = false; updatePreview(); },
+        crop: updatePreview,
+      });
+    };
+    image.onerror = () => { dispose(); toast('Không thể đọc ảnh đã chọn', 'error'); };
+  });
+  zoom.addEventListener('input', () => { if (cropper) cropper.zoomTo(initialZoom * (1 + Number(zoom.value) / 100 * 2)); });
+  reset.addEventListener('click', resetCrop);
+  document.getElementById('employee-avatar-cancel')?.addEventListener('click', close);
+  document.getElementById('modal-close')?.addEventListener('click', dispose, { once: true });
+  save.addEventListener('click', async event => {
+    if (!cropper) return;
+    event.currentTarget.disabled = true; event.currentTarget.textContent = 'Đang lưu...';
     try {
-      await api.uploadUserDocument(user.id, 'avatar', file);
-      closeModal();
-      toast('Đã cập nhật ảnh đại diện', 'success');
-      onSaved();
-    } catch (error) { toast(error.message, 'error'); event.currentTarget.disabled = false; }
+      const canvas = cropper.getCroppedCanvas({ width: 512, height: 512, imageSmoothingEnabled: true, imageSmoothingQuality: 'high' });
+      const blob = await new Promise((resolve, reject) => canvas?.toBlob(value => value ? resolve(value) : reject(new Error('Không thể tạo ảnh đã crop')), 'image/webp', .9));
+      await api.uploadUserDocument(user.id, 'avatar', new File([blob], 'avatar.webp', { type: 'image/webp' }));
+      close(); toast('Đã cập nhật ảnh đại diện', 'success'); onSaved();
+    } catch (error) { toast(error.message, 'error'); event.currentTarget.disabled = false; event.currentTarget.textContent = 'Lưu ảnh'; }
   });
 }
 

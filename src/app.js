@@ -11,21 +11,22 @@ let _viewModules = {};
 async function getView(name) {
   if (!_viewModules[name]) {
     if (name === 'dashboard')    _viewModules[name] = await import('./views/dashboard.js?v=20260730-notification-center-v1');
-    else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js?v=20260730-notification-center-v1');
+    else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js?v=20260804-monthly-attendance-board-v1');
     else if (name === 'tasks')       _viewModules[name] = await import('./views/tasks.js?v=20260803-task-status-actions');
     else if (name === 'invoices')    _viewModules[name] = await import('./views/invoices.js?v=20260730-payslip-detail-v1');
-    else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260730-notification-center-v1');
-    else if (name === 'wifi')        _viewModules[name] = await import('./views/wifi.js');
-    else if (name === 'settings')    _viewModules[name] = await import('./views/settings.js?v=20260728-overtime');
+    else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260804-cropperjs-v2');
+    else if (name === 'wifi')        _viewModules[name] = await import('./views/wifi.js?v=20260804-office-network-v1');
+    else if (name === 'settings')    _viewModules[name] = await import('./views/settings.js?v=20260804-password-policy-v2');
     else if (name === 'taskpanel')   _viewModules[name] = await import('./views/taskpanel.js?v=20260722-rich-task-editor');
     else if (name === 'departments') _viewModules[name] = await import('./views/departments.js');
     else if (name === 'recruitment') _viewModules[name] = await import('./views/recruitment.js');
-    else if (name === 'payroll')     _viewModules[name] = await import('./views/payroll.js?v=20260803-payroll-table-v2');
-    else if (name === 'leave')       _viewModules[name] = await import('./views/leave.js');
+    else if (name === 'payroll')     _viewModules[name] = await import('./views/payroll.js?v=20260804-payroll-column-grid-v1');
+    else if (name === 'leave')       _viewModules[name] = await import('./views/leave.js?v=20260804-leave-policy-v4');
     else if (name === 'campaigns')   _viewModules[name] = await import('./views/campaigns.js');
-    else if (name === 'evaluation')  _viewModules[name] = await import('./views/evaluation.js?v=20260728-evaluation-policy');
+    else if (name === 'evaluation')  _viewModules[name] = await import('./views/evaluation.js?v=20260804-eval-report-pagination-v1');
     else if (name === 'kpis')        _viewModules[name] = await import('./views/kpis.js?v=20260730-manual-kpi');
     else if (name === 'notifications') _viewModules[name] = await import('./views/notifications.js?v=20260730-notification-center-v1');
+    else if (name === 'assets')      _viewModules[name] = await import('./views/assets.js?v=20260804-project-handover-v1');
     else if (name === 'db-admin')    _viewModules[name] = await import('./views/dbadmin.js');
   }
   return _viewModules[name];
@@ -34,17 +35,9 @@ async function getView(name) {
 // ── State ───────────────────────────────────────
 let me = null;
 let _currentView = null;
-let _contentCleanup = null;
 let _appInitialized = false;
-
-// DOM view cache — stores { node, cleanup, ts } per view name
-// Cached nodes stay in contentEl but are hidden (display:none) when not active
-// Switching back to a view is instant (just show the node), no re-render needed
-const _viewCache = new Map();
-const VIEW_CACHE_TTL = 90_000; // 90 s — force re-render after this long
-
-// Views that must ALWAYS re-render (they have live clocks / realtime state)
-const NO_CACHE_VIEWS = new Set(['attendance', 'tasks']);
+let _activeViewNode = null;
+let _activeViewCleanup = null;
 let _routeGeneration = 0;
 
 // ── DOM refs ────────────────────────────────────
@@ -81,6 +74,7 @@ loginForm.addEventListener('submit', async (e) => {
     const { token, user: userData } = await api.login(user, pw);
     await setToken(token);
     me = userData;
+    if (me.must_change_password) window.location.hash = '#/settings';
     loginScreen.classList.add('hidden');
     appEl.classList.remove('hidden');
     initApp();
@@ -115,6 +109,7 @@ async function boot() {
     await verifyBiometricIfAvailable();
     const { user: userData } = await api.me();
     me = userData;
+    if (me.must_change_password) window.location.hash = '#/settings';
     loginScreen.classList.add('hidden');
     appEl.classList.remove('hidden');
     initApp();
@@ -177,7 +172,7 @@ function initApp() {
   document.getElementById('btn-menu').addEventListener('click', openSidebar);
   document.getElementById('sidebar-close').addEventListener('click', closeSidebar);
   sidebarOverlay.addEventListener('click', closeSidebar);
-  document.getElementById('header-av-btn').addEventListener('click', () => navigate('#/settings'));
+  document.getElementById('header-av-btn').addEventListener('click', () => navigate(`#/users/${me.id}`));
   document.getElementById('employee-alert-button')?.addEventListener('click', () => navigate('#/notifications'));
 
   document.querySelectorAll('.nav-item[data-nav]').forEach(link => {
@@ -382,36 +377,16 @@ async function route() {
     link.classList.toggle('active', link.dataset.nav === path);
   });
 
-  // Hide the currently visible view node (keep it alive in DOM)
-  if (_currentView && _currentView !== routeKey) {
-    const prev = _viewCache.get(_currentView);
-    if (prev) prev.node.style.display = 'none';
+  // Keep exactly one route view in the DOM. Views contain repeated element IDs
+  // and some legacy global selectors; retaining hidden route DOM lets events
+  // bind to a stale instance and is the root cause of the "refresh to use" bug.
+  if (_activeViewCleanup) {
+    try { _activeViewCleanup(); } catch (error) { console.warn('View cleanup failed', error); }
   }
-
-  const now = Date.now();
-  const cached = _viewCache.get(routeKey);
-  const isFresh = cached && !NO_CACHE_VIEWS.has(path) && (now - cached.ts) < VIEW_CACHE_TTL;
-
-  if (isFresh) {
-    // Instant — just show the cached node, no fetch needed
-    cached.node.style.display = '';
-    _contentCleanup = cached.cleanup || null;
-    _currentView = routeKey;
-    return;
-  }
-
-  // Stale or missing — tear down old node for this view if it exists
-  if (cached) {
-    if (cached.cleanup) cached.cleanup();
-    cached.node.remove();
-    _viewCache.delete(routeKey);
-  }
-
-  if (NO_CACHE_VIEWS.has(path)) {
-    contentEl.querySelectorAll(':scope > .view-container').forEach(node => node.remove());
-    _viewCache.clear();
-  }
-  contentEl.querySelectorAll(`:scope > .view-container[data-view="${CSS.escape(routeKey)}"]`).forEach(node => node.remove());
+  _activeViewCleanup = null;
+  if (_activeViewNode) _activeViewNode.remove();
+  _activeViewNode = null;
+  contentEl.querySelectorAll(':scope > .view-container').forEach(node => node.remove());
 
   // Create a fresh container node for this view
   const viewNode = document.createElement('div');
@@ -419,19 +394,12 @@ async function route() {
   viewNode.dataset.view = routeKey;
   contentEl.appendChild(viewNode);
 
-  // Hide all other cached view nodes
-  _viewCache.forEach((entry, name) => {
-    if (name !== routeKey) entry.node.style.display = 'none';
-  });
-  contentEl.querySelectorAll(':scope > .view-container').forEach(node => {
-    if (node !== viewNode && node.dataset.view !== routeKey) node.style.display = 'none';
-  });
-
   _currentView = routeKey;
 
   try {
     const mod = await getView(path);
     if (routeGeneration !== _routeGeneration) {
+      if (viewNode._cleanup) viewNode._cleanup();
       viewNode.remove();
       return;
     }
@@ -443,40 +411,33 @@ async function route() {
         viewNode.remove();
         return;
       }
-      const cleanup = viewNode._cleanup || null;
+      _activeViewNode = viewNode;
+      _activeViewCleanup = viewNode._cleanup || null;
       viewNode._cleanup = null;
-      _contentCleanup = cleanup;
-      _viewCache.set(routeKey, { node: viewNode, cleanup, ts: Date.now() });
     } else {
       viewNode.innerHTML = `<div class="empty-state"><div class="empty-icon">404</div><div class="empty-text">Trang không tìm thấy</div></div>`;
-      _viewCache.set(routeKey, { node: viewNode, cleanup: null, ts: Date.now() });
+      _activeViewNode = viewNode;
     }
   } catch(e) {
     console.error('Route error:', e);
     viewNode.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
-    _viewCache.set(routeKey, { node: viewNode, cleanup: null, ts: Date.now() });
+    _activeViewNode = viewNode;
   }
 }
 
 // Destroy all cached view nodes (e.g. on logout)
 function _destroyAllViews() {
-  _viewCache.forEach(entry => {
-    if (entry.cleanup) entry.cleanup();
-    entry.node.remove();
-  });
-  _viewCache.clear();
+  if (_activeViewCleanup) _activeViewCleanup();
+  _activeViewCleanup = null;
+  if (_activeViewNode) _activeViewNode.remove();
+  _activeViewNode = null;
+  contentEl.querySelectorAll(':scope > .view-container').forEach(node => node.remove());
   _currentView = null;
-  _contentCleanup = null;
 }
 
 // Invalidate a specific view's DOM cache so it re-renders fresh on next visit
-export function invalidateView(name) {
-  for (const [key, entry] of _viewCache.entries()) {
-    if (key !== name && !key.startsWith(`${name}/`)) continue;
-    if (entry.cleanup) entry.cleanup();
-    entry.node.remove();
-    _viewCache.delete(key);
-  }
+export function invalidateView(_name) {
+  // Route DOM is not cached: the next hashchange always renders a fresh view.
 }
 
 export function navigate(hash) {

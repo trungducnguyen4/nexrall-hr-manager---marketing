@@ -12,8 +12,61 @@ let _migrated = false;
 // Bump when additive schema changes are introduced. Existing installations may
 // already have the prior version recorded, so they would otherwise skip the
 // KPI table creation below and fail every KPI request at runtime.
-const SCHEMA_VERSION = '2026-07-30-payslip-detail-v1';
+const SCHEMA_VERSION = '2026-08-04-project-handover-v1';
 const SEED_VERSION = '2026-07-22-seed-v1';
+
+const LEAVE_DOCUMENT_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+const LEAVE_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
+
+async function ensureLeavePolicySchema(env) {
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS leave_balances (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, leave_type_code TEXT NOT NULL,
+    balance_year INTEGER NOT NULL, available_days REAL NOT NULL DEFAULT 0,
+    updated_by INTEGER, updated_by_name TEXT, updated_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(user_id, leave_type_code, balance_year)
+  )`);
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS leave_balance_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, leave_type_code TEXT NOT NULL,
+    balance_year INTEGER NOT NULL, leave_request_id INTEGER, delta_days REAL NOT NULL,
+    entry_type TEXT NOT NULL, note TEXT, created_by INTEGER, created_by_name TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS leave_request_documents (
+    id TEXT PRIMARY KEY, leave_request_id INTEGER, owner_id INTEGER NOT NULL,
+    original_filename TEXT NOT NULL, content_type TEXT NOT NULL, byte_size INTEGER NOT NULL,
+    storage_key TEXT NOT NULL UNIQUE, required_label TEXT, uploaded_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  for (const [column, type] of Object.entries({
+    short_description: 'TEXT', policy_description: 'TEXT', notice_hours: 'INTEGER',
+    required_documents: 'TEXT', requires_handover: 'INTEGER DEFAULT 0', approval_flow: 'TEXT',
+  })) { try { await env.DB.exec(`ALTER TABLE leave_types ADD COLUMN ${column} ${type}`); } catch (_) {} }
+  for (const [column, type] of Object.entries({
+    leave_session: "TEXT DEFAULT 'full'", total_days: 'REAL', handover_user_id: 'INTEGER',
+    handover_user_name: 'TEXT', approval_flow: 'TEXT', balance_reserved_days: 'REAL DEFAULT 0',
+  })) { try { await env.DB.exec(`ALTER TABLE leave_requests ADD COLUMN ${column} ${type}`); } catch (_) {} }
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_leave_balances_user_year ON leave_balances(user_id,balance_year,leave_type_code)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_leave_documents_request ON leave_request_documents(leave_request_id,owner_id)'); } catch (_) {}
+}
+
+// This audit table was introduced after some production databases had already
+// reached the schema-version fast path. Keep its creation idempotent and call
+// it again immediately before payroll line adjustments so an audit migration
+// can never make a successful payroll update look like a failed request.
+async function ensurePayrollLineChangeLog(env) {
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS payroll_line_change_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    payroll_id INTEGER NOT NULL,
+    line_key TEXT NOT NULL,
+    line_label TEXT NOT NULL,
+    before_value REAL NOT NULL,
+    after_value REAL NOT NULL,
+    change_note TEXT NOT NULL,
+    changed_by INTEGER NOT NULL,
+    changed_by_name TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_payroll_line_change_log_payroll_created ON payroll_line_change_log(payroll_id,created_at DESC)');
+}
 
 // VietQR's bank directory is public reference data, but fetching it through
 // the Worker keeps the browser within the app's CSP and gives us one place to
@@ -52,6 +105,29 @@ async function getVietqrBanks() {
 
 async function migrate(env) {
   if (_migrated) return;
+  // These additive tables are self-healed before the schema-version fast path.
+  // A previous interrupted deployment can otherwise leave the version marker
+  // behind while a new API starts querying a table that was never created.
+  await ensureAttendanceOvertimeSchema(env);
+  await ensureProjectHandoverSchema(env);
+  // Leave-policy schema is additive. A partially migrated legacy D1 must not
+  // block every authenticated request; the individual leave endpoints still
+  // fail closed if their required data is unavailable.
+  try { await ensureLeavePolicySchema(env); } catch (error) { console.error('Leave policy schema check failed', error); }
+  // Keep this audit table available even when the rest of the schema is already current.
+  // This is intentionally idempotent so older databases self-heal safely.
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS payroll_change_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    payroll_id INTEGER NOT NULL,
+    changed_by INTEGER NOT NULL,
+    changed_by_name TEXT,
+    change_note TEXT NOT NULL,
+    before_data TEXT NOT NULL,
+    after_data TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_payroll_change_log_payroll_created ON payroll_change_log(payroll_id,created_at DESC)'); } catch (_) {}
+  try { await ensurePayrollLineChangeLog(env); } catch (_) {}
   try {
     const row = await env.DB.prepare("SELECT setting_value FROM settings WHERE setting_key='schema_version'").first();
     if (row?.setting_value === SCHEMA_VERSION) {
@@ -288,6 +364,21 @@ async function migrate(env) {
   try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN work_days REAL DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN standard_days REAL DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN note TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE candidates ADD COLUMN cv_storage_key TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE candidates ADD COLUMN cv_original_filename TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE candidates ADD COLUMN cv_content_type TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE candidates ADD COLUMN cv_byte_size INTEGER DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS payroll_change_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    payroll_id INTEGER NOT NULL,
+    changed_by INTEGER NOT NULL,
+    changed_by_name TEXT,
+    change_note TEXT NOT NULL,
+    before_data TEXT NOT NULL,
+    after_data TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_payroll_change_log_payroll_created ON payroll_change_log(payroll_id,created_at DESC)'); } catch (_) {}
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS payroll_adjustments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     employee_id INTEGER NOT NULL,
@@ -353,6 +444,67 @@ async function migrate(env) {
   )`).run();
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_overtime_requests_status_date ON overtime_requests(status,work_date)'); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_overtime_requests_user_date ON overtime_requests(user_id,work_date)'); } catch (_) {}
+  // Employee-entered overtime forms deliberately live beside the checkout OT
+  // table above.  The legacy table has a required one-to-one attendance_id and
+  // therefore cannot represent a multi-date monthly form safely.
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS overtime_forms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    period_month TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    source TEXT NOT NULL DEFAULT 'employee',
+    source_batch_id INTEGER,
+    review_note TEXT,
+    reviewer_id INTEGER,
+    reviewer_name TEXT,
+    reviewed_at TEXT,
+    submitted_at TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS overtime_form_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    form_id INTEGER NOT NULL,
+    start_at TEXT NOT NULL,
+    end_at TEXT NOT NULL,
+    requested_minutes INTEGER NOT NULL,
+    approved_minutes INTEGER,
+    reason TEXT NOT NULL,
+    time_category TEXT NOT NULL DEFAULT 'workday',
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_overtime_forms_user_period ON overtime_forms(user_id,period_month)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_overtime_forms_status_period ON overtime_forms(status,period_month)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_overtime_form_items_form ON overtime_form_items(form_id)'); } catch (_) {}
+  // Imported data is linked to its batch rather than merely annotated in a
+  // note, allowing conflicts and a later batch-specific rollback to be safe.
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS attendance_import_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_name TEXT NOT NULL,
+    period_month TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'preview',
+    created_by INTEGER NOT NULL,
+    created_by_name TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    committed_at TEXT
+  )`); } catch (_) {}
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS attendance_import_rows (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id INTEGER NOT NULL,
+    source_key TEXT NOT NULL,
+    employee_code TEXT NOT NULL,
+    work_date TEXT,
+    attendance_id INTEGER,
+    outcome TEXT NOT NULL,
+    detail TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(batch_id,source_key)
+  )`); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN source_batch_id INTEGER'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE users ADD COLUMN profile_pending INTEGER DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_attendance_source_batch ON attendance(source_batch_id)'); } catch (_) {}
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS company_holidays (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     holiday_date TEXT NOT NULL UNIQUE,
@@ -690,6 +842,16 @@ async function migrate(env) {
     note TEXT,
     created_at TEXT DEFAULT (datetime('now','localtime'))
   )`); } catch (_) {}
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS asset_handover_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    actor_id INTEGER,
+    actor_name TEXT,
+    detail TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
+  try { await env.DB.exec(`CREATE INDEX IF NOT EXISTS idx_asset_handover_history_asset_created ON asset_handover_history(asset_id, created_at DESC)`); } catch (_) {}
   // KPI theo nhân viên/kỳ tháng. Các bảng này chỉ được thêm mới, không thay đổi dữ liệu cũ.
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS employee_kpi_plans (
     id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, month INTEGER NOT NULL, year INTEGER NOT NULL,
@@ -764,6 +926,37 @@ async function migrate(env) {
       .bind('schema_version', SCHEMA_VERSION).run();
   } catch (_) {}
   _migrated = true;
+}
+
+async function ensureAttendanceOvertimeSchema(env) {
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS overtime_forms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,period_month TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',source TEXT NOT NULL DEFAULT 'employee',source_batch_id INTEGER,
+    review_note TEXT,reviewer_id INTEGER,reviewer_name TEXT,reviewed_at TEXT,submitted_at TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS overtime_form_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,form_id INTEGER NOT NULL,start_at TEXT NOT NULL,end_at TEXT NOT NULL,
+    requested_minutes INTEGER NOT NULL,approved_minutes INTEGER,reason TEXT NOT NULL,time_category TEXT NOT NULL DEFAULT 'workday',
+    created_at TEXT DEFAULT (datetime('now','localtime')),updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS attendance_import_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,source_name TEXT NOT NULL,period_month TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'preview',
+    created_by INTEGER NOT NULL,created_by_name TEXT,created_at TEXT DEFAULT (datetime('now','localtime')),committed_at TEXT
+  )`); } catch (_) {}
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS attendance_import_rows (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,batch_id INTEGER NOT NULL,source_key TEXT NOT NULL,employee_code TEXT NOT NULL,work_date TEXT,
+    attendance_id INTEGER,outcome TEXT NOT NULL,detail TEXT,created_at TEXT DEFAULT (datetime('now','localtime')),UNIQUE(batch_id,source_key)
+  )`); } catch (_) {}
+  for (const statement of [
+    'CREATE INDEX IF NOT EXISTS idx_overtime_forms_user_period ON overtime_forms(user_id,period_month)',
+    'CREATE INDEX IF NOT EXISTS idx_overtime_forms_status_period ON overtime_forms(status,period_month)',
+    'CREATE INDEX IF NOT EXISTS idx_overtime_form_items_form ON overtime_form_items(form_id)',
+    'ALTER TABLE attendance ADD COLUMN source_batch_id INTEGER',
+    'ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0',
+    'ALTER TABLE users ADD COLUMN profile_pending INTEGER DEFAULT 0',
+    'CREATE INDEX IF NOT EXISTS idx_attendance_source_batch ON attendance(source_batch_id)',
+  ]) { try { await env.DB.exec(statement); } catch (_) {} }
 }
 
 // ===================== DEPARTMENT STANDARDIZATION =====================
@@ -893,6 +1086,16 @@ async function hashPassword(password) {
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+function validatePasswordPolicy(password) {
+  if (typeof password !== 'string' || password.length < 8 || password.length > 20) return 'Mật khẩu phải có từ 8 đến 20 ký tự';
+  if (!/[A-Z]/.test(password)) return 'Mật khẩu phải có ít nhất 1 chữ in hoa';
+  if (!/[a-z]/.test(password)) return 'Mật khẩu phải có ít nhất 1 chữ thường';
+  if (!/[0-9]/.test(password)) return 'Mật khẩu phải có ít nhất 1 chữ số';
+  if (!/[^A-Za-z0-9\s]/.test(password)) return 'Mật khẩu phải có ít nhất 1 ký tự đặc biệt';
+  if (/\s/.test(password)) return 'Mật khẩu không được chứa khoảng trắng';
+  return null;
+}
+
 function genToken() {
   const arr = new Uint8Array(32);
   crypto.getRandomValues(arr);
@@ -1004,6 +1207,7 @@ function employeeProfilePermissions(target, me, hasHrScope, isManager) {
     can_edit_contract: hasHrScope,
     can_edit_compensation: hasHrScope,
     can_manage_documents: hasHrScope,
+    can_manage_avatar: hasHrScope || self,
     can_view_documents: hasHrScope || self,
     can_view_audit: hasHrScope,
     can_export: hasHrScope,
@@ -1085,6 +1289,24 @@ function xmlEscape(value) {
   })[character]);
 }
 
+const VIETNAMESE_SEARCH_REPLACEMENTS = [
+  ['a', 'àáạảãâầấậẩẫăằắặẳẵ'], ['e', 'èéẹẻẽêềếệểễ'],
+  ['i', 'ìíịỉĩ'], ['o', 'òóọỏõôồốộổỗơờớợởỡ'],
+  ['u', 'ùúụủũưừứựửữ'], ['y', 'ỳýỵỷỹ'], ['d', 'đĐ'],
+];
+
+function normalizeVietnameseSearch(value) {
+  return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/đ/g, 'd').trim();
+}
+
+function vietnameseSearchSql(column) {
+  let expression = `COALESCE(${column},'')`;
+  for (const [replacement, chars] of VIETNAMESE_SEARCH_REPLACEMENTS) {
+    for (const char of chars) expression = `REPLACE(${expression},'${char}','${replacement}')`;
+  }
+  return `LOWER(${expression})`;
+}
+
 function buildEmployeeDirectoryFilter(url, me, hasHrScope) {
   const conditions = [];
   const binds = [];
@@ -1092,11 +1314,10 @@ function buildEmployeeDirectoryFilter(url, me, hasHrScope) {
     conditions.push('u.department=?');
     binds.push(me.department || '');
   }
-  const search = String(url.searchParams.get('search') || '').trim();
+  const search = normalizeVietnameseSearch(url.searchParams.get('search'));
   if (search) {
     const value = `%${search}%`;
-    conditions.push(`(u.full_name LIKE ? COLLATE NOCASE OR u.employee_code LIKE ? COLLATE NOCASE
-      OR u.email LIKE ? COLLATE NOCASE OR u.department LIKE ? COLLATE NOCASE OR u.position LIKE ? COLLATE NOCASE)`);
+    conditions.push(`(${['u.full_name','u.employee_code','u.email','u.department','u.position'].map(vietnameseSearchSql).map(column => `${column} LIKE ?`).join(' OR ')})`);
     binds.push(value, value, value, value, value);
   }
   const filters = [
@@ -1339,6 +1560,12 @@ function nowStr() {
   return new Date().toISOString().slice(0, 19).replace('T', ' ');
 }
 
+async function recordAssetHistory(env, assetId, action, actor, detail = '') {
+  await env.DB.prepare(
+    'INSERT INTO asset_handover_history (asset_id,action,actor_id,actor_name,detail) VALUES (?,?,?,?,?)'
+  ).bind(assetId, action, actor?.id || null, actor?.full_name || '', detail || '').run();
+}
+
 function safeParseJSON(str) {
   if (!str) return null;
   try { return JSON.parse(str); } catch (_) { return null; }
@@ -1546,6 +1773,78 @@ function attToMinutes(t) {
   const [h, m] = String(t).split(':').map(Number);
   if (Number.isNaN(h) || Number.isNaN(m)) return null;
   return h * 60 + m;
+}
+
+function isIsoDate(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
+}
+
+function normalizeOvertimeItems(items, periodMonth, { allowFuture = false } = {}) {
+  if (!/^\d{4}-\d{2}$/.test(String(periodMonth || ''))) return { error: 'Tháng làm thêm không hợp lệ' };
+  if (!Array.isArray(items) || !items.length || items.length > 31) return { error: 'Form cần từ 1 đến 31 dòng làm thêm' };
+  const now = Date.now();
+  const seen = new Set();
+  const normalized = [];
+  for (const raw of items) {
+    const startAt = String(raw?.start_at || '');
+    const endAt = String(raw?.end_at || '');
+    const reason = String(raw?.reason || '').trim();
+    const category = ['workday', 'rest_day', 'holiday'].includes(raw?.time_category) ? raw.time_category : 'workday';
+    const start = new Date(startAt);
+    const end = new Date(endAt);
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(startAt) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(endAt) || Number.isNaN(start.valueOf()) || Number.isNaN(end.valueOf())) return { error: 'Mỗi dòng OT phải có ngày giờ bắt đầu và kết thúc hợp lệ' };
+    if (!startAt.startsWith(`${periodMonth}-`)) return { error: 'Ngày bắt đầu OT phải thuộc đúng tháng của form' };
+    if (end <= start || end.valueOf() - start.valueOf() > 24 * 60 * 60 * 1000) return { error: 'Thời gian OT phải lớn hơn 0 và không quá 24 giờ' };
+    if (!allowFuture && start.valueOf() > now) return { error: 'Không thể khai báo OT trong tương lai' };
+    if (!reason || reason.length > 1000) return { error: 'Lý do OT là bắt buộc và tối đa 1000 ký tự' };
+    const key = `${startAt}|${endAt}`;
+    if (seen.has(key)) return { error: 'Không được nhập hai dòng OT trùng thời gian' };
+    seen.add(key);
+    normalized.push({ start_at: startAt, end_at: endAt, requested_minutes: Math.round((end - start) / 60000), reason, time_category: category });
+  }
+  return { items: normalized };
+}
+
+async function applyCalendarOvertimeCategories(env, items) {
+  return Promise.all(items.map(async item => {
+    const workDate = item.start_at.slice(0, 10);
+    const holiday = await env.DB.prepare('SELECT id FROM company_holidays WHERE holiday_date=? AND is_active=1').bind(workDate).first();
+    const weekday = new Date(`${workDate}T00:00:00`).getDay();
+    return { ...item, time_category: holiday ? 'holiday' : (weekday === 0 || weekday === 6) ? 'rest_day' : item.time_category };
+  }));
+}
+
+async function ensureProjectHandoverSchema(env) {
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS asset_handovers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, asset_name TEXT NOT NULL,
+    asset_type TEXT, platform TEXT, link TEXT, credential_enc TEXT, responsible_name TEXT,
+    mentor_id INTEGER, mentor_name TEXT, status TEXT DEFAULT 'active', note TEXT,
+    confirmed_by INTEGER, confirmed_at TEXT, expected_handover_date TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')), updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS asset_credential_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id INTEGER NOT NULL, viewed_by INTEGER,
+    viewed_by_name TEXT, created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS asset_handover_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id INTEGER NOT NULL, action TEXT NOT NULL,
+    actor_id INTEGER, actor_name TEXT, detail TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_asset_handover_history_asset_created ON asset_handover_history(asset_id, created_at DESC)'); } catch (_) {}
+}
+
+async function d1WriteWithRetry(operation, attempts = 3) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try { return await operation(); }
+    catch (error) {
+      lastError = error;
+      if (!/Network connection lost|connection reset|timed out/i.test(String(error?.message || '')) || attempt === attempts - 1) throw error;
+      await new Promise(resolve => setTimeout(resolve, 150 * (attempt + 1)));
+    }
+  }
+  throw lastError;
 }
 
 // Number of Mon–Fri business days in a given month (used as "Ngày công chuẩn").
@@ -1767,8 +2066,14 @@ function rateLimit(request, scope, limit, windowMs) {
 
 async function buildMonthlyOvertimeSummary(env, userId, month, year, baseSalary = 0) {
   const mm = String(month).padStart(2, '0');
-  const { results = [] } = await env.DB.prepare(
+  const { results: legacyResults = [] } = await env.DB.prepare(
     "SELECT work_date, approved_minutes FROM overtime_requests WHERE user_id=? AND status='approved' AND strftime('%m',work_date)=? AND strftime('%Y',work_date)=?"
+  ).bind(userId, mm, String(year)).all();
+  const { results: formResults = [] } = await env.DB.prepare(
+    `SELECT substr(i.start_at,1,10) AS work_date,i.approved_minutes,i.time_category
+       FROM overtime_form_items i JOIN overtime_forms f ON f.id=i.form_id
+      WHERE f.user_id=? AND f.status IN ('approved','partially_approved')
+        AND strftime('%m',substr(i.start_at,1,10))=? AND strftime('%Y',substr(i.start_at,1,10))=?`
   ).bind(userId, mm, String(year)).all();
   const { results: holidays = [] } = await env.DB.prepare(
     "SELECT holiday_date FROM company_holidays WHERE is_active=1 AND strftime('%m',holiday_date)=? AND strftime('%Y',holiday_date)=?"
@@ -1778,10 +2083,10 @@ async function buildMonthlyOvertimeSummary(env, userId, month, year, baseSalary 
   const hourlyRate = Number(baseSalary || 0) / standardDays / 8;
   let approvedMinutes = 0;
   let overtimePay = 0;
-  for (const item of results) {
+  for (const item of [...legacyResults, ...formResults]) {
     const minutes = Math.max(0, Number(item.approved_minutes || 0));
     const day = new Date(`${item.work_date}T00:00:00`).getDay();
-    const multiplier = holidayDates.has(item.work_date) ? 3 : day === 0 ? 2 : 1.5;
+    const multiplier = item.time_category === 'holiday' || holidayDates.has(item.work_date) ? 3 : item.time_category === 'rest_day' || day === 0 || day === 6 ? 2 : 1.5;
     approvedMinutes += minutes;
     overtimePay += (minutes / 60) * hourlyRate * multiplier;
   }
@@ -1815,6 +2120,22 @@ function clientIpFromRequest(request) {
   return String(forwarded).split(',')[0].trim() || '127.0.0.1';
 }
 
+function ipv6ToBigInt(value) {
+  let input = String(value || '').trim().toLowerCase();
+  if (!input || input.includes('%')) return null;
+  if (input.includes('.')) return null; // IPv4-mapped IPv6 is not a supported whitelist format.
+  const halves = input.split('::');
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  if (left.length + right.length > 8 || (halves.length === 1 && left.length !== 8)) return null;
+  const groups = halves.length === 2
+    ? [...left, ...Array(8 - left.length - right.length).fill('0'), ...right]
+    : left;
+  if (groups.length !== 8 || groups.some(group => !/^[0-9a-f]{1,4}$/.test(group))) return null;
+  return groups.reduce((result, group) => (result << 16n) + BigInt(`0x${group}`), 0n);
+}
+
 function ipMatchesRule(ip, rule) {
   const r = String(rule || '').trim();
   if (!ip || !r) return false;
@@ -1822,6 +2143,13 @@ function ipMatchesRule(ip, rule) {
   if (r.includes('/')) {
     const [base, bitsRaw] = r.split('/');
     const bits = parseInt(bitsRaw, 10);
+    const ipV6 = ipv6ToBigInt(ip);
+    const baseV6 = ipv6ToBigInt(base);
+    if (ipV6 != null || baseV6 != null) {
+      if (ipV6 == null || baseV6 == null || bits < 0 || bits > 128) return false;
+      const mask = bits === 0 ? 0n : ((1n << BigInt(bits)) - 1n) << BigInt(128 - bits);
+      return (ipV6 & mask) === (baseV6 & mask);
+    }
     const toInt = (v) => {
       const parts = String(v).split('.').map(Number);
       if (parts.length !== 4 || parts.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return null;
@@ -1833,6 +2161,26 @@ function ipMatchesRule(ip, rule) {
     return (ipInt & mask) === (baseInt & mask);
   }
   return ip === r || ip.startsWith(r.endsWith('.') ? r : r + '.');
+}
+
+function isPrivateNetworkRule(rule) {
+  const value = String(rule || '').trim().toLowerCase();
+  const base = value.split('/')[0];
+  return base === 'localhost' || base === '::1' ||
+    base.startsWith('10.') || base.startsWith('127.') ||
+    base.startsWith('192.168.') || base.startsWith('169.254.') ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(base) ||
+    base.startsWith('fc') || base.startsWith('fd') || base.startsWith('fe80:');
+}
+
+function validOfficeNetworkInput(value, currentIp) {
+  const rules = String(value || '').split(',').map(item => item.trim()).filter(Boolean);
+  if (!rules.length) return { error: 'Nhập ít nhất một Public IP hoặc dải mạng công khai.' };
+  if (rules.some(isPrivateNetworkRule)) return { error: 'Không sử dụng IP nội bộ, router hoặc dải private cho mạng văn phòng.' };
+  if (!rules.some(rule => ipMatchesRule(currentIp, rule))) {
+    return { error: `IP backend đang nhận là ${currentIp}. Dải mạng lưu phải chứa IP hiện tại để tránh whitelist sai.` };
+  }
+  return { rules };
 }
 
 async function currentIpInfo(env, request) {
@@ -1940,6 +2288,46 @@ async function seedLeaveTypes(env) {
   await env.DB.batch(rows.map(r => env.DB.prepare(
     'INSERT OR IGNORE INTO leave_types (code,name,paid_policy,deducts_annual_leave,requires_evidence,requires_bod_approval,max_days,is_active) VALUES (?,?,?,?,?,?,?,?)'
   ).bind(...r)));
+}
+
+function leavePolicyFor(type) {
+  const flow = String(type?.approval_flow || '').trim();
+  if (flow) return flow;
+  return type?.requires_bod_approval ? 'manager_hr_bgd' : 'manager_hr';
+}
+
+function leavePaidLabel(policy) {
+  return policy === 'unpaid' ? 'Không hưởng lương' : policy === 'configurable' ? 'Theo chế độ' : 'Có hưởng lương';
+}
+
+function leaveDaysForSession(startDate, endDate, session) {
+  const businessDays = attCountBusinessDaysBetween(startDate, endDate);
+  if (!businessDays) return 0;
+  return session === 'morning' || session === 'afternoon' ? 0.5 : businessDays;
+}
+
+function leaveBalanceType(type) {
+  return type?.deducts_annual_leave ? 'annual' : type?.code === 'compensatory' ? 'compensatory' : null;
+}
+
+async function getLeaveBalance(env, userId, leaveTypeCode, year) {
+  const row = await env.DB.prepare(
+    'SELECT available_days FROM leave_balances WHERE user_id=? AND leave_type_code=? AND balance_year=?'
+  ).bind(userId, leaveTypeCode, year).first();
+  return Number(row?.available_days || 0);
+}
+
+function canManageLeaveRequest(me, request) {
+  if (isHrOrBod(me)) return true;
+  return me?.role === 'manager' && !!request?.department && me.department === request.department;
+}
+
+function canAdvanceLeaveApproval(me, request) {
+  if (me?.role === 'admin') return true;
+  if (Number(request.approval_level || 1) === 1) return me?.role === 'manager' && me.department === request.department;
+  if (Number(request.approval_level) === 2) return isHcns(me);
+  if (Number(request.approval_level) === 3) return isBgd(me);
+  return false;
 }
 
 async function seedDepartments(env) {
@@ -2069,7 +2457,7 @@ async function getSessionFromToken(token, env) {
     const row = await env.DB.prepare(
       'SELECT s.*, u.id as uid, u.full_name, u.email, u.role, u.department, u.position,' +
       ' u.avatar_color, u.avatar_initials, u.employee_code, u.salary, u.phone,' +
-      ' u.bank_account, u.bank_name, u.is_active, u.lifecycle_status' +
+      ' u.bank_account, u.bank_name, u.is_active, u.lifecycle_status, u.must_change_password' +
       ' FROM sessions s JOIN users u ON s.user_id = u.id' +
       " WHERE s.token=? AND s.revoked=0 AND CAST(s.expires_at AS INTEGER) > CAST(strftime('%s','now') AS INTEGER)"
     ).bind(token).first();
@@ -2220,7 +2608,7 @@ export async function handle(request, env) {
       avatar_color: user.avatar_color, avatar_initials: user.avatar_initials,
       employee_code: user.employee_code, salary: user.salary, phone: user.phone,
       bank_account: user.bank_account, bank_name: user.bank_name,
-      lifecycle_status: user.lifecycle_status,
+      lifecycle_status: user.lifecycle_status, must_change_password: !!user.must_change_password,
     };
     return new Response(JSON.stringify({ token, user: userData }), {
       headers: {
@@ -2267,7 +2655,7 @@ export async function handle(request, env) {
         employee_code: session.employee_code, salary: session.salary,
         phone: session.phone, bank_account: session.bank_account,
         bank_name: session.bank_name, is_active: session.is_active,
-        lifecycle_status: session.lifecycle_status,
+        lifecycle_status: session.lifecycle_status, must_change_password: !!session.must_change_password,
       }
     });
   }
@@ -2282,13 +2670,14 @@ export async function handle(request, env) {
     const b = await request.json().catch(() => ({}));
     const { old_password, new_password } = b;
     if (!old_password || !new_password) return json({ error: 'Thiếu thông tin' }, 400);
-    if (typeof new_password !== 'string' || new_password.length < 10 || new_password.length > 128) return json({ error: 'Mật khẩu mới phải từ 10 đến 128 ký tự' }, 400);
+    const passwordError = validatePasswordPolicy(new_password);
+    if (passwordError) return json({ error: passwordError }, 400);
     const user = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(cpUser.id).first();
     if (!user) return json({ error: 'Không tìm thấy tài khoản' }, 404);
     const oldHash = await hashPassword(old_password);
     if (oldHash !== user.password_hash) return json({ error: 'Mật khẩu cũ không đúng' }, 400);
     const newHash = await hashPassword(new_password);
-    await env.DB.prepare('UPDATE users SET password_hash=? WHERE id=?').bind(newHash, cpUser.id).run();
+    await env.DB.prepare('UPDATE users SET password_hash=?,must_change_password=0 WHERE id=?').bind(newHash, cpUser.id).run();
     return json({ ok: true });
   }
 
@@ -2309,7 +2698,7 @@ export async function handle(request, env) {
       employee_code: mainSession.employee_code, salary: mainSession.salary,
       phone: mainSession.phone, bank_account: mainSession.bank_account,
       bank_name: mainSession.bank_name, is_active: mainSession.is_active,
-      lifecycle_status: mainSession.lifecycle_status,
+      lifecycle_status: mainSession.lifecycle_status, must_change_password: !!mainSession.must_change_password,
     };
   }
 
@@ -2338,11 +2727,15 @@ export async function handle(request, env) {
     }
   }
 
+  if (me.must_change_password) {
+    return json({ error: 'Bạn phải đổi mật khẩu tạm trước khi tiếp tục', code: 'PASSWORD_CHANGE_REQUIRED' }, 403);
+  }
+
   const DB_ADMIN_TABLES = {
     // Database Admin is intentionally restricted to low-risk reference data.
     // Personnel, attendance, OT, payroll, invoices and evaluations must go
     // through their domain APIs so approval/audit rules cannot be bypassed.
-    wifi_whitelist: { label: 'WiFi Whitelist', readonly: ['id'] },
+    wifi_whitelist: { label: 'Mạng được phép chấm công', readonly: ['id'] },
     tasks: { label: 'Tasks', readonly: ['id', 'created_at', 'updated_at'] },
     subtasks: { label: 'Subtasks', readonly: ['id', 'created_at'] },
     task_comments: { label: 'Task Comments', readonly: ['id', 'created_at'] },
@@ -3097,6 +3490,112 @@ export async function handle(request, env) {
     return json({ error: 'Không thể sinh mã nhân viên, vui lòng thử lại' }, 500);
   }
 
+  // ── HISTORICAL ATTENDANCE IMPORT ─────────────────────────────────
+  // The client sends normalized rows from a reviewed spreadsheet.  Preview is
+  // read-only; commit creates accounts only when the employee code is absent
+  // and never overwrites an existing attendance record.
+  if (path === '/api/attendance-imports/preview' && request.method === 'POST') {
+    if (!(isAdmin || isHcns(me))) return json({ error: 'Chỉ HCNS hoặc Admin được nhập chấm công lịch sử' }, 403);
+    const b = await request.json().catch(() => ({}));
+    const periodMonth = String(b.period_month || '');
+    const employees = Array.isArray(b.employees) ? b.employees : [];
+    if (!/^\d{4}-\d{2}$/.test(periodMonth) || !employees.length || employees.length > 500) return json({ error: 'Dữ liệu lô nhập không hợp lệ' }, 400);
+    const preview = [];
+    for (const employee of employees) {
+      const code = String(employee.employee_code || '').trim();
+      const name = String(employee.full_name || '').trim();
+      const values = Object.entries(employee.days || employee.attendance || {});
+      const invalidDays = values.filter(([day, value]) => !/^\d{1,2}$/.test(day) || ![0, 0.5, 1].includes(Number(value)));
+      const user = code ? await env.DB.prepare('SELECT id,full_name,is_active FROM users WHERE employee_code=?').bind(code).first() : null;
+      preview.push({ employee_code: code, full_name: name, account: user ? 'existing' : 'create', attendance_entries: values.length, errors: [
+        ...(!/^[A-Za-z0-9-]{2,50}$/.test(code) ? ['Mã NV không hợp lệ'] : []),
+        ...(!name ? ['Thiếu họ tên'] : []),
+        ...(invalidDays.length ? [`Có ${invalidDays.length} ô ngày công không hợp lệ`] : []),
+      ] });
+    }
+    return json({ period_month: periodMonth, preview, valid: preview.every(row => !row.errors.length) });
+  }
+
+  if (path === '/api/attendance-imports/commit' && request.method === 'POST') {
+    if (!(isAdmin || isHcns(me))) return json({ error: 'Chỉ HCNS hoặc Admin được nhập chấm công lịch sử' }, 403);
+    const b = await request.json().catch(() => ({}));
+    const periodMonth = String(b.period_month || '');
+    const employees = Array.isArray(b.employees) ? b.employees : [];
+    if (!/^\d{4}-\d{2}$/.test(periodMonth) || !employees.length || employees.length > 500) return json({ error: 'Dữ liệu lô nhập không hợp lệ' }, 400);
+    const sourceName = String(b.source_name || `Bảng chấm công ${periodMonth}`).trim().slice(0, 160) || `Bảng chấm công ${periodMonth}`;
+    const validation = [];
+    const codes = new Set();
+    for (const employee of employees) {
+      const code = String(employee.employee_code || '').trim();
+      const name = String(employee.full_name || '').trim();
+      const values = Object.entries(employee.days || employee.attendance || {});
+      if (!/^[A-Za-z0-9-]{2,50}$/.test(code) || !name || codes.has(code) || values.some(([day, value]) => !/^\d{1,2}$/.test(day) || ![0, 0.5, 1].includes(Number(value)))) validation.push(code || name || '(trống)');
+      codes.add(code);
+    }
+    if (validation.length) return json({ error: 'Lô nhập có dòng nhân sự hoặc ngày công không hợp lệ', invalid_rows: validation }, 400);
+    const batchResult = await d1WriteWithRetry(() => env.DB.prepare('INSERT INTO attendance_import_batches (source_name,period_month,status,created_by,created_by_name) VALUES (?,?,?,?,?)')
+      .bind(sourceName, periodMonth, 'committing', me.id, me.full_name || '').run());
+    const batchId = batchResult.meta.last_row_id;
+    const report = { batch_id: batchId, created_accounts: [], imported_attendance: 0, conflicts: [], overtime_forms: [], overtime_exceptions: [] };
+    const userByCode = new Map();
+    try {
+      for (const employee of employees) {
+        const code = String(employee.employee_code).trim();
+        let user = await d1WriteWithRetry(() => env.DB.prepare('SELECT id,employee_code FROM users WHERE employee_code=?').bind(code).first());
+        if (!user) {
+          const rawNote = String(employee.note || '');
+          const inactive = /nghi/i.test(rawNote.normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
+          const type = String(employee.employee_type || employee.position || '').trim().toLowerCase() === 'tts' ? 'TTS' : 'NV';
+          const r = await d1WriteWithRetry(async () => env.DB.prepare(
+            'INSERT INTO users (employee_code,employee_type,full_name,email,password_hash,role,department,position,avatar_color,avatar_initials,phone,is_active,lifecycle_status,work_location,hire_date,must_change_password,profile_pending) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
+          ).bind(code, type, String(employee.full_name).trim(), `${code.toLowerCase()}@pending.local`, await hashPassword('Pass@123'), 'employee', normalizeDeptName(employee.department || ''), String(employee.position || ''), '#4F46E5', nameInitials(employee.full_name), '', inactive ? 0 : 1, inactive ? 'Đã nghỉ' : (type === 'TTS' ? 'Thực tập' : 'Chờ tiếp nhận'), String(employee.work_location || ''), `${periodMonth}-01`, 1, 1).run());
+          user = { id: r.meta.last_row_id, employee_code: code };
+          report.created_accounts.push({ employee_code: code, user_id: user.id, login: code });
+        }
+        userByCode.set(code, user);
+        for (const [rawDay, rawValue] of Object.entries(employee.days || employee.attendance || {})) {
+          const day = String(rawDay).padStart(2, '0');
+          const workDate = `${periodMonth}-${day}`;
+          const sourceKey = `${code}:${workDate}`;
+          const existing = await d1WriteWithRetry(() => env.DB.prepare('SELECT id FROM attendance WHERE user_id=? AND date=? ORDER BY id LIMIT 1').bind(user.id, workDate).first());
+          if (existing) {
+            report.conflicts.push({ employee_code: code, work_date: workDate, reason: 'Đã có chấm công' });
+            await d1WriteWithRetry(() => env.DB.prepare('INSERT INTO attendance_import_rows (batch_id,source_key,employee_code,work_date,attendance_id,outcome,detail) VALUES (?,?,?,?,?,?,?)').bind(batchId, sourceKey, code, workDate, existing.id, 'conflict', 'Đã có chấm công').run());
+            continue;
+          }
+          const unit = Number(rawValue);
+          const config = unit === 1 ? ['full', '08:30', '17:00', 8.5, 'present'] : unit === .5 ? ['morning', '08:30', '12:00', 3.5, 'present'] : ['full', null, null, 0, 'absent'];
+          const inserted = await d1WriteWithRetry(() => env.DB.prepare('INSERT INTO attendance (user_id,date,checkin_time,checkout_time,status,work_hours,note,work_type,shift,registered,source_batch_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+            .bind(user.id, workDate, config[1], config[2], config[4], config[3], `Nhập lịch sử từ ${sourceName}`, 'office', config[0], 1, batchId).run());
+          await d1WriteWithRetry(() => env.DB.prepare('INSERT INTO attendance_import_rows (batch_id,source_key,employee_code,work_date,attendance_id,outcome,detail) VALUES (?,?,?,?,?,?,?)').bind(batchId, sourceKey, code, workDate, inserted.meta.last_row_id, 'imported', null).run());
+          report.imported_attendance += 1;
+        }
+      }
+      for (const rawForm of Array.isArray(b.overtime_forms) ? b.overtime_forms : []) {
+        const code = String(rawForm.employee_code || '').trim();
+        const user = userByCode.get(code);
+        const validated = normalizeOvertimeItems(rawForm.items, periodMonth, { allowFuture: true });
+        const reportedHours = rawForm.reported_hours === undefined || rawForm.reported_hours === '' ? null : Number(rawForm.reported_hours);
+        const computedHours = validated.items ? validated.items.reduce((sum, item) => sum + item.requested_minutes, 0) / 60 : null;
+        if (!user || validated.error || (reportedHours !== null && (!Number.isFinite(reportedHours) || Math.abs(reportedHours - computedHours) > .01))) {
+          report.overtime_exceptions.push({ employee_code: code, reason: validated.error || 'Tổng giờ khai báo không khớp mốc thời gian', reported_hours: reportedHours, computed_hours: computedHours });
+          continue;
+        }
+        const duplicate = await env.DB.prepare("SELECT id FROM overtime_forms WHERE user_id=? AND period_month=? AND source='attendance_import' LIMIT 1").bind(user.id, periodMonth).first();
+        if (duplicate) { report.overtime_exceptions.push({ employee_code: code, reason: 'Đã có form OT lịch sử cho tháng này' }); continue; }
+        const form = await env.DB.prepare("INSERT INTO overtime_forms (user_id,period_month,status,source,source_batch_id,submitted_at) VALUES (?,?,'pending','attendance_import',?,datetime('now','localtime'))").bind(user.id, periodMonth, batchId).run();
+        const items = await applyCalendarOvertimeCategories(env, validated.items);
+        await env.DB.batch(items.map(item => env.DB.prepare('INSERT INTO overtime_form_items (form_id,start_at,end_at,requested_minutes,reason,time_category) VALUES (?,?,?,?,?,?)').bind(form.meta.last_row_id, item.start_at, item.end_at, item.requested_minutes, item.reason, item.time_category)));
+        report.overtime_forms.push({ employee_code: code, form_id: form.meta.last_row_id });
+      }
+      await d1WriteWithRetry(() => env.DB.prepare("UPDATE attendance_import_batches SET status='committed',committed_at=datetime('now','localtime') WHERE id=?").bind(batchId).run());
+    } catch (error) {
+      await env.DB.prepare("UPDATE attendance_import_batches SET status='failed' WHERE id=?").bind(batchId).run().catch(() => {});
+      throw error;
+    }
+    return json({ ok: true, ...report });
+  }
+
   // ── USERS: PRIVATE DOCUMENTS (R2) ─────────────────────────────────
   const userDocumentMatch = path.match(/^\/api\/users\/(\d+)\/documents\/(avatar|national_id|degree|contract|decision)$/);
   if (userDocumentMatch) {
@@ -3126,8 +3625,12 @@ export async function handle(request, env) {
       });
     }
 
-    if (!hasHrScope) return json({ error: 'Chỉ HCNS hoặc quản trị viên được tải hồ sơ lên' }, 403);
+    // Avatar is the sole profile document employees may update themselves.
+    // All other document categories remain restricted to HCNS/Admin.
+    const canUpload = hasHrScope || (kind === 'avatar' && me.id === uid);
+    if (!canUpload) return json({ error: 'Chỉ HCNS hoặc quản trị viên được tải hồ sơ lên' }, 403);
     if (request.method === 'DELETE') {
+      if (!hasHrScope) return json({ error: 'Chỉ HCNS hoặc quản trị viên được xóa avatar' }, 403);
       await env.HR_DOCUMENTS.delete(userDocumentKey(uid, kind));
       const changeSetId = crypto.randomUUID();
       const statements = [
@@ -3293,7 +3796,7 @@ export async function handle(request, env) {
   // ── USERS: basic list (safe fields only, for pickers e.g. Mentor select) ──
   if (path === '/api/users/basic' && request.method === 'GET') {
     const { results } = await env.DB.prepare(
-      'SELECT id, full_name, department, position, lifecycle_status FROM users WHERE is_active=1 ORDER BY full_name'
+      'SELECT id, full_name, department, position, lifecycle_status, is_active FROM users WHERE is_active=1 ORDER BY full_name'
     ).all();
     return json({ users: results });
   }
@@ -3351,15 +3854,15 @@ export async function handle(request, env) {
          FROM asset_handovers a LEFT JOIN users u ON a.user_id=u.id ORDER BY a.updated_at DESC`
       ).all();
     } else {
-      // Manager/Trưởng phòng also sees assets owned by anyone in their own department
+      // Employees see their own declarations and Mentors see only declarations assigned to them.
       rowsResult = await env.DB.prepare(
         `SELECT a.*, u.full_name as owner_name, u.employee_code as owner_code,
                 u.department as owner_department, u.employee_type as owner_employee_type,
                 u.lifecycle_status as owner_lifecycle_status
          FROM asset_handovers a LEFT JOIN users u ON a.user_id=u.id
-         WHERE a.user_id=? OR a.mentor_id=? OR (? = 'manager' AND u.department = ?)
+         WHERE a.user_id=? OR a.mentor_id=?
          ORDER BY a.updated_at DESC`
-      ).bind(me.id, me.id, me.role, me.department || '').all();
+      ).bind(me.id, me.id).all();
     }
     const assets = rowsResult.results.map(r => {
       const { credential_enc, ...rest } = r;
@@ -3386,13 +3889,24 @@ export async function handle(request, env) {
         return json({ error: 'Không có quyền khai báo hộ nhân sự khác' }, 403);
       }
     }
+    const owner = await env.DB.prepare('SELECT employee_type FROM users WHERE id=?').bind(ownerUserId).first();
+    const mentorId = b.mentor_id ? parseInt(b.mentor_id) : null;
+    if (owner?.employee_type === 'TTS' && !mentorId) return json({ error: 'TTS phải chọn Mentor để xác nhận bàn giao' }, 400);
+    if (mentorId === ownerUserId) return json({ error: 'Mentor không thể là người bàn giao' }, 400);
     const credEnc = b.credential ? await encryptCred(env, String(b.credential)) : null;
-    const status = ['active','pending_review','needs_update'].includes(b.status) ? b.status : 'active';
+    if (owner?.employee_type === 'TTS' && !credEnc) return json({ error: 'TTS phải nhập email/tài khoản và mật khẩu bàn giao' }, 400);
+    // A TTS declaration always enters the Mentor review queue. HCNS/BGĐ may
+    // create historical/manual records with an explicit status when needed.
+    const status = owner?.employee_type === 'TTS' && !isHrOrBod(me)
+      ? 'pending_review'
+      : (['active','pending_review','needs_update'].includes(b.status) ? b.status : 'active');
     const expectedDate = b.expected_handover_date ? String(b.expected_handover_date) : null;
     const r = await env.DB.prepare(
       `INSERT INTO asset_handovers (user_id,asset_name,asset_type,platform,link,credential_enc,responsible_name,mentor_id,mentor_name,status,note,expected_handover_date)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
-    ).bind(ownerUserId, assetName, b.asset_type||'', b.platform||'', b.link||'', credEnc, b.responsible_name||me.full_name, b.mentor_id||null, b.mentor_name||'', status, b.note||'', expectedDate).run();
+    ).bind(ownerUserId, assetName, b.asset_type||'', b.platform||'', b.link||'', credEnc, b.responsible_name||me.full_name, mentorId, b.mentor_name||'', status, b.note||'', expectedDate).run();
+    await recordAssetHistory(env, r.meta.last_row_id, 'created', me, 'Tạo bàn giao dự án/tài khoản');
+    if (credEnc) await recordAssetHistory(env, r.meta.last_row_id, 'credential_set', me, 'Đã lưu thông tin đăng nhập được mã hóa');
     return json({ ok: true, id: r.meta.last_row_id });
   }
 
@@ -3403,12 +3917,27 @@ export async function handle(request, env) {
       `SELECT a.*, u.department as owner_department FROM asset_handovers a LEFT JOIN users u ON a.user_id=u.id WHERE a.id=?`
     ).bind(aid).first();
     if (!asset) return json({ error: 'Không tìm thấy' }, 404);
-    const allowed = asset.user_id === me.id || asset.mentor_id === me.id || isHrOrBod(me) || isDeptManager(me, asset.owner_department);
+    const allowed = asset.user_id === me.id || asset.mentor_id === me.id || isHrOrBod(me);
     if (!allowed) return json({ error: 'Không có quyền' }, 403);
     if (!asset.credential_enc) return json({ credential: '' });
     const plain = await decryptCred(env, asset.credential_enc);
     await env.DB.prepare('INSERT INTO asset_credential_log (asset_id,viewed_by,viewed_by_name) VALUES (?,?,?)').bind(aid, me.id, me.full_name).run();
+    await recordAssetHistory(env, aid, 'credential_viewed', me, 'Đã xem thông tin đăng nhập');
     return json({ credential: plain });
+  }
+
+  const assetHistoryMatch = path.match(/^\/api\/assets\/(\d+)\/history$/);
+  if (assetHistoryMatch && request.method === 'GET') {
+    const aid = parseInt(assetHistoryMatch[1]);
+    const asset = await env.DB.prepare(
+      `SELECT a.*, u.department as owner_department FROM asset_handovers a LEFT JOIN users u ON a.user_id=u.id WHERE a.id=?`
+    ).bind(aid).first();
+    if (!asset) return json({ error: 'Không tìm thấy' }, 404);
+    if (!(asset.user_id === me.id || asset.mentor_id === me.id || isHrOrBod(me))) return json({ error: 'Không có quyền' }, 403);
+    const history = await env.DB.prepare(
+      'SELECT id,action,actor_id,actor_name,detail,created_at FROM asset_handover_history WHERE asset_id=? ORDER BY id DESC'
+    ).bind(aid).all();
+    return json({ history: history.results || [] });
   }
 
   const assetMatch = path.match(/^\/api\/assets\/(\d+)$/);
@@ -3421,24 +3950,30 @@ export async function handle(request, env) {
     const isOwner = asset.user_id === me.id;
     const isMentor = asset.mentor_id === me.id;
     const isHr = isHrOrBod(me);
-    const isDeptMgr = isDeptManager(me, asset.owner_department);
+    const isDeptMgr = false;
 
     if (request.method === 'PUT') {
-      if (!isOwner && !isMentor && !isHr && !isDeptMgr) return json({ error: 'Không có quyền' }, 403);
+      if (!isOwner && !isMentor && !isHr) return json({ error: 'Không có quyền' }, 403);
       const b = await request.json().catch(() => ({}));
 
-      if (isMentor && !isOwner && !isHr && !isDeptMgr) {
-        // Mentor may only confirm — no other field edits accepted
-        if (b.status !== 'confirmed') return json({ error: 'Bạn chỉ có thể xác nhận tài sản này' }, 403);
+      if (isMentor && !isOwner && !isHr) {
+        // Mentor may only confirm or return the declaration for correction.
+        if (!['confirmed', 'needs_update'].includes(b.status)) return json({ error: 'Mentor chỉ có thể xác nhận hoặc yêu cầu bổ sung' }, 403);
+        if (b.status === 'needs_update' && !String(b.note || '').trim()) return json({ error: 'Vui lòng nêu nội dung cần bổ sung' }, 400);
         await env.DB.prepare(
-          `UPDATE asset_handovers SET status='confirmed', confirmed_by=?, confirmed_at=?, note=COALESCE(?,note), updated_at=? WHERE id=?`
-        ).bind(me.id, nowStr(), b.note ?? null, nowStr(), aid).run();
+          `UPDATE asset_handovers SET status=?, confirmed_by=?, confirmed_at=?, note=COALESCE(?,note), updated_at=? WHERE id=?`
+        ).bind(b.status, b.status === 'confirmed' ? me.id : asset.confirmed_by, b.status === 'confirmed' ? nowStr() : asset.confirmed_at, b.note ?? null, nowStr(), aid).run();
+        await recordAssetHistory(env, aid, b.status === 'confirmed' ? 'mentor_confirmed' : 'mentor_requested_update', me, b.note || '');
         return json({ ok: true });
+      }
+
+      if (isOwner && !isHr && ['confirmed', 'handed_over'].includes(asset.status)) {
+        return json({ error: 'Bàn giao đã được xác nhận, chỉ HCNS/Ban giám đốc mới có thể chỉnh sửa' }, 403);
       }
 
       const allowedStatuses = isHr
         ? ['active','pending_review','needs_update','confirmed','handed_over']
-        : ['active','pending_review','needs_update'];
+        : ['pending_review','needs_update'];
       const newStatus = allowedStatuses.includes(b.status) ? b.status : asset.status;
       const credEnc = (b.credential !== undefined)
         ? (b.credential ? await encryptCred(env, String(b.credential)) : null)
@@ -3459,6 +3994,8 @@ export async function handle(request, env) {
         expectedDate,
         nowStr(), aid
       ).run();
+      await recordAssetHistory(env, aid, 'updated', me, newStatus === 'pending_review' && asset.status === 'needs_update' ? 'Đã cập nhật và gửi lại Mentor xác nhận' : 'Đã cập nhật thông tin bàn giao');
+      if (b.credential !== undefined) await recordAssetHistory(env, aid, 'credential_changed', me, 'Đã thay đổi thông tin đăng nhập được mã hóa');
       return json({ ok: true });
     }
 
@@ -3530,7 +4067,7 @@ export async function handle(request, env) {
       COALESCE(SUM(CASE WHEN a.status NOT IN ('absent','leave','cancelled','rejected') AND a.checkin_time IS NULL THEN 1 ELSE 0 END),0) AS missing_checkin_days,
       COALESCE(SUM(CASE WHEN a.status NOT IN ('absent','leave','cancelled','rejected') AND a.checkin_time IS NOT NULL AND a.checkout_time IS NULL THEN 1 ELSE 0 END),0) AS missing_checkout_days
       FROM users u LEFT JOIN attendance a ON a.user_id=u.id AND a.date BETWEEN ? AND ?
-      WHERE u.is_active=1`;
+      WHERE (u.is_active=1 OR a.id IS NOT NULL)`;
     const binds = [from, to];
     if (me.role === 'manager' && !isAdmin && !isAttendanceHcns) { q += ' AND u.department=?'; binds.push(me.department); }
     q += ' GROUP BY u.id ORDER BY u.full_name COLLATE NOCASE';
@@ -3728,6 +4265,106 @@ export async function handle(request, env) {
     return json({ ok: true, status: nextStatus, approved_minutes: approvedMinutes, overtime: ot });
   }
 
+  // ── MONTHLY OVERTIME FORMS ──────────────────────────────────────
+  // Unlike checkout OT, these forms may contain multiple dates and can be
+  // submitted by an employee before/without a same-day attendance checkout.
+  if (path === '/api/overtime-forms' && request.method === 'GET') {
+    const month = String(url.searchParams.get('month') || '');
+    const status = String(url.searchParams.get('status') || '');
+    let q = `SELECT f.*,u.full_name,u.employee_code,u.department FROM overtime_forms f JOIN users u ON u.id=f.user_id WHERE 1=1`;
+    const binds = [];
+    if (!isAttendanceAdmin) { q += ' AND f.user_id=?'; binds.push(me.id); }
+    else if (me.role === 'manager' && !isAdmin && !isAttendanceHcns) { q += ' AND u.department=?'; binds.push(me.department); }
+    if (/^\d{4}-\d{2}$/.test(month)) { q += ' AND f.period_month=?'; binds.push(month); }
+    if (['draft','pending','approved','partially_approved','rejected'].includes(status)) { q += ' AND f.status=?'; binds.push(status); }
+    q += " ORDER BY CASE f.status WHEN 'pending' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END,f.period_month DESC,f.id DESC";
+    const { results: forms = [] } = await (binds.length ? env.DB.prepare(q).bind(...binds) : env.DB.prepare(q)).all();
+    for (const form of forms) {
+      form.items = (await env.DB.prepare('SELECT * FROM overtime_form_items WHERE form_id=? ORDER BY start_at,id').bind(form.id).all()).results || [];
+      form.requested_minutes = form.items.reduce((sum, item) => sum + Number(item.requested_minutes || 0), 0);
+      form.approved_minutes = form.items.reduce((sum, item) => sum + Number(item.approved_minutes || 0), 0);
+    }
+    return json({ overtime_forms: forms });
+  }
+
+  if (path === '/api/overtime-forms' && request.method === 'POST') {
+    const retryAfter = rateLimit(request, `overtime-form:${me.id}`, 20, 24 * 60 * 60 * 1000);
+    if (retryAfter) return json({ error: 'Đã vượt số lần tạo form OT trong ngày', code: 'RATE_LIMITED' }, 429, { 'Retry-After': String(retryAfter) });
+    const b = await request.json().catch(() => ({}));
+    const periodMonth = String(b.period_month || '');
+    const validated = normalizeOvertimeItems(b.items, periodMonth);
+    if (validated.error) return json({ error: validated.error }, 400);
+    const items = await applyCalendarOvertimeCategories(env, validated.items);
+    const status = b.submit === false ? 'draft' : 'pending';
+    const r = await env.DB.prepare(
+      "INSERT INTO overtime_forms (user_id,period_month,status,source,submitted_at) VALUES (?,?,?,?,CASE WHEN ?='pending' THEN datetime('now','localtime') ELSE NULL END)"
+    ).bind(me.id, periodMonth, status, 'employee', status).run();
+    const formId = r.meta.last_row_id;
+    await env.DB.batch(items.map(item => env.DB.prepare(
+      'INSERT INTO overtime_form_items (form_id,start_at,end_at,requested_minutes,reason,time_category) VALUES (?,?,?,?,?,?)'
+    ).bind(formId, item.start_at, item.end_at, item.requested_minutes, item.reason, item.time_category)));
+    return json({ ok: true, id: formId, status });
+  }
+
+  const overtimeFormMatch = path.match(/^\/api\/overtime-forms\/(\d+)$/);
+  if (overtimeFormMatch && request.method === 'PUT') {
+    const formId = parseInt(overtimeFormMatch[1], 10);
+    const form = await env.DB.prepare('SELECT * FROM overtime_forms WHERE id=?').bind(formId).first();
+    if (!form) return json({ error: 'Không tìm thấy form OT' }, 404);
+    if (Number(form.user_id) !== Number(me.id) || form.status !== 'draft') return json({ error: 'Chỉ được sửa form OT nháp của chính bạn' }, 403);
+    const b = await request.json().catch(() => ({}));
+    const periodMonth = String(b.period_month || form.period_month);
+    const validated = normalizeOvertimeItems(b.items, periodMonth);
+    if (validated.error) return json({ error: validated.error }, 400);
+    const items = await applyCalendarOvertimeCategories(env, validated.items);
+    await env.DB.batch([
+      env.DB.prepare("UPDATE overtime_forms SET period_month=?,updated_at=datetime('now','localtime') WHERE id=?").bind(periodMonth, formId),
+      env.DB.prepare('DELETE FROM overtime_form_items WHERE form_id=?').bind(formId),
+      ...items.map(item => env.DB.prepare('INSERT INTO overtime_form_items (form_id,start_at,end_at,requested_minutes,reason,time_category) VALUES (?,?,?,?,?,?)').bind(formId, item.start_at, item.end_at, item.requested_minutes, item.reason, item.time_category)),
+    ]);
+    return json({ ok: true });
+  }
+
+  const overtimeFormSubmit = path.match(/^\/api\/overtime-forms\/(\d+)\/submit$/);
+  if (overtimeFormSubmit && request.method === 'POST') {
+    const formId = parseInt(overtimeFormSubmit[1], 10);
+    const form = await env.DB.prepare('SELECT * FROM overtime_forms WHERE id=?').bind(formId).first();
+    if (!form) return json({ error: 'Không tìm thấy form OT' }, 404);
+    if (Number(form.user_id) !== Number(me.id) || form.status !== 'draft') return json({ error: 'Chỉ được gửi form OT nháp của chính bạn' }, 403);
+    await env.DB.prepare("UPDATE overtime_forms SET status='pending',submitted_at=datetime('now','localtime'),updated_at=datetime('now','localtime') WHERE id=?").bind(formId).run();
+    return json({ ok: true, status: 'pending' });
+  }
+
+  const overtimeFormDecision = path.match(/^\/api\/overtime-forms\/(\d+)\/decision$/);
+  if (overtimeFormDecision && request.method === 'POST') {
+    if (!isAttendanceAdmin) return json({ error: 'Không có quyền duyệt form OT' }, 403);
+    const formId = parseInt(overtimeFormDecision[1], 10);
+    const form = await env.DB.prepare('SELECT f.*,u.department FROM overtime_forms f JOIN users u ON u.id=f.user_id WHERE f.id=?').bind(formId).first();
+    if (!form) return json({ error: 'Không tìm thấy form OT' }, 404);
+    if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && form.department !== me.department) return json({ error: 'Không có quyền duyệt form ngoài phòng ban' }, 403);
+    if (form.status !== 'pending') return json({ error: 'Form OT đã được xử lý' }, 400);
+    const b = await request.json().catch(() => ({}));
+    const action = b.action === 'reject' ? 'reject' : 'approve';
+    const note = String(b.review_note || '').trim();
+    if (action === 'reject' && !note) return json({ error: 'Vui lòng nhập lý do từ chối' }, 400);
+    const { results: items = [] } = await env.DB.prepare('SELECT * FROM overtime_form_items WHERE form_id=? ORDER BY id').bind(formId).all();
+    const supplied = new Map((Array.isArray(b.items) ? b.items : []).map(item => [Number(item.id), Number(item.approved_minutes)]));
+    const updates = [];
+    let approvedTotal = 0;
+    for (const item of items) {
+      const approved = action === 'reject' ? 0 : Math.min(Math.max(0, Number.isFinite(supplied.get(Number(item.id))) ? supplied.get(Number(item.id)) : Number(item.requested_minutes)), Number(item.requested_minutes));
+      approvedTotal += approved;
+      updates.push(env.DB.prepare("UPDATE overtime_form_items SET approved_minutes=?,updated_at=datetime('now','localtime') WHERE id=?").bind(Math.round(approved), item.id));
+    }
+    const requestedTotal = items.reduce((sum, item) => sum + Number(item.requested_minutes || 0), 0);
+    const nextStatus = action === 'reject' ? 'rejected' : approvedTotal === requestedTotal ? 'approved' : 'partially_approved';
+    updates.push(env.DB.prepare("UPDATE overtime_forms SET status=?,review_note=?,reviewer_id=?,reviewer_name=?,reviewed_at=datetime('now','localtime'),updated_at=datetime('now','localtime') WHERE id=?").bind(nextStatus, note || null, me.id, me.full_name || '', formId));
+    await env.DB.batch(updates);
+    const [year, month] = form.period_month.split('-').map(Number);
+    const overtime = await refreshInvoiceOvertime(env, form.user_id, month, year, me);
+    return json({ ok: true, status: nextStatus, approved_minutes: approvedTotal, overtime });
+  }
+
   if (path === '/api/company-holidays' && request.method === 'GET') {
     const { results = [] } = await env.DB.prepare('SELECT * FROM company_holidays ORDER BY holiday_date DESC').all();
     return json({ holidays: results });
@@ -3854,13 +4491,9 @@ export async function handle(request, env) {
     if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
     const b = await request.json();
     const ipInfo = await currentIpInfo(env, request);
-    const requestedIp = String(b.ip_range || '').trim();
-    if (requestedIp && requestedIp !== ipInfo.ip) {
-      return json({ error: `IP backend dang nhan la ${ipInfo.ip}. He thong khong tu luu IP khac neu chua xac nhan.`, ip: ipInfo.ip, warning: ipInfo.warning }, 400);
-    }
-    if (requestedIp === '192.168.1.1' || requestedIp.startsWith('192.168.')) {
-      return json({ error: 'Khong su dung IP noi bo/router cho whitelist van phong.', ip: ipInfo.ip }, 400);
-    }
+    const requestedIp = String(b.ip_range || ipInfo.ip).trim();
+    const validation = validOfficeNetworkInput(requestedIp, ipInfo.ip);
+    if (validation.error) return json({ error: validation.error, ip: ipInfo.ip, warning: ipInfo.warning }, 400);
     const r = await env.DB.prepare(
       'INSERT INTO wifi_whitelist (wifi_name,ip_range,description,is_active) VALUES (?,?,?,1)'
     ).bind(b.wifi_name||'',requestedIp || ipInfo.ip,b.description||'').run();
@@ -3873,8 +4506,8 @@ export async function handle(request, env) {
       if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
       const b = await request.json();
       const requestedIp = String(b.ip_range || '').trim();
-      if (requestedIp === '192.168.1.1' || requestedIp.startsWith('192.168.')) {
-        return json({ error: 'Khong su dung IP noi bo/router cho whitelist van phong.' }, 400);
+      if (!requestedIp || requestedIp.split(',').some(isPrivateNetworkRule)) {
+        return json({ error: 'Nhập Public IP/dải mạng hợp lệ; không sử dụng IP nội bộ, router hoặc dải private.' }, 400);
       }
       await env.DB.prepare('UPDATE wifi_whitelist SET wifi_name=?,ip_range=?,description=?,is_active=? WHERE id=?')
         .bind(b.wifi_name||'',b.ip_range||'',b.description||'',b.is_active??1,wid).run();
@@ -4638,8 +5271,8 @@ export async function handle(request, env) {
     const name = String(b.name || '').trim();
     if (!code || !name) return json({ error: 'Thieu ma hoac ten loai nghi' }, 400);
     const r = await env.DB.prepare(
-      'INSERT INTO leave_types (code,name,paid_policy,deducts_annual_leave,requires_evidence,requires_bod_approval,max_days,is_active) VALUES (?,?,?,?,?,?,?,?)'
-    ).bind(code, name, b.paid_policy || 'paid', b.deducts_annual_leave ? 1 : 0, b.requires_evidence ? 1 : 0, b.requires_bod_approval ? 1 : 0, b.max_days || null, b.is_active ?? 1).run();
+      'INSERT INTO leave_types (code,name,paid_policy,deducts_annual_leave,requires_evidence,requires_bod_approval,max_days,is_active,short_description,policy_description,notice_hours,required_documents,requires_handover,approval_flow) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
+    ).bind(code, name, b.paid_policy || 'paid', b.deducts_annual_leave ? 1 : 0, b.requires_evidence ? 1 : 0, b.requires_bod_approval ? 1 : 0, b.max_days || null, b.is_active ?? 1, String(b.short_description || '').trim(), String(b.policy_description || '').trim(), b.notice_hours === '' || b.notice_hours == null ? null : Number(b.notice_hours), String(b.required_documents || '').trim(), b.requires_handover ? 1 : 0, String(b.approval_flow || '').trim()).run();
     return json({ ok: true, id: r.meta.last_row_id });
   }
   const leaveTypeMatch = path.match(/^\/api\/leave-types\/(\d+)$/);
@@ -4652,8 +5285,8 @@ export async function handle(request, env) {
       const name = String(b.name || '').trim();
       if (!code || !name) return json({ error: 'Thieu ma hoac ten loai nghi' }, 400);
       await env.DB.prepare(
-        "UPDATE leave_types SET code=?,name=?,paid_policy=?,deducts_annual_leave=?,requires_evidence=?,requires_bod_approval=?,max_days=?,is_active=?,updated_at=datetime('now','localtime') WHERE id=?"
-      ).bind(code, name, b.paid_policy || 'paid', b.deducts_annual_leave ? 1 : 0, b.requires_evidence ? 1 : 0, b.requires_bod_approval ? 1 : 0, b.max_days || null, b.is_active ?? 1, id).run();
+        "UPDATE leave_types SET code=?,name=?,paid_policy=?,deducts_annual_leave=?,requires_evidence=?,requires_bod_approval=?,max_days=?,is_active=?,short_description=?,policy_description=?,notice_hours=?,required_documents=?,requires_handover=?,approval_flow=?,updated_at=datetime('now','localtime') WHERE id=?"
+      ).bind(code, name, b.paid_policy || 'paid', b.deducts_annual_leave ? 1 : 0, b.requires_evidence ? 1 : 0, b.requires_bod_approval ? 1 : 0, b.max_days || null, b.is_active ?? 1, String(b.short_description || '').trim(), String(b.policy_description || '').trim(), b.notice_hours === '' || b.notice_hours == null ? null : Number(b.notice_hours), String(b.required_documents || '').trim(), b.requires_handover ? 1 : 0, String(b.approval_flow || '').trim(), id).run();
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
@@ -4662,42 +5295,114 @@ export async function handle(request, env) {
     }
   }
 
+  if (path === '/api/leave/balances' && request.method === 'GET') {
+    const requestedUserId = Number(url.searchParams.get('user_id') || me.id);
+    if (requestedUserId !== Number(me.id) && !isHcns(me)) return json({ error: 'Không có quyền xem số dư' }, 403);
+    const year = Number(url.searchParams.get('year') || new Date().getFullYear());
+    const { results = [] } = await env.DB.prepare(
+      'SELECT leave_type_code,available_days,balance_year,updated_at FROM leave_balances WHERE user_id=? AND balance_year=?'
+    ).bind(requestedUserId, year).all();
+    return json({ balances: results, year });
+  }
+  if (path === '/api/leave/balances' && request.method === 'POST') {
+    if (!isHcns(me)) return json({ error: 'Chỉ HCNS được điều chỉnh số dư' }, 403);
+    const b = await request.json().catch(() => ({}));
+    const userId = Number(b.user_id), typeCode = String(b.leave_type_code || '');
+    const year = Number(b.balance_year || new Date().getFullYear()), delta = Number(b.delta_days);
+    const note = String(b.note || '').trim();
+    if (!Number.isInteger(userId) || !['annual', 'compensatory'].includes(typeCode) || !Number.isFinite(delta) || !delta || !note) return json({ error: 'Dữ liệu điều chỉnh số dư không hợp lệ hoặc thiếu ghi chú' }, 400);
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO leave_balances (user_id,leave_type_code,balance_year,available_days,updated_by,updated_by_name)
+        VALUES (?,?,?,?,?,?) ON CONFLICT(user_id,leave_type_code,balance_year) DO UPDATE SET available_days=leave_balances.available_days+excluded.available_days,updated_by=excluded.updated_by,updated_by_name=excluded.updated_by_name,updated_at=datetime('now','localtime')`)
+        .bind(userId, typeCode, year, delta, me.id, me.full_name || ''),
+      env.DB.prepare('INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?)')
+        .bind(userId, typeCode, year, delta, 'hr_adjustment', note, me.id, me.full_name || ''),
+    ]);
+    return json({ ok: true });
+  }
+
+  if (path === '/api/leave/uploads' && request.method === 'POST') {
+    if (!env.HR_DOCUMENTS) return json({ error: 'Lưu trữ tài liệu chưa được cấu hình' }, 503);
+    const form = await request.formData().catch(() => null);
+    const file = form?.get('file');
+    if (!file || typeof file.stream !== 'function') return json({ error: 'Vui lòng chọn tệp đính kèm' }, 400);
+    const contentType = String(file.type || '').toLowerCase();
+    if (!LEAVE_DOCUMENT_TYPES.includes(contentType) || !Number.isFinite(file.size) || file.size < 1 || file.size > LEAVE_DOCUMENT_MAX_BYTES) return json({ error: 'Chỉ nhận PDF, JPG, PNG hoặc WebP, tối đa 10 MB' }, 400);
+    const bytes = await file.arrayBuffer();
+    if (!employeeDocumentContentMatches(contentType, bytes)) return json({ error: 'Nội dung tệp không khớp định dạng' }, 400);
+    const documentId = crypto.randomUUID(), storageKey = `leave-requests/${me.id}/${documentId}`;
+    await env.HR_DOCUMENTS.put(storageKey, bytes, { httpMetadata: { contentType, cacheControl: 'private, no-store' }, customMetadata: { owner_id: String(me.id) } });
+    await env.DB.prepare('INSERT INTO leave_request_documents (id,owner_id,original_filename,content_type,byte_size,storage_key,required_label) VALUES (?,?,?,?,?,?,?)')
+      .bind(documentId, me.id, safeDownloadName(file.name), contentType, file.size, storageKey, String(form?.get('label') || '').slice(0, 120)).run();
+    return json({ ok: true, id: documentId, filename: safeDownloadName(file.name) });
+  }
+
   if (path === '/api/leave' && request.method === 'GET') {
     const statusFilter = url.searchParams.get('status') || '';
     const selfOnly     = url.searchParams.get('self') === '1';
-    const isAdminUser  = me.role === 'admin' || me.role === 'manager';
+    const isAdminUser  = isHrOrBod(me) || me.role === 'manager';
     let query, params;
     if (!isAdminUser || selfOnly) {
-      // Regular employee sees own requests only
-      query  = 'SELECT lr.*, u.full_name as employee_name, u.department, lt.name as type_name, lt.paid_policy, lt.deducts_annual_leave, lt.requires_evidence, lt.requires_bod_approval, lt.max_days FROM leave_requests lr LEFT JOIN users u ON lr.user_id=u.employee_code OR CAST(lr.user_id AS TEXT)=CAST(u.id AS TEXT) LEFT JOIN leave_types lt ON lr.type=lt.code WHERE lr.user_id=?';
+      query  = 'SELECT lr.*, u.full_name as employee_name, u.department, lt.name AS type_name, lt.paid_policy, lt.deducts_annual_leave, lt.requires_evidence, lt.requires_bod_approval, lt.max_days, lt.short_description AS type_short_description, lt.policy_description AS type_policy_description, lt.notice_hours AS type_notice_hours, lt.required_documents AS type_required_documents, lt.requires_handover AS type_requires_handover FROM leave_requests lr LEFT JOIN users u ON lr.user_id=u.employee_code OR CAST(lr.user_id AS TEXT)=CAST(u.id AS TEXT) LEFT JOIN leave_types lt ON lr.type=lt.code WHERE lr.user_id=?';
       params = [String(me.id)];
     } else {
-      // Admin: join with users table for name display
-      query  = `SELECT lr.*, u.full_name as employee_name, u.department, lt.name as type_name, lt.paid_policy, lt.deducts_annual_leave, lt.requires_evidence, lt.requires_bod_approval, lt.max_days FROM leave_requests lr
+      query  = `SELECT lr.*, u.full_name as employee_name, u.department, lt.name AS type_name, lt.paid_policy, lt.deducts_annual_leave, lt.requires_evidence, lt.requires_bod_approval, lt.max_days, lt.short_description AS type_short_description, lt.policy_description AS type_policy_description, lt.notice_hours AS type_notice_hours, lt.required_documents AS type_required_documents, lt.requires_handover AS type_requires_handover FROM leave_requests lr
                 LEFT JOIN users u ON CAST(lr.user_id AS TEXT)=CAST(u.id AS TEXT) OR lr.user_id=u.employee_code
                 LEFT JOIN leave_types lt ON lr.type=lt.code
                 WHERE 1=1`;
       params = [];
+      if (!isHrOrBod(me)) { query += ' AND u.department=?'; params.push(me.department); }
     }
     if (statusFilter) { query += ' AND lr.status=?'; params.push(statusFilter); }
     query += ' ORDER BY lr.id DESC';
     const { results } = await env.DB.prepare(query).bind(...params).all();
-    return json({ leave: results });
+    const leave = await Promise.all(results.map(async row => ({
+      ...row, type_name: row.type_name || row.type, paid_label: leavePaidLabel(row.paid_policy),
+      can_action: row.status === 'pending' && canAdvanceLeaveApproval(me, row),
+      document_count: Number((await env.DB.prepare('SELECT COUNT(*) AS cnt FROM leave_request_documents WHERE leave_request_id=?').bind(row.id).first())?.cnt || 0),
+    })));
+    return json({ leave });
   }
   if (path === '/api/leave' && request.method === 'POST') {
     try {
     const b = await request.json();
-    if (!b.start_date || !b.end_date) return json({ error: 'Thiếu ngày bắt đầu/kết thúc' }, 400);
-    const typeCode = String(b.type || 'annual').trim();
+    if (!b.start_date || !b.end_date || !b.type) return json({ error: 'Chọn loại nghỉ và ngày bắt đầu/kết thúc' }, 400);
+    if (String(b.start_date) > String(b.end_date)) return json({ error: 'Ngày bắt đầu phải trước hoặc bằng ngày kết thúc' }, 400);
+    const typeCode = String(b.type).trim();
     const leaveType = await env.DB.prepare('SELECT * FROM leave_types WHERE code=? AND is_active=1').bind(typeCode).first();
     if (!leaveType) return json({ error: 'Loai nghi phep khong hop le hoac da tat' }, 400);
-    const leaveDays = attCountBusinessDaysBetween(b.start_date, b.end_date) || 1;
+    const session = ['full', 'morning', 'afternoon'].includes(b.leave_session) ? b.leave_session : 'full';
+    if (session !== 'full' && b.start_date !== b.end_date) return json({ error: 'Nghỉ nửa ngày chỉ áp dụng cho một ngày' }, 400);
+    const leaveDays = leaveDaysForSession(b.start_date, b.end_date, session);
+    if (!leaveDays) return json({ error: 'Khoảng thời gian nghỉ không có ngày làm việc' }, 400);
+    const reason = String(b.reason || '').trim();
+    if (!reason) return json({ error: 'Vui lòng nhập lý do nghỉ' }, 400);
+    const documentIds = [...new Set(Array.isArray(b.document_ids) ? b.document_ids.map(String).filter(Boolean) : [])];
+    if (leaveType.requires_evidence && !documentIds.length) return json({ error: 'Loại nghỉ này yêu cầu tài liệu đính kèm' }, 400);
+    const needsHandover = !!leaveType.requires_handover || leaveDays >= 2;
+    const handoverUserId = b.handover_user_id ? Number(b.handover_user_id) : null;
+    if (needsHandover && !handoverUserId) return json({ error: 'Đơn nghỉ từ 2 ngày hoặc theo chính sách phải chọn người bàn giao' }, 400);
+    if (handoverUserId === Number(me.id)) return json({ error: 'Người bàn giao không thể là chính bạn' }, 400);
+    const handoverUser = handoverUserId ? await env.DB.prepare('SELECT id,full_name FROM users WHERE id=? AND is_active=1').bind(handoverUserId).first() : null;
+    if (handoverUserId && !handoverUser) return json({ error: 'Người bàn giao không hợp lệ' }, 400);
+    if (documentIds.length) {
+      const placeholders = documentIds.map(() => '?').join(',');
+      const { results: documents = [] } = await env.DB.prepare(`SELECT id FROM leave_request_documents WHERE owner_id=? AND leave_request_id IS NULL AND id IN (${placeholders})`).bind(me.id, ...documentIds).all();
+      if (documents.length !== documentIds.length) return json({ error: 'Tài liệu đính kèm không hợp lệ' }, 400);
+    }
+    const balanceType = leaveBalanceType(leaveType), balanceYear = Number(String(b.start_date).slice(0, 4));
+    if (balanceType && await getLeaveBalance(env, me.id, balanceType, balanceYear) < leaveDays) return json({ error: `Không đủ số dư ${balanceType === 'annual' ? 'phép năm' : 'nghỉ bù'}` }, 400);
     const isHcnsApplicant = normalizeDeptName(me.department) === 'Phòng HCNS';
-    const needsBod = leaveDays >= 3 || typeCode === 'unpaid' || isHcnsApplicant;
+    const flow = leavePolicyFor(leaveType), needsBod = flow === 'manager_hr_bgd' || isHcnsApplicant;
     const currentApprover = isHcnsApplicant ? 'Trưởng phòng HCNS' : 'Quản lý trực tiếp';
     const r = await env.DB.prepare(
-      'INSERT INTO leave_requests (user_id,employee_id,type,start_date,end_date,reason,status,current_approver,approval_level,submitted_at) VALUES (?,?,?,?,?,?,?,?,?,datetime(\'now\',\'localtime\'))'
-    ).bind(String(me.id), me.id, typeCode, b.start_date, b.end_date, b.reason||'', 'pending', currentApprover, 1).run();
+      'INSERT INTO leave_requests (user_id,employee_id,type,start_date,end_date,reason,status,current_approver,approval_level,submitted_at,leave_session,total_days,handover_user_id,handover_user_name,approval_flow,balance_reserved_days) VALUES (?,?,?,?,?,?,?,?,?,datetime(\'now\',\'localtime\'),?,?,?,?,?,?,?)'
+    ).bind(String(me.id), me.id, typeCode, b.start_date, b.end_date, reason, 'pending', currentApprover, 1, session, leaveDays, handoverUser?.id || null, handoverUser?.full_name || null, flow, balanceType ? leaveDays : 0).run();
+    if (balanceType) await env.DB.batch([
+      env.DB.prepare("UPDATE leave_balances SET available_days=available_days-?,updated_at=datetime('now','localtime') WHERE user_id=? AND leave_type_code=? AND balance_year=?").bind(leaveDays, me.id, balanceType, balanceYear),
+      env.DB.prepare('INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,leave_request_id,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?,?)').bind(me.id, balanceType, balanceYear, r.meta.last_row_id, -leaveDays, 'pending_reservation', 'Giữ chỗ đơn nghỉ', me.id, me.full_name || ''),
+    ]);
+    if (documentIds.length) await env.DB.prepare(`UPDATE leave_request_documents SET leave_request_id=? WHERE id IN (${documentIds.map(() => '?').join(',')})`).bind(r.meta.last_row_id, ...documentIds).run();
     await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(r.meta.last_row_id, 0, me.id, me.full_name, 'submitted', needsBod ? 'Luồng cần Ban Giám đốc phê duyệt cuối' : 'Luồng Quản lý trực tiếp → HCNS').run();
     return json({ ok: true, id: r.meta.last_row_id });
     } catch (e) {
@@ -4705,26 +5410,68 @@ export async function handle(request, env) {
       return json({ error: 'Không thể tạo yêu cầu nghỉ phép, vui lòng thử lại sau' }, 500);
     }
   }
+  const leaveDocumentMatch = path.match(/^\/api\/leave\/(\d+)\/documents\/([0-9a-fA-F-]{36})$/);
+  if (leaveDocumentMatch && request.method === 'GET') {
+    const leaveId = Number(leaveDocumentMatch[1]), documentId = leaveDocumentMatch[2];
+    const document = await env.DB.prepare(`SELECT d.*,lr.employee_id,u.department FROM leave_request_documents d
+      JOIN leave_requests lr ON lr.id=d.leave_request_id LEFT JOIN users u ON u.id=lr.employee_id WHERE d.id=? AND d.leave_request_id=?`).bind(documentId, leaveId).first();
+    if (!document) return json({ error: 'Tài liệu không tồn tại' }, 404);
+    if (Number(document.employee_id) !== Number(me.id) && !canManageLeaveRequest(me, document)) return json({ error: 'Không có quyền xem tài liệu' }, 403);
+    if (!env.HR_DOCUMENTS) return json({ error: 'Lưu trữ tài liệu chưa được cấu hình' }, 503);
+    const object = await env.HR_DOCUMENTS.get(document.storage_key);
+    if (!object) return json({ error: 'Tệp không tồn tại trên kho lưu trữ' }, 404);
+    const disposition = url.searchParams.get('disposition') === 'attachment' ? 'attachment' : 'inline';
+    const filename = safeDownloadName(document.original_filename);
+    return new Response(object.body, { headers: { 'Content-Type': document.content_type || object.httpMetadata?.contentType || 'application/octet-stream', 'Content-Disposition': `${disposition}; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' } });
+  }
   const leaveMatch = path.match(/^\/api\/leave\/(\d+)$/);
   if (leaveMatch) {
     const id = parseInt(leaveMatch[1]);
     if (request.method === 'PUT') {
       const b = await request.json();
-      // Build update query based on what fields are sent
-      const updates = [];
-      const vals    = [];
-      if (b.status !== undefined)     { updates.push('status=?');     vals.push(b.status); }
-      if (b.type !== undefined)       { updates.push('type=?');       vals.push(b.type); }
-      if (b.start_date !== undefined) { updates.push('start_date=?'); vals.push(b.start_date); }
-      if (b.end_date !== undefined)   { updates.push('end_date=?');   vals.push(b.end_date); }
-      if (b.reason !== undefined)     { updates.push('reason=?');     vals.push(b.reason); }
+      const request = await env.DB.prepare('SELECT lr.*,u.department FROM leave_requests lr LEFT JOIN users u ON u.id=lr.employee_id WHERE lr.id=?').bind(id).first();
+      if (!request) return json({ error: 'Không tìm thấy đơn nghỉ' }, 404);
+      if (b.status === 'rejected') {
+        if (!canAdvanceLeaveApproval(me, request)) return json({ error: 'Chưa đến bước phê duyệt của bạn' }, 403);
+        await env.DB.prepare("UPDATE leave_requests SET status='rejected',current_approver=NULL WHERE id=?").bind(id).run();
+        if (request.balance_reserved_days > 0) {
+          const type = request.type === 'annual' ? 'annual' : 'compensatory', year = Number(String(request.start_date).slice(0,4));
+          await env.DB.batch([
+            env.DB.prepare("UPDATE leave_balances SET available_days=available_days+?,updated_at=datetime('now','localtime') WHERE user_id=? AND leave_type_code=? AND balance_year=?").bind(request.balance_reserved_days, request.employee_id, type, year),
+            env.DB.prepare('INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,leave_request_id,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?,?)').bind(request.employee_id, type, year, id, request.balance_reserved_days, 'reservation_release', String(b.note || 'Từ chối đơn'), me.id, me.full_name || ''),
+          ]);
+        }
+        await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(id, request.approval_level, me.id, me.full_name, 'rejected', String(b.note || '')).run();
+        return json({ ok: true });
+      }
+      if (b.status === 'approved') {
+        if (!canAdvanceLeaveApproval(me, request)) return json({ error: 'Chưa đến bước phê duyệt của bạn' }, 403);
+        const flow = request.approval_flow || 'manager_hr'; let nextLevel = Number(request.approval_level || 1) + 1, nextApprover = null;
+        if (me.role === 'admin' || (nextLevel === 3 && flow !== 'manager_hr_bgd') || nextLevel > 3) nextLevel = 99;
+        if (nextLevel === 2) nextApprover = 'HCNS'; else if (nextLevel === 3) nextApprover = 'Ban Giám đốc';
+        const finalApproved = nextLevel === 99;
+        await env.DB.prepare('UPDATE leave_requests SET status=?,approval_level=?,current_approver=? WHERE id=?').bind(finalApproved ? 'approved' : 'pending', nextLevel, nextApprover, id).run();
+        await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(id, request.approval_level, me.id, me.full_name, finalApproved ? 'approved' : 'forwarded', String(b.note || '')).run();
+        return json({ ok: true, final: finalApproved });
+      }
+      if (Number(request.employee_id) !== Number(me.id) || request.status !== 'pending') return json({ error: 'Chỉ được sửa đơn của bạn khi đang chờ duyệt' }, 403);
+      const updates = [], vals = [];
+      if (b.reason !== undefined) { const reason = String(b.reason).trim(); if (!reason) return json({ error: 'Vui lòng nhập lý do nghỉ' }, 400); updates.push('reason=?'); vals.push(reason); }
       if (!updates.length) return json({ error: 'Không có dữ liệu cập nhật' }, 400);
-      vals.push(id);
-      await env.DB.prepare(`UPDATE leave_requests SET ${updates.join(',')} WHERE id=?`).bind(...vals).run();
-      if (b.status !== undefined) await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action) VALUES (?,?,?,?,?)').bind(id, 1, me.id, me.full_name, b.status).run();
+      vals.push(id); await env.DB.prepare(`UPDATE leave_requests SET ${updates.join(',')} WHERE id=?`).bind(...vals).run();
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
+      const request = await env.DB.prepare('SELECT * FROM leave_requests WHERE id=?').bind(id).first();
+      if (!request || (Number(request.employee_id) !== Number(me.id) && !isHcns(me))) return json({ error: 'Không có quyền xóa đơn nghỉ' }, 403);
+      if (request.status !== 'pending') return json({ error: 'Chỉ được xóa đơn đang chờ duyệt' }, 400);
+      if (request.balance_reserved_days > 0) {
+        const type = request.type === 'annual' ? 'annual' : 'compensatory', year = Number(String(request.start_date).slice(0,4));
+        await env.DB.batch([
+          env.DB.prepare("UPDATE leave_balances SET available_days=available_days+?,updated_at=datetime('now','localtime') WHERE user_id=? AND leave_type_code=? AND balance_year=?").bind(request.balance_reserved_days, request.employee_id, type, year),
+          env.DB.prepare('INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,leave_request_id,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?,?)').bind(request.employee_id, type, year, id, request.balance_reserved_days, 'reservation_release', 'Hủy đơn nghỉ', me.id, me.full_name || ''),
+        ]);
+      }
       await env.DB.prepare('DELETE FROM leave_requests WHERE id=?').bind(id).run();
       return json({ ok: true });
     }
@@ -5097,16 +5844,74 @@ export async function handle(request, env) {
     if (request.method === 'PUT') {
       if (!(isAdmin || isHcns(me))) return json({ error: 'Không có quyền' }, 403);
       const b = await request.json();
+      const current = await env.DB.prepare('SELECT * FROM payroll WHERE id=?').bind(id).first();
+      if (!current) return json({ error: 'Không tìm thấy dòng lương' }, 404);
+      const lineChanges = Array.isArray(b.line_changes) ? b.line_changes : [];
+      if (lineChanges.length) {
+        const allowedLines = new Set(['base_salary', 'allowance', 'kpi_bonus', 'insurance', 'tax', 'deduction']);
+        const normalized = [];
+        for (const raw of lineChanges) {
+          const field = String(raw?.field || '');
+          const lineLabel = String(raw?.label || '').trim();
+          const changeNote = String(raw?.note || '').trim();
+          const nextValue = Number(raw?.new_value);
+          if (!allowedLines.has(field) || !lineLabel || !changeNote || changeNote.length > 1000 || !Number.isFinite(nextValue) || nextValue < 0) {
+            return json({ error: 'Mỗi dòng điều chỉnh phải hợp lệ và có ghi chú' }, 400);
+          }
+          const beforeValue = Number(current[field] || 0);
+          if (beforeValue !== nextValue) normalized.push({ field, lineLabel, changeNote, beforeValue, nextValue });
+        }
+        if (!normalized.length) return json({ error: 'Không có thay đổi dòng lương để lưu' }, 400);
+        const next = { ...current };
+        for (const item of normalized) next[item.field] = item.nextValue;
+        const net = Number(next.base_salary || 0) + Number(next.kpi_bonus || 0) + Number(next.allowance || 0) + Number(next.overtime_pay || 0) - Number(next.deduction || 0) - Number(next.tax || 0) - Number(next.insurance || 0);
+        const dataStatus = Number(next.base_salary || 0) > 0 ? 'ready' : 'missing_salary_config';
+        const dataWarnings = dataStatus === 'ready' ? '' : 'Thiếu cấu hình lương';
+        await ensurePayrollLineChangeLog(env);
+        await env.DB.batch([
+          env.DB.prepare(
+            "UPDATE payroll SET base_salary=?,kpi_bonus=?,allowance=?,deduction=?,overtime_pay=?,tax=?,insurance=?,net_salary=?,data_status=?,data_warnings=?,source_synced_at=datetime('now','localtime') WHERE id=?"
+          ).bind(next.base_salary || 0, next.kpi_bonus || 0, next.allowance || 0, next.deduction || 0, next.overtime_pay || 0, next.tax || 0, next.insurance || 0, net, dataStatus, dataWarnings, id),
+          ...normalized.map(item => env.DB.prepare(
+            'INSERT INTO payroll_line_change_log (payroll_id,line_key,line_label,before_value,after_value,change_note,changed_by,changed_by_name) VALUES (?,?,?,?,?,?,?,?)'
+          ).bind(id, item.field, item.lineLabel, item.beforeValue, item.nextValue, item.changeNote, me.id, me.full_name || '')),
+          env.DB.prepare(
+            'INSERT INTO payroll_change_log (payroll_id,changed_by,changed_by_name,change_note,before_data,after_data) VALUES (?,?,?,?,?,?)'
+          ).bind(id, me.id, me.full_name || '', `Điều chỉnh ${normalized.length} dòng lương`, JSON.stringify(current), JSON.stringify({ ...next, net_salary: net })),
+        ]);
+        return json({ ok: true, net_salary: net, changed_lines: normalized.length });
+      }
+      const changeNote = String(b.change_note || '').trim();
+      if (!changeNote) return json({ error: 'Vui lòng nhập ghi chú điều chỉnh' }, 400);
+      if (changeNote.length > 1000) return json({ error: 'Ghi chú điều chỉnh không được quá 1000 ký tự' }, 400);
       const net = (b.base_salary||0) + (b.kpi_bonus||0) + (b.allowance||0) + (b.overtime_pay||0) - (b.deduction||0) - (b.tax||0) - (b.insurance||0);
       const dataStatus = Number(b.base_salary || 0) > 0 ? 'ready' : 'missing_salary_config';
       const dataWarnings = dataStatus === 'ready' ? '' : 'Thiếu cấu hình lương';
       await env.DB.prepare(
         "UPDATE payroll SET employee_name=?,employee_code=?,department=?,month=?,base_salary=?,kpi_bonus=?,allowance=?,deduction=?,overtime_pay=?,tax=?,insurance=?,work_days=?,standard_days=?,note=?,net_salary=?,data_status=?,data_warnings=?,source_synced_at=datetime('now','localtime') WHERE id=?"
       ).bind(b.employee_name||'', b.employee_code||'', b.department||'', b.month||'', b.base_salary||0, b.kpi_bonus||0, b.allowance||0, b.deduction||0, b.overtime_pay||0, b.tax||0, b.insurance||0, b.work_days||0, b.standard_days||0, b.note||'', net, dataStatus, dataWarnings, id).run();
+      await env.DB.prepare(
+        'INSERT INTO payroll_change_log (payroll_id,changed_by,changed_by_name,change_note,before_data,after_data) VALUES (?,?,?,?,?,?)'
+      ).bind(id, me.id, me.full_name || '', changeNote, JSON.stringify(current), JSON.stringify({
+        base_salary: b.base_salary||0, kpi_bonus: b.kpi_bonus||0, allowance: b.allowance||0,
+        deduction: b.deduction||0, overtime_pay: b.overtime_pay||0, tax: b.tax||0,
+        insurance: b.insurance||0, work_days: b.work_days||0, standard_days: b.standard_days||0,
+        net_salary: net, note: b.note||''
+      })).run();
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
       if (!(isAdmin || isHcns(me))) return json({ error: 'Không có quyền' }, 403);
+      const current = await env.DB.prepare('SELECT * FROM payroll WHERE id=?').bind(id).first();
+      if (!current) return json({ error: 'Không tìm thấy dòng lương' }, 404);
+      const issued = await env.DB.prepare(
+        "SELECT id FROM invoices WHERE payroll_id=? AND (locked_at IS NOT NULL OR status IN ('issued','paid','employee_confirmed') OR employee_confirmed_at IS NOT NULL) LIMIT 1"
+      ).bind(id).first();
+      if (issued) return json({ error: 'Không thể xóa dòng lương đã phát hành phiếu lương. Hãy xử lý phiếu đã phát hành trước.' }, 409);
+      await env.DB.prepare(
+        'INSERT INTO payroll_change_log (payroll_id,changed_by,changed_by_name,change_note,before_data,after_data) VALUES (?,?,?,?,?,?)'
+      ).bind(id, me.id, me.full_name || '', 'Xóa dòng lương', JSON.stringify(current), '{}').run();
+      await env.DB.prepare('UPDATE payroll_adjustments SET payroll_id=NULL,updated_at=datetime(\'now\',\'localtime\') WHERE payroll_id=?').bind(id).run();
       await env.DB.prepare('DELETE FROM payroll WHERE id=?').bind(id).run();
       return json({ ok: true });
     }
@@ -5155,6 +5960,42 @@ export async function handle(request, env) {
     const { results: templates = [] } = await env.DB.prepare('SELECT * FROM kpi_templates ORDER BY id DESC').all();
     for (const t of templates) t.items = (await env.DB.prepare('SELECT * FROM kpi_template_items WHERE template_id=? ORDER BY id').bind(t.id).all()).results || [];
     return json({ templates });
+  }
+
+  const candCvMatch = path.match(/^\/api\/candidates\/(\d+)\/cv$/);
+  if (candCvMatch) {
+    const candidateId = parseInt(candCvMatch[1], 10);
+    const candidate = await env.DB.prepare('SELECT * FROM candidates WHERE id=?').bind(candidateId).first();
+    if (!candidate) return json({ error: 'Không tìm thấy ứng viên' }, 404);
+    if (!env.HR_DOCUMENTS) return json({ error: 'Lưu trữ hồ sơ chưa được cấu hình' }, 503);
+    if (request.method === 'GET') {
+      if (!candidate.cv_storage_key) return json({ error: 'Ứng viên chưa có CV' }, 404);
+      const object = await env.HR_DOCUMENTS.get(candidate.cv_storage_key);
+      if (!object) return json({ error: 'Không tìm thấy tệp CV' }, 404);
+      const headers = new Headers();
+      headers.set('Content-Type', candidate.cv_content_type || 'application/octet-stream');
+      headers.set('Content-Disposition', `${url.searchParams.get('disposition') === 'attachment' ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(candidate.cv_original_filename || 'CV-ung-vien')}`);
+      return new Response(object.body, { headers });
+    }
+    if (request.method === 'POST') {
+      const form = await request.formData();
+      const file = form.get('file');
+      if (!file || typeof file.arrayBuffer !== 'function') return json({ error: 'Vui lòng chọn tệp CV' }, 400);
+      const contentType = String(file.type || 'application/octet-stream').toLowerCase();
+      const allowedTypes = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+      const fileName = String(file.name || 'CV-ung-vien').trim();
+      const ext = fileName.toLowerCase().split('.').pop();
+      if (!allowedTypes.includes(contentType) && !['pdf','doc','docx'].includes(ext)) return json({ error: 'CV chỉ nhận định dạng PDF, DOC hoặc DOCX' }, 400);
+      if (!Number.isFinite(file.size) || file.size < 1 || file.size > 10 * 1024 * 1024) return json({ error: 'CV không được vượt quá 10 MB' }, 400);
+      const bytes = await file.arrayBuffer();
+      const storageKey = `candidates/${candidateId}/cv-${crypto.randomUUID()}`;
+      await env.HR_DOCUMENTS.put(storageKey, bytes, { httpMetadata: { contentType, cacheControl: 'private, no-store' }, customMetadata: { candidate_id: String(candidateId), uploaded_by: String(me.id) } });
+      if (candidate.cv_storage_key) await env.HR_DOCUMENTS.delete(candidate.cv_storage_key);
+      await env.DB.prepare('UPDATE candidates SET cv_storage_key=?,cv_original_filename=?,cv_content_type=?,cv_byte_size=? WHERE id=?')
+        .bind(storageKey, fileName, contentType, file.size, candidateId).run();
+      return json({ ok: true, original_filename: fileName, byte_size: file.size });
+    }
+    return json({ error: 'Phương thức không được hỗ trợ' }, 405);
   }
   if (path === '/api/kpi-templates' && request.method === 'POST') {
     if (!isHcns(me)) return json({ error: 'Không có quyền' }, 403);

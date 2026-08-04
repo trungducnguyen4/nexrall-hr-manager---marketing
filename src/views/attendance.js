@@ -1,16 +1,21 @@
 import { api } from '../api.js';
 import { esc, fmtDate, statusBadge, setAvatar, toast, openModal, closeModal, loadingHTML, emptyHTML, today, initials, avatarColor, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js';
+import { attendanceClosingMonth } from '../attendance-period.js';
 
 const WORK_TYPE_LABEL = { office: '🏢 Văn phòng', wfh: '🏠 WFH', business: '✈️ Công tác' };
 const SHIFT_LABEL = { morning: 'Ca sáng (08:30–12:00)', afternoon: 'Ca chiều (13:30–17:00)', full: 'Cả ngày' };
 const SHIFT_LABEL_SHORT = { morning: 'Ca sáng', afternoon: 'Ca chiều', full: 'Cả ngày' };
 const isHcnsDepartment = (department) => ['hcns', 'phong hcns', 'nhan su', 'phong nhan su', 'hanh chinh nhan su', 'hr'].includes(String(department || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim());
 
+
 export async function renderAttendance(el, me, route = {}) {
   const isManager = me.role === 'admin' || me.role === 'manager';
   const canManageAttendance = isManager || isHcnsDepartment(me.department);
+  const canImportHistorical = me.role === 'admin' || isHcnsDepartment(me.department);
   const routeDate = /^\d{4}-\d{2}-\d{2}$/.test(String(route.segments?.[1] || '')) ? String(route.segments[1]) : '';
   const routeEmployeeId = Number(route.segments?.[2] || 0);
+  const closingMonth = attendanceClosingMonth();
+  const closingLabel = `Kỳ chốt công: ${closingMonth.slice(5, 7)}/${closingMonth.slice(0, 4)}`;
 
   el.innerHTML = `
     <div class="page-header">
@@ -69,6 +74,11 @@ export async function renderAttendance(el, me, route = {}) {
       </div>
     </div>
 
+    <div class="card" style="margin:14px 0;">
+      <div class="card-header"><div class="card-title">📝 Form làm thêm giờ</div><button id="btn-create-ot-form" class="btn-primary btn-sm">+ Tạo form</button></div>
+      <div id="ot-form-list">${loadingHTML()}</div>
+    </div>
+
     ${canManageAttendance ? `<div class="card" style="margin:14px 0;">
       <div class="card-header"><div class="card-title">⏱️ Yêu cầu làm thêm giờ</div><select id="ot-status-filter" class="btn-secondary btn-sm"><option value="pending">Chờ duyệt</option><option value="approved">Đã duyệt</option><option value="rejected">Đã từ chối</option><option value="">Tất cả</option></select></div>
       <div id="ot-request-list">${loadingHTML()}</div>
@@ -79,12 +89,14 @@ export async function renderAttendance(el, me, route = {}) {
       <div class="card-header" style="margin-bottom:10px;">
         <div class="card-title">📅 Lịch sử chấm công</div>
         <div style="display:flex;gap:8px;">
+          ${canManageAttendance ? `<button id="btn-att-monthly-board" class="btn-secondary btn-sm">▦ Bảng chấm công tổng hợp</button>` : ''}
           ${!canManageAttendance ? `<button id="btn-my-att-summary" class="btn-secondary btn-sm">Tổng kết của tôi</button>` : ''}
-          ${isManager ? `<button id="btn-add-att" class="btn-primary btn-sm">+ Thêm</button>` : ''}
+          ${canImportHistorical ? `<button id="btn-import-att" class="btn-secondary btn-sm">⇧ Nhập bảng</button>` : ''}${isManager ? `<button id="btn-add-att" class="btn-primary btn-sm">+ Thêm</button>` : ''}
         </div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
-        <input type="month" id="att-month-filter" class="w-full" style="max-width:180px;" value="${new Date().toISOString().slice(0,7)}"/>
+        <input type="month" id="att-month-filter" class="w-full" style="max-width:180px;" value="${closingMonth}"/>
+        <span class="badge badge-info" id="att-closing-period" style="align-self:center;">${closingLabel}</span>
         <input type="date" id="att-date-filter" class="w-full" style="max-width:170px;" title="Lọc theo ngày cụ thể" value="${esc(routeDate)}"/>
           ${canManageAttendance ? `
 
@@ -281,12 +293,120 @@ export async function renderAttendance(el, me, route = {}) {
   });
 
   let historyPage = 1;
+  let overtimeForms = [];
+
+  const formStatus = status => ({
+    draft: '<span class="badge badge-gray">Nháp</span>', pending: '<span class="badge badge-warning">Chờ duyệt</span>',
+    approved: '<span class="badge badge-success">Đã duyệt</span>', partially_approved: '<span class="badge badge-info">Duyệt một phần</span>',
+    rejected: '<span class="badge badge-danger">Từ chối</span>',
+  }[status] || esc(status));
+
+  async function loadOvertimeForms() {
+    const list = document.getElementById('ot-form-list');
+    if (!list) return;
+    const month = document.getElementById('att-month-filter')?.value || closingMonth;
+    try {
+      const { overtime_forms: forms = [] } = await api.getOvertimeForms({ month });
+      overtimeForms = forms;
+      list.innerHTML = forms.length ? `<div class="table-wrap"><table><thead><tr><th>Nhân viên</th><th>Thời gian & lý do</th><th>Đề nghị / duyệt</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>${forms.map(form => {
+        const detail = form.items.map(item => `${esc(item.start_at.replace('T', ' '))} → ${esc(item.end_at.replace('T', ' '))}<br><small>${esc(item.reason)} · ${item.time_category === 'holiday' ? 'Ngày lễ' : item.time_category === 'rest_day' ? 'Ngày nghỉ' : 'Ngày thường'}</small>`).join('<hr style="border:0;border-top:1px solid var(--border);margin:7px 0">');
+        const minutes = `${Number(form.requested_minutes || 0) / 60}h${form.status !== 'draft' ? ` / ${Number(form.approved_minutes || 0) / 60}h` : ''}`;
+        const canDecide = canManageAttendance && form.status === 'pending';
+        const canSubmit = Number(form.user_id) === Number(me.id) && form.status === 'draft';
+        return `<tr><td><b>${esc(form.full_name)}</b><br><small>${esc(form.employee_code || '')}</small></td><td style="min-width:260px">${detail}</td><td>${minutes}</td><td>${formStatus(form.status)}${form.review_note ? `<br><small>${esc(form.review_note)}</small>` : ''}</td><td>${canDecide ? `<button class="btn-secondary btn-sm ot-form-decide" data-id="${form.id}">Duyệt</button>` : ''}${canSubmit ? `<button class="btn-primary btn-sm ot-form-submit" data-id="${form.id}">Gửi</button>` : ''}${form.reviewer_name ? `<small>${esc(form.reviewer_name)}</small>` : ''}</td></tr>`;
+      }).join('')}</tbody></table></div>` : emptyHTML('📝', 'Chưa có form làm thêm giờ trong kỳ này');
+      list.querySelectorAll('.ot-form-decide').forEach(button => button.addEventListener('click', () => openOvertimeFormDecision(Number(button.dataset.id))));
+      list.querySelectorAll('.ot-form-submit').forEach(button => button.addEventListener('click', async () => {
+        try { await api.submitOvertimeForm(button.dataset.id); toast('Đã gửi form OT chờ duyệt', 'success'); loadOvertimeForms(); }
+        catch (error) { toast(error.message, 'error'); }
+      }));
+    } catch (error) { list.innerHTML = emptyHTML('⚠️', error.message || 'Không thể tải form OT'); }
+  }
+
+  function openOvertimeFormCreator() {
+    let itemIndex = 0;
+    const renderItem = () => `<div class="ot-form-item" data-index="${itemIndex++}" style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px"><div class="input-row"><div class="field"><label>Từ *</label><input class="ot-start" type="datetime-local"/></div><div class="field"><label>Đến *</label><input class="ot-end" type="datetime-local"/></div></div><div class="input-row"><div class="field"><label>Thời điểm *</label><select class="ot-category"><option value="workday">Ngày thường</option><option value="rest_day">Ngày nghỉ</option><option value="holiday">Ngày lễ</option></select></div><div class="field" style="flex:2"><label>Lý do *</label><input class="ot-item-reason" maxlength="1000" placeholder="Ví dụ: Theo lịch tổ chức sự kiện"/></div></div><button type="button" class="btn-danger btn-sm ot-remove-row">Xóa dòng</button></div>`;
+    openModal('Tạo form làm thêm giờ', `<div class="field"><label>Tháng OT *</label><input id="ot-form-month" type="month" value="${closingMonth}"/></div><p style="font-size:12px;color:var(--text-2)">Có thể thêm nhiều ca, kể cả ca qua ngày. Chỉ giờ được HCNS duyệt mới được tính.</p><div id="ot-form-items">${renderItem()}</div><button id="ot-add-row" type="button" class="btn-secondary btn-sm">+ Thêm ca OT</button>`, '<button class="btn-secondary" id="ot-form-cancel">Hủy</button><button class="btn-primary" id="ot-form-send">Gửi HCNS duyệt</button>');
+    const bindRows = () => document.querySelectorAll('.ot-remove-row').forEach(button => button.onclick = () => { const rows = document.querySelectorAll('.ot-form-item'); if (rows.length === 1) { toast('Form cần ít nhất một ca OT', 'error'); return; } button.closest('.ot-form-item').remove(); });
+    bindRows();
+    document.getElementById('ot-add-row').onclick = () => { document.getElementById('ot-form-items').insertAdjacentHTML('beforeend', renderItem()); bindRows(); };
+    document.getElementById('ot-form-cancel').onclick = closeModal;
+    document.getElementById('ot-form-send').onclick = async event => {
+      const period_month = document.getElementById('ot-form-month').value;
+      const items = [...document.querySelectorAll('.ot-form-item')].map(row => ({ start_at: row.querySelector('.ot-start').value, end_at: row.querySelector('.ot-end').value, reason: row.querySelector('.ot-item-reason').value.trim(), time_category: row.querySelector('.ot-category').value }));
+      if (!period_month || items.some(item => !item.start_at || !item.end_at || !item.reason)) { toast('Vui lòng nhập đầy đủ thời gian và lý do', 'error'); return; }
+      event.currentTarget.disabled = true;
+      try { await api.createOvertimeForm({ period_month, items, submit: true }); closeModal(); toast('Đã gửi form OT chờ HCNS duyệt', 'success'); loadOvertimeForms(); }
+      catch (error) { toast(error.message, 'error'); event.currentTarget.disabled = false; }
+    };
+  }
+
+  function openOvertimeFormDecision(formId) {
+    const form = overtimeForms.find(item => Number(item.id) === Number(formId));
+    if (!form) return;
+    const rows = form.items.map(item => `<tr><td>${esc(item.start_at.replace('T', ' '))}<br>${esc(item.end_at.replace('T', ' '))}</td><td>${esc(item.reason)}</td><td>${Number(item.requested_minutes)} phút</td><td><input class="ot-form-approved" data-id="${item.id}" type="number" min="0" max="${item.requested_minutes}" value="${item.requested_minutes}"/></td></tr>`).join('');
+    openModal('Duyệt form làm thêm giờ', `<div class="table-wrap"><table><thead><tr><th>Thời gian</th><th>Lý do</th><th>Đề nghị</th><th>Duyệt phút</th></tr></thead><tbody>${rows}</tbody></table></div><div class="field"><label>Ghi chú duyệt/từ chối</label><textarea id="ot-form-review-note" rows="3"></textarea></div>`, '<button class="btn-danger" id="ot-form-reject">Từ chối</button><button class="btn-primary" id="ot-form-approve">Duyệt</button>');
+    const decide = async action => {
+      const review_note = document.getElementById('ot-form-review-note').value.trim();
+      if (action === 'reject' && !review_note) { toast('Vui lòng nhập lý do từ chối', 'error'); return; }
+      const items = [...document.querySelectorAll('.ot-form-approved')].map(input => ({ id: Number(input.dataset.id), approved_minutes: Number(input.value) }));
+      try { await api.decideOvertimeForm(form.id, { action, review_note, items }); closeModal(); toast(action === 'approve' ? 'Đã duyệt form OT' : 'Đã từ chối form OT', 'success'); loadOvertimeForms(); loadHistory(); }
+      catch (error) { toast(error.message, 'error'); }
+    };
+    document.getElementById('ot-form-approve').onclick = () => decide('approve');
+    document.getElementById('ot-form-reject').onclick = () => decide('reject');
+  }
+
+  function parseHistoricalTimesheet(text) {
+    const lines = String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/).filter(line => line.trim());
+    const title = lines.find(line => /Tháng\s+\d+\s+năm\s+\d+/i.test(line));
+    const period = title?.match(/Tháng\s+(\d+)\s+năm\s+(\d+)/i);
+    const header = lines.findIndex(line => line.includes('Mã NV') && line.includes('Họ và tên'));
+    if (!period || header < 0) throw new Error('Tệp cần là bảng TSV có tiêu đề “Mã NV”, “Họ và tên” và tháng/năm.');
+    const departmentMap = { 'BAN GIÁM ĐỐC': 'Ban Giám Đốc', 'PHÒNG HÀNH CHÍNH NHÂN SỰ': 'Phòng HCNS', 'PHÒNG KINH DOANH': 'Phòng Kinh Doanh', 'PHÒNG MARKETING': 'Phòng Marketing', 'PHÒNG BIÊN TẬP': 'Phòng Biên Tập', 'PHÒNG SẢN XUẤT PHIM': 'Phòng Sản Xuất Phim', 'PHÒNG GAME SHOW': 'Phòng Gameshow', 'TẠP VỤ + BẢO VỆ': 'Tạp Vụ + Bảo Vệ', 'PHÒNG KẾ TOÁN': 'Phòng Kế Toán', 'THỰC TẬP SINH': 'Thực Tập Sinh' };
+    let department = ''; const employees = [];
+    for (const line of lines.slice(header + 2)) {
+      const cells = line.split('\t').map(value => value.trim());
+      const code = cells[2] || ''; const full_name = cells[3] || '';
+      if (!full_name) { if (departmentMap[code.toUpperCase()]) department = departmentMap[code.toUpperCase()]; continue; }
+      if (!code) continue;
+      const days = {};
+      for (let day = 1; day <= 31; day++) { const value = cells[5 + day]; if (['0', '0.5', '1'].includes(value)) days[day] = Number(value); }
+      employees.push({ employee_code: code, full_name, position: cells[4] || '', work_location: cells[5] || '', department, note: cells[1] || '', employee_type: (cells[4] || '').toUpperCase() === 'TTS' ? 'TTS' : 'NV', days });
+    }
+    if (!employees.length) throw new Error('Không đọc được nhân sự nào từ bảng.');
+    return { source_name: `Bảng chấm công ${period[2]}-${String(period[1]).padStart(2, '0')}`, period_month: `${period[2]}-${String(period[1]).padStart(2, '0')}`, employees };
+  }
+
+  function openHistoricalImport() {
+    let payload = null;
+    openModal('Nhập bảng chấm công lịch sử', `<div class="field"><label>Tệp bảng chấm công TSV/TXT *</label><input id="att-import-file" type="file" accept="text/plain,.txt,.tsv"/><small>Chọn tệp bảng tháng đã gửi. Hệ thống chỉ xem trước trước khi ghi dữ liệu.</small></div><div class="field"><label>OT lịch sử (JSON, không bắt buộc)</label><textarea id="att-import-ot" rows="5" placeholder='[{"employee_code":"TTS-11","reported_hours":4,"items":[{"start_at":"2026-07-12T08:00","end_at":"2026-07-12T12:00","reason":"Theo lịch tổ chức sự kiện","time_category":"rest_day"}]}]'></textarea></div><div id="att-import-result" style="font-size:13px"></div>`, '<button class="btn-secondary" id="att-import-preview">Xem trước</button><button class="btn-primary" id="att-import-commit" disabled>Nhập dữ liệu</button>');
+    document.getElementById('att-import-preview').onclick = async () => {
+      const file = document.getElementById('att-import-file').files?.[0];
+      if (!file) { toast('Vui lòng chọn tệp bảng chấm công', 'error'); return; }
+      try {
+        payload = parseHistoricalTimesheet(await file.text());
+        const otText = document.getElementById('att-import-ot').value.trim();
+        if (otText) payload.overtime_forms = JSON.parse(otText);
+        const preview = await api.previewAttendanceImport(payload);
+        const errors = preview.preview.filter(row => row.errors?.length);
+        document.getElementById('att-import-result').innerHTML = `<p><b>${preview.preview.length}</b> nhân sự · ${preview.preview.filter(row => row.account === 'create').length} tài khoản mới · ${preview.preview.reduce((sum, row) => sum + row.attendance_entries, 0)} ô ngày công.</p>${errors.length ? `<p style="color:var(--danger)">Có ${errors.length} dòng lỗi: ${esc(errors.map(row => `${row.employee_code}: ${row.errors.join(', ')}`).join(' | '))}</p>` : '<p style="color:var(--success)">Dữ liệu hợp lệ. Nhấn “Nhập dữ liệu” để tạo lô.</p>'}`;
+        document.getElementById('att-import-commit').disabled = !preview.valid;
+      } catch (error) { payload = null; document.getElementById('att-import-commit').disabled = true; toast(error.message || 'Không thể đọc bảng', 'error'); }
+    };
+    document.getElementById('att-import-commit').onclick = async event => {
+      if (!payload) return;
+      event.currentTarget.disabled = true;
+      try { const result = await api.commitAttendanceImport(payload); closeModal(); toast(`Đã nhập ${result.imported_attendance} bản ghi công; ${result.conflicts.length} xung đột được giữ nguyên`, 'success'); loadHistory(); loadOvertimeForms(); }
+      catch (error) { toast(error.message || 'Không thể nhập dữ liệu', 'error'); event.currentTarget.disabled = false; }
+    };
+  }
 
   async function loadOvertimeRequests() {
     const list = document.getElementById('ot-request-list');
     if (!list) return;
     try {
-      const month = document.getElementById('att-month-filter')?.value || new Date().toISOString().slice(0, 7);
+      const month = document.getElementById('att-month-filter')?.value || closingMonth;
       const status = document.getElementById('ot-status-filter')?.value || '';
       const { overtime_requests: rows = [] } = await api.getOvertimeRequests({ month, status });
       list.innerHTML = rows.length ? `<div class="table-wrap"><table><thead><tr><th>Nhân viên</th><th>Ngày</th><th>Checkout / hết ca</th><th>Đề nghị</th><th>Lý do</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>${rows.map(r => `<tr><td><b>${esc(r.full_name)}</b><br><small>${esc(r.employee_code || '')}</small></td><td>${esc(r.work_date)}</td><td>${esc(r.checkout_time)} / ${esc(r.shift_end_time)}</td><td>${r.requested_minutes} phút${r.approved_minutes != null ? `<br><small>Duyệt: ${r.approved_minutes} phút</small>` : ''}</td><td style="max-width:220px;">${esc(r.reason)}</td><td>${r.status === 'pending' ? '<span class="badge badge-warning">Chờ duyệt</span>' : r.status === 'approved' ? '<span class="badge badge-success">Đã duyệt</span>' : '<span class="badge badge-danger">Từ chối</span>'}</td><td>${r.status === 'pending' ? `<button class="btn-secondary btn-sm ot-decide" data-id="${r.id}" data-minutes="${r.requested_minutes}" data-action="approve">Duyệt</button> <button class="btn-danger btn-sm ot-decide" data-id="${r.id}" data-action="reject">Từ chối</button>` : esc(r.reviewer_name || '—')}</td></tr>`).join('')}</tbody></table></div>` : emptyHTML('⏱️', 'Không có yêu cầu làm thêm giờ');
@@ -306,12 +426,15 @@ export async function renderAttendance(el, me, route = {}) {
     });
   }
   document.getElementById('ot-status-filter')?.addEventListener('change', loadOvertimeRequests);
+  document.getElementById('btn-create-ot-form')?.addEventListener('click', openOvertimeFormCreator);
+  document.getElementById('btn-import-att')?.addEventListener('click', openHistoricalImport);
   if (canManageAttendance) loadOvertimeRequests();
+  loadOvertimeForms();
 
 
 
   // Month filter
-  document.getElementById('att-month-filter').addEventListener('change', () => { historyPage = 1; loadHistory(); });
+  document.getElementById('att-month-filter').addEventListener('change', () => { historyPage = 1; loadHistory(); loadOvertimeForms(); if (canManageAttendance) loadOvertimeRequests(); });
   document.getElementById('att-date-filter')?.addEventListener('change', () => { historyPage = 1; loadHistory(); });
   document.getElementById('att-search')?.addEventListener('input', () => { historyPage = 1; loadHistory(); });
   document.getElementById('att-dept-filter')?.addEventListener('change', () => { historyPage = 1; loadHistory(); });
@@ -331,11 +454,58 @@ export async function renderAttendance(el, me, route = {}) {
     return '<span class="badge badge-success">Đủ dữ liệu</span>';
   }
 
+  async function openMonthlyAttendanceBoard() {
+    const monthValue = document.getElementById('att-month-filter')?.value || closingMonth;
+    const [year, month] = monthValue.split('-').map(Number);
+    const daysInMonth = new Date(year, month, 0).getDate();
+    openModal(`Bảng chấm công tổng hợp ${String(month).padStart(2, '0')}/${year}`, `<div id="att-monthly-board-content">${loadingHTML()}</div>`, `<button class="btn-secondary" id="att-monthly-board-close">Đóng</button>`);
+    document.getElementById('modal')?.classList.add('modal--scroll-fixed', 'modal--attendance-board');
+    document.getElementById('att-monthly-board-close')?.addEventListener('click', closeModal);
+    try {
+      const [{ employees = [] }, { attendance = [] }, { overtime_forms: overtimeForms = [] }] = await Promise.all([
+        api.getAttendanceEmployees({ month: String(month), year: String(year) }),
+        api.getAttendance({ month: String(month), year: String(year) }),
+        api.getOvertimeForms({ month: monthValue }),
+      ]);
+      const byEmployeeDay = new Map(attendance.map(record => [`${record.user_id}:${record.date}`, record]));
+      const mark = record => {
+        if (!record || ['absent', 'cancelled', 'rejected', 'leave'].includes(record.status)) return '—';
+        if (!record.checkin_time || !record.checkout_time) return '•';
+        return record.shift === 'morning' || record.shift === 'afternoon' ? '0.5' : '1';
+      };
+      const content = document.getElementById('att-monthly-board-content');
+      if (!content) return;
+      const formatOtMoment = value => value ? new Date(value).toLocaleString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+      const otStatus = status => ({ draft: 'Nháp', pending: 'Chờ duyệt', approved: 'Đã duyệt', partially_approved: 'Duyệt một phần', rejected: 'Từ chối' }[status] || status || '—');
+      const overtimeRows = overtimeForms.flatMap(form => (form.items || []).map((item, index) => `<tr>
+        <td>${index === 0 ? esc(form.full_name || '—') : ''}</td><td>${index === 0 ? esc(form.employee_code || '—') : ''}</td>
+        <td>${formatOtMoment(item.start_at)}</td><td>${formatOtMoment(item.end_at)}</td>
+        <td>${(Number(item.requested_minutes || 0) / 60).toFixed(2)}</td><td>${esc(item.reason || '—')}</td>
+        <td>${esc(item.time_category === 'holiday' ? 'Ngày lễ' : item.time_category === 'weekend' ? 'Ngày nghỉ' : 'Ngày thường')}</td>
+        <td>${index === 0 ? statusBadge(form.status) : ''}</td></tr>`));
+      content.innerHTML = `
+        <div class="att-board-note">Ký hiệu: <strong>1</strong> đủ ngày · <strong>0.5</strong> nửa ngày · <strong>•</strong> thiếu check-in/out · <strong>—</strong> chưa có công, nghỉ hoặc vắng.</div>
+        <div class="table-wrap att-monthly-board-table"><table><thead><tr><th>Nhân viên</th><th>Mã NV</th>${Array.from({ length: daysInMonth }, (_, index) => `<th>${index + 1}</th>`).join('')}<th>Tổng công</th></tr></thead><tbody>
+          ${employees.map(employee => `<tr><td><strong>${esc(employee.full_name)}</strong></td><td>${esc(employee.employee_code || '—')}</td>${Array.from({ length: daysInMonth }, (_, index) => {
+            const date = `${monthValue}-${String(index + 1).padStart(2, '0')}`;
+            return `<td>${mark(byEmployeeDay.get(`${employee.user_id}:${date}`))}</td>`;
+          }).join('')}<td><strong>${Number(employee.actual_work_days || 0)}</strong></td></tr>`).join('') || `<tr><td colspan="${daysInMonth + 3}">Không có nhân viên trong kỳ này.</td></tr>`}
+        </tbody></table></div>
+        <div class="att-board-section-title">Tổng hợp form làm thêm giờ <span>${String(month).padStart(2, '0')}/${year}</span></div>
+        <div class="table-wrap att-overtime-board-table"><table><thead><tr><th>Nhân viên</th><th>Mã NV</th><th>Làm thêm từ</th><th>Làm thêm đến</th><th>Số giờ</th><th>Lý do</th><th>Thời điểm</th><th>Trạng thái</th></tr></thead><tbody>
+          ${overtimeRows.join('') || '<tr><td colspan="8">Chưa có form làm thêm giờ trong kỳ này.</td></tr>'}
+        </tbody></table></div>`;
+    } catch (error) {
+      const content = document.getElementById('att-monthly-board-content');
+      if (content) content.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">${esc(error.message || 'Không thể tải bảng chấm công tổng hợp')}</div></div>`;
+    }
+  }
+
   async function loadHistory() {
     const listEl = document.getElementById('att-list');
     if (!listEl) return;
     listEl.innerHTML = loadingHTML();
-    const monthVal = document.getElementById('att-month-filter')?.value || new Date().toISOString().slice(0,7);
+    const monthVal = document.getElementById('att-month-filter')?.value || closingMonth;
     const [yr, mo] = monthVal.split('-');
     const params = { month: mo, year: yr };
     const dateVal = document.getElementById('att-date-filter')?.value || '';
@@ -416,7 +586,7 @@ export async function renderAttendance(el, me, route = {}) {
   }
 
   function openAttendanceSummary(employeeId, forcedDate = '') {
-    const monthValue = document.getElementById('att-month-filter')?.value || new Date().toISOString().slice(0, 7);
+    const monthValue = document.getElementById('att-month-filter')?.value || closingMonth;
     const dateValue = forcedDate || document.getElementById('att-date-filter')?.value || '';
     const params = dateValue ? { from: dateValue, to: dateValue } : { year: monthValue.slice(0, 4), month: monthValue.slice(5, 7) };
     openModal('Tổng kết chấm công nhân viên', `<div id="att-summary-content">${loadingHTML()}</div>`, `<button class="btn-secondary" id="att-summary-close">Đóng</button>`);
@@ -464,6 +634,7 @@ export async function renderAttendance(el, me, route = {}) {
   }
 
   document.getElementById('btn-my-att-summary')?.addEventListener('click', () => openAttendanceSummary(me.id));
+  document.getElementById('btn-att-monthly-board')?.addEventListener('click', openMonthlyAttendanceBoard);
 
   function openEditAttModal(data) {
     openModal('Sửa chấm công', `

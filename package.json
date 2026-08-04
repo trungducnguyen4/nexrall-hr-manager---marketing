@@ -8,6 +8,7 @@
     "ios:open": "cap open ios",
     "security:production": "powershell -ExecutionPolicy Bypass -File tests/pentest-production.ps1",
     "test:employee-profile": "node tests/employee-profile-smoke.mjs",
+    "test:attendance-period": "node tests/attendance-period.mjs",
     "deploy": "powershell -ExecutionPolicy Bypass -File sync-to-deploy.ps1",
     "deploy:sync-only": "powershell -ExecutionPolicy Bypass -File sync-to-deploy.ps1 -NoDeploy"
   },
@@ -18,7 +19,8 @@
     "@capacitor/ios": "^8.4.2",
     "@capacitor/local-notifications": "^8.2.1",
     "capacitor-native-biometric": "^4.2.2",
-    "capacitor-secure-storage-plugin": "^0.13.0"
+    "capacitor-secure-storage-plugin": "^0.13.0",
+    "cropperjs": "^1.6.2"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.4.2",

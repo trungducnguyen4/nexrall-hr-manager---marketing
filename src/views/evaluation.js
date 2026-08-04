@@ -680,7 +680,7 @@ function renderEvalModal(ev, history, me, onRefresh = noop) {
 // ════════════════════════════════════════════════
 //  REPORT: Bảng tổng hợp điểm hiệu suất (HCNS/BGD)
 // ════════════════════════════════════════════════
-export async function renderEvalReport(el, me, latestPeriod = null) {
+export async function renderEvalReport(el, me, latestPeriod = null, reportPage = 1) {
   el.innerHTML = loadingHTML();
   let report = [], periods = [], selected = null;
   try {
@@ -690,6 +690,7 @@ export async function renderEvalReport(el, me, latestPeriod = null) {
       api.getEvalPeriods(),
     ]);
     report = rR.report || [];
+    var pageData = paginateRows(report, reportPage, 10);
     periods = (rR.periods || pR.periods || []);
     selected = rR.selectedPeriod || null;
   } catch (e) {
@@ -723,9 +724,9 @@ export async function renderEvalReport(el, me, latestPeriod = null) {
             </tr>
           </thead>
           <tbody>
-            ${report.map((r, i) => `
+            ${pageData.rows.map((r, i) => `
               <tr>
-                <td>${i + 1}</td>
+                <td>${(pageData.page - 1) * pageData.pageSize + i + 1}</td>
                 <td><span class="badge badge-gray">${esc(r.employee_code)}</span></td>
                 <td style="font-weight:600;">${esc(r.full_name)}</td>
                 <td>${esc(r.department || '—')}</td>
@@ -744,9 +745,15 @@ export async function renderEvalReport(el, me, latestPeriod = null) {
             `).join('')}
           </tbody>
         </table>
+        ${paginationHTML(pageData)}
       </div>` : `<div style="text-align:center;padding:20px;color:var(--text-3);">Chưa có dữ liệu đánh giá cho kỳ này</div>`}
     </div>
   `;
+
+  bindPagination(el, page => {
+    const selectedPeriod = selected ? { id: selected.id, month: selected.month, year: selected.year } : latestPeriod;
+    renderEvalReport(el, me, selectedPeriod, page);
+  });
 
   document.getElementById('eval-report-period')?.addEventListener('change', async (e) => {
     el.innerHTML = loadingHTML();

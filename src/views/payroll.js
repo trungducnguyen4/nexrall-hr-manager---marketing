@@ -1,6 +1,6 @@
 import { api } from '../api.js?v=20260722-payroll-export-ux';
 import { esc, fmtMoney, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination, avatarColor, initials } from '../utils.js?v=20260722-payroll-export-ux';
-import { payslipDetailHTML, hydratePayslipAttendance, preparePayslipModal } from './payslip-detail.js';
+import { payslipDetailHTML, hydratePayslipAttendance, preparePayslipModal } from './payslip-detail.js?v=20260804-inline-line-notes-v1';
 
 function formatMonth(month) {
   if (!/^\d{4}-\d{2}$/.test(month || '')) return month || '';
@@ -55,10 +55,6 @@ function payrollRowHTML(p) {
       <td class="payroll-col-money payroll-col-money--pos" data-label="Phụ cấp">${payrollMoney(p.allowance, ready)}</td>
       <td class="payroll-col-money payroll-col-money--neg" data-label="Khấu trừ">${payrollMoney(p.deduction, ready)}</td>
       <td class="payroll-col-money payroll-col-net" data-label="Thực lĩnh"><strong>${payrollMoney(net, ready)}</strong></td>
-      <td class="payroll-col-actions" data-label="">
-        <button class="btn-xs btn-secondary pay-edit" data-pid="${p.id}" title="Sửa dòng lương" style="margin-right:4px;">✏️</button>
-        <button class="btn-xs btn-danger pay-del" data-pid="${p.id}" title="Xóa dòng lương">🗑</button>
-      </td>
     </tr>
   `;
   payrollRowCache.set(p.id, { sig, html });
@@ -68,6 +64,7 @@ function payrollRowHTML(p) {
 
 export async function renderPayroll(el, me) {
   const isHr = me.role === 'admin' || me.role === 'manager';
+  const canEditPayroll = me.role === 'admin' || /(^|\s)(hcns|hành chính nhân sự)(\s|$)/i.test(String(me.department || ''));
   if (!isHr) {
     el.innerHTML = `<div class="empty-state"><div class="empty-icon">🔒</div><div class="empty-text">Không có quyền truy cập</div></div>`;
     return;
@@ -76,6 +73,9 @@ export async function renderPayroll(el, me) {
   const now = new Date();
   const curMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   let adjustmentData = { suggestions: [], approved: [] };
+  let adjustmentPage = 1;
+  let selectedAdjustmentRefs = new Set();
+  const adjustmentAmounts = new Map();
   let latestPayrollRows = [];
   let currentPage = 1;
 
@@ -85,7 +85,6 @@ export async function renderPayroll(el, me) {
         <div class="page-title">💰 Bảng lương</div>
         <div class="page-sub">Quản lý lương và KPI nhân viên</div>
       </div>
-      <button id="btn-new-payroll" class="btn-primary btn-sm">+ Tạo bảng lương</button>
     </div>
 
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;">
@@ -107,17 +106,12 @@ export async function renderPayroll(el, me) {
     <div id="payroll-adjustments" style="margin-bottom:18px;"></div>
 
     <div class="card" style="padding:0;">
-      <div style="display:flex;justify-content:flex-end;padding:12px 12px 0;">
-        <button id="btn-manual-payroll" class="btn-secondary btn-sm">+ Thêm dòng lương thủ công</button>
-      </div>
       <div id="payroll-table">${loadingHTML()}</div>
     </div>
   `;
 
   const monthInput = document.getElementById('payroll-month');
-  document.getElementById('btn-new-payroll').addEventListener('click', openCreatePayrollBatchConfirm);
   document.getElementById('btn-export-payslips').addEventListener('click', openExportPayslipsConfirm);
-  document.getElementById('btn-manual-payroll').addEventListener('click', () => openPayrollLineForm(null, loadPayroll, monthInput.value));
   monthInput.addEventListener('change', () => {
     currentPage = 1;
     updateExportButtonLabel();
@@ -158,6 +152,8 @@ export async function renderPayroll(el, me) {
     if (!el) return;
     const suggestions = adjustmentData.suggestions || [];
     const approved = adjustmentData.approved || [];
+    const pageData = paginateRows(suggestions, adjustmentPage, 10);
+    adjustmentPage = pageData.page;
     const totalSuggestedBonus = suggestions.filter(x => x.type === 'bonus').reduce((s, x) => s + Number(x.amount || 0), 0);
     const totalSuggestedPenalty = suggestions.filter(x => x.type === 'penalty').reduce((s, x) => s + Number(x.amount || 0), 0);
     el.innerHTML = `
@@ -179,7 +175,7 @@ export async function renderPayroll(el, me) {
             <table>
               <thead><tr><th></th><th>Nhân viên</th><th>Nguồn</th><th>Loại</th><th>Số tiền</th><th>Điểm</th><th>Lý do</th></tr></thead>
               <tbody>
-                ${suggestions.map(s => `
+                ${pageData.rows.map(s => `
                   <tr>
                     <td><input type="checkbox" class="adj-check" data-ref="${esc(s.source_ref)}" ${s.can_apply === false ? 'disabled' : 'checked'} title="${s.can_apply === false ? 'Cần đồng bộ/tạo dòng bảng lương trước' : ''}"></td>
                     <td><strong>${esc(s.employee_name || '—')}</strong><br><span style="font-size:11px;color:var(--text-3);">${esc(s.employee_code || '')}</span></td>
@@ -193,6 +189,7 @@ export async function renderPayroll(el, me) {
               </tbody>
             </table>
           </div>
+          ${paginationHTML(pageData)}
           <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 14px;">
             <button class="btn-primary btn-sm" id="payroll-adjust-apply">Áp dụng đề xuất đã chọn</button>
           </div>
@@ -218,16 +215,32 @@ export async function renderPayroll(el, me) {
     `;
     document.getElementById('payroll-adjust-refresh')?.addEventListener('click', () => loadPayroll({ keepStatus: true }));
     document.getElementById('payroll-adjust-apply')?.addEventListener('click', applySelectedAdjustments);
+    el.querySelectorAll('.adj-check').forEach(check => {
+      const ref = check.dataset.ref;
+      check.checked = selectedAdjustmentRefs.has(ref);
+      check.addEventListener('change', () => {
+        if (check.checked) selectedAdjustmentRefs.add(ref);
+        else selectedAdjustmentRefs.delete(ref);
+      });
+    });
+    el.querySelectorAll('.adj-amount').forEach(input => {
+      const ref = input.dataset.ref;
+      if (adjustmentAmounts.has(ref)) input.value = adjustmentAmounts.get(ref);
+      input.addEventListener('input', () => adjustmentAmounts.set(ref, Number(input.value || 0)));
+    });
+    bindPagination(el, page => {
+      adjustmentPage = page;
+      renderAdjustmentPanel(month);
+    });
   }
 
   async function applySelectedAdjustments() {
     const month = monthInput.value;
-    const selectedRefs = Array.from(document.querySelectorAll('.adj-check:checked')).map(cb => cb.dataset.ref);
+    const selectedRefs = Array.from(selectedAdjustmentRefs);
     if (!selectedRefs.length) { toast('Chọn ít nhất một đề xuất để áp dụng', 'error'); return; }
     const items = selectedRefs.map(ref => {
       const s = adjustmentData.suggestions.find(x => x.source_ref === ref);
-      const amountInput = document.querySelector(`.adj-amount[data-ref="${CSS.escape(ref)}"]`);
-      return { source_ref: ref, amount: amountInput ? Number(amountInput.value || 0) : s?.amount };
+      return { source_ref: ref, amount: adjustmentAmounts.has(ref) ? adjustmentAmounts.get(ref) : s?.amount };
     });
     const btn = document.getElementById('payroll-adjust-apply');
     if (btn) { btn.disabled = true; btn.textContent = 'Đang áp dụng...'; }
@@ -347,8 +360,14 @@ export async function renderPayroll(el, me) {
       latestPayrollRows = payrolls;
       try {
         adjustmentData = await api.getPayrollAdjustmentSuggestions(month);
+        adjustmentPage = 1;
+        selectedAdjustmentRefs = new Set((adjustmentData.suggestions || []).filter(s => s.can_apply !== false).map(s => s.source_ref));
+        adjustmentAmounts.clear();
       } catch (_) {
         adjustmentData = { suggestions: [], approved: [] };
+        adjustmentPage = 1;
+        selectedAdjustmentRefs = new Set();
+        adjustmentAmounts.clear();
       }
       renderAdjustmentPanel(month);
       const totalBonus = payrolls.reduce((s, p) => s + (p.kpi_bonus || 0) + (p.allowance || 0), 0);
@@ -390,6 +409,15 @@ export async function renderPayroll(el, me) {
       tableEl.innerHTML = `
         <div class="table-wrap payroll-table-wrap">
           <table class="payroll-table">
+            <colgroup>
+              <col class="payroll-width-employee" />
+              <col class="payroll-width-dept" />
+              <col class="payroll-width-money" />
+              <col class="payroll-width-money" />
+              <col class="payroll-width-money" />
+              <col class="payroll-width-money" />
+              <col class="payroll-width-net" />
+            </colgroup>
             <thead>
               <tr>
                 <th class="payroll-col-employee">Nhân viên</th>
@@ -399,7 +427,6 @@ export async function renderPayroll(el, me) {
                 <th class="payroll-col-money">Phụ cấp</th>
                 <th class="payroll-col-money">Khấu trừ</th>
                 <th class="payroll-col-money payroll-col-net">Thực lĩnh</th>
-                <th class="payroll-col-actions">Thao tác</th>
               </tr>
             </thead>
             <tbody>
@@ -410,34 +437,30 @@ export async function renderPayroll(el, me) {
         ${paginationHTML(pageData)}
       `;
 
-      tableEl.querySelectorAll('.pay-edit').forEach(btn => {
-        btn.addEventListener('click', event => {
-          event.stopPropagation();
-          const p = payrolls.find(x => x.id === parseInt(btn.dataset.pid));
-          if (p) openPayrollLineForm(p, loadPayroll, month);
-        });
-      });
-      tableEl.querySelectorAll('.pay-del').forEach(btn => {
-        btn.addEventListener('click', async event => {
-          event.stopPropagation();
-          if (!confirm('Xóa dòng lương này?')) return;
-          try {
-            await api.deletePayroll(btn.dataset.pid);
-            toast('Đã xóa', 'success');
-            loadPayroll();
-          } catch (e) {
-            toast(e.message, 'error');
-          }
-        });
-      });
       tableEl.querySelectorAll('.payroll-row').forEach(row => {
         const open = () => {
           const payroll = payrolls.find(item => item.id === Number(row.dataset.pid));
           if (!payroll) return;
-          openModal('Chi tiết phiếu lương', payslipDetailHTML(payroll, { source: 'payroll' }), '<button class="btn-secondary w-full" id="payslip-close">Đóng</button>');
-          preparePayslipModal();
-          document.getElementById('payslip-close')?.addEventListener('click', closeModal);
-          hydratePayslipAttendance();
+          const showDetails = (editing = false) => {
+            openModal('Chi tiết phiếu lương', payslipDetailHTML(payroll, { source: 'payroll', edit: editing }), editing
+              ? '<button class="btn-secondary" id="payslip-cancel-edit">Hủy</button><button class="btn-primary" id="payslip-save-edit" disabled>Lưu thay đổi</button>'
+              : '<button class="btn-secondary w-full" id="payslip-close">Đóng</button>');
+            preparePayslipModal();
+            if (editing) {
+              bindPayslipInlineEditor(payroll, loadPayroll, () => showDetails(false));
+              hydratePayslipAttendance();
+              return;
+            }
+            if (canEditPayroll) {
+              const footer = document.getElementById('modal-footer');
+              if (footer) footer.insertAdjacentHTML('afterbegin', '<button class="btn-danger" id="payslip-delete">Xóa dòng lương</button><button class="btn-secondary" id="payslip-edit">Sửa trên phiếu</button>');
+              document.getElementById('payslip-edit')?.addEventListener('click', () => showDetails(true));
+              document.getElementById('payslip-delete')?.addEventListener('click', () => openPayrollDeleteConfirm(payroll, loadPayroll, showDetails));
+            }
+            document.getElementById('payslip-close')?.addEventListener('click', closeModal);
+            hydratePayslipAttendance();
+          };
+          showDetails();
         };
         row.addEventListener('click', open);
         row.addEventListener('keydown', event => {
@@ -467,8 +490,123 @@ function unformatMoneyInput(str) {
   return parseInt(String(str || '').replace(/[^0-9]/g, ''), 10) || 0;
 }
 
-function openPayrollLineForm(pay, onRefresh = noop, currentMonth = '') {
+function bindPayslipInlineEditor(payroll, onRefresh = noop, onCancel = closeModal) {
   onRefresh = safeCb(onRefresh);
+  const labels = {
+    base_salary: 'Mức lương thỏa thuận', allowance: 'Phụ cấp khác', kpi_bonus: 'Thưởng KPI',
+    insurance: 'BHXH, BHYT, BHTN người lao động', tax: 'Thuế TNCN', deduction: 'Khấu trừ khác',
+  };
+  const inputs = [...document.querySelectorAll('[data-payroll-field]')];
+  const values = Object.fromEntries(inputs.map(input => [input.dataset.payrollField, Number(input.value || 0)]));
+  const initial = Object.fromEntries(inputs.map(input => [input.dataset.payrollField, Number(input.dataset.originalValue || 0)]));
+  const overtime = Number(payroll.overtime_pay || 0);
+  const saveButton = document.getElementById('payslip-save-edit');
+
+  const changedFields = () => inputs.filter(input => Number(input.value || 0) !== initial[input.dataset.payrollField]);
+  const refreshTotals = () => {
+    const income = values.base_salary + values.allowance + values.kpi_bonus + overtime;
+    const net = income - values.insurance - values.tax - values.deduction;
+    const incomeFromWork = document.getElementById('payslip-income-from-work');
+    if (incomeFromWork) incomeFromWork.textContent = fmtMoney(values.base_salary);
+    document.getElementById('payslip-total-income').textContent = fmtMoney(income);
+    document.getElementById('payslip-net').textContent = fmtMoney(net);
+    document.getElementById('payslip-net').classList.toggle('payslip-money--negative', net < 0);
+  };
+  const validate = () => {
+    const changed = changedFields();
+    let valid = changed.length > 0;
+    for (const input of inputs) {
+      const field = input.dataset.payrollField;
+      const isChanged = Number(input.value || 0) !== initial[field];
+      const noteRow = document.querySelector(`[data-payroll-note-row="${field}"]`);
+      const note = document.querySelector(`[data-payroll-note="${field}"]`);
+      noteRow.hidden = !isChanged;
+      if (isChanged && !String(note?.value || '').trim()) valid = false;
+      note?.classList.toggle('input-error', isChanged && !String(note?.value || '').trim());
+    }
+    saveButton.disabled = !valid;
+  };
+  for (const input of inputs) {
+    input.addEventListener('input', () => {
+      const field = input.dataset.payrollField;
+      values[field] = Math.max(0, Number(input.value || 0));
+      refreshTotals();
+      validate();
+    });
+  }
+  document.querySelectorAll('[data-payroll-note]').forEach(note => note.addEventListener('input', validate));
+  document.getElementById('payslip-cancel-edit')?.addEventListener('click', onCancel);
+  saveButton?.addEventListener('click', async () => {
+    const changed = changedFields().map(input => {
+      const field = input.dataset.payrollField;
+      return { field, label: labels[field], old_value: initial[field], new_value: values[field], note: document.querySelector(`[data-payroll-note="${field}"]`)?.value.trim() || '' };
+    });
+    if (!changed.length || changed.some(item => !item.note)) { validate(); toast('Mỗi dòng đã sửa cần có ghi chú điều chỉnh', 'error'); return; }
+    saveButton.disabled = true;
+    saveButton.textContent = 'Đang lưu...';
+    try {
+      const payload = {
+        employee_name: payroll.employee_name || '', employee_code: payroll.employee_code || '', department: payroll.department || '',
+        month: payroll.month, base_salary: values.base_salary, kpi_bonus: values.kpi_bonus, allowance: values.allowance,
+        deduction: values.deduction, overtime_pay: overtime, tax: values.tax, insurance: values.insurance,
+        work_days: Number(payroll.work_days || 0), standard_days: Number(payroll.standard_days || 0), note: payroll.note || '',
+        line_changes: changed,
+      };
+      await api.updatePayroll(payroll.id, payload);
+      Object.assign(payroll, payload, { net_salary: values.base_salary + values.kpi_bonus + values.allowance + overtime - values.deduction - values.tax - values.insurance });
+      await onRefresh();
+      toast('Đã lưu điều chỉnh từng dòng lương', 'success');
+      onCancel();
+    } catch (error) {
+      toast(error.message || 'Không thể lưu điều chỉnh', 'error');
+      validate();
+      saveButton.textContent = 'Lưu thay đổi';
+    }
+  });
+  refreshTotals();
+  validate();
+}
+
+function openPayrollDeleteConfirm(payroll, onRefresh = noop, onCancel = closeModal) {
+  onRefresh = safeCb(onRefresh);
+  openModal('Xác nhận xóa dòng lương', `
+    <div class="payedit-warn payedit-warn--error" style="display:block;">
+      Dòng lương của <b>${esc(payroll.employee_name || 'nhân viên')}</b> trong kỳ <b>${esc(formatMonth(payroll.month))}</b> sẽ bị xóa.
+      Thao tác này không thể hoàn tác.
+    </div>
+    <div class="field" style="margin-top:16px;">
+      <label>Nhập <b>XÓA</b> để xác nhận</label>
+      <input id="payroll-delete-confirm" autocomplete="off" placeholder="XÓA" />
+    </div>
+  `, `
+    <button class="btn-secondary" id="payroll-delete-cancel">Quay lại</button>
+    <button class="btn-danger" id="payroll-delete-submit" disabled>Xóa dòng lương</button>
+  `);
+  const input = document.getElementById('payroll-delete-confirm');
+  const submit = document.getElementById('payroll-delete-submit');
+  const confirmed = () => String(input?.value || '').trim().toLocaleUpperCase('vi-VN') === 'XÓA';
+  input?.addEventListener('input', () => { submit.disabled = !confirmed(); });
+  document.getElementById('payroll-delete-cancel')?.addEventListener('click', onCancel);
+  submit?.addEventListener('click', async () => {
+    if (!confirmed()) return;
+    submit.disabled = true;
+    submit.textContent = 'Đang xóa...';
+    try {
+      await api.deletePayroll(payroll.id);
+      await onRefresh();
+      closeModal();
+      toast('Đã xóa dòng lương', 'success');
+    } catch (error) {
+      toast(error.message || 'Không thể xóa dòng lương', 'error');
+      submit.disabled = false;
+      submit.textContent = 'Xóa dòng lương';
+    }
+  });
+}
+
+function openPayrollLineForm(pay, onRefresh = noop, currentMonth = '', options = {}) {
+  onRefresh = safeCb(onRefresh);
+  const { inline = false, onCancel = closeModal, onSaved = null } = options;
   const now = new Date();
   const defMonth = currentMonth || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const isEdit = !!pay;
@@ -481,7 +619,7 @@ function openPayrollLineForm(pay, onRefresh = noop, currentMonth = '') {
   const allowVal = Number(pay?.allowance || 0);
   const deductVal = Number(pay?.deduction || 0);
 
-  openModal(isEdit ? 'Sửa dòng lương' : 'Thêm dòng lương thủ công', `
+  const bodyHtml = `
     <!-- Employee Info Card -->
     <div class="payedit-emp">
       <span class="payedit-avatar" style="background:${color};">${ini}</span>
@@ -530,6 +668,17 @@ function openPayrollLineForm(pay, onRefresh = noop, currentMonth = '') {
       </div>
     </div>
 
+    ${isEdit ? `
+      <div class="payedit-section">
+        <div class="payedit-section-title">Ghi chú điều chỉnh <span style="color:var(--danger)">*</span></div>
+        <div class="field">
+          <label>Nêu rõ lý do sửa dòng lương này</label>
+          <textarea id="pf-change-note" rows="3" maxlength="1000" placeholder="Ví dụ: Điều chỉnh phụ cấp tháng do bổ sung chứng từ đã duyệt."></textarea>
+          <div style="font-size:12px;color:var(--text-2);margin-top:5px;">Ghi chú, người sửa và giá trị trước/sau sẽ được lưu vào lịch sử điều chỉnh.</div>
+        </div>
+      </div>
+    ` : ''}
+
     <!-- Warnings -->
     <div id="pf-warnings" style="display:none;"></div>
 
@@ -550,16 +699,24 @@ function openPayrollLineForm(pay, onRefresh = noop, currentMonth = '') {
       </div>
       <div class="payedit-formula">= Lương CB + KPI bonus + Phụ cấp − Khấu trừ</div>
     </div>
-  `, `
+  `;
+  const footerHtml = `
     <button class="btn-secondary" id="pf-cancel">Hủy</button>
     <button class="btn-primary" id="pf-save">Lưu thay đổi</button>
-  `);
+  `;
+  if (inline) {
+    document.getElementById('modal-title').textContent = 'Chỉnh sửa phiếu lương';
+    document.getElementById('modal-body').innerHTML = bodyHtml;
+    document.getElementById('modal-footer').innerHTML = footerHtml;
+  } else {
+    openModal(isEdit ? 'Sửa dòng lương' : 'Thêm dòng lương thủ công', bodyHtml, footerHtml);
+  }
 
   // Apply payroll-edit modal class
   const modalEl = document.getElementById('modal');
   modalEl?.classList.add('modal--payroll-edit');
 
-  document.getElementById('pf-cancel').addEventListener('click', closeModal);
+  document.getElementById('pf-cancel').addEventListener('click', onCancel);
 
   function readInputs() {
     return {
@@ -664,6 +821,8 @@ function openPayrollLineForm(pay, onRefresh = noop, currentMonth = '') {
     const v = readInputs();
     const net = v.base + v.kpi + v.allow - v.deduct;
     const month = document.getElementById('pf-month').value;
+    const changeNote = document.getElementById('pf-change-note')?.value.trim() || '';
+    if (isEdit && !changeNote) { toast('Vui lòng nhập ghi chú điều chỉnh', 'error'); return; }
     if (!month) { toast('Vui lòng chọn tháng lương', 'error'); return; }
     if ((v.base <= 0 && !isReady) || net < 0) { toast('Không thể lưu khi dữ liệu không hợp lệ', 'error'); return; }
 
@@ -681,12 +840,15 @@ function openPayrollLineForm(pay, onRefresh = noop, currentMonth = '') {
         allowance: v.allow,
         deduction: v.deduct,
         net_salary: net,
+        change_note: changeNote,
       };
       if (isEdit) await api.updatePayroll(pay.id, data);
       else await api.createPayroll(data);
-      closeModal();
+      if (inline && isEdit) Object.assign(pay, data, { net_salary: net });
       toast(isEdit ? 'Đã cập nhật dòng lương' : 'Đã thêm dòng lương thủ công', 'success');
-      onRefresh();
+      await onRefresh();
+      if (inline && typeof onSaved === 'function') onSaved();
+      else closeModal();
     } catch (e) {
       toast(e.message || 'Không thể cập nhật dòng lương. Vui lòng thử lại.', 'error');
       saveBtn.disabled = false;

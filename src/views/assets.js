@@ -29,9 +29,7 @@ export async function renderAssetSection(el, me) {
 
   const ownAssets = assets.filter(a => a.user_id === me.id);
   const mentorAssets = assets.filter(a => a.mentor_id === me.id && a.user_id !== me.id);
-  const deptAssets = (isMgr && !isHr)
-    ? assets.filter(a => a.user_id !== me.id && a.mentor_id !== me.id && a.owner_department === me.department)
-    : [];
+  const deptAssets = [];
 
   const sections = [];
 
@@ -40,15 +38,15 @@ export async function renderAssetSection(el, me) {
 
   sections.push(`
     <div class="card-header">
-      <div class="card-title">🗂️ Tài sản tôi quản lý</div>
-      <button class="btn-primary btn-sm" id="asset-add-own">+ Khai báo</button>
+      <div class="card-title">🔐 Dự án &amp; tài khoản tôi bàn giao</div>
+      <button class="btn-primary btn-sm" id="asset-add-own">+ Bàn giao dự án</button>
     </div>
     <div id="asset-own-list">${renderAssetList(ownAssets, 'own')}</div>
   `);
 
   if (mentorAssets.length) {
     sections.push(`
-      <div class="card-header"><div class="card-title">👨‍🏫 Cần bạn xác nhận (Mentor)</div></div>
+      <div class="card-header"><div class="card-title">👨‍🏫 Dự án cần bạn xác nhận (Mentor)</div></div>
       <div id="asset-mentor-list">${renderAssetList(mentorAssets, 'mentor')}</div>
     `);
   }
@@ -66,6 +64,12 @@ export async function renderAssetSection(el, me) {
 
   el.innerHTML = `<div class="card">${sections.join('<div style="border-top:1px solid var(--divider);margin:16px 0;"></div>')}</div>`;
   wireAssetHandlers(el, me, assets);
+}
+
+// Router derives renderAssets from #/assets; keep the original entry point for
+// existing callers while exposing the route-compatible name.
+export async function renderAssets(el, me) {
+  return renderAssetSection(el, me);
 }
 
 function renderPersonalSummary(ownAssets) {
@@ -200,12 +204,12 @@ function openAssetDetail(asset, me, onRefresh = noop) {
   const isOwner = asset.user_id === me.id;
   const isMentor = asset.mentor_id === me.id;
   const isHr = isHrOrBod(me);
-  const isDeptMgr = me.role === 'manager' && asset.owner_department === me.department;
-  const canEditFields = isOwner || isHr || isDeptMgr;
+  const isDeptMgr = false;
+  const canEditFields = (isOwner && !['confirmed', 'handed_over'].includes(asset.status)) || isHr;
   const canDelete = isHr;
-  const canConfirm = isMentor && !['confirmed', 'handed_over'].includes(asset.status);
+  const canConfirm = isMentor && asset.status === 'pending_review';
   const canHandover = isHr && asset.status !== 'handed_over';
-  const canReveal = isOwner || isMentor || isHr || isDeptMgr;
+  const canReveal = isOwner || isMentor || isHr;
 
   openModal(asset.asset_name, `
     <div class="detail-grid">
@@ -225,9 +229,11 @@ function openAssetDetail(asset, me, onRefresh = noop) {
       </div>
     </div>
     ${asset.note ? `<div class="field"><label>Ghi chú</label><div class="detail-val" style="font-weight:400;">${esc(asset.note)}</div></div>` : ''}
+    <div class="field"><label>Lịch sử bàn giao</label><div id="asset-history" class="reference-empty">Đang tải lịch sử...</div></div>
   `, `
     <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Đóng</button>
     ${canConfirm ? `<button class="btn-primary" id="asset-confirm">✅ Xác nhận</button>` : ''}
+    ${canConfirm ? `<button class="btn-secondary" id="asset-request-update">↩ Yêu cầu bổ sung</button>` : ''}
     ${canHandover ? `<button class="btn-primary" id="asset-handover">📦 Đã bàn giao</button>` : ''}
     ${canDelete ? `<button class="btn-danger" id="asset-del">Xóa</button>` : ''}
     ${canEditFields ? `<button class="btn-primary" id="asset-edit">✏️ Sửa</button>` : ''}
@@ -247,6 +253,21 @@ function openAssetDetail(asset, me, onRefresh = noop) {
     try { await api.updateAsset(asset.id, { status: 'confirmed' }); closeModal(); toast('Đã xác nhận', 'success'); onRefresh(); }
     catch (e) { toast(e.message, 'error'); }
   });
+
+  document.getElementById('asset-request-update')?.addEventListener('click', async () => {
+    const note = prompt('Nội dung cần TTS bổ sung:')?.trim();
+    if (!note) return;
+    try { await api.updateAsset(asset.id, { status: 'needs_update', note }); closeModal(); toast('Đã gửi yêu cầu bổ sung', 'success'); onRefresh(); }
+    catch (e) { toast(e.message, 'error'); }
+  });
+
+  api.getAssetHistory(asset.id).then(({ history = [] }) => {
+    const labels = { created: 'Đã tạo bàn giao', credential_set: 'Đã lưu thông tin đăng nhập', credential_changed: 'Đã đổi thông tin đăng nhập', credential_viewed: 'Đã xem thông tin đăng nhập', updated: 'Đã cập nhật', mentor_confirmed: 'Mentor đã xác nhận', mentor_requested_update: 'Mentor yêu cầu bổ sung' };
+    const host = document.getElementById('asset-history');
+    if (!host) return;
+    host.className = 'detail-val';
+    host.innerHTML = history.length ? history.map(h => `<div style="padding:5px 0;border-bottom:1px solid var(--divider);font-size:12px;"><b>${esc(labels[h.action] || h.action)}</b><br><span style="color:var(--text-3);">${esc(h.actor_name || 'Hệ thống')} · ${esc(h.created_at || '')}${h.detail ? ` · ${esc(h.detail)}` : ''}</span></div>`).join('') : 'Chưa có lịch sử';
+  }).catch(() => { const host = document.getElementById('asset-history'); if (host) host.textContent = 'Không thể tải lịch sử'; });
 
   document.getElementById('asset-handover')?.addEventListener('click', async () => {
     try { await api.updateAsset(asset.id, { status: 'handed_over' }); closeModal(); toast('Đã đánh dấu bàn giao', 'success'); onRefresh(); }
@@ -276,7 +297,7 @@ async function openAssetForm(asset, me, onRefresh = noop, opts = {}) {
   // an out-of-scope pick is rejected on save with a clear error.
   const pickableUsers = people;
 
-  openModal(isEdit ? 'Sửa tài sản' : 'Khai báo tài sản', `
+  openModal(isEdit ? 'Cập nhật bàn giao dự án' : 'Bàn giao dự án & tài khoản', `
     ${needOwnerPick ? `
     <div class="field"><label>Nhân sự *</label>
       <select id="af-owner">
@@ -284,37 +305,31 @@ async function openAssetForm(asset, me, onRefresh = noop, opts = {}) {
         ${pickableUsers.map(u => `<option value="${u.id}">${esc(u.full_name)}${u.department ? ` (${esc(u.department)})` : ''}</option>`).join('')}
       </select>
     </div>` : ''}
-    <div class="field"><label>Tên tài sản *</label><input type="text" id="af-name" value="${esc(asset?.asset_name || '')}" placeholder="VD: Fanpage Facebook ABC"/></div>
+    <div class="field"><label>Tên dự án/kênh *</label><input type="text" id="af-name" value="${esc(asset?.asset_name || '')}" placeholder="VD: Kênh Facebook Phi thương mại"/></div>
     <div class="input-row">
-      <div class="field"><label>Loại</label><input type="text" id="af-type" value="${esc(asset?.asset_type || '')}" placeholder="Tài khoản MXH, Website..."/></div>
+      <div class="field"><label>Loại dự án/tài khoản</label><input type="text" id="af-type" value="${esc(asset?.asset_type || '')}" placeholder="Kênh MXH, Website, Email..."/></div>
       <div class="field"><label>Nền tảng</label><input type="text" id="af-platform" value="${esc(asset?.platform || '')}" placeholder="Facebook, WordPress..."/></div>
     </div>
     <div class="field"><label>Link</label><input type="text" id="af-link" value="${esc(asset?.link || '')}" placeholder="https://..."/></div>
-    <div class="field"><label>Tài khoản đăng nhập</label><input type="text" id="af-cred" placeholder="${isEdit && asset.has_credential ? 'Để trống nếu không đổi' : 'username / password...'}"/></div>
+    <div class="field"><label>Email/tài khoản và mật khẩu *</label><input type="text" id="af-cred" placeholder="${isEdit && asset.has_credential ? 'Để trống nếu không đổi' : 'email / username / password'}"/></div>
     <div class="field"><label>Người phụ trách</label><input type="text" id="af-resp" value="${esc(asset?.responsible_name || (!isEdit ? me.full_name : ''))}"/></div>
-    <div class="field"><label>Mentor</label>
+    <div class="field"><label>Mentor xác nhận *</label>
       <select id="af-mentor">
         <option value="">-- Chọn mentor --</option>
         ${people.map(u => `<option value="${u.id}" ${asset?.mentor_id === u.id ? 'selected' : ''}>${esc(u.full_name)}</option>`).join('')}
       </select>
     </div>
     <div class="field"><label>Ngày dự kiến bàn giao</label><input type="date" id="af-expdate" value="${esc(asset?.expected_handover_date || '')}"/></div>
-    <div class="field"><label>Trạng thái</label>
-      <select id="af-status">
-        <option value="active" ${(!asset || asset.status === 'active') ? 'selected' : ''}>Đang quản lý</option>
-        <option value="pending_review" ${asset?.status === 'pending_review' ? 'selected' : ''}>Chờ kiểm tra</option>
-        <option value="needs_update" ${asset?.status === 'needs_update' ? 'selected' : ''}>Cần bổ sung</option>
-      </select>
-    </div>
+    <div class="field"><label>Trạng thái gửi</label><div class="detail-val">${asset?.status === 'needs_update' ? 'Cập nhật và gửi lại Mentor xác nhận' : 'Gửi Mentor xác nhận'}</div></div>
     <div class="field"><label>Ghi chú</label><textarea id="af-note" rows="3">${esc(asset?.note || '')}</textarea></div>
   `, `
     <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Hủy</button>
-    <button class="btn-primary" id="af-save">Lưu</button>
+    <button class="btn-primary" id="af-save">${isEdit && asset?.status === 'needs_update' ? 'Cập nhật & gửi lại' : 'Gửi Mentor xác nhận'}</button>
   `);
 
   document.getElementById('af-save').addEventListener('click', async () => {
     const name = document.getElementById('af-name').value.trim();
-    if (!name) { toast('Vui lòng nhập tên tài sản', 'error'); return; }
+    if (!name) { toast('Vui lòng nhập tên dự án/kênh', 'error'); return; }
     let ownerId = null;
     if (needOwnerPick) {
       ownerId = document.getElementById('af-owner').value;
@@ -322,8 +337,10 @@ async function openAssetForm(asset, me, onRefresh = noop, opts = {}) {
     }
     const mentorSel = document.getElementById('af-mentor');
     const mentorId = mentorSel.value ? parseInt(mentorSel.value) : null;
+    if (!mentorId) { toast('Vui lòng chọn Mentor xác nhận', 'error'); return; }
     const mentorName = mentorId ? mentorSel.options[mentorSel.selectedIndex].textContent : '';
     const cred = document.getElementById('af-cred').value;
+    if (!isEdit && !cred.trim()) { toast('Vui lòng nhập email/tài khoản và mật khẩu bàn giao', 'error'); return; }
     const data = {
       asset_name: name,
       asset_type: document.getElementById('af-type').value.trim(),
@@ -332,7 +349,7 @@ async function openAssetForm(asset, me, onRefresh = noop, opts = {}) {
       responsible_name: document.getElementById('af-resp').value.trim(),
       mentor_id: mentorId,
       mentor_name: mentorName,
-      status: document.getElementById('af-status').value,
+      status: 'pending_review',
       note: document.getElementById('af-note').value.trim(),
       expected_handover_date: document.getElementById('af-expdate').value || null,
     };

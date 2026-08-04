@@ -261,6 +261,7 @@ export const api = {
   updateAsset: (id, d) => req('PUT', `/api/assets/${id}`, d).then(r => { inv('/api/assets'); return r; }),
   deleteAsset: (id) => req('DELETE', `/api/assets/${id}`).then(r => { inv('/api/assets'); return r; }),
   revealAssetCredential: (id) => req('POST', `/api/assets/${id}/reveal-credential`),
+  getAssetHistory: (id) => cachedGet(`/api/assets/${id}/history`),
 
   // Attendance
   getAttendance: (params = {}) => {
@@ -289,6 +290,13 @@ export const api = {
   getOvertimeRequests: (params = {}) => { const q = new URLSearchParams(params).toString(); return req('GET', '/api/overtime-requests' + (q ? '?' + q : '')); },
   createOvertimeRequest: (d) => req('POST', '/api/overtime-requests', d).then(r => { inv('/api/attendance'); return r; }),
   decideOvertimeRequest: (id, action, d = {}) => req('POST', `/api/overtime-requests/${id}/${action}`, d).then(r => { inv('/api/attendance', '/api/invoices'); return r; }),
+  getOvertimeForms: (params = {}) => { const q = new URLSearchParams(params).toString(); return req('GET', '/api/overtime-forms' + (q ? '?' + q : '')); },
+  createOvertimeForm: (d) => req('POST', '/api/overtime-forms', d).then(r => { inv('/api/attendance', '/api/invoices'); return r; }),
+  updateOvertimeForm: (id, d) => req('PUT', `/api/overtime-forms/${id}`, d).then(r => { inv('/api/attendance'); return r; }),
+  submitOvertimeForm: (id) => req('POST', `/api/overtime-forms/${id}/submit`, {}).then(r => { inv('/api/attendance'); return r; }),
+  decideOvertimeForm: (id, d) => req('POST', `/api/overtime-forms/${id}/decision`, d).then(r => { inv('/api/attendance', '/api/invoices'); return r; }),
+  previewAttendanceImport: (d) => req('POST', '/api/attendance-imports/preview', d),
+  commitAttendanceImport: (d) => req('POST', '/api/attendance-imports/commit', d).then(r => { inv('/api/users', '/api/employees', '/api/attendance', '/api/invoices'); return r; }),
   getCompanyHolidays: () => req('GET', '/api/company-holidays'),
   createCompanyHoliday: (d) => req('POST', '/api/company-holidays', d),
   updateCompanyHoliday: (id, d) => req('PUT', `/api/company-holidays/${id}`, d),
@@ -393,6 +401,10 @@ export const api = {
   createLeaveType: (d) => req('POST', '/api/leave-types', d).then(r => { inv('/api/leave-types'); return r; }),
   updateLeaveType: (id, d) => req('PUT', `/api/leave-types/${id}`, d).then(r => { inv('/api/leave-types'); return r; }),
   deleteLeaveType: (id) => req('DELETE', `/api/leave-types/${id}`).then(r => { inv('/api/leave-types'); return r; }),
+  getLeaveBalances: (params = {}) => { const q = new URLSearchParams(params).toString(); return req('GET', '/api/leave/balances' + (q ? '?' + q : '')); },
+  adjustLeaveBalance: (d) => req('POST', '/api/leave/balances', d).then(r => { inv('/api/leave'); return r; }),
+  uploadLeaveDocument: (file, label = '') => uploadForm('/api/leave/uploads', { label }, file),
+  getLeaveDocumentBlob: (leaveId, documentId, disposition = 'inline') => fetchBlob(`/api/leave/${leaveId}/documents/${documentId}?disposition=${encodeURIComponent(disposition)}`),
 
   // Candidates / Recruitment
   getCandidates: (params = {}) => {

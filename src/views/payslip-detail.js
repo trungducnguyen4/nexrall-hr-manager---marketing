@@ -43,18 +43,26 @@ function recordValues(record) {
   };
 }
 
-function payslipRow(index, label, days, income = '', deduction = '', note = '', tone = '') {
-  return `<tr class="${tone}">
+function payslipRow(index, label, days, income = '', deduction = '', note = '', tone = '', options = {}) {
+  const { field = '', editable = false, value = 0, column = 'income', valueId = '' } = options;
+  const moneyCell = (amount, target) => {
+    if (editable && target === column) return `<input class="payslip-inline-input" type="number" min="0" step="1000" inputmode="numeric" data-payroll-field="${field}" data-original-value="${Number(value || 0)}" value="${Number(value || 0)}" aria-label="${esc(label)}"/>`;
+    const text = amount === '' ? '' : fmtMoney(amount);
+    return valueId && target === 'income' ? `<span id="${valueId}">${text}</span>` : text;
+  };
+  const row = `<tr class="${tone}" data-payroll-line="${field}">
     <td class="payslip-index">${index}</td>
     <td>${esc(label)}</td>
     <td class="payslip-number">${days === '' ? '' : esc(days)}</td>
-    <td class="payslip-money">${income === '' ? '' : fmtMoney(income)}</td>
-    <td class="payslip-money">${deduction === '' ? '' : fmtMoney(deduction)}</td>
+    <td class="payslip-money">${moneyCell(income, 'income')}</td>
+    <td class="payslip-money">${moneyCell(deduction, 'deduction')}</td>
     <td>${esc(note)}</td>
   </tr>`;
+  if (!editable) return row;
+  return `${row}<tr class="payslip-line-note" data-payroll-note-row="${field}" hidden><td></td><td colSpan="5"><label>Ghi chú điều chỉnh cho “${esc(label)}” <span>*</span><textarea data-payroll-note="${field}" rows="2" maxlength="1000" placeholder="Nêu rõ lý do điều chỉnh khoản này..."></textarea></label></td></tr>`;
 }
 
-export function payslipDetailHTML(record, { source = 'invoice' } = {}) {
+export function payslipDetailHTML(record, { source = 'invoice', edit = false } = {}) {
   const period = payrollPeriod(record);
   const values = recordValues(record);
   const employeeId = Number(source === 'payroll' ? record.employee_id : (record.user_id || record.employee_id || 0));
@@ -74,25 +82,25 @@ export function payslipDetailHTML(record, { source = 'invoice' } = {}) {
         <div class="payslip-identity-note"><dt>Ghi chú</dt><dd>${esc(note || 'Không có')}</dd></div>
       </dl>
       <div class="payslip-table-wrap">
-        <table class="payslip-table">
+        <table class="payslip-table${edit ? ' payslip-table--editing' : ''}">
           <thead><tr><th>STT</th><th>NỘI DUNG</th><th>SỐ NGÀY/GIỜ</th><th>THU NHẬP</th><th>KHẤU TRỪ</th><th>GHI CHÚ</th></tr></thead>
           <tbody>
-            ${payslipRow(1, 'Mức lương thỏa thuận', '', values.base)}
+            ${payslipRow(1, 'Mức lương thỏa thuận', '', values.base, '', '', '', { field: 'base_salary', editable: edit, value: values.base })}
             ${payslipRow(2, 'Ngày công thử việc', '0')}
             ${payslipRow(3, 'Ngày công chính thức', values.workDays || '0')}
-            ${payslipRow(4, 'Thu nhập theo ngày công', '', values.incomeFromWork)}
+            ${payslipRow(4, 'Thu nhập theo ngày công', '', values.incomeFromWork, '', '', '', { valueId: 'payslip-income-from-work' })}
             ${payslipRow(5, 'Thu nhập làm thêm giờ', `${(number(record.approved_overtime_minutes) / 60).toFixed(1)} giờ`, values.overtime)}
-            ${payslipRow(6, 'Phụ cấp khác', '', values.allowance, '', note ? 'Theo ghi chú phiếu lương' : '')}
-            ${payslipRow(7, 'Thưởng KPI', '', values.bonus)}
+            ${payslipRow(6, 'Phụ cấp khác', '', values.allowance, '', note ? 'Theo ghi chú phiếu lương' : '', '', { field: 'allowance', editable: edit, value: values.allowance })}
+            ${payslipRow(7, 'Thưởng KPI', '', values.bonus, '', '', '', { field: 'kpi_bonus', editable: edit, value: values.bonus })}
             ${payslipRow(8, 'Truy lĩnh lương', '', 0)}
-            ${payslipRow(9, 'Tổng thu nhập trước thuế', '', values.totalIncome, '', '', 'payslip-subtotal')}
-            ${payslipRow(10, 'BHXH, BHYT, BHTN người lao động', '', '', values.insurance)}
-            ${payslipRow(11, 'Thuế TNCN', '', '', values.tax)}
+            ${payslipRow(9, 'Tổng thu nhập trước thuế', '', values.totalIncome, '', '', 'payslip-subtotal', { valueId: 'payslip-total-income' })}
+            ${payslipRow(10, 'BHXH, BHYT, BHTN người lao động', '', '', values.insurance, '', '', { field: 'insurance', editable: edit, value: values.insurance, column: 'deduction' })}
+            ${payslipRow(11, 'Thuế TNCN', '', '', values.tax, '', '', { field: 'tax', editable: edit, value: values.tax, column: 'deduction' })}
             ${payslipRow(12, 'Tiền ăn ca', '', 0)}
             ${payslipRow(13, 'Truy lĩnh khác', '', 0)}
-            ${payslipRow(14, 'Khấu trừ khác', '', '', values.deduction)}
+            ${payslipRow(14, 'Khấu trừ khác', '', '', values.deduction, '', '', { field: 'deduction', editable: edit, value: values.deduction, column: 'deduction' })}
           </tbody>
-          <tfoot><tr><td colSpan="3">THỰC LĨNH/CHUYỂN KHOẢN</td><td class="payslip-money">${fmtMoney(values.net)}</td><td></td><td></td></tr></tfoot>
+          <tfoot><tr><td colSpan="3">THỰC LĨNH/CHUYỂN KHOẢN</td><td class="payslip-money" id="payslip-net">${fmtMoney(values.net)}</td><td></td><td></td></tr></tfoot>
         </table>
       </div>
     </section>

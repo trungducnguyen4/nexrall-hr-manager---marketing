@@ -225,10 +225,14 @@ export function safeCb(fn) { return typeof fn === 'function' ? fn : noop; }
 
 export const PAGE_SIZE = 10;
 
+export function normalizeVietnameseSearch(value) {
+  return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/đ/g, 'd').trim();
+}
+
 export function filterBySearch(rows, search, fields = []) {
-  const q = String(search || '').trim().toLowerCase();
+  const q = normalizeVietnameseSearch(search);
   if (!q) return rows || [];
-  return (rows || []).filter(row => fields.some(field => String(row?.[field] ?? '').toLowerCase().includes(q)));
+  return (rows || []).filter(row => fields.some(field => normalizeVietnameseSearch(row?.[field]).includes(q)));
 }
 
 export function filterByDepartment(rows, department, fields = ['department']) {
@@ -291,7 +295,7 @@ export function openModal(title, bodyHtml, footerHtml = '') {
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = bodyHtml;
   document.getElementById('modal-footer').innerHTML = footerHtml;
-  document.getElementById('modal')?.classList.remove('modal--scroll-fixed', 'modal--project', 'modal--attendance-summary', 'modal--user-detail', 'modal--user-profile', 'modal--user-form', 'modal--payslip');
+  document.getElementById('modal')?.classList.remove('modal--scroll-fixed', 'modal--project', 'modal--attendance-summary', 'modal--user-detail', 'modal--user-profile', 'modal--user-form', 'modal--payslip', 'modal--avatar-crop', 'modal--payroll-edit');
   ov?.classList.remove('modal-overlay--desktop-centered');
   ov.classList.remove('hidden');
 }

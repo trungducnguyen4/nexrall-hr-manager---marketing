@@ -17,7 +17,12 @@ export async function renderSettings(el, me) {
         <div class="pw-wrap"><input type="password" id="pw-old" placeholder="••••••••"/><button type="button" id="pw-eye-old" class="pw-eye-btn">👁</button></div>
       </div>
       <div class="field"><label>Mật khẩu mới</label>
-        <div class="pw-wrap"><input type="password" id="pw-new" placeholder="Tối thiểu 8 ký tự"/><button type="button" id="pw-eye-new" class="pw-eye-btn">👁</button></div>
+        <div class="pw-wrap"><input type="password" id="pw-new" placeholder="Tạo mật khẩu mạnh" autocomplete="new-password"/><button type="button" id="pw-eye-new" class="pw-eye-btn">👁</button></div>
+        <ul id="pw-rules" class="password-rules" aria-live="polite">
+          <li data-rule="length">Từ 8 đến 20 ký tự</li><li data-rule="upper">Có ít nhất 1 chữ in hoa</li>
+          <li data-rule="lower">Có ít nhất 1 chữ thường</li><li data-rule="number">Có ít nhất 1 chữ số</li>
+          <li data-rule="special">Có ít nhất 1 ký tự đặc biệt, ví dụ: ! @ # $ %</li><li data-rule="space">Không chứa khoảng trắng</li>
+        </ul>
       </div>
       <div class="field"><label>Xác nhận mật khẩu mới</label><input type="password" id="pw-confirm" placeholder="Nhập lại mật khẩu mới"/></div>
       <button id="btn-change-pw-save" class="btn-primary w-full">Đổi mật khẩu</button>
@@ -62,13 +67,27 @@ export async function renderSettings(el, me) {
     inp.type = inp.type === 'password' ? 'text' : 'password';
   }
 
+  function renderPasswordRules(value) {
+    const checks = {
+      length: value.length >= 8 && value.length <= 20, upper: /[A-Z]/.test(value), lower: /[a-z]/.test(value),
+      number: /[0-9]/.test(value), special: /[^A-Za-z0-9\s]/.test(value), space: !/\s/.test(value),
+    };
+    document.querySelectorAll('#pw-rules [data-rule]').forEach(item => {
+      const passed = checks[item.dataset.rule];
+      item.classList.toggle('is-valid', passed);
+      item.classList.toggle('is-invalid', Boolean(value) && !passed);
+    });
+    return Object.values(checks).every(Boolean);
+  }
+  document.getElementById('pw-new').addEventListener('input', event => renderPasswordRules(event.target.value));
+
   // Change password
   document.getElementById('btn-change-pw-save').addEventListener('click', async () => {
     const old_password = document.getElementById('pw-old').value;
     const new_password = document.getElementById('pw-new').value;
     const confirm = document.getElementById('pw-confirm').value;
     if (!old_password || !new_password) { toast('Điền đầy đủ thông tin', 'error'); return; }
-    if (new_password.length < 8) { toast('Mật khẩu mới tối thiểu 8 ký tự', 'error'); return; }
+    if (!renderPasswordRules(new_password)) { toast('Mật khẩu mới chưa đáp ứng đủ quy tắc', 'error'); return; }
     if (new_password !== confirm) { toast('Mật khẩu xác nhận không khớp', 'error'); return; }
     try {
       await api.changePassword(old_password, new_password);
