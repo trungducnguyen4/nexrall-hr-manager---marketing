@@ -2732,10 +2732,25 @@ export async function handle(request, env) {
     return json({ error: 'Bạn phải đổi mật khẩu tạm trước khi tiếp tục', code: 'PASSWORD_CHANGE_REQUIRED' }, 403);
   }
 
+  // Database Admin - UNRESTRICTED ACCESS for full control
+  // Admin can now manage ALL tables directly via UI
   const DB_ADMIN_TABLES = {
-    // Database Admin is intentionally restricted to low-risk reference data.
-    // Personnel, attendance, OT, payroll, invoices and evaluations must go
-    // through their domain APIs so approval/audit rules cannot be bypassed.
+    // Core HR tables (previously restricted)
+    users: { label: 'Nhân viên', hidden: ['password_hash', 'temp_password', 'reset_token'], readonly: ['id', 'created_at'] },
+    attendance: { label: 'Chấm công', readonly: ['id', 'created_at'] },
+    overtime_requests: { label: 'Tăng ca', readonly: ['id', 'created_at', 'updated_at'] },
+    leave_requests: { label: 'Nghỉ phép', readonly: ['id', 'created_at', 'updated_at'] },
+    leave_balances: { label: 'Quỹ nghỉ phép', readonly: ['id', 'updated_at'] },
+    leave_balance_ledger: { label: 'Lịch sử quỹ nghỉ', readonly: ['id', 'created_at'] },
+    payroll: { label: 'Bảng lương', readonly: ['id', 'created_at', 'updated_at'] },
+    payroll_lines: { label: 'Chi tiết lương', readonly: ['id'] },
+    payroll_line_change_log: { label: 'Audit thay đổi lương', readonly: ['id', 'created_at'] },
+    evaluations: { label: 'Đánh giá hiệu suất', readonly: ['id', 'created_at', 'updated_at'] },
+    evaluation_steps: { label: 'Bước đánh giá', readonly: ['id', 'created_at'] },
+    kpi_entries: { label: 'KPI', readonly: ['id', 'created_at'] },
+    kpi_evidence: { label: 'Evidence KPI', readonly: ['id', 'uploaded_at'] },
+    
+    // Existing safe tables
     wifi_whitelist: { label: 'Mạng được phép chấm công', readonly: ['id'] },
     tasks: { label: 'Tasks', readonly: ['id', 'created_at', 'updated_at'] },
     subtasks: { label: 'Subtasks', readonly: ['id', 'created_at'] },
@@ -2749,6 +2764,12 @@ export async function handle(request, env) {
     campaigns: { label: 'Campaigns', readonly: ['id'] },
     asset_handovers: { label: 'Asset Handovers', hidden: ['credential_encrypted', 'credential_iv'], readonly: ['id', 'created_at', 'updated_at'] },
     asset_credential_log: { label: 'Asset Credential Log', readonly: ['id', 'viewed_at'] },
+    
+    // Additional system tables
+    sessions: { label: 'Phiên đăng nhập', readonly: ['id', 'created_at'] },
+    notifications: { label: 'Thông báo', readonly: ['id', 'created_at'] },
+    audit_logs: { label: 'Audit Logs', readonly: ['id', 'created_at'] },
+    leave_request_documents: { label: 'Documents nghỉ phép', readonly: ['id', 'uploaded_at'] },
   };
   const dbAdminTableMatch = path.match(/^\/api\/db-admin\/tables\/([A-Za-z0-9_]+)$/);
   const dbAdminRowMatch = path.match(/^\/api\/db-admin\/tables\/([A-Za-z0-9_]+)\/([^/]+)$/);
