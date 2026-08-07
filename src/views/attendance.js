@@ -166,6 +166,15 @@ export async function renderAttendance(el, me, route = {}) {
       const { attendance } = await api.getAttendanceToday();
       const mine = attendance.find(a => a.user_id === me.id) || (attendance.length === 1 ? attendance[0] : null);
       todayRecord = mine || null;
+      // Restore chip selection from existing registration so UI matches reality
+      if (todayRecord && todayRecord.shift) {
+        regShifts.clear();
+        if (todayRecord.shift === 'full') { regShifts.add('morning'); regShifts.add('afternoon'); }
+        else if (todayRecord.shift === 'morning') regShifts.add('morning');
+        else if (todayRecord.shift === 'afternoon') regShifts.add('afternoon');
+      }
+      if (regShifts.size === 0) { regShifts.add('morning'); regShifts.add('afternoon'); }
+      updateShiftChips();
       renderClockState();
     } catch(e) {
       document.getElementById('att-status-line').innerHTML = `<span style="font-size:12px;opacity:.7">Lỗi tải trạng thái</span>`;

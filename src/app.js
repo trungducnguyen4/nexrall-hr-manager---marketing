@@ -3,7 +3,7 @@
 // ════════════════════════════════════════════════
 import { api, setToken, loadToken, clearCache } from './api.js?v=20260728-native-security';
 import { initNativeShell, verifyBiometricIfAvailable } from './native.js';
-import { setAvatar, toast, initials, avatarColor, closeModal } from './utils.js?v=20260722-payroll-export-ux';
+import { setAvatar, toast, initials, avatarColor, closeModal } from './utils.js?v=20260806-shared-avatar-v1';
 import { icon } from './icons.js';
 
 // ── Lazy view imports ───────────────────────────
@@ -14,7 +14,7 @@ async function getView(name) {
     else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js?v=20260804-monthly-attendance-board-v1');
     else if (name === 'tasks')       _viewModules[name] = await import('./views/tasks.js?v=20260803-task-status-actions');
     else if (name === 'invoices')    _viewModules[name] = await import('./views/invoices.js?v=20260730-payslip-detail-v1');
-    else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260804-cropperjs-v2');
+    else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260806-admin-password-reset-v1');
     else if (name === 'wifi')        _viewModules[name] = await import('./views/wifi.js?v=20260804-office-network-v1');
     else if (name === 'settings')    _viewModules[name] = await import('./views/settings.js?v=20260804-password-policy-v2');
     else if (name === 'taskpanel')   _viewModules[name] = await import('./views/taskpanel.js?v=20260722-rich-task-editor');
@@ -146,10 +146,11 @@ async function refreshEmployeeAlertBadge() {
 
 function initApp() {
   normalizeIcons(document);
-  setAvatar(document.getElementById('sidebar-av'), me.full_name, me.avatar_color, me.avatar_initials);
+  setAvatar(document.getElementById('sidebar-av'), me.full_name, me.avatar_color, me.avatar_initials, me.avatar_url);
   document.getElementById('sidebar-name').textContent = me.full_name;
   document.getElementById('sidebar-role').textContent = roleLabel(me.role);
-  setAvatar(document.getElementById('header-av'), me.full_name, me.avatar_color, me.avatar_initials);
+  setAvatar(document.getElementById('header-av'), me.full_name, me.avatar_color, me.avatar_initials, me.avatar_url);
+  document.getElementById('sidebar-profile-link').href = `#/users/${me.id}`;
 
   // Admin nav visibility
   const isManager = me.role === 'admin' || me.role === 'manager' || me.department === 'Phòng HCNS';
@@ -173,6 +174,14 @@ function initApp() {
   document.getElementById('sidebar-close').addEventListener('click', closeSidebar);
   sidebarOverlay.addEventListener('click', closeSidebar);
   document.getElementById('header-av-btn').addEventListener('click', () => navigate(`#/users/${me.id}`));
+  document.getElementById('sidebar-profile-link').addEventListener('click', closeSidebar);
+  document.addEventListener('hr-avatar-updated', event => {
+    const { userId, url } = event.detail || {};
+    if (Number(userId) !== Number(me?.id)) return;
+    me.avatar_url = url || '';
+    setAvatar(document.getElementById('sidebar-av'), me.full_name, me.avatar_color, me.avatar_initials, me.avatar_url);
+    setAvatar(document.getElementById('header-av'), me.full_name, me.avatar_color, me.avatar_initials, me.avatar_url);
+  });
   document.getElementById('employee-alert-button')?.addEventListener('click', () => navigate('#/notifications'));
 
   document.querySelectorAll('.nav-item[data-nav]').forEach(link => {

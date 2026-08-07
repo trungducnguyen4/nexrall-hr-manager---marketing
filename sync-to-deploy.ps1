@@ -1,7 +1,8 @@
 # ============================================================================
 # sync-to-deploy.ps1
-# Dong bo code tu nguon (src/, styles/, index.html, favicon.png) sang
-# thu muc deploy (.local-public/) roi deploy len Cloudflare Workers.
+# Dong bo code tu nguon (src/, styles/, index.html, favicon.png, manifest,
+# sw.js, icon pwa) sang thu muc deploy (.local-public/) roi deploy len
+# Cloudflare Workers.
 #
 # Cach dung:
 #   .\sync-to-deploy.ps1             # sync + deploy
@@ -77,6 +78,11 @@ Copy-Dir $styles (Join-Path $pub 'styles')
 Write-Host "Copy root files ..."
 Copy-File (Join-Path $root 'index.html')
 Copy-File (Join-Path $root 'favicon.png')
+Copy-File (Join-Path $root 'manifest.webmanifest')
+Copy-File (Join-Path $root 'sw.js')
+Copy-File (Join-Path $root 'icon-192.png')
+Copy-File (Join-Path $root 'icon-512.png')
+Copy-File (Join-Path $root 'apple-touch-icon.png')
 
 # 4. Xac nhan
 $pubCount = @(Get-ChildItem (Join-Path $pub 'src') -Recurse -File).Count

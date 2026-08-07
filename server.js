@@ -2456,7 +2456,7 @@ async function getSessionFromToken(token, env) {
   try {
     const row = await env.DB.prepare(
       'SELECT s.*, u.id as uid, u.full_name, u.email, u.role, u.department, u.position,' +
-      ' u.avatar_color, u.avatar_initials, u.employee_code, u.salary, u.phone,' +
+      ' u.avatar_color, u.avatar_initials, u.avatar_url, u.employee_code, u.salary, u.phone,' +
       ' u.bank_account, u.bank_name, u.is_active, u.lifecycle_status, u.must_change_password' +
       ' FROM sessions s JOIN users u ON s.user_id = u.id' +
       " WHERE s.token=? AND s.revoked=0 AND CAST(s.expires_at AS INTEGER) > CAST(strftime('%s','now') AS INTEGER)"
@@ -2510,7 +2510,7 @@ async function getPlatformUser(env) {
         uid: byPlatform.id, full_name: byPlatform.full_name, email: byPlatform.email,
         role: isOwner ? 'admin' : byPlatform.role,
         department: byPlatform.department, position: byPlatform.position,
-        avatar_color: byPlatform.avatar_color, avatar_initials: byPlatform.avatar_initials,
+        avatar_color: byPlatform.avatar_color, avatar_initials: byPlatform.avatar_initials, avatar_url: byPlatform.avatar_url,
         employee_code: byPlatform.employee_code, salary: byPlatform.salary,
         phone: byPlatform.phone, bank_account: byPlatform.bank_account,
         bank_name: byPlatform.bank_name, is_active: byPlatform.is_active,
@@ -2535,6 +2535,7 @@ async function getPlatformUser(env) {
     position: adminUser.position,
     avatar_color: adminUser.avatar_color,
     avatar_initials: adminUser.avatar_initials,
+    avatar_url: adminUser.avatar_url,
     employee_code: adminUser.employee_code,
     salary: adminUser.salary,
     phone: adminUser.phone,
@@ -2605,7 +2606,7 @@ export async function handle(request, env) {
     const userData = {
       id: user.id, full_name: user.full_name, email: user.email,
       role: user.role, department: user.department, position: user.position,
-      avatar_color: user.avatar_color, avatar_initials: user.avatar_initials,
+      avatar_color: user.avatar_color, avatar_initials: user.avatar_initials, avatar_url: user.avatar_url,
       employee_code: user.employee_code, salary: user.salary, phone: user.phone,
       bank_account: user.bank_account, bank_name: user.bank_name,
       lifecycle_status: user.lifecycle_status, must_change_password: !!user.must_change_password,
@@ -2651,7 +2652,7 @@ export async function handle(request, env) {
       user: {
         id: userId, full_name: session.full_name, email: session.email,
         role: session.role, department: session.department, position: session.position,
-        avatar_color: session.avatar_color, avatar_initials: session.avatar_initials,
+        avatar_color: session.avatar_color, avatar_initials: session.avatar_initials, avatar_url: session.avatar_url,
         employee_code: session.employee_code, salary: session.salary,
         phone: session.phone, bank_account: session.bank_account,
         bank_name: session.bank_name, is_active: session.is_active,
@@ -2694,7 +2695,7 @@ export async function handle(request, env) {
     me = {
       id: mainSession.uid, full_name: mainSession.full_name, email: mainSession.email,
       role: mainSession.role, department: mainSession.department, position: mainSession.position,
-      avatar_color: mainSession.avatar_color, avatar_initials: mainSession.avatar_initials,
+      avatar_color: mainSession.avatar_color, avatar_initials: mainSession.avatar_initials, avatar_url: mainSession.avatar_url,
       employee_code: mainSession.employee_code, salary: mainSession.salary,
       phone: mainSession.phone, bank_account: mainSession.bank_account,
       bank_name: mainSession.bank_name, is_active: mainSession.is_active,
@@ -3762,9 +3763,10 @@ export async function handle(request, env) {
       const ini = b.avatar_initials || nameInitials(b.full_name || '');
       let extraSql = '';
       let extraBinds = [];
-      if (b.reset_password && isAdmin) {
+      const passwordWasReset = b.reset_password === true && isAdmin;
+      if (passwordWasReset) {
         const newHash = await hashPassword('Pass@123');
-        extraSql = ', password_hash=?';
+        extraSql = ', password_hash=?, must_change_password=1';
         extraBinds = [newHash];
       }
       const binds = [b.full_name,b.email,b.role||'employee',normalizeDeptName(b.department||''),b.position||'',b.avatar_color||'#4F46E5',ini,b.phone||'',b.salary||0,b.bank_account||'',b.bank_name||'',b.is_active??1,b.birth_date||null,b.gender||'',b.national_id||'',b.home_address||'',b.emergency_contact_name||'',b.emergency_contact_phone||'',b.direct_manager_id||null,b.work_location||'',b.contract_type||'',b.contract_start_date||null,b.contract_end_date||null,b.contract_signed_date||null,b.official_date||null,b.termination_date||null,b.allowance||0,b.insurance_salary||0,b.bank_account_holder||'',b.tax_code||'',b.social_insurance_number||'',b.insurance_hospital||'',b.avatar_url||'',b.national_id_document_url||'',b.degree_document_url||'',b.contract_document_url||'',b.personnel_decision_url||'',...extraBinds,me.id,uid];
@@ -3783,6 +3785,19 @@ export async function handle(request, env) {
           newValue: value,
           actor: me,
         })),
+        ...(passwordWasReset ? [
+          env.DB.prepare('UPDATE sessions SET revoked=1 WHERE user_id=? AND revoked=0').bind(uid),
+          employeeAuditStatement(env, {
+            userId: uid,
+            changeSetId,
+            action: 'password_reset',
+            group: 'security',
+            field: 'password_hash',
+            oldValue: null,
+            newValue: 'Administrator reset password',
+            actor: me,
+          }),
+        ] : []),
       ]);
       return json({ ok: true, change_set_id: changeSetId });
     }
@@ -4492,12 +4507,15 @@ export async function handle(request, env) {
     const b = await request.json();
     const ipInfo = await currentIpInfo(env, request);
     const requestedIp = String(b.ip_range || ipInfo.ip).trim();
-    const validation = validOfficeNetworkInput(requestedIp, ipInfo.ip);
-    if (validation.error) return json({ error: validation.error, ip: ipInfo.ip, warning: ipInfo.warning }, 400);
+    const rules = String(requestedIp || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (!rules.length) return json({ error: 'Nhập ít nhất một Public IP hoặc dải mạng công khai.' }, 400);
+    if (rules.some(isPrivateNetworkRule)) return json({ error: 'Không sử dụng IP nội bộ, router hoặc dải private cho mạng văn phòng.' }, 400);
+    const hasCurrentIp = rules.some(rule => ipMatchesRule(ipInfo.ip, rule));
+    const warning = hasCurrentIp ? null : `IP backend đang nhận là ${ipInfo.ip} — không nằm trong dải vừa lưu. Nếu IP này không phải IP văn phòng, việc chấm công có thể bị gián đoạn.`;
     const r = await env.DB.prepare(
       'INSERT INTO wifi_whitelist (wifi_name,ip_range,description,is_active) VALUES (?,?,?,1)'
     ).bind(b.wifi_name||'',requestedIp || ipInfo.ip,b.description||'').run();
-    return json({ ok: true, id: r.meta.last_row_id });
+    return json({ ok: true, id: r.meta.last_row_id, warning });
   }
   const wifiMatch = path.match(/^\/api\/wifi-whitelist\/(\d+)$/);
   if (wifiMatch) {

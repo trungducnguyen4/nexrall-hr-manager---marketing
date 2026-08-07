@@ -342,6 +342,7 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
         <div class="employee-profile-actions print-hidden">
           <button class="btn-secondary" id="employee-print">${icon('fileText', 'sm')} Xuất PDF</button>
           ${isHr(me) ? `<button class="btn-secondary" id="employee-lifecycle">${icon('refreshCw', 'sm')} Đổi trạng thái</button>` : ''}
+          ${me.role === 'admin' && Number(user.id) !== Number(me.id) ? `<button class="btn-secondary" id="employee-reset-password">${icon('keyRound', 'sm')} Reset mật khẩu</button>` : ''}
         </div>
         <div class="employee-profile-status">
           <div>${lifecycleBadge(user.lifecycle_status)}</div>
@@ -479,6 +480,19 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
   });
   $('#employee-lifecycle')?.addEventListener('click', () => openLifecycleEditor(user, refreshProfile));
   $('#employee-avatar-edit')?.addEventListener('click', () => openAvatarEditor(user, refreshProfile));
+  $('#employee-reset-password')?.addEventListener('click', async event => {
+    if (!confirm(`Reset mật khẩu của ${user.full_name} về “Pass@123”? Nhân viên sẽ phải đổi mật khẩu sau khi đăng nhập.`)) return;
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await api.updateUser(user.id, { reset_password: true });
+      toast('Đã reset mật khẩu. Nhân viên cần đổi mật khẩu sau khi đăng nhập.', 'success');
+    } catch (error) {
+      toast(error.message || 'Không thể reset mật khẩu', 'error');
+    } finally {
+      button.disabled = false;
+    }
+  });
   renderTab();
 }
 
@@ -788,7 +802,8 @@ function openAvatarEditor(user, onSaved) {
     try {
       const canvas = cropper.getCroppedCanvas({ width: 512, height: 512, imageSmoothingEnabled: true, imageSmoothingQuality: 'high' });
       const blob = await new Promise((resolve, reject) => canvas?.toBlob(value => value ? resolve(value) : reject(new Error('Không thể tạo ảnh đã crop')), 'image/webp', .9));
-      await api.uploadUserDocument(user.id, 'avatar', new File([blob], 'avatar.webp', { type: 'image/webp' }));
+      const uploaded = await api.uploadUserDocument(user.id, 'avatar', new File([blob], 'avatar.webp', { type: 'image/webp' }));
+      document.dispatchEvent(new CustomEvent('hr-avatar-updated', { detail: { userId: user.id, url: uploaded.url || '' } }));
       close(); toast('Đã cập nhật ảnh đại diện', 'success'); onSaved();
     } catch (error) { toast(error.message, 'error'); event.currentTarget.disabled = false; event.currentTarget.textContent = 'Lưu ảnh'; }
   });

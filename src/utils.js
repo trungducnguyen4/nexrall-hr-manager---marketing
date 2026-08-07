@@ -64,10 +64,18 @@ export function initials(name) {
   return name.split(' ').filter(Boolean).map(w => w[0]).slice(-2).join('').toUpperCase();
 }
 
-export function setAvatar(el, name, color, ini) {
+export function setAvatar(el, name, color, ini, imageUrl = '') {
   if (!el) return;
   el.style.background = color || avatarColor(name || '');
   el.textContent = ini || initials(name || '');
+  el.querySelector('.app-avatar-image')?.remove();
+  if (!imageUrl) return;
+  const image = document.createElement('img');
+  image.className = 'app-avatar-image';
+  image.src = imageUrl;
+  image.alt = '';
+  image.addEventListener('error', () => image.remove(), { once: true });
+  el.appendChild(image);
 }
 
 export function statusBadge(status) {

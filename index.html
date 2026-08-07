@@ -4,7 +4,15 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
   <title>NetViet HR – Marketing</title>
+  <meta name="description" content="Hệ thống quản lý nhân sự NetViet – Marketing"/>
+  <meta name="theme-color" content="#EE4D2D"/>
+  <link rel="manifest" href="/manifest.webmanifest"/>
   <link rel="icon" type="image/png" href="/favicon.png?v=20260722-netviettv"/>
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="NetViet HR"/>
   <link rel="stylesheet" href="/styles/main.css?v=20260803-payroll-modal-v4"/>
 </head>
 <body>
@@ -50,13 +58,13 @@
       <button class="sidebar-close" id="sidebar-close">✕</button>
     </div>
 
-    <div class="sidebar-profile">
+    <a id="sidebar-profile-link" class="sidebar-profile" href="#/users" aria-label="Mở hồ sơ cá nhân">
       <div id="sidebar-av" class="avatar avatar-md"></div>
       <div style="min-width:0;">
         <div id="sidebar-name" class="profile-name truncate">—</div>
         <div id="sidebar-role" class="profile-role">—</div>
       </div>
-    </div>
+    </a>
 
     <nav class="sidebar-nav">
       <!-- Main -->
@@ -186,6 +194,7 @@
 
 <link rel="stylesheet" href="/src/vendor/cropperjs/cropper.min.css?v=1.6.2">
 <script src="/src/vendor/cropperjs/cropper.min.js?v=1.6.2"></script>
-<script type="module" src="/src/app.js?v=20260804-leave-policy-v4"></script>
+<script type="module" src="/src/app.js?v=20260806-admin-password-reset-v1"></script>
+<script defer src="/src/pwa-register.js?v=pwa-v1"></script>
 </body>
 </html>

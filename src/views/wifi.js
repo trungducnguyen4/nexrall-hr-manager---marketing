@@ -111,7 +111,10 @@ function openWifiForm(data, refreshFn) {
     };
     try {
       if (isEdit) await api.updateWifi(parseInt(data.wid), d);
-      else await api.createWifi(d);
+      else {
+        const result = await api.createWifi(d);
+        if (result.warning) toast(result.warning, 'info', 8000);
+      }
       closeModal(); toast('Đã lưu', 'success'); refreshFn();
     } catch(e) { toast(e.message, 'error'); }
   });

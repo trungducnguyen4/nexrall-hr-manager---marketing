@@ -24,6 +24,13 @@ function dashboardKpiCard(item, index) {
   return `<article class="reference-kpi ${tone}"><p>${esc(item.title || item.criterion_code || 'KPI')}</p><div class="kpi-value">${esc(actualLabel)}</div><div class="reference-progress"><i style="width:${percent}%"></i></div><div class="kpi-foot"><span>${esc(targetLabel)}</span><b>● ${esc(state)}</b></div></article>`;
 }
 
+function getTimeGreeting() {
+  const h = new Date().getHours();
+  if (h < 12) return { text: 'Chào buổi sáng', icon: 'sun' };
+  if (h < 18) return { text: 'Chào buổi chiều', icon: 'sun' };
+  return { text: 'Chào buổi tối', icon: 'moon' };
+}
+
 export async function renderDashboard(el, me) {
   const displayName = me.full_name || 'Nguyễn Văn Hậu';
   const department = me.department || 'Ban Giám Đốc';
@@ -36,7 +43,7 @@ export async function renderDashboard(el, me) {
       <div class="dash-main-column">
         <div class="dash-welcome">
           <div class="welcome-orb welcome-orb-one"></div><div class="welcome-orb welcome-orb-two"></div>
-          <div class="welcome-eyebrow"><span data-icon="sun"></span> Chào buổi sáng,</div>
+          <div class="welcome-eyebrow"><span data-icon="${getTimeGreeting().icon}"></span> ${getTimeGreeting().text},</div>
           <h1>${esc(displayName)} <span data-icon="userRound"></span></h1>
           <p>${today}</p>
           <div class="welcome-tags"><span>${esc(department)}</span><span>${esc(position)}</span></div>
