@@ -3,7 +3,9 @@
 *.log
 *.tmp
 *.swp
-
+.wrangler/
+.wrangler-local/
+.local-public/
 # Environment
 .env
 .env.local
