@@ -187,6 +187,19 @@ export async function renderTasks(el, me) {
     else renderEmptyBoard();
   }
 
+  async function refreshProjectsAfterMutation(change = {}) {
+    if (change.archivedProjectId) {
+      const archivedId = String(change.archivedProjectId);
+      const archivedFilter = el.querySelector('#project-archived');
+      if (archivedFilter) archivedFilter.checked = false;
+      projects = projects.filter(project => String(project.id) !== archivedId);
+      if (String(selectedProjectId) === archivedId) selectedProjectId = '';
+      renderProjects();
+      renderEmptyBoard();
+    }
+    await loadProjects();
+  }
+
   function selectedProject() {
     return projects.find(p => String(p.id) === String(selectedProjectId));
   }
@@ -213,7 +226,7 @@ export async function renderTasks(el, me) {
     list.querySelectorAll('[data-edit-project]').forEach(btn => btn.addEventListener('click', e => {
       e.stopPropagation();
       const project = projects.find(p => String(p.id) === btn.dataset.editProject);
-      openProjectForm(project, users, departments, loadProjects);
+      openProjectForm(project, users, departments, refreshProjectsAfterMutation);
     }));
   }
 
@@ -250,7 +263,7 @@ export async function renderTasks(el, me) {
     list.querySelectorAll('[data-edit-project]').forEach(btn => btn.addEventListener('click', e => {
       e.stopPropagation();
       const project = projects.find(p => String(p.id) === btn.dataset.editProject);
-      openProjectForm(project, users, departments, loadProjects);
+      openProjectForm(project, users, departments, refreshProjectsAfterMutation);
     }));
   }
 
@@ -438,7 +451,7 @@ export async function renderTasks(el, me) {
     searchTimer = setTimeout(loadProjects, 250);
   });
   el.querySelector('#project-archived')?.addEventListener('change', loadProjects);
-  el.querySelector('#btn-new-project')?.addEventListener('click', () => openProjectForm(null, users, departments, loadProjects));
+  el.querySelector('#btn-new-project')?.addEventListener('click', () => openProjectForm(null, users, departments, refreshProjectsAfterMutation));
   el.querySelector('#btn-new-task').addEventListener('click', () => {
     const project = selectedProject();
     if (!project) { toast('Vui lòng chọn Project trước khi tạo việc', 'error'); return; }
@@ -596,7 +609,12 @@ function openProjectFormOld(project, users, departments, onDone) {
 
   document.getElementById('pf-archive')?.addEventListener('click', async () => {
     if (!confirm('Lưu trữ Project này?')) return;
-    try { await api.archiveTaskProject(project.id); closeModal(); toast('Đã lưu trữ', 'success'); onDone?.(); }
+    try {
+      await api.archiveTaskProject(project.id);
+      closeModal();
+      toast('Đã lưu trữ', 'success');
+      onDone?.({ archivedProjectId: project.id });
+    }
     catch (e) { toast(e.message, 'error'); }
   });
 }
@@ -730,7 +748,12 @@ function openProjectForm(project, users, departments, onDone) {
 
   document.getElementById('pf-archive')?.addEventListener('click', async () => {
     if (!confirm('Lưu trữ Project này?')) return;
-    try { await api.archiveTaskProject(project.id); closeModal(); toast('Đã lưu trữ', 'success'); onDone?.(); }
+    try {
+      await api.archiveTaskProject(project.id);
+      closeModal();
+      toast('Đã lưu trữ', 'success');
+      onDone?.({ archivedProjectId: project.id });
+    }
     catch (e) { toast(e.message, 'error'); }
   });
 }

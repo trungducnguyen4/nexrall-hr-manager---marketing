@@ -85,7 +85,7 @@ export async function renderAttendance(el, me, route = {}) {
     </div>` : ''}
 
     <!-- Filter -->
-    <div class="card" style="margin-bottom:14px;">
+    <div id="att-history-card" class="card" style="margin-bottom:14px;">
       <div class="card-header" style="margin-bottom:10px;">
         <div class="card-title">📅 Lịch sử chấm công</div>
         <div style="display:flex;gap:8px;">
@@ -109,6 +109,11 @@ export async function renderAttendance(el, me, route = {}) {
       <div id="att-list">${loadingHTML()}</div>
     </div>
   `;
+
+  // Keep the attendance history immediately below the clock actions, before overtime forms.
+  const historyCard = document.getElementById('att-history-card');
+  const clockCard = document.getElementById('att-clock-card');
+  if (historyCard && clockCard) clockCard.insertAdjacentElement('afterend', historyCard);
 
   // Live clock
   const liveTime = document.getElementById('att-live-time');
@@ -237,6 +242,13 @@ export async function renderAttendance(el, me, route = {}) {
       const en = document.getElementById('att-exp-end').value;
       if (!s || !en) { toast('Vui lòng nhập giờ dự kiến', 'error'); return; }
     }
+
+    // Xác nhận trước khi đăng ký
+    const shiftLabel = resolvedShift() === 'full' ? 'Cả ngày' : resolvedShift() === 'morning' ? 'Ca sáng' : 'Ca chiều';
+    const workTypeLabel = WORK_TYPE_LABEL[regWorkType] || regWorkType;
+    const confirmMsg = `Xác nhận đăng ký chấm công hôm nay?\n\n📌 Hình thức: ${workTypeLabel}\n🕐 Ca làm: ${shiftLabel}`;
+    if (!confirm(confirmMsg)) return;
+
     submitting = true; btn.disabled = true; const oldText = btn.textContent; btn.textContent = 'Đang đăng ký...';
     try {
       await api.registerAttendance({
@@ -259,6 +271,7 @@ export async function renderAttendance(el, me, route = {}) {
   document.getElementById('btn-checkin').addEventListener('click', async () => {
     if (submitting) return;
     const note = document.getElementById('att-note')?.value || '';
+    if (!confirm(`Xác nhận Check In lúc này?${note ? `\n\nGhi chú: ${note}` : ''}`)) return;
     const btnIn = document.getElementById('btn-checkin');
     submitting = true; btnIn.disabled = true; btnIn.textContent = '...';
     try {
@@ -277,6 +290,7 @@ export async function renderAttendance(el, me, route = {}) {
   // Check-out
   document.getElementById('btn-checkout').addEventListener('click', async () => {
     if (submitting) return;
+    if (!confirm('Xác nhận Check Out lúc này?')) return;
     const btnOut = document.getElementById('btn-checkout');
     submitting = true; btnOut.disabled = true; btnOut.textContent = '...';
     try {
@@ -463,6 +477,12 @@ export async function renderAttendance(el, me, route = {}) {
     return '<span class="badge badge-success">Đủ dữ liệu</span>';
   }
 
+  function attendanceRateBadge(value) {
+    const rate = Number(value || 0);
+    const tone = rate >= 95 ? 'is-excellent' : rate >= 80 ? 'is-watch' : 'is-low';
+    return `<span class="att-attendance-rate ${tone}">${rate.toFixed(1)}%</span>`;
+  }
+
   async function openMonthlyAttendanceBoard() {
     const monthValue = document.getElementById('att-month-filter')?.value || closingMonth;
     const [year, month] = monthValue.split('-').map(Number);
@@ -534,14 +554,14 @@ export async function renderAttendance(el, me, route = {}) {
         listEl.innerHTML = `
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Nhân viên</th><th>Phòng ban</th><th>Chức danh</th><th>Ngày công</th><th>Tổng giờ</th><th>Đi muộn</th><th>Thiếu check-in/out</th><th>Trạng thái kỳ</th></tr></thead>
+              <thead><tr><th>Nhân viên</th><th>Phòng ban</th><th>Chức danh</th><th>Ngày công<br><span class="att-column-hint">Thực tế / chuẩn</span></th><th>Đi muộn</th><th>Thiếu check-in/out</th><th>Tỉ lệ chuyên cần</th></tr></thead>
               <tbody>
                 ${pageData.rows.map(employee => `<tr class="att-employee-row" data-user-id="${employee.user_id}" role="button" tabindex="0" title="Xem tổng kết chấm công">
                   <td><span style="font-weight:600">${esc(employee.full_name)}</span><br><span style="font-size:11px;color:var(--text-2)">${esc(employee.employee_code || '—')}</span></td>
                   <td>${esc(employee.department || '—')}</td><td>${esc(employee.position || '—')}</td>
-                  <td>${Number(employee.actual_work_days || 0)}</td><td>${Number(employee.total_work_hours || 0).toFixed(1)}h</td>
+                  <td><div class="att-workday-pair"><strong>${Number(employee.actual_work_days || 0)}</strong><span>/</span><span>${Number(employee.standard_work_days || 0)}</span></div></td>
                   <td>${employee.late_days ? `${employee.late_days} ngày · ${employee.late_minutes}p` : '—'}</td>
-                  <td>${Number(employee.missing_checkin_days || 0)} / ${Number(employee.missing_checkout_days || 0)}</td><td>${employeePeriodStatus(employee)}</td>
+                  <td>${Number(employee.missing_checkin_days || 0)} / ${Number(employee.missing_checkout_days || 0)}</td><td>${attendanceRateBadge(employee.attendance_rate)}</td>
                 </tr>`).join('')}
               </tbody>
             </table>

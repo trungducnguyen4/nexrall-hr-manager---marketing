@@ -4108,9 +4108,16 @@ export async function handle(request, env) {
     if (me.role === 'manager' && !isAdmin && !isAttendanceHcns) { q += ' AND u.department=?'; binds.push(me.department); }
     q += ' GROUP BY u.id ORDER BY u.full_name COLLATE NOCASE';
     const { results = [] } = await env.DB.prepare(q).bind(...binds).all();
+    const standardWorkDays = attCountBusinessDaysBetween(from, to);
     const employees = results.map(row => {
       const missingDays = Number(row.missing_checkin_days || 0) + Number(row.missing_checkout_days || 0);
-      return { ...row, period_status: !Number(row.record_count) ? 'no_data' : missingDays ? 'incomplete' : Number(row.late_days) ? 'late' : 'complete' };
+      const actualWorkDays = Number(row.actual_work_days || 0);
+      return {
+        ...row,
+        standard_work_days: standardWorkDays,
+        attendance_rate: standardWorkDays ? Number(((actualWorkDays / standardWorkDays) * 100).toFixed(1)) : 0,
+        period_status: !Number(row.record_count) ? 'no_data' : missingDays ? 'incomplete' : Number(row.late_days) ? 'late' : 'complete',
+      };
     });
     return json({ period: { from, to }, employees });
   }
