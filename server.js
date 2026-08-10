@@ -6822,6 +6822,18 @@ export async function handle(request, env) {
     return json({ ...conv, members });
   }
 
+  if (convMatch && request.method === 'PUT') {
+    const convId = parseInt(convMatch[1]);
+    const conv = await env.DB.prepare('SELECT * FROM conversations WHERE id = ?').bind(convId).first();
+    if (!conv) return json({ error: 'Không tìm thấy hội thoại' }, 404);
+    const b = await request.json().catch(() => ({}));
+    const name = String(b.name || '').trim();
+    if (!name) return json({ error: 'Tên không được để trống' }, 400);
+    if (name.length > 200) return json({ error: 'Tên quá dài (tối đa 200 ký tự)' }, 400);
+    await env.DB.prepare('UPDATE conversations SET name = ? WHERE id = ?').bind(name, convId).run();
+    return json({ ok: true, name });
+  }
+
   const convMembersMatch = path.match(/^\/api\/conversations\/(\d+)\/members$/);
   if (convMembersMatch && request.method === 'POST') {
     const convId = parseInt(convMembersMatch[1]);
@@ -7009,7 +7021,9 @@ export async function handle(request, env) {
 
     const doId = env.CHAT_ROOM.idFromName(String(convId));
     const stub = env.CHAT_ROOM.get(doId);
-    return stub.fetch(request);
+    const wsUrl = new URL(request.url);
+    wsUrl.searchParams.set('conv', String(convId));
+    return stub.fetch(new Request(wsUrl.toString(), request));
   }
 
   // ═══════════════════════════════════════════════════════════════

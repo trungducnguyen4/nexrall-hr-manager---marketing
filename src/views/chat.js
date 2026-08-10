@@ -692,6 +692,7 @@ function openSearchModal() {
 
 // ── More menu ───────────────────────────────────────────────────────
 function openMoreMenu(conv) {
+  const isDM = conv.type === 'direct';
   const members = (conv.members || []).map(m => `
     <div style="display:flex;align-items:center;gap:10px;padding:8px 0">
       <div class="chat-conv-avatar" style="width:34px;height:34px;font-size:13px">${(m.full_name || '?').charAt(0).toUpperCase()}</div>
@@ -699,13 +700,77 @@ function openMoreMenu(conv) {
       ${m.role === 'owner' ? '<span class="badge badge-success">Owner</span>' : ''}
     </div>`).join('');
 
+  const actions = !isDM ? `
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn-secondary btn-sm" id="chat-rename-btn">${icon('pencil', 'sm')} Đổi tên</button>
+      <button class="btn-secondary btn-sm" id="chat-add-member-btn">${icon('userPlus', 'sm')} Thêm</button>
+    </div>` : '';
+
   openModal('Thông tin cuộc trò chuyện', `
     <div style="padding:4px">
+      ${actions}
       <div style="font-size:12px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Thành viên (${conv.members.length})</div>
       <div>${members}</div>
     </div>`,
     '<button class="btn-secondary" id="chat-more-close">Đóng</button>');
   document.getElementById('chat-more-close')?.addEventListener('click', closeModal);
+
+  document.getElementById('chat-rename-btn')?.addEventListener('click', () => renameConversation(conv));
+  document.getElementById('chat-add-member-btn')?.addEventListener('click', () => addMemberFlow(conv));
+}
+
+async function renameConversation(conv) {
+  const name = prompt('Nhập tên mới:', conv.name || '');
+  if (!name || name === conv.name) return;
+  try {
+    await api.put(`/api/conversations/${conv.id}`, { name });
+    closeModal();
+    await loadConversations();
+    openConversation(conv.id);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function addMemberFlow(conv) {
+  closeModal();
+  openModal('Thêm thành viên', `
+    <input id="chat-add-user-search" class="chat-new-search" type="text" placeholder="Tìm nhân viên..." autocomplete="off" />
+    <div style="height:5px"></div>
+    <div id="chat-add-users">${loadingHTML()}</div>`,
+    '<button class="btn-secondary" id="chat-add-close">Đóng</button>');
+  document.getElementById('chat-add-close')?.addEventListener('click', closeModal);
+
+  let allUsers = [];
+  const renderUsers = async () => {
+    const q = (document.getElementById('chat-add-user-search')?.value || '').trim().toLowerCase();
+    const usersEl = document.getElementById('chat-add-users');
+    try {
+      if (!allUsers.length) { const { users = [] } = await api.get('/api/users'); allUsers = users; }
+      const existingIds = new Set((conv.members || []).map(m => m.user_id));
+      const filtered = q ? allUsers.filter(u =>
+        (u.full_name || '').toLowerCase().includes(q) && !existingIds.has(u.id)
+      ) : allUsers.filter(u => !existingIds.has(u.id));
+      usersEl.innerHTML = filtered.length ? filtered.map(u => `
+        <div class="chat-new-user" data-uid="${u.id}">
+          <div class="chat-conv-avatar" style="width:38px;height:38px;font-size:15px">${(u.full_name || '?').charAt(0).toUpperCase()}</div>
+          <div style="min-width:0">
+            <div class="chat-conv-name" style="font-size:13.5px">${esc(u.full_name || '')}</div>
+            <div class="chat-conv-preview">${esc(u.department || '')} · ${esc(u.position || '')}</div>
+          </div>
+        </div>`).join('') : '<div class="empty-state">Không tìm thấy</div>';
+      usersEl.querySelectorAll('.chat-new-user').forEach(item => {
+        item.addEventListener('click', async () => {
+          try {
+            await api.post(`/api/conversations/${conv.id}/members`, { action: 'add', user_ids: [Number(item.dataset.uid)] });
+            closeModal();
+            await loadConversations();
+            openConversation(conv.id);
+          } catch (err) { toast(err.message, 'error'); }
+        });
+      });
+    } catch (e) { usersEl.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
+  };
+  document.getElementById('chat-add-user-search')?.addEventListener('input', debounce(renderUsers, 250));
+  renderUsers();
 }
 
 // ── New conversation flow ───────────────────────────────────────────

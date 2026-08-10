@@ -15,9 +15,20 @@ export class ChatRoom {
     this.conversationId = null;
   }
 
-  // ── HTTP fetch (legacy, not used for WS) ──────────────────────────
+  // ── HTTP fetch — handles WebSocket upgrade ──────────────────────────
   async fetch(request) {
-    return new Response('ChatRoom DO – use WebSocket', { status: 200 });
+    const url = new URL(request.url);
+    this.conversationId = url.searchParams.get('conv') || '0';
+
+    const upgradeHeader = request.headers.get('Upgrade');
+    if (upgradeHeader !== 'websocket') {
+      return new Response('Expected Upgrade: websocket', { status: 426 });
+    }
+
+    const [client, server] = Object.values(new WebSocketPair());
+    this.ctx.acceptWebSocket(server);
+
+    return new Response(null, { status: 101, webSocket: client });
   }
 
   // ── WebSocket lifecycle ───────────────────────────────────────────
