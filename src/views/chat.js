@@ -190,8 +190,9 @@ function renderConvItem(c, name) {
     isActive ? 'active' : '',
     unread ? 'unread' : '',
   ].filter(Boolean).join(' ');
+  const other = (c.members || []).find(m => m.user_id !== me.id);
   return `<div class="${cls}" data-conv-id="${c.id}" role="button" tabindex="0" aria-selected="${isActive}">
-    <div class="chat-conv-avatar">${(name || '?').charAt(0).toUpperCase()}</div>
+    ${renderChatAvatar(other || c.members?.[0], 44)}
     <div class="chat-conv-info">
       <div class="chat-conv-name">${esc(name)}</div>
       <div class="chat-conv-preview">${esc(preview)}</div>
@@ -229,6 +230,13 @@ async function openConversation(convId) {
     renderMessages();
     scrollToBottom();
     connectWS(convId);
+
+    // Mark all visible messages as read
+    if (msgs.length) {
+      const lastMsg = msgs[msgs.length - 1];
+      markRead(lastMsg.id);
+      loadConversationsSilently();
+    }
   } catch (e) {
     convEl.innerHTML = `
       <div class="chat-main-empty">
@@ -268,13 +276,14 @@ function renderConversation(conv) {
   const sub = conv.type === 'direct'
     ? '<span class="chat-online-dot"></span> Đang hoạt động'
     : `${icon('users', 'xs')} ${conv.members.length} thành viên`;
+  const headerMember = conv.type === 'direct' ? otherMembers[0] : { full_name: name };
 
   const convEl = document.getElementById('chat-conversation');
   convEl.innerHTML = `
     <div class="chat-conv-header">
       <div class="chat-conv-header-left">
         <button class="chat-header-action chat-back-btn" id="chat-back-btn" aria-label="Quay lại">${icon('chevronLeft', 'md')}</button>
-        <div class="chat-conv-header-avatar">${(name || '?').charAt(0).toUpperCase()}</div>
+        ${renderChatAvatar(headerMember, 42, 'chat-conv-header-avatar')}
         <div style="min-width:0">
           <div class="chat-conv-header-name">${esc(name)}</div>
           <div class="chat-conv-header-sub">${sub}</div>
@@ -434,7 +443,7 @@ function renderMessages() {
       : `<span class="chat-msg-bubble">${esc(msg.content || '')}</span>${edited ? '<span class="chat-msg-edited">(đã sửa)</span>' : ''}`;
 
     html += `<div class="${cls}" data-msg-id="${msg.id}">
-      ${showAvatar ? `<div class="chat-msg-avatar">${(msg.sender_name || '?').charAt(0).toUpperCase()}</div>` : '<div class="chat-msg-avatar"></div>'}
+      ${showAvatar ? renderChatAvatar({ full_name: msg.sender_name, avatar_url: msg.sender_avatar }, 32, 'chat-msg-avatar') : '<div class="chat-msg-avatar"></div>'}
       <div class="chat-msg-body">
         ${!grouped ? `<div class="chat-msg-header">
           <span class="chat-msg-sender">${isMe ? 'Bạn' : esc(msg.sender_name || 'Unknown')}</span>
@@ -699,7 +708,7 @@ function openMoreMenu(conv) {
   const isDM = conv.type === 'direct';
   const members = (conv.members || []).map(m => `
     <div style="display:flex;align-items:center;gap:10px;padding:8px 0">
-      <div class="chat-conv-avatar" style="width:34px;height:34px;font-size:13px">${(m.full_name || '?').charAt(0).toUpperCase()}</div>
+      ${renderChatAvatar(m, 34)}
       <span style="font-size:13.5px;font-weight:500;color:var(--text)">${esc(m.full_name || '')}</span>
       ${m.role === 'owner' ? '<span class="badge badge-success">Owner</span>' : ''}
     </div>`).join('');
@@ -755,7 +764,7 @@ async function addMemberFlow(conv) {
       ) : allUsers.filter(u => !existingIds.has(u.id));
       usersEl.innerHTML = filtered.length ? filtered.map(u => `
         <div class="chat-new-user" data-uid="${u.id}">
-          <div class="chat-conv-avatar" style="width:38px;height:38px;font-size:15px">${(u.full_name || '?').charAt(0).toUpperCase()}</div>
+          ${renderChatAvatar(u, 38)}
           <div style="min-width:0">
             <div class="chat-conv-name" style="font-size:13.5px">${esc(u.full_name || '')}</div>
             <div class="chat-conv-preview">${esc(u.department || '')} · ${esc(u.position || '')}</div>
@@ -802,7 +811,7 @@ async function openNewConversation() {
       ) : allUsers;
       usersEl.innerHTML = filtered.length ? filtered.map(u => `
         <div class="chat-new-user${selected.has(u.id) ? ' selected' : ''}" data-uid="${u.id}">
-          <div class="chat-conv-avatar" style="width:38px;height:38px;font-size:15px">${(u.full_name || '?').charAt(0).toUpperCase()}</div>
+          ${renderChatAvatar(u, 38)}
           <div style="min-width:0">
             <div class="chat-conv-name" style="font-size:13.5px">${esc(u.full_name || '')}</div>
             <div class="chat-conv-preview">${esc(u.department || '')} · ${esc(u.position || '')}</div>
@@ -942,6 +951,18 @@ function formatDate(iso) {
   if (d.toDateString() === yesterday.toDateString()) return 'Hôm qua';
   return d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
+function renderChatAvatar(member, size = 44, extraClass = 'chat-conv-avatar') {
+  if (!member) return `<div class="${extraClass}" style="width:${size}px;height:${size}px;font-size:${Math.round(size*0.36)}px">?</div>`;
+  const avatarUrl = member.avatar_url || '';
+  const initial = (member.full_name || '?').charAt(0).toUpperCase();
+  if (avatarUrl) {
+    return `<div class="${extraClass} chat-avatar-img" style="width:${size}px;height:${size}px">
+      <img src="${avatarUrl}" alt="${esc(member.full_name || '')}" style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover" />
+    </div>`;
+  }
+  return `<div class="${extraClass}" style="width:${size}px;height:${size}px;font-size:${Math.round(size*0.36)}px">${initial}</div>`;
+}
+
 function formatChatTime(iso) {
   if (!iso) return '';
   const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z');
