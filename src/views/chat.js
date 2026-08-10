@@ -14,6 +14,8 @@ let messages = [];
 let ws = null;
 let wsAuthenticated = false;
 let wsReconnectTimer = null;
+let wsGeneration = 0;
+let wsIntentionalClose = false;
 let me = null;
 let replyTo = null;
 let uploading = false;
@@ -893,6 +895,11 @@ function connectWS(convId) {
   const wsUrl = `${protocol}//${location.host}/api/chat/ws/${convId}`;
 
   wsAuthenticated = false;
+  wsIntentionalClose = false;
+  const gen = ++wsGeneration;
+  const connectionConvId = convId;
+  let reconnectDelay = 1000;
+
   try {
     ws = new WebSocket(wsUrl);
     ws.onopen = () => {
@@ -900,12 +907,18 @@ function connectWS(convId) {
       if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
     };
     ws.onmessage = (event) => {
+      if (gen !== wsGeneration) return; // stale connection
       const data = JSON.parse(event.data);
       if (data.type === 'auth:ok') {
         wsAuthenticated = true;
+        reconnectDelay = 1000;
       } else if (data.type === 'auth:error') {
         console.warn('Chat WS auth failed:', data.message);
         wsAuthenticated = false;
+        if (data.message === 'Not a member' || data.message === 'Invalid token') {
+          wsIntentionalClose = true;
+          ws.close();
+        }
       } else if (data.type === 'message:new') {
         if (Number(data.message.conversation_id) === activeConvId) {
           if (!messages.find(m => m.id === data.message.id)) {
@@ -925,7 +938,13 @@ function connectWS(convId) {
     };
     ws.onclose = () => {
       wsAuthenticated = false;
-      wsReconnectTimer = setTimeout(() => { if (activeConvId) connectWS(activeConvId); }, 3000);
+      if (wsIntentionalClose || gen !== wsGeneration) return;
+      wsReconnectTimer = setTimeout(() => {
+        if (activeConvId === connectionConvId && gen === wsGeneration) {
+          connectWS(connectionConvId);
+        }
+      }, reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
     };
     ws.onerror = () => { wsAuthenticated = false; ws?.close(); };
   } catch (_) { wsAuthenticated = false; }
@@ -933,6 +952,8 @@ function connectWS(convId) {
 
 function disconnectWS() {
   wsAuthenticated = false;
+  wsIntentionalClose = true;
+  wsGeneration = Math.max(0, wsGeneration - 1);
   if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
   if (ws) { try { ws.close(); } catch (_) {} ws = null; }
 }

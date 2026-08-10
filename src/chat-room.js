@@ -9,10 +9,26 @@ export class ChatRoom {
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;
-    // Map of WebSocket → { userId, userName, userCode }
+    // Map of WebSocket → session data (restored after hibernation)
     this.sessions = new Map();
-    // Conversation ID extracted from DO name
     this.conversationId = null;
+    // Restore sessions from hibernated WebSocket connections
+    this.restoreSessions();
+  }
+
+  // ── Restore sessions after hibernation ────────────────────────────
+  restoreSessions() {
+    for (const ws of this.ctx.getWebSockets()) {
+      try {
+        const session = ws.deserializeAttachment();
+        if (session && session.userId) {
+          this.sessions.set(ws, session);
+          if (!this.conversationId && session.conversationId) {
+            this.conversationId = session.conversationId;
+          }
+        }
+      } catch (_) { /* socket may not have attachment yet */ }
+    }
   }
 
   // ── HTTP fetch — handles WebSocket upgrade ──────────────────────────
@@ -95,16 +111,28 @@ export class ChatRoom {
       return;
     }
 
-    // Extract conversation ID from DO name
+    // conversationId is set during fetch() WS upgrade. After hibernation,
+    // it may be restored from a previously attached session (see restoreSessions).
+    // DO NOT fall back to this.ctx.id.toString() — that is NOT a numeric conv ID.
     if (!this.conversationId) {
-      this.conversationId = this.ctx.id.toString();
+      ws.send(JSON.stringify({ type: 'auth:error', message: 'Conversation ID missing' }));
+      ws.close(4000, 'Internal error');
+      return;
     }
 
-    this.sessions.set(ws, {
+    const sessionData = {
       userId: user.id,
       userName: user.full_name || 'Unknown',
       userCode: user.employee_code || '',
-    });
+      conversationId: this.conversationId,
+    };
+
+    // Persist session on the WebSocket so it survives DO hibernation.
+    // Cloudflare Hibernation API: WebSocket connections are preserved
+    // but the JS instance is destroyed. serializeAttachment stores
+    // session data that can be restored via deserializeAttachment().
+    ws.serializeAttachment(sessionData);
+    this.sessions.set(ws, sessionData);
 
     // Verify user is a member of this conversation
     const isMember = await this.env.DB.prepare(
@@ -244,9 +272,21 @@ export class ChatRoom {
   // ── Broadcast ─────────────────────────────────────────────────────
   broadcast(data, excludeWs = null) {
     const payload = JSON.stringify(data);
+    // Primary: broadcast via sessions Map (fast lookup)
     for (const [ws, session] of this.sessions) {
       if (ws === excludeWs) continue;
       try { ws.send(payload); } catch (_) { /* client may have disconnected */ }
+    }
+    // Safety net: also broadcast to any WebSocket in ctx.getWebSockets()
+    // that may not be in the sessions Map (e.g. restored after hibernation
+    // but not yet re-authenticated). These get an auth:error first.
+    const knownSockets = new Set(this.sessions.keys());
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws === excludeWs || knownSockets.has(ws)) continue;
+      try {
+        // This socket hasn't authenticated yet — send auth:error
+        ws.send(JSON.stringify({ type: 'auth:error', message: 'Please re-authenticate' }));
+      } catch (_) {}
     }
   }
 }
