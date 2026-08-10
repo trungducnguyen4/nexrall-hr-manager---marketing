@@ -537,14 +537,18 @@ async function sendMessage() {
   const btn = document.getElementById('chat-send-btn');
   btn.disabled = true;
   try {
-    const payload = { content };
+    const payload = { type: 'message:send', content };
     if (replyTo) payload.reply_to_id = replyTo.id;
-    await api.post(`/api/conversations/${activeConvId}/messages`, payload);
-    if (input) input.value = '';
-    autoGrow(input);
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(payload));
+    } else {
+      await api.post(`/api/conversations/${activeConvId}/messages`, { content, reply_to_id: replyTo?.id });
+    }
+
+    if (input) { input.value = ''; autoGrow(input); }
     replyTo = null;
     updateReplyPreview();
-    await refreshMessages();
   } catch (e) { toast(e.message, 'error'); }
   btn.disabled = false;
   input?.focus();
