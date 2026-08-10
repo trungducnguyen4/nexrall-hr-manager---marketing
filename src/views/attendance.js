@@ -596,7 +596,7 @@ export async function renderAttendance(el, me, route = {}) {
                   <td style="white-space:nowrap">${esc((WORK_TYPE_LABEL[a.work_type] || WORK_TYPE_LABEL.office))}</td>
                   <td style="white-space:nowrap">${esc(SHIFT_LABEL_SHORT[a.shift] || SHIFT_LABEL_SHORT.full)}${a.work_type === 'business' ? `<br><span style="font-size:11px;color:var(--text-2)">${esc(a.expected_start||'—')}–${esc(a.expected_end||'—')}</span>` : ''}</td>
                   <td>${esc(a.checkin_time||'—')}</td>
-                  <td>${esc(a.checkout_time||'—')}</td>
+                  <td>${esc(a.checkout_time||'—')}${Number(a.auto_checkout) ? '<br><span class="att-quen-checkout-tag">Quên checkout</span>' : ''}</td>
                   <td>${a.work_hours ? Number(a.work_hours).toFixed(1)+'h' : '—'}</td>
                   <td>${a.overtime_status === 'approved' ? `<span class="badge badge-success">${Number(a.approved_overtime_minutes || 0) / 60}h duyệt</span>` : a.overtime_status === 'pending' ? '<span class="badge badge-warning">Chờ duyệt</span>' : a.overtime_status === 'rejected' ? '<span class="badge badge-danger">Từ chối</span>' : '—'}</td>
                   <td>${statusWithMinutes(a)}</td>

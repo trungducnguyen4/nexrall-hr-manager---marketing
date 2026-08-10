@@ -566,6 +566,7 @@ tr:hover td { background: var(--surface-2); }
 .att-attendance-rate.is-excellent { color:#087A4C; background:#DFF6EA; border-color:#AEE6C8; }
 .att-attendance-rate.is-watch { color:#B45309; background:#FFF2D9; border-color:#F6D59A; }
 .att-attendance-rate.is-low { color:#C2413A; background:#FDE7E4; border-color:#F4B8B1; }
+.att-quen-checkout-tag { display:inline-block; margin-top:3px; padding:1px 7px; border-radius:999px; font-size:10px; font-weight:800; letter-spacing:.02em; color:#92400E; background:#FEF3C7; border:1px solid #FCD34D; }
 .att-summary-hero { padding:18px 20px; border:1px solid #E7EAF0; border-radius:14px; background:linear-gradient(135deg,#FFF7F4 0%,#FFF 56%,#F5F8FF 100%); }
 .att-summary-person { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; }
 .att-summary-eyebrow { margin-bottom:5px; font-size:10px; font-weight:800; letter-spacing:.1em; color:var(--primary-text); }

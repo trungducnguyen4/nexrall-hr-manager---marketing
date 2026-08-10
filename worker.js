@@ -1,4 +1,4 @@
-import { handle } from './server.js';
+import { handle, handleScheduled } from './server.js';
 
 function secureAssetResponse(response, pathname) {
   const headers = new Headers(response.headers);
@@ -43,5 +43,9 @@ export default {
 
     const indexUrl = new URL('/index.html', url);
     return secureAssetResponse(await env.ASSETS.fetch(new Request(indexUrl, request)), '/index.html');
+  },
+
+  async scheduled(event, env) {
+    return handleScheduled(event, env);
   },
 };

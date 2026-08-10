@@ -422,6 +422,9 @@ async function migrate(env) {
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN late_minutes INTEGER DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN early_minutes INTEGER DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN registered INTEGER DEFAULT 0'); } catch (_) {}
+  // Auto-checkout marker: set to 1 when the nightly scheduled job closes a day
+  // the employee forgot to check out (tag "Quên checkout").
+  try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN auto_checkout INTEGER DEFAULT 0'); } catch (_) {}
   // Overtime requests are kept separately from attendance so the actual checkout
   // remains immutable evidence and only HCNS/management-approved minutes are paid.
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS overtime_requests (
@@ -2111,6 +2114,59 @@ function attShiftBounds(workType, shift, expectedStart, expectedEnd) {
     return { start, lateAfter: start, end }; // business trip: late = after own expected start
   }
   return std;
+}
+
+// ── NIGHTLY AUTO-CHECKOUT ─────────────────────────────────────────
+// Any day in the past that has a check-in but no check-out is closed
+// automatically at the end of the shift, tagged "Quên checkout"
+// (auto_checkout=1) so HR can see it was a forgotten check-out, not a
+// missing day. Work hours are computed up to the shift end (17:00 for a
+// full day) as if the employee worked the full registered shift.
+export async function runAutoCheckout(env) {
+  const today = vnTodayStr();
+  const rows = await env.DB.prepare(
+    `SELECT * FROM attendance
+      WHERE checkin_time IS NOT NULL
+        AND checkout_time IS NULL
+        AND date < ?
+        AND status NOT IN ('absent','cancelled','rejected','leave')`
+  ).bind(today).all().then(r => r.results || []);
+
+  let closed = 0;
+  for (const record of rows) {
+    const shift = record.shift || 'full';
+    const workType = record.work_type || 'office';
+    const bounds = attShiftBounds(workType, shift, record.expected_start, record.expected_end);
+    const endMin = attToMinutes(bounds.end) ?? 17 * 60;
+    const ciMin = attToMinutes(record.checkin_time) ?? attToMinutes(bounds.start);
+    let workMinutes = Math.max(0, endMin - ciMin);
+    if (workType !== 'business' && shift === 'full') {
+      // Exclude the 12:00–13:30 lunch break from total worked time
+      const lunchStart = 12 * 60, lunchEnd = 13 * 60 + 30;
+      const overlap = Math.max(0, Math.min(endMin, lunchEnd) - Math.max(ciMin, lunchStart));
+      workMinutes -= overlap;
+    }
+    const workHours = Math.max(0, workMinutes) / 60;
+    const note = [record.note, '[Quên checkout]'].filter(Boolean).join(' ').trim();
+    await env.DB.prepare(
+      `UPDATE attendance
+          SET checkout_time=?, checkout_ip='auto', work_hours=?, auto_checkout=1, note=?
+        WHERE id=?`
+    ).bind(bounds.end, Number(workHours.toFixed(2)), note, record.id).run();
+    closed++;
+  }
+  return { closed, today };
+}
+
+export async function handleScheduled(_event, env) {
+  try {
+    const result = await runAutoCheckout(env);
+    console.log('auto-checkout completed', JSON.stringify(result));
+    return result;
+  } catch (error) {
+    console.error('auto-checkout failed', String(error?.message || error), error?.stack);
+    return { error: String(error?.message || error) };
+  }
 }
 
 function clientIpFromRequest(request) {

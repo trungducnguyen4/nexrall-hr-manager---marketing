@@ -2,6 +2,11 @@ name = "nexrall-hr-manager-marketing"
 main = "worker.js"
 compatibility_date = "2026-07-22"
 
+# Nightly auto-checkout: close any past day missing a check-out (tag "Quên checkout").
+# Runs at 00:05 Asia/Ho_Chi_Minh (17:05 UTC) every day.
+[triggers]
+crons = ["5 17 * * *"]
+
 [assets]
 directory = ".local-public"
 binding = "ASSETS"
