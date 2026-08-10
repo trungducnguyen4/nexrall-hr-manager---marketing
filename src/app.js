@@ -28,7 +28,7 @@ async function getView(name) {
     else if (name === 'notifications') _viewModules[name] = await import('./views/notifications.js?v=20260730-notification-center-v1');
     else if (name === 'assets')      _viewModules[name] = await import('./views/assets.js?v=20260804-project-handover-v1');
     else if (name === 'db-admin')    _viewModules[name] = await import('./views/dbadmin.js');
-    else if (name === 'chat')        _viewModules[name] = await import('./views/chat.js?v=20260810-chat-v3');
+    else if (name === 'chat')        _viewModules[name] = await import('./views/chat.js?v=20260810-chat-v4');
   }
   return _viewModules[name];
 }

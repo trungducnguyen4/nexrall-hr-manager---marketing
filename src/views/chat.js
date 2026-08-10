@@ -12,6 +12,7 @@ let conversations = [];
 let activeConvId = null;
 let messages = [];
 let ws = null;
+let wsAuthenticated = false;
 let wsReconnectTimer = null;
 let me = null;
 let replyTo = null;
@@ -231,10 +232,14 @@ async function openConversation(convId) {
     scrollToBottom();
     connectWS(convId);
 
-    // Mark all visible messages as read
+    // Mark all visible as read, then refresh sidebar
     if (msgs.length) {
       const lastMsg = msgs[msgs.length - 1];
-      markRead(lastMsg.id);
+      const readOk = await markRead(lastMsg.id);
+      if (readOk) {
+        const conv = conversations.find(c => c.id === convId);
+        if (conv) { conv.unread_count = 0; renderSidebarList(); }
+      }
       loadConversationsSilently();
     }
   } catch (e) {
@@ -545,22 +550,57 @@ async function sendMessage() {
 
   const btn = document.getElementById('chat-send-btn');
   btn.disabled = true;
-  try {
-    const payload = { type: 'message:send', content };
-    if (replyTo) payload.reply_to_id = replyTo.id;
-
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(payload));
-    } else {
-      await api.post(`/api/conversations/${activeConvId}/messages`, { content, reply_to_id: replyTo?.id });
-    }
-
+  const success = await trySend(content);
+  if (success) {
     if (input) { input.value = ''; autoGrow(input); }
     replyTo = null;
     updateReplyPreview();
-  } catch (e) { toast(e.message, 'error'); }
+  }
   btn.disabled = false;
   input?.focus();
+}
+
+async function trySend(content) {
+  const payload = { type: 'message:send', content };
+  if (replyTo) payload.reply_to_id = replyTo.id;
+
+  if (ws && ws.readyState === WebSocket.OPEN && wsAuthenticated) {
+    ws.send(JSON.stringify(payload));
+    return true;
+  }
+
+  if (ws && ws.readyState === WebSocket.OPEN && !wsAuthenticated) {
+    await waitForWsAuth(3000);
+    if (wsAuthenticated) {
+      ws.send(JSON.stringify(payload));
+      return true;
+    }
+  }
+
+  try {
+    const { message } = await api.post(`/api/conversations/${activeConvId}/messages`, { content, reply_to_id: replyTo?.id });
+    if (message && !messages.find(m => m.id === message.id)) {
+      messages.push(message);
+      renderMessages();
+      scrollToBottom();
+    }
+    return true;
+  } catch (e) {
+    toast(e.message, 'error');
+    return false;
+  }
+}
+
+function waitForWsAuth(ms) {
+  return new Promise(resolve => {
+    const start = Date.now();
+    const check = () => {
+      if (wsAuthenticated) return resolve();
+      if (Date.now() - start > ms) return resolve();
+      setTimeout(check, 50);
+    };
+    check();
+  });
 }
 
 async function refreshMessages() {
@@ -852,6 +892,7 @@ function connectWS(convId) {
   const token = localStorage.getItem('hr_token') || '';
   const wsUrl = `${protocol}//${location.host}/api/chat/ws/${convId}`;
 
+  wsAuthenticated = false;
   try {
     ws = new WebSocket(wsUrl);
     ws.onopen = () => {
@@ -860,13 +901,20 @@ function connectWS(convId) {
     };
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
-      if (data.type === 'message:new') {
+      if (data.type === 'auth:ok') {
+        wsAuthenticated = true;
+      } else if (data.type === 'auth:error') {
+        console.warn('Chat WS auth failed:', data.message);
+        wsAuthenticated = false;
+      } else if (data.type === 'message:new') {
         if (Number(data.message.conversation_id) === activeConvId) {
-          messages.push(data.message);
-          renderMessages();
-          scrollToBottom();
-          markRead(data.message.id);
-          loadConversationsSilently();
+          if (!messages.find(m => m.id === data.message.id)) {
+            messages.push(data.message);
+            renderMessages();
+            scrollToBottom();
+            markRead(data.message.id);
+            loadConversationsSilently();
+          }
         }
       } else if (data.type === 'message:edit' || data.type === 'message:delete') {
         refreshMessages();
@@ -875,18 +923,28 @@ function connectWS(convId) {
         if (msg) { msg.reactions = data.reactions; renderMessages(); }
       }
     };
-    ws.onclose = () => { wsReconnectTimer = setTimeout(() => { if (activeConvId) connectWS(activeConvId); }, 3000); };
-    ws.onerror = () => ws?.close();
-  } catch (_) { /* WebSocket not available */ }
+    ws.onclose = () => {
+      wsAuthenticated = false;
+      wsReconnectTimer = setTimeout(() => { if (activeConvId) connectWS(activeConvId); }, 3000);
+    };
+    ws.onerror = () => { wsAuthenticated = false; ws?.close(); };
+  } catch (_) { wsAuthenticated = false; }
 }
 
 function disconnectWS() {
+  wsAuthenticated = false;
   if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
   if (ws) { try { ws.close(); } catch (_) {} ws = null; }
 }
 
 async function markRead(msgId) {
-  try { await api.post(`/api/messages/${msgId}/read`, {}); } catch (_) {}
+  try {
+    await api.post(`/api/messages/${msgId}/read`, {});
+    return true;
+  } catch (e) {
+    console.warn('markRead failed:', e.message);
+    return false;
+  }
 }
 
 let silentLoadTimer = null;

@@ -3749,8 +3749,13 @@ export async function handle(request, env) {
     if (!env.HR_DOCUMENTS) return json({ error: 'Lưu trữ hồ sơ chưa được cấu hình' }, 503);
 
     if (request.method === 'GET') {
-      const canReadAvatar = kind === 'avatar' && (hasHrScope || me.id === uid || (isManager && target.department === me.department));
-      if (!hasHrScope && !canReadAvatar && me.id !== uid) return json({ error: 'Không có quyền xem hồ sơ này' }, 403);
+      // Avatar: visible to any authenticated active user (display purpose).
+      // Other documents (national_id, degree, contract, decision): HR/Admin only.
+      const canReadAvatar = kind === 'avatar';
+      const canReadSensitive = hasHrScope || me.id === uid;
+      if (kind === 'avatar' ? !canReadAvatar : !canReadSensitive && me.id !== uid) {
+        return json({ error: 'Không có quyền xem hồ sơ này' }, 403);
+      }
       const object = await env.HR_DOCUMENTS.get(userDocumentKey(uid, kind));
       if (!object) return json({ error: 'Tệp không tồn tại' }, 404);
       const disposition = kind === 'avatar' ? 'inline' : 'attachment';
@@ -6913,7 +6918,7 @@ export async function handle(request, env) {
       }
     }
     const msg = await env.DB.prepare(
-      `SELECT m.*, u.full_name AS sender_name, u.employee_code AS sender_code FROM messages m JOIN users u ON u.id = m.sender_id WHERE m.id = ?`
+      `SELECT m.*, u.full_name AS sender_name, u.employee_code AS sender_code, u.avatar_url AS sender_avatar FROM messages m JOIN users u ON u.id = m.sender_id WHERE m.id = ?`
     ).bind(messageId).first();
     return json({ message: msg });
   }
@@ -6962,10 +6967,15 @@ export async function handle(request, env) {
     const msgId = parseInt(msgReadMatch[1]);
     const msg = await env.DB.prepare('SELECT conversation_id FROM messages WHERE id = ?').bind(msgId).first();
     if (!msg) return json({ error: 'Không tìm thấy tin nhắn' }, 404);
+    // Verify membership
+    const isMember = await env.DB.prepare(
+      'SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?'
+    ).bind(msg.conversation_id, me.id).first();
+    if (!isMember) return json({ error: 'Không có quyền' }, 403);
     await env.DB.prepare('INSERT OR IGNORE INTO message_reads (message_id, user_id) VALUES (?, ?)')
       .bind(msgId, me.id).run();
     await env.DB.prepare(
-      'UPDATE conversation_members SET last_read_message_id = MAX(last_read_message_id, ?) WHERE conversation_id = ? AND user_id = ?'
+      'UPDATE conversation_members SET last_read_message_id = MAX(COALESCE(last_read_message_id,0), ?) WHERE conversation_id = ? AND user_id = ?'
     ).bind(msgId, msg.conversation_id, me.id).run();
     return json({ ok: true });
   }

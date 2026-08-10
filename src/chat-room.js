@@ -35,11 +35,21 @@ export class ChatRoom {
   async webSocketMessage(ws, raw) {
     try {
       const msg = JSON.parse(raw);
+
+      // Auth must be processed BEFORE session check — a new WebSocket
+      // has no session yet, and auth is what creates it.
+      if (msg.type === 'auth') {
+        await this.handleAuth(ws, msg);
+        return;
+      }
+
       const session = this.sessions.get(ws);
-      if (!session) return;
+      if (!session) {
+        ws.send(JSON.stringify({ type: 'auth:error', message: 'WebSocket chưa được xác thực' }));
+        return;
+      }
 
       switch (msg.type) {
-        case 'auth': await this.handleAuth(ws, msg); break;
         case 'message:send': await this.handleSend(session, msg); break;
         case 'message:edit': await this.handleEdit(session, msg); break;
         case 'message:delete': await this.handleDelete(session, msg); break;
@@ -201,7 +211,7 @@ export class ChatRoom {
   // ── Helpers ───────────────────────────────────────────────────────
   async fetchMessage(messageId, userId) {
     const row = await this.env.DB.prepare(
-      `SELECT m.*, u.full_name AS sender_name, u.employee_code AS sender_code
+      `SELECT m.*, u.full_name AS sender_name, u.employee_code AS sender_code, u.avatar_url AS sender_avatar
        FROM messages m JOIN users u ON u.id = m.sender_id
        WHERE m.id = ?`
     ).bind(messageId).first();
