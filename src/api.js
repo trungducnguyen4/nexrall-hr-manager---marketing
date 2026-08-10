@@ -202,6 +202,7 @@ export const api = {
   put:    (path, body) => req('PUT', path, body),
   patch:  (path, body) => req('PATCH', path, body),
   delete: (path) => req('DELETE', path),
+  uploadFile: (path, file) => uploadFile(path, file),
 
   // Auth (never cached)
   login:          (login, password) => req('POST', '/api/auth/login', { login, password }),

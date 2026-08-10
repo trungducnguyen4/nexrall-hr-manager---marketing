@@ -19,3 +19,12 @@ database_id = "1e0eeebd-82fa-4c10-a079-97d35308a58b"
 [[r2_buckets]]
 binding = "HR_DOCUMENTS"
 bucket_name = "netviet-hr-documents"
+
+# Chat: one Durable Object instance per conversation for WebSocket real-time.
+[[durable_objects.bindings]]
+name = "CHAT_ROOM"
+class_name = "ChatRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ChatRoom"]

@@ -425,7 +425,70 @@ async function migrate(env) {
   // Auto-checkout marker: set to 1 when the nightly scheduled job closes a day
   // the employee forgot to check out (tag "Quên checkout").
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN auto_checkout INTEGER DEFAULT 0'); } catch (_) {}
-  // Overtime requests are kept separately from attendance so the actual checkout
+  // ── Chat module ─────────────────────────────────────────────────
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL DEFAULT 'direct',
+    name TEXT,
+    team_id INTEGER,
+    project_id INTEGER,
+    created_by INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  try { await env.DB.exec('ALTER TABLE conversations ADD COLUMN team_id INTEGER'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE conversations ADD COLUMN project_id INTEGER'); } catch (_) {}
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS conversation_members (
+    conversation_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    role TEXT DEFAULT 'member',
+    last_read_message_id INTEGER DEFAULT 0,
+    notification_level TEXT DEFAULT 'all',
+    joined_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(conversation_id, user_id)
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL,
+    sender_id INTEGER NOT NULL,
+    content TEXT,
+    reply_to_id INTEGER,
+    thread_root_id INTEGER,
+    task_id INTEGER,
+    edited_at TEXT,
+    deleted_at TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  try { await env.DB.exec('ALTER TABLE messages ADD COLUMN task_id INTEGER'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE messages ADD COLUMN reply_to_id INTEGER'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE messages ADD COLUMN thread_root_id INTEGER'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE messages ADD COLUMN edited_at TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE messages ADD COLUMN deleted_at TEXT'); } catch (_) {}
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS message_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    type TEXT NOT NULL DEFAULT 'file',
+    file_name TEXT NOT NULL,
+    file_size INTEGER,
+    mime_type TEXT,
+    storage_key TEXT NOT NULL,
+    width INTEGER,
+    height INTEGER,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS message_reactions (
+    message_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    emoji TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(message_id, user_id, emoji)
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS message_reads (
+    message_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    read_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(message_id, user_id)
+  )`).run();
+  // ── End Chat module ─────────────────────────────────────────────
   // remains immutable evidence and only HCNS/management-approved minutes are paid.
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS overtime_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -6684,6 +6747,274 @@ export async function handle(request, env) {
       .bind(note, me.full_name, nowStr(), periodId).run();
     return json({ ok: true });
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  // CHAT MODULE
+  // ═══════════════════════════════════════════════════════════════
+
+  // ── Conversations ────────────────────────────────────────────────
+  if (path === '/api/conversations' && request.method === 'GET') {
+    const search = (url.searchParams.get('q') || '').trim();
+    const { results = [] } = await env.DB.prepare(
+      `SELECT c.id, c.type, c.name, c.team_id, c.project_id, c.created_by, c.created_at,
+        (SELECT COUNT(*) FROM conversation_members cm WHERE cm.conversation_id = c.id) AS member_count,
+        (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.id > COALESCE((SELECT cm2.last_read_message_id FROM conversation_members cm2 WHERE cm2.conversation_id = c.id AND cm2.user_id = ?), 0) AND m.sender_id != ?) AS unread_count
+       FROM conversations c
+       JOIN conversation_members cm ON cm.conversation_id = c.id AND cm.user_id = ?
+       ${search ? 'AND (c.name LIKE ?1 OR EXISTS (SELECT 1 FROM conversation_members cm2 JOIN users u ON u.id = cm2.user_id WHERE cm2.conversation_id = c.id AND cm2.user_id != ? AND u.full_name LIKE ?1))' : ''}
+       ORDER BY (SELECT MAX(m.created_at) FROM messages m WHERE m.conversation_id = c.id) DESC`
+    ).bind(me.id, me.id, me.id, ...(search ? [me.id] : [])).all();
+
+    const conversations = await Promise.all(results.map(async c => {
+      const lastMsg = await env.DB.prepare(
+        `SELECT m.id, m.content, m.created_at, m.sender_id, u.full_name AS sender_name, m.deleted_at
+         FROM messages m JOIN users u ON u.id = m.sender_id
+         WHERE m.conversation_id = ? ORDER BY m.id DESC LIMIT 1`
+      ).bind(c.id).first();
+      const members = await env.DB.prepare(
+        `SELECT cm.user_id, u.full_name, u.employee_code, u.avatar_url, cm.role
+         FROM conversation_members cm JOIN users u ON u.id = cm.user_id
+         WHERE cm.conversation_id = ?`
+      ).bind(c.id).all().then(r => r.results || []);
+      return { ...c, last_message: lastMsg || null, members };
+    }));
+    return json({ conversations });
+  }
+
+  if (path === '/api/conversations' && request.method === 'POST') {
+    const b = await request.json().catch(() => ({}));
+    const type = ['direct', 'group', 'team', 'project'].includes(b.type) ? b.type : 'direct';
+    const name = String(b.name || '').slice(0, 200) || null;
+    const memberIds = Array.isArray(b.member_ids) ? [...new Set(b.member_ids.map(Number).filter(id => id > 0 && id !== me.id))] : [];
+    if (type === 'direct' && memberIds.length !== 1) return json({ error: 'DM cần đúng 1 người nhận' }, 400);
+    if (type === 'direct') {
+      const existing = await env.DB.prepare(
+        `SELECT c.id FROM conversations c
+         WHERE c.type = 'direct'
+           AND EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.user_id = ?)
+           AND EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.user_id = ?)
+           AND (SELECT COUNT(*) FROM conversation_members cm WHERE cm.conversation_id = c.id) = 2`
+      ).bind(me.id, memberIds[0]).first();
+      if (existing) return json({ conversation_id: existing.id });
+    }
+    const result = await env.DB.prepare(
+      'INSERT INTO conversations (type, name, team_id, project_id, created_by) VALUES (?, ?, ?, ?, ?)'
+    ).bind(type, name, b.team_id || null, b.project_id || null, me.id).run();
+    const convId = result.meta?.last_row_id;
+    await env.DB.prepare('INSERT INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?)')
+      .bind(convId, me.id, 'owner').run();
+    for (const uid of memberIds) {
+      await env.DB.prepare('INSERT INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?)')
+        .bind(convId, uid, 'member').run();
+    }
+    return json({ conversation_id: convId });
+  }
+
+  const convMatch = path.match(/^\/api\/conversations\/(\d+)$/);
+  if (convMatch && request.method === 'GET') {
+    const convId = parseInt(convMatch[1]);
+    const conv = await env.DB.prepare('SELECT * FROM conversations WHERE id = ?').bind(convId).first();
+    if (!conv) return json({ error: 'Không tìm thấy hội thoại' }, 404);
+    const members = await env.DB.prepare(
+      `SELECT cm.user_id, u.full_name, u.employee_code, u.avatar_url, cm.role, cm.last_read_message_id
+       FROM conversation_members cm JOIN users u ON u.id = cm.user_id WHERE cm.conversation_id = ?`
+    ).bind(convId).all().then(r => r.results || []);
+    return json({ ...conv, members });
+  }
+
+  const convMembersMatch = path.match(/^\/api\/conversations\/(\d+)\/members$/);
+  if (convMembersMatch && request.method === 'POST') {
+    const convId = parseInt(convMembersMatch[1]);
+    const b = await request.json().catch(() => ({}));
+    const action = b.action || 'add';
+    const userIds = Array.isArray(b.user_ids) ? b.user_ids.map(Number) : [];
+    if (action === 'add') {
+      for (const uid of userIds) {
+        await env.DB.prepare('INSERT OR IGNORE INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?)')
+          .bind(convId, uid, 'member').run();
+      }
+    } else if (action === 'remove') {
+      for (const uid of userIds) {
+        await env.DB.prepare('DELETE FROM conversation_members WHERE conversation_id = ? AND user_id = ? AND role != ?')
+          .bind(convId, uid, 'owner').run();
+      }
+    }
+    return json({ ok: true });
+  }
+
+  // ── Messages ─────────────────────────────────────────────────────
+  const msgListMatch = path.match(/^\/api\/conversations\/(\d+)\/messages$/);
+  if (msgListMatch && request.method === 'GET') {
+    const convId = parseInt(msgListMatch[1]);
+    const before = url.searchParams.get('before');
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '30'), 100);
+    let q = `SELECT m.*, u.full_name AS sender_name, u.employee_code AS sender_code, u.avatar_url AS sender_avatar
+       FROM messages m JOIN users u ON u.id = m.sender_id
+       WHERE m.conversation_id = ?`;
+    const binds = [convId];
+    if (before) { q += ' AND m.id < ?'; binds.push(Number(before)); }
+    q += ' ORDER BY m.id DESC LIMIT ?'; binds.push(limit);
+    const { results = [] } = await env.DB.prepare(q).bind(...binds).all();
+    results.reverse();
+    const messageIds = results.map(r => r.id);
+    let attachments = [];
+    let reactions = [];
+    if (messageIds.length) {
+      const placeholders = messageIds.map(() => '?').join(',');
+      const { results: atts = [] } = await env.DB.prepare(
+        `SELECT * FROM message_attachments WHERE message_id IN (${placeholders})`
+      ).bind(...messageIds).all();
+      attachments = atts;
+      const { results: reacs = [] } = await env.DB.prepare(
+        `SELECT mr.message_id, mr.emoji, mr.user_id, u.full_name AS user_name
+         FROM message_reactions mr JOIN users u ON u.id = mr.user_id
+         WHERE mr.message_id IN (${placeholders})`
+      ).bind(...messageIds).all();
+      reactions = reacs;
+    }
+    const attMap = {};
+    for (const a of attachments) { if (!attMap[a.message_id]) attMap[a.message_id] = []; attMap[a.message_id].push(a); }
+    const reacMap = {};
+    for (const r of reactions) { if (!reacMap[r.message_id]) reacMap[r.message_id] = []; reacMap[r.message_id].push(r); }
+    const messages = results.map(m => ({
+      ...m,
+      attachments: attMap[m.id] || [],
+      reactions: reacMap[m.id] || [],
+    }));
+    return json({ messages, has_more: results.length >= limit });
+  }
+
+  if (msgListMatch && request.method === 'POST') {
+    const convId = parseInt(msgListMatch[1]);
+    const b = await request.json().catch(() => ({}));
+    const content = String(b.content || '').trim();
+    if (!content && !b.attachments?.length) return json({ error: 'Nội dung không được để trống' }, 400);
+    const result = await env.DB.prepare(
+      'INSERT INTO messages (conversation_id, sender_id, content, reply_to_id, task_id) VALUES (?, ?, ?, ?, ?)'
+    ).bind(convId, me.id, content || null, b.reply_to_id ? Number(b.reply_to_id) : null, b.task_id ? Number(b.task_id) : null).run();
+    const messageId = result.meta?.last_row_id;
+    if (b.attachments?.length) {
+      for (const att of b.attachments) {
+        await env.DB.prepare(
+          'INSERT INTO message_attachments (message_id, type, file_name, file_size, mime_type, storage_key, width, height) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        ).bind(messageId, att.type || 'file', att.file_name, att.file_size || 0, att.mime_type || '', att.storage_key, att.width || null, att.height || null).run();
+      }
+    }
+    const msg = await env.DB.prepare(
+      `SELECT m.*, u.full_name AS sender_name, u.employee_code AS sender_code FROM messages m JOIN users u ON u.id = m.sender_id WHERE m.id = ?`
+    ).bind(messageId).first();
+    return json({ message: msg });
+  }
+
+  const msgMatch = path.match(/^\/api\/messages\/(\d+)$/);
+  if (msgMatch && request.method === 'PUT') {
+    const msgId = parseInt(msgMatch[1]);
+    const b = await request.json().catch(() => ({}));
+    const content = String(b.content || '').trim();
+    if (!content) return json({ error: 'Nội dung không được để trống' }, 400);
+    const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    await env.DB.prepare('UPDATE messages SET content = ?, edited_at = ? WHERE id = ? AND sender_id = ?')
+      .bind(content, now, msgId, me.id).run();
+    return json({ ok: true });
+  }
+
+  if (msgMatch && request.method === 'DELETE') {
+    const msgId = parseInt(msgMatch[1]);
+    const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    await env.DB.prepare('UPDATE messages SET deleted_at = ? WHERE id = ? AND sender_id = ?')
+      .bind(now, msgId, me.id).run();
+    return json({ ok: true });
+  }
+
+  const msgReactionMatch = path.match(/^\/api\/messages\/(\d+)\/reactions$/);
+  if (msgReactionMatch && request.method === 'POST') {
+    const msgId = parseInt(msgReactionMatch[1]);
+    const b = await request.json().catch(() => ({}));
+    const emoji = String(b.emoji || '');
+    if (!emoji) return json({ error: 'Emoji là bắt buộc' }, 400);
+    await env.DB.prepare('INSERT OR IGNORE INTO message_reactions (message_id, user_id, emoji) VALUES (?, ?, ?)')
+      .bind(msgId, me.id, emoji).run();
+    return json({ ok: true });
+  }
+
+  if (msgReactionMatch && request.method === 'DELETE') {
+    const msgId = parseInt(msgReactionMatch[1]);
+    const emoji = url.searchParams.get('emoji') || '';
+    await env.DB.prepare('DELETE FROM message_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?')
+      .bind(msgId, me.id, emoji).run();
+    return json({ ok: true });
+  }
+
+  const msgReadMatch = path.match(/^\/api\/messages\/(\d+)\/read$/);
+  if (msgReadMatch && request.method === 'POST') {
+    const msgId = parseInt(msgReadMatch[1]);
+    const msg = await env.DB.prepare('SELECT conversation_id FROM messages WHERE id = ?').bind(msgId).first();
+    if (!msg) return json({ error: 'Không tìm thấy tin nhắn' }, 404);
+    await env.DB.prepare('INSERT OR IGNORE INTO message_reads (message_id, user_id) VALUES (?, ?)')
+      .bind(msgId, me.id).run();
+    await env.DB.prepare(
+      'UPDATE conversation_members SET last_read_message_id = MAX(last_read_message_id, ?) WHERE conversation_id = ? AND user_id = ?'
+    ).bind(msgId, msg.conversation_id, me.id).run();
+    return json({ ok: true });
+  }
+
+  // ── Search ────────────────────────────────────────────────────────
+  if (path === '/api/search/messages' && request.method === 'GET') {
+    const q = (url.searchParams.get('q') || '').trim();
+    if (!q || q.length < 2) return json({ error: 'Từ khóa tối thiểu 2 ký tự' }, 400);
+    const convId = url.searchParams.get('conversation_id');
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '20'), 50);
+    let sql = `SELECT m.*, u.full_name AS sender_name, c.name AS conversation_name, c.type AS conversation_type
+       FROM messages m JOIN users u ON u.id = m.sender_id
+       JOIN conversations c ON c.id = m.conversation_id
+       JOIN conversation_members cm ON cm.conversation_id = c.id AND cm.user_id = ?
+       WHERE m.content LIKE ?1 AND m.deleted_at IS NULL`;
+    const binds = [me.id];
+    if (convId) { sql += ' AND m.conversation_id = ?'; binds.push(Number(convId)); }
+    sql += ' ORDER BY m.id DESC LIMIT ?'; binds.push(limit);
+    const { results = [] } = await env.DB.prepare(sql).bind(...binds).all();
+    return json({ results });
+  }
+
+  // ── File upload ───────────────────────────────────────────────────
+  const convUploadMatch = path.match(/^\/api\/conversations\/(\d+)\/upload$/);
+  if (convUploadMatch && request.method === 'POST') {
+    const convId = parseInt(convUploadMatch[1]);
+    const formData = await request.formData();
+    const file = formData.get('file');
+    if (!file || typeof file.name !== 'string') return json({ error: 'Vui lòng chọn file' }, 400);
+    const buffer = await file.arrayBuffer();
+    const key = `chat/${convId}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    await env.HR_DOCUMENTS.put(key, buffer, {
+      httpMetadata: { contentType: file.type || 'application/octet-stream' },
+    });
+    const isImage = String(file.type || '').startsWith('image/');
+    return json({
+      storage_key: key,
+      file_name: file.name,
+      file_size: buffer.byteLength,
+      mime_type: file.type || 'application/octet-stream',
+      type: isImage ? 'image' : 'file',
+    });
+  }
+
+  // ── WebSocket upgrade ─────────────────────────────────────────────
+  const wsMatch = path.match(/^\/api\/chat\/ws\/(\d+)$/);
+  if (wsMatch && request.method === 'GET') {
+    const convId = parseInt(wsMatch[1]);
+    const isMember = await env.DB.prepare(
+      'SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?'
+    ).bind(convId, me.id).first();
+    if (!isMember) return json({ error: 'Không có quyền truy cập hội thoại này' }, 403);
+
+    const doId = env.CHAT_ROOM.idFromName(String(convId));
+    const stub = env.CHAT_ROOM.get(doId);
+    return stub.fetch(request);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // END CHAT MODULE
+  // ═══════════════════════════════════════════════════════════════
 
   return json({ error: 'Not found' }, 404);
 }

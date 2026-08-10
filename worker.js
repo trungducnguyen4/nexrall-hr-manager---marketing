@@ -1,4 +1,5 @@
 import { handle, handleScheduled } from './server.js';
+import { ChatRoom } from './src/chat-room.js';
 
 function secureAssetResponse(response, pathname) {
   const headers = new Headers(response.headers);
@@ -49,3 +50,5 @@ export default {
     return handleScheduled(event, env);
   },
 };
+
+export { ChatRoom };
