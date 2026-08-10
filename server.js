@@ -12,7 +12,7 @@ let _migrated = false;
 // Bump when additive schema changes are introduced. Existing installations may
 // already have the prior version recorded, so they would otherwise skip the
 // KPI table creation below and fail every KPI request at runtime.
-const SCHEMA_VERSION = '2026-08-04-project-handover-v1';
+const SCHEMA_VERSION = '2026-08-10-chat-v1';
 const SEED_VERSION = '2026-07-22-seed-v1';
 
 const LEAVE_DOCUMENT_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
