@@ -303,7 +303,7 @@ export function openModal(title, bodyHtml, footerHtml = '') {
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = bodyHtml;
   document.getElementById('modal-footer').innerHTML = footerHtml;
-  document.getElementById('modal')?.classList.remove('modal--scroll-fixed', 'modal--project', 'modal--attendance-summary', 'modal--user-detail', 'modal--user-profile', 'modal--user-form', 'modal--payslip', 'modal--avatar-crop', 'modal--payroll-edit');
+  document.getElementById('modal')?.classList.remove('modal--scroll-fixed', 'modal--project', 'modal--project-timeline', 'modal--attendance-summary', 'modal--user-detail', 'modal--user-profile', 'modal--user-form', 'modal--payslip', 'modal--avatar-crop', 'modal--payroll-edit');
   ov?.classList.remove('modal-overlay--desktop-centered');
   ov.classList.remove('hidden');
 }

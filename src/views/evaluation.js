@@ -11,13 +11,13 @@ const REWARD_POLICY = [
   'Được chọn tham gia dự án lớn',
 ];
 const PENALTY_POLICY = [
-  'Đi trễ dưới 15 phút: phạt 20.000đ/lần',
-  'Đi trễ từ 15 phút: phạt 50.000đ/lần',
+  'Đi trễ: được miễn 2 lần/tháng (gồm có/không xin phép)',
+  'Từ lần đi trễ thứ 3: phạt 20.000đ/lần, trừ vào lương sau khi HCNS xác nhận',
   'Trễ deadline 3 lần/tháng: trừ 5 điểm',
-  'Không chủ động báo cáo: trừ 3 điểm',
-  'Quản lý phải hỏi tiến độ: trừ 5 điểm',
+  'Không chủ động báo cáo: HCNS trừ 3 điểm',
+  'Quản lý phải hỏi tiến độ: HCNS trừ 5 điểm',
   'Quên check-in/out: 50.000đ/lần',
-  'Điểm thấp nhất 2 tháng liên tiếp = đề xuất xem xét/nghỉ việc',
+  'Điểm dưới 50 trong 2 tháng liên tiếp: đề xuất HCNS/BGD xem xét',
 ];
 
 function rewardPenaltyPolicyHtml() {

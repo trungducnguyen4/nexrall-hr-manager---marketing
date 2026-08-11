@@ -1,4 +1,4 @@
-import { api } from '../api.js?v=20260722-payroll-export-ux';
+import { api } from '../api.js?v=20260811-penalty-policy-v3';
 import { esc, fmtMoney, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination, avatarColor, initials } from '../utils.js?v=20260722-payroll-export-ux';
 import { payslipDetailHTML, hydratePayslipAttendance, preparePayslipModal } from './payslip-detail.js?v=20260804-inline-line-notes-v1';
 
@@ -136,6 +136,14 @@ export async function renderPayroll(el, me) {
     return map[type] || type || 'Đề xuất';
   }
 
+  // Legacy rows may still contain the date in their saved reason. The date is
+  // now presented in its own column, so keep the reason concise on screen.
+  function adjustmentReason(reason) {
+    return String(reason || '')
+      .replace(/\s+ngày\s+\d{4}-\d{2}-\d{2}/gi, '')
+      .replace(/\s+trong\s+\d{4}-\d{2}/gi, '');
+  }
+
   function updateExportButtonLabel() {
     const btn = document.getElementById('btn-export-payslips');
     if (btn) btn.textContent = `Xuất phiếu lương tháng ${formatMonth(monthInput.value)}`;
@@ -163,7 +171,10 @@ export async function renderPayroll(el, me) {
             <div class="card-title">Đề xuất thưởng-phạt tháng ${formatMonth(month)}</div>
             <div style="font-size:12px;color:var(--text-2);margin-top:2px;">Tự động gợi ý từ đánh giá đã khóa, chấm công và deadline. HCNS xác nhận trước khi cộng/trừ lương.</div>
           </div>
-          <button class="btn-secondary btn-sm" id="payroll-adjust-refresh">Làm mới đề xuất</button>
+          <div style="display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end;">
+            ${canEditPayroll ? '<button class="btn-secondary btn-sm" id="payroll-adjust-manual">Phạt thủ công</button><button class="btn-secondary btn-sm" id="payroll-policy-reset">Đổi quy định phạt</button>' : ''}
+            <button class="btn-secondary btn-sm" id="payroll-adjust-refresh">Làm mới đề xuất</button>
+          </div>
         </div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:12px 14px;border-bottom:1px solid var(--border);">
           <div class="detail-item"><div class="detail-label">Chưa áp dụng</div><div class="detail-val">${suggestions.length}</div></div>
@@ -173,7 +184,7 @@ export async function renderPayroll(el, me) {
         ${suggestions.length ? `
           <div class="table-wrap" style="border:none;border-radius:0;">
             <table>
-              <thead><tr><th></th><th>Nhân viên</th><th>Nguồn</th><th>Loại</th><th>Số tiền</th><th>Điểm</th><th>Lý do</th></tr></thead>
+              <thead><tr><th></th><th>Nhân viên</th><th>Nguồn</th><th>Loại</th><th>Ngày vi phạm</th><th>Tháng áp dụng</th><th>Số tiền</th><th>Điểm</th><th>Lý do</th>${canEditPayroll ? '<th>Thao tác</th>' : ''}</tr></thead>
               <tbody>
                 ${pageData.rows.map(s => `
                   <tr>
@@ -181,9 +192,12 @@ export async function renderPayroll(el, me) {
                     <td><strong>${esc(s.employee_name || '—')}</strong><br><span style="font-size:11px;color:var(--text-3);">${esc(s.employee_code || '')}</span></td>
                     <td><span class="badge badge-gray">${esc(adjustmentSourceLabel(s.source))}</span></td>
                     <td>${esc(adjustmentTypeLabel(s.type))}</td>
+                    <td>${esc(s.violation_date || '—')}</td>
+                    <td>${esc(s.policy_month || month)}</td>
                     <td>${s.amount > 0 ? `<input type="number" class="adj-amount" data-ref="${esc(s.source_ref)}" value="${Number(s.amount || 0)}" min="0" step="50000" style="width:120px;" ${s.can_apply === false ? 'disabled' : ''}>` : '—'}</td>
                     <td>${s.score_delta ? (s.score_delta > 0 ? '+' : '') + s.score_delta : '—'}</td>
-                    <td style="white-space:normal;min-width:220px;font-size:12px;color:var(--text-2);">${esc(s.reason)}${s.can_apply === false ? '<br><span style="color:var(--warning);font-weight:700;">Cần đồng bộ/tạo dòng bảng lương trước khi áp dụng tiền.</span>' : ''}</td>
+                    <td style="white-space:normal;min-width:220px;font-size:12px;color:var(--text-2);">${esc(adjustmentReason(s.reason))}${s.can_apply === false ? '<br><span style="color:var(--warning);font-weight:700;">Cần đồng bộ/tạo dòng bảng lương trước khi áp dụng tiền.</span>' : ''}</td>
+                    ${canEditPayroll ? `<td><button class="btn-danger btn-sm adj-dismiss" data-ref="${esc(s.source_ref)}">Xóa</button></td>` : ''}
                   </tr>
                 `).join('')}
               </tbody>
@@ -203,7 +217,7 @@ export async function renderPayroll(el, me) {
                 const hasAmount = Number(a.amount || 0) > 0;
                 return `
                   <div style="display:flex;justify-content:space-between;gap:12px;border:1px solid ${tone.border};background:${tone.bg};border-radius:8px;padding:9px 11px;font-size:12px;align-items:flex-start;">
-                    <span style="color:${tone.color};line-height:1.45;"><strong>${esc(a.employee_name || '—')}</strong> · ${esc(adjustmentSourceLabel(a.source))} · ${esc(a.reason)}</span>
+                    <span style="color:${tone.color};line-height:1.45;"><strong>${esc(a.employee_name || '—')}</strong> · ${esc(adjustmentSourceLabel(a.source))} · ${a.violation_date ? `Ngày ${esc(a.violation_date)} · ` : ''}Kỳ ${esc(a.policy_month || a.month || month)} · ${esc(adjustmentReason(a.reason))}</span>
                     <span style="white-space:nowrap;color:${tone.color};font-weight:800;">${hasAmount ? tone.sign + fmtMoney(a.amount) : (a.score_delta || 'audit')}</span>
                   </div>
                 `;
@@ -214,6 +228,8 @@ export async function renderPayroll(el, me) {
       </div>
     `;
     document.getElementById('payroll-adjust-refresh')?.addEventListener('click', () => loadPayroll({ keepStatus: true }));
+    document.getElementById('payroll-adjust-manual')?.addEventListener('click', openManualPenalty);
+    document.getElementById('payroll-policy-reset')?.addEventListener('click', openPenaltyPolicyReset);
     document.getElementById('payroll-adjust-apply')?.addEventListener('click', applySelectedAdjustments);
     el.querySelectorAll('.adj-check').forEach(check => {
       const ref = check.dataset.ref;
@@ -227,6 +243,23 @@ export async function renderPayroll(el, me) {
       const ref = input.dataset.ref;
       if (adjustmentAmounts.has(ref)) input.value = adjustmentAmounts.get(ref);
       input.addEventListener('input', () => adjustmentAmounts.set(ref, Number(input.value || 0)));
+    });
+    el.querySelectorAll('.adj-dismiss').forEach(button => {
+      button.addEventListener('click', async () => {
+        const ref = button.dataset.ref;
+        if (!ref || !window.confirm('Xóa đề xuất này? Dữ liệu chấm công/công việc gốc sẽ không bị xóa.')) return;
+        button.disabled = true;
+        try {
+          await api.dismissPayrollAdjustment(month, ref);
+          selectedAdjustmentRefs.delete(ref);
+          adjustmentAmounts.delete(ref);
+          toast('Đã xóa đề xuất; dữ liệu nguồn được giữ nguyên.', 'success');
+          await loadPayroll({ keepStatus: true });
+        } catch (error) {
+          toast(error.message || 'Không thể xóa đề xuất', 'error');
+          button.disabled = false;
+        }
+      });
     });
     bindPagination(el, page => {
       adjustmentPage = page;
@@ -252,6 +285,58 @@ export async function renderPayroll(el, me) {
       toast(e.message || 'Không áp dụng được đề xuất', 'error');
       if (btn) { btn.disabled = false; btn.textContent = 'Áp dụng đề xuất đã chọn'; }
     }
+  }
+
+  function openManualPenalty() {
+    const employees = latestPayrollRows.filter(row => row.employee_id).map(row => `<option value="${row.employee_id}" data-payroll-id="${row.id}">${esc(row.employee_name || '—')} · ${esc(row.employee_code || '')}</option>`).join('');
+    if (!employees) return toast('Hãy tải bảng lương trước khi tạo phạt thủ công', 'error');
+    openModal('Phạt điểm thủ công', `<div class="field"><label>Nhân sự *</label><select id="manual-penalty-employee"><option value="">Chọn nhân sự</option>${employees}</select></div>
+      <div class="field"><label>Vi phạm *</label><select id="manual-penalty-kind"><option value="report">Không chủ động báo cáo — trừ 3 điểm</option><option value="progress">Quản lý phải hỏi tiến độ — trừ 5 điểm</option></select></div>
+      <div class="field"><label>Ngày vi phạm</label><input id="manual-penalty-date" type="date" min="${monthInput.value}-01" max="${monthInput.value}-31"></div>
+      <div class="field"><label>Ghi chú / căn cứ *</label><textarea id="manual-penalty-reason" rows="3" placeholder="Mô tả sự việc, thời điểm hoặc nguồn xác minh"></textarea></div>`, '<button class="btn-secondary" id="manual-penalty-cancel">Hủy</button><button class="btn-primary" id="manual-penalty-save">Áp dụng</button>');
+    document.getElementById('manual-penalty-cancel')?.addEventListener('click', closeModal);
+    document.getElementById('manual-penalty-save')?.addEventListener('click', async event => {
+      const select = document.getElementById('manual-penalty-employee');
+      const kind = document.getElementById('manual-penalty-kind')?.value;
+      const violationDate = document.getElementById('manual-penalty-date')?.value || null;
+      const reason = document.getElementById('manual-penalty-reason')?.value.trim() || '';
+      const employeeId = Number(select?.value || 0);
+      const payrollId = Number(select?.selectedOptions?.[0]?.dataset.payrollId || 0) || null;
+      const scoreDelta = kind === 'progress' ? -5 : -3;
+      if (!employeeId || !reason) return toast('Chọn nhân sự và nhập căn cứ áp dụng', 'error');
+      event.currentTarget.disabled = true;
+      try {
+        await api.applyPayrollAdjustments(monthInput.value, [{ source: 'manual', employee_id: employeeId, payroll_id: payrollId, type: 'score_penalty', amount: 0, score_delta: scoreDelta, violation_date: violationDate, reason }]);
+        closeModal();
+        toast('Đã lưu phạt điểm thủ công kèm audit', 'success');
+        await loadPayroll({ keepStatus: true });
+      } catch (error) { toast(error.message || 'Không thể áp dụng phạt thủ công', 'error'); event.currentTarget.disabled = false; }
+    });
+  }
+
+  async function openPenaltyPolicyReset() {
+    try {
+      const preview = await api.previewPenaltyPolicyReset();
+      if (preview.conflicts?.length) {
+        return toast(`Không thể dọn: ${preview.conflicts.length} dòng lương có deduction không khớp.`, 'error', 6000);
+      }
+      openModal('Cập nhật quy định phạt từ 08/2026', `<div style="display:grid;gap:9px;line-height:1.45;">
+        <div class="detail-item"><div class="detail-label">Row phạt sẽ xóa</div><div class="detail-val">${Number(preview.adjustment_count || 0)}</div></div>
+        <div class="detail-item"><div class="detail-label">Hoàn deduction / lương</div><div class="detail-val" style="color:var(--success);">${fmtMoney(preview.total_payroll_refund || 0)}</div></div>
+        <div class="detail-item"><div class="detail-label">Dòng lương được cập nhật</div><div class="detail-val">${Number(preview.payroll_rows_to_refund || 0)}</div></div>
+        <div style="background:#FEF2F2;border:1px solid #FECACA;color:#991B1B;border-radius:8px;padding:10px;font-size:12px;">Thao tác xóa toàn bộ adjustment loại phạt/trừ điểm cũ, hoàn lương tương ứng và ghi audit. Không xóa bảng lương, attendance hay đánh giá.</div>
+      </div>`, '<button class="btn-secondary" id="penalty-reset-cancel">Hủy</button><button class="btn-primary" id="penalty-reset-confirm">Xác nhận cập nhật</button>');
+      document.getElementById('penalty-reset-cancel')?.addEventListener('click', closeModal);
+      document.getElementById('penalty-reset-confirm')?.addEventListener('click', async event => {
+        event.currentTarget.disabled = true;
+        try {
+          const result = await api.resetPenaltyPolicy();
+          closeModal();
+          toast(`Đã xóa ${result.adjustment_count || 0} row phạt và hoàn ${fmtMoney(result.total_payroll_refund || 0)}.`, 'success', 6000);
+          await loadPayroll({ keepStatus: true });
+        } catch (error) { toast(error.message || 'Không thể cập nhật quy định phạt', 'error'); event.currentTarget.disabled = false; }
+      });
+    } catch (error) { toast(error.message || 'Không tải được thống kê dọn dữ liệu', 'error'); }
   }
 
   async function openCreatePayrollBatchConfirm() {

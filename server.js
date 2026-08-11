@@ -12,7 +12,10 @@ let _migrated = false;
 // Bump when additive schema changes are introduced. Existing installations may
 // already have the prior version recorded, so they would otherwise skip the
 // KPI table creation below and fail every KPI request at runtime.
-const SCHEMA_VERSION = '2026-08-10-chat-v1';
+// Chat interactions self-heal additively before the version fast path below.
+// Keep the established marker so a deployed Timeline database does not rerun
+// the legacy bootstrap migration sequence just to gain these new tables.
+const SCHEMA_VERSION = '2026-08-11-project-timeline-v1';
 const SEED_VERSION = '2026-07-22-seed-v1';
 
 const LEAVE_DOCUMENT_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
@@ -68,6 +71,31 @@ async function ensurePayrollLineChangeLog(env) {
   await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_payroll_line_change_log_payroll_created ON payroll_line_change_log(payroll_id,created_at DESC)');
 }
 
+// Payroll adjustments were present before the policy audit fields. Run this
+// independently of the schema-version marker so already deployed databases
+// receive the additive columns on their first request after this release.
+async function ensurePayrollAdjustmentPolicySchema(env) {
+  try { await env.DB.exec('ALTER TABLE payroll_adjustments ADD COLUMN violation_date TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE payroll_adjustments ADD COLUMN policy_month TEXT'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_payroll_adjustments_policy_date ON payroll_adjustments(policy_month,violation_date,employee_id)'); } catch (_) {}
+}
+
+// Suggestions are calculated from attendance/tasks, so deleting one in Payroll
+// must never delete its source record. A dismissal simply suppresses that
+// proposal for the specified payroll month and preserves the audit trail.
+async function ensurePayrollAdjustmentDismissalSchema(env) {
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS payroll_adjustment_dismissals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    month TEXT NOT NULL,
+    source_ref TEXT NOT NULL UNIQUE,
+    dismissed_by INTEGER NOT NULL,
+    dismissed_by_name TEXT,
+    dismissed_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(month, source_ref)
+  )`);
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_payroll_adjustment_dismissals_month ON payroll_adjustment_dismissals(month,dismissed_at DESC)'); } catch (_) {}
+}
+
 // VietQR's bank directory is public reference data, but fetching it through
 // the Worker keeps the browser within the app's CSP and gives us one place to
 // handle provider outages.  A short-lived isolate cache is sufficient here;
@@ -108,8 +136,14 @@ async function migrate(env) {
   // These additive tables are self-healed before the schema-version fast path.
   // A previous interrupted deployment can otherwise leave the version marker
   // behind while a new API starts querying a table that was never created.
-  await ensureAttendanceOvertimeSchema(env);
-  await ensureProjectHandoverSchema(env);
+  // Older deployment helpers are best-effort: a legacy D1 inconsistency in
+  // one optional module must not make Chat (or login) unavailable.
+  try { await ensureAttendanceOvertimeSchema(env); } catch (error) { console.error('Attendance schema check failed', error); }
+  try { await ensureProjectHandoverSchema(env); } catch (error) { console.error('Handover schema check failed', error); }
+  // Timeline columns are additive and must exist before the version fast path:
+  // production databases may already carry an older matching schema marker.
+  try { await ensureTaskActivityTimelineSchema(env); } catch (error) { console.error('Task timeline schema check failed', error); }
+  try { await ensureChatInteractionSchema(env); } catch (error) { console.error('Chat interaction schema check failed', error); }
   // Leave-policy schema is additive. A partially migrated legacy D1 must not
   // block every authenticated request; the individual leave endpoints still
   // fail closed if their required data is unavailable.
@@ -128,6 +162,8 @@ async function migrate(env) {
   )`); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_payroll_change_log_payroll_created ON payroll_change_log(payroll_id,created_at DESC)'); } catch (_) {}
   try { await ensurePayrollLineChangeLog(env); } catch (_) {}
+  try { await ensurePayrollAdjustmentPolicySchema(env); } catch (error) { console.error('Payroll adjustment policy schema check failed', error); }
+  try { await ensurePayrollAdjustmentDismissalSchema(env); } catch (error) { console.error('Payroll adjustment dismissal schema check failed', error); }
   try {
     const row = await env.DB.prepare("SELECT setting_value FROM settings WHERE setting_key='schema_version'").first();
     if (row?.setting_value === SCHEMA_VERSION) {
@@ -227,6 +263,13 @@ async function migrate(env) {
       user_id INTEGER NOT NULL,
       action TEXT NOT NULL,
       detail TEXT,
+      project_id INTEGER,
+      entity_type TEXT,
+      entity_id INTEGER,
+      entity_title TEXT,
+      assignee_id INTEGER,
+      assignee_name TEXT,
+      actor_name TEXT,
       created_at TEXT DEFAULT (datetime('now','localtime'))
     )`,
     `CREATE TABLE IF NOT EXISTS invoices (
@@ -296,6 +339,8 @@ async function migrate(env) {
       employee_id INTEGER NOT NULL,
       payroll_id INTEGER,
       month TEXT NOT NULL,
+      violation_date TEXT,
+      policy_month TEXT,
       type TEXT NOT NULL,
       source TEXT NOT NULL,
       source_ref TEXT UNIQUE,
@@ -384,6 +429,8 @@ async function migrate(env) {
     employee_id INTEGER NOT NULL,
     payroll_id INTEGER,
     month TEXT NOT NULL,
+    violation_date TEXT,
+    policy_month TEXT,
     type TEXT NOT NULL,
     source TEXT NOT NULL,
     source_ref TEXT UNIQUE,
@@ -401,6 +448,11 @@ async function migrate(env) {
   )`); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_payroll_adjustments_month_employee ON payroll_adjustments(month,employee_id)'); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_payroll_adjustments_status ON payroll_adjustments(status)'); } catch (_) {}
+  // Keep the policy period distinct from the actual violation date for payroll audit/reporting.
+  // These upgrades are additive so existing adjustments remain intact.
+  try { await env.DB.exec('ALTER TABLE payroll_adjustments ADD COLUMN violation_date TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE payroll_adjustments ADD COLUMN policy_month TEXT'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_payroll_adjustments_policy_date ON payroll_adjustments(policy_month,violation_date,employee_id)'); } catch (_) {}
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS payroll_batches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     month TEXT UNIQUE NOT NULL,
@@ -454,11 +506,13 @@ async function migrate(env) {
     reply_to_id INTEGER,
     thread_root_id INTEGER,
     task_id INTEGER,
+    message_type TEXT NOT NULL DEFAULT 'text',
     edited_at TEXT,
     deleted_at TEXT,
     created_at TEXT DEFAULT (datetime('now','localtime'))
   )`).run();
   try { await env.DB.exec('ALTER TABLE messages ADD COLUMN task_id INTEGER'); } catch (_) {}
+  try { await env.DB.exec("ALTER TABLE messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'text'"); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE messages ADD COLUMN reply_to_id INTEGER'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE messages ADD COLUMN thread_root_id INTEGER'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE messages ADD COLUMN edited_at TEXT'); } catch (_) {}
@@ -488,6 +542,24 @@ async function migrate(env) {
     read_at TEXT DEFAULT (datetime('now','localtime')),
     UNIQUE(message_id, user_id)
   )`).run();
+  // Mentions are stored separately from message text so they remain queryable
+  // and can never point to a user outside of the conversation.
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS message_mentions (
+    message_id INTEGER NOT NULL,
+    mentioned_user_id INTEGER NOT NULL,
+    mentioned_by INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(message_id, mentioned_user_id)
+  )`).run();
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_message_mentions_user ON message_mentions(mentioned_user_id,message_id DESC)'); } catch (_) {}
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS pinned_messages (
+    conversation_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    pinned_by INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(conversation_id, message_id)
+  )`).run();
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_pinned_messages_conversation ON pinned_messages(conversation_id,created_at DESC)'); } catch (_) {}
   // ── End Chat module ─────────────────────────────────────────────
   // remains immutable evidence and only HCNS/management-approved minutes are paid.
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS overtime_requests (
@@ -1622,6 +1694,215 @@ function evalValidateComplete(scores, comments) {
 }
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 
+async function saveMessageMentions(env, { conversationId, messageId, mentionedBy, mentionIds }) {
+  const requestedIds = [...new Set((Array.isArray(mentionIds) ? mentionIds : [])
+    .map(Number).filter(id => Number.isInteger(id) && id > 0 && id !== mentionedBy))].slice(0, 25);
+  if (!requestedIds.length) return [];
+
+  const placeholders = requestedIds.map(() => '?').join(',');
+  const { results = [] } = await env.DB.prepare(
+    `SELECT user_id FROM conversation_members WHERE conversation_id = ? AND user_id IN (${placeholders})`
+  ).bind(conversationId, ...requestedIds).all();
+  const validIds = results.map(row => Number(row.user_id));
+  for (const userId of validIds) {
+    await env.DB.prepare(
+      'INSERT OR IGNORE INTO message_mentions (message_id, mentioned_user_id, mentioned_by) VALUES (?, ?, ?)'
+    ).bind(messageId, userId, mentionedBy).run();
+  }
+  return validIds;
+}
+
+async function chatMember(env, conversationId, userId) {
+  return await env.DB.prepare(
+    'SELECT cm.role,c.type FROM conversation_members cm JOIN conversations c ON c.id=cm.conversation_id WHERE cm.conversation_id=? AND cm.user_id=?'
+  ).bind(conversationId, userId).first();
+}
+
+async function saveAllMention(env, { conversationId, messageId, mentionedBy, requested, content }) {
+  if (!requested) return false;
+  const member = await chatMember(env, conversationId, mentionedBy);
+  if (!member || member.type === 'direct' || !/(^|\s)@all\b/i.test(String(content || ''))) {
+    throw new Error('@all chỉ dùng được trong nhóm');
+  }
+  await env.DB.prepare('INSERT OR IGNORE INTO message_all_mentions (message_id,mentioned_by) VALUES (?,?)')
+    .bind(messageId, mentionedBy).run();
+  return true;
+}
+
+async function hydrateChatMessages(env, messageRows, viewerId) {
+  const ids = messageRows.map(row => Number(row.id)).filter(Boolean);
+  if (!ids.length) return messageRows;
+  const placeholders = ids.map(() => '?').join(',');
+  const [attachmentsResult, reactionsResult, mentionsResult, allMentionsResult, pollsResult, optionsResult, eventsResult, attendeeResult, readersResult] = await Promise.all([
+    env.DB.prepare(`SELECT * FROM message_attachments WHERE message_id IN (${placeholders}) ORDER BY id`).bind(...ids).all(),
+    env.DB.prepare(`SELECT mr.message_id,mr.emoji,mr.user_id,u.full_name AS user_name FROM message_reactions mr JOIN users u ON u.id=mr.user_id WHERE mr.message_id IN (${placeholders})`).bind(...ids).all(),
+    env.DB.prepare(`SELECT mm.message_id,mm.mentioned_user_id AS user_id,u.full_name FROM message_mentions mm JOIN users u ON u.id=mm.mentioned_user_id WHERE mm.message_id IN (${placeholders})`).bind(...ids).all(),
+    env.DB.prepare(`SELECT message_id FROM message_all_mentions WHERE message_id IN (${placeholders})`).bind(...ids).all(),
+    env.DB.prepare(`SELECT * FROM chat_polls WHERE message_id IN (${placeholders})`).bind(...ids).all(),
+    env.DB.prepare(`SELECT o.id,o.message_id,o.option_text,o.position,COUNT(v.user_id) AS vote_count
+                      FROM chat_poll_options o LEFT JOIN chat_poll_votes v ON v.option_id=o.id
+                     WHERE o.message_id IN (${placeholders}) GROUP BY o.id ORDER BY o.position,o.id`).bind(...ids).all(),
+    env.DB.prepare(`SELECT e.*,COUNT(a.user_id) AS attendee_count,
+                      SUM(CASE WHEN a.response='going' THEN 1 ELSE 0 END) AS going_count
+                      FROM chat_events e LEFT JOIN chat_event_attendees a ON a.message_id=e.message_id
+                     WHERE e.message_id IN (${placeholders}) GROUP BY e.message_id`).bind(...ids).all(),
+    env.DB.prepare(`SELECT message_id,response FROM chat_event_attendees WHERE user_id=? AND message_id IN (${placeholders})`).bind(viewerId, ...ids).all(),
+    env.DB.prepare(`SELECT m.id AS message_id,cm.user_id,u.full_name,u.avatar_url
+                      FROM messages m
+                      JOIN conversation_members cm ON cm.conversation_id=m.conversation_id
+                      JOIN users u ON u.id=cm.user_id
+                     WHERE m.id IN (${placeholders})
+                       AND cm.user_id != m.sender_id
+                       AND COALESCE(cm.last_read_message_id,0) >= m.id`).bind(...ids).all(),
+  ]);
+  const mapBy = (rows, key) => rows.reduce((map, row) => { (map[row[key]] ||= []).push(row); return map; }, {});
+  const attachments = mapBy(attachmentsResult.results || [], 'message_id');
+  const reactions = mapBy(reactionsResult.results || [], 'message_id');
+  const mentions = mapBy(mentionsResult.results || [], 'message_id');
+  const allMentionIds = new Set((allMentionsResult.results || []).map(row => Number(row.message_id)));
+  const pollByMessage = Object.fromEntries((pollsResult.results || []).map(row => [row.message_id, { ...row, options: [] }]));
+  for (const option of optionsResult.results || []) if (pollByMessage[option.message_id]) pollByMessage[option.message_id].options.push(option);
+  const eventByMessage = Object.fromEntries((eventsResult.results || []).map(row => [row.message_id, row]));
+  const responseByEvent = Object.fromEntries((attendeeResult.results || []).map(row => [row.message_id, row.response]));
+  const readers = mapBy(readersResult.results || [], 'message_id');
+  for (const poll of Object.values(pollByMessage)) {
+    const optionIds = poll.options.map(option => option.id);
+    if (!optionIds.length) { poll.voted_option_ids = []; continue; }
+    const own = await env.DB.prepare(`SELECT option_id FROM chat_poll_votes WHERE user_id=? AND option_id IN (${optionIds.map(() => '?').join(',')})`)
+      .bind(viewerId, ...optionIds).all();
+    poll.voted_option_ids = (own.results || []).map(row => row.option_id);
+  }
+  return messageRows.map(row => ({
+    ...row,
+    attachments: attachments[row.id] || [],
+    reactions: reactions[row.id] || [],
+    mentions: mentions[row.id] || [],
+    mention_all: allMentionIds.has(Number(row.id)),
+    read_by: readers[row.id] || [],
+    poll: pollByMessage[row.id] || null,
+    event: eventByMessage[row.id] ? { ...eventByMessage[row.id], my_response: responseByEvent[row.id] || null } : null,
+  }));
+}
+
+async function getChatMessage(env, messageId, viewerId) {
+  const row = await env.DB.prepare(
+    `SELECT m.*,u.full_name AS sender_name,u.employee_code AS sender_code,u.avatar_url AS sender_avatar,
+       EXISTS(SELECT 1 FROM pinned_messages pm WHERE pm.message_id=m.id) AS is_pinned
+       FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.id=?`
+  ).bind(messageId).first();
+  return row ? (await hydrateChatMessages(env, [row], viewerId))[0] : null;
+}
+
+async function broadcastChatUpdate(env, conversationId, payload) {
+  if (!env.CHAT_ROOM) return;
+  try {
+    const stub = env.CHAT_ROOM.get(env.CHAT_ROOM.idFromName(String(conversationId)));
+    await stub.fetch('https://chat-room.internal/broadcast', { method: 'POST', body: JSON.stringify(payload) });
+  } catch (error) { console.warn('Chat broadcast failed', error?.message || error); }
+}
+
+const CHAT_EMOJI_FALLBACK = ['😀','😁','😂','🤣','😊','😍','😘','😎','🤔','😭','😡','👍','👎','❤️','🎉','✅','🔥','👏','🙏','👀'];
+let _chatEmojiCache = { expiresAt: 0, emojis: CHAT_EMOJI_FALLBACK };
+async function getChatEmojis() {
+  if (_chatEmojiCache.expiresAt > Date.now()) return _chatEmojiCache.emojis;
+  try {
+    const response = await fetch('https://emojihub.yurace.pro/api/all', { cf: { cacheTtl: 86400, cacheEverything: true } });
+    const data = await response.json();
+    const emojis = [...new Set((Array.isArray(data) ? data : []).map(item => String(item.htmlCode?.[0] || '')
+      .replace(/&#x([0-9a-f]+);|&#(\d+);/gi, (_, hex, decimal) => String.fromCodePoint(parseInt(hex || decimal, hex ? 16 : 10)))).filter(Boolean))].slice(0, 400);
+    if (emojis.length) _chatEmojiCache = { expiresAt: Date.now() + 24 * 60 * 60 * 1000, emojis };
+  } catch (_) { _chatEmojiCache = { expiresAt: Date.now() + 5 * 60 * 1000, emojis: CHAT_EMOJI_FALLBACK }; }
+  return _chatEmojiCache.emojis;
+}
+
+// Project timeline is built on top of the existing task_activity audit table.
+// Keep this strictly additive: old rows remain valid and are only joined to a
+// Project when their task can still be identified.
+async function ensureTaskActivityTimelineSchema(env) {
+  for (const [column, type] of Object.entries({
+    project_id: 'INTEGER',
+    entity_type: 'TEXT',
+    entity_id: 'INTEGER',
+    entity_title: 'TEXT',
+    assignee_id: 'INTEGER',
+    assignee_name: 'TEXT',
+    actor_name: 'TEXT',
+  })) {
+    try { await env.DB.exec(`ALTER TABLE task_activity ADD COLUMN ${column} ${type}`); } catch (_) {}
+  }
+  try {
+    await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_task_activity_project_created ON task_activity(project_id,created_at DESC,id DESC)');
+  } catch (_) {}
+}
+
+// Chat interactions are independent tables so existing text messages remain
+// immutable and deploys can safely add cards without rewriting chat history.
+async function ensureChatInteractionSchema(env) {
+  try { await env.DB.exec("ALTER TABLE messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'text'"); } catch (_) {}
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS message_all_mentions (
+    message_id INTEGER PRIMARY KEY,
+    mentioned_by INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS chat_polls (
+    message_id INTEGER PRIMARY KEY,
+    question TEXT NOT NULL,
+    allows_multiple INTEGER NOT NULL DEFAULT 1,
+    is_closed INTEGER NOT NULL DEFAULT 0,
+    closed_by INTEGER,
+    closed_at TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS chat_poll_options (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    option_text TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0
+  )`);
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS chat_poll_votes (
+    option_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(option_id,user_id)
+  )`);
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS chat_events (
+    message_id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    start_at TEXT NOT NULL,
+    end_at TEXT,
+    description TEXT,
+    location TEXT,
+    meeting_url TEXT,
+    cancelled_at TEXT,
+    cancelled_by INTEGER,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS chat_event_attendees (
+    message_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    response TEXT NOT NULL DEFAULT 'invited',
+    responded_at TEXT,
+    UNIQUE(message_id,user_id)
+  )`);
+  for (const statement of [
+    'CREATE INDEX IF NOT EXISTS idx_chat_poll_options_message ON chat_poll_options(message_id,position,id)',
+    'CREATE INDEX IF NOT EXISTS idx_chat_poll_votes_option ON chat_poll_votes(option_id,user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_chat_event_attendees_user ON chat_event_attendees(user_id,message_id)',
+  ]) { try { await env.DB.exec(statement); } catch (_) {} }
+}
+
+async function attachChatAttachments(env, messageRows) {
+  const ids = messageRows.map(row => Number(row.id)).filter(Boolean);
+  if (!ids.length) return messageRows;
+  const placeholders = ids.map(() => '?').join(',');
+  const { results = [] } = await env.DB.prepare(
+    `SELECT * FROM message_attachments WHERE message_id IN (${placeholders}) ORDER BY id ASC`
+  ).bind(...ids).all();
+  const byMessage = {};
+  for (const attachment of results) (byMessage[attachment.message_id] ||= []).push(attachment);
+  return messageRows.map(row => ({ ...row, attachments: byMessage[row.id] || [] }));
+}
+
 function nowStr() {
   return new Date().toISOString().slice(0, 19).replace('T', ' ');
 }
@@ -1663,6 +1944,89 @@ function payrollAdjustmentType(source, amount, scoreDelta) {
   return 'alert';
 }
 
+const PENALTY_POLICY_EFFECTIVE_MONTH = '2026-08';
+const PENALTY_POLICY_RESET_CONFIRMATION = 'RESET_PENALTY_POLICY_2026_08';
+
+async function getPenaltyPolicyResetPreview(env) {
+  const { results: adjustments = [] } = await env.DB.prepare(
+    `SELECT pa.*,p.id AS payroll_exists,p.deduction AS payroll_deduction,p.base_salary,p.kpi_bonus,p.allowance,p.net_salary
+       FROM payroll_adjustments pa
+       LEFT JOIN payroll p ON p.id=pa.payroll_id
+      WHERE pa.type IN ('penalty','score_penalty')
+      ORDER BY pa.month,pa.id`
+  ).all();
+  const refundsByPayroll = new Map();
+  let penaltyRows = 0;
+  let scorePenaltyRows = 0;
+  let penaltyAmount = 0;
+  let scoreDelta = 0;
+  let unlinkedApprovedPenaltyRows = 0;
+  for (const adjustment of adjustments) {
+    if (adjustment.type === 'penalty') {
+      penaltyRows++;
+      penaltyAmount += Number(adjustment.amount || 0);
+      if (adjustment.status === 'approved' && adjustment.payroll_id) {
+        const current = refundsByPayroll.get(Number(adjustment.payroll_id)) || { payroll: adjustment, amount: 0, adjustmentIds: [] };
+        current.amount += Number(adjustment.amount || 0);
+        current.adjustmentIds.push(Number(adjustment.id));
+        refundsByPayroll.set(Number(adjustment.payroll_id), current);
+      } else if (adjustment.status === 'approved') {
+        unlinkedApprovedPenaltyRows++;
+      }
+    } else {
+      scorePenaltyRows++;
+      scoreDelta += Number(adjustment.score_delta || 0);
+    }
+  }
+  const payrollRefunds = [...refundsByPayroll.values()];
+  const conflicts = payrollRefunds
+    .filter(item => !item.payroll.payroll_exists || Number(item.payroll.payroll_deduction || 0) < item.amount)
+    .map(item => ({ payroll_id: item.payroll.payroll_id, month: item.payroll.month, deduction: Number(item.payroll.payroll_deduction || 0), refund_amount: item.amount }));
+  return {
+    adjustments,
+    payrollRefunds,
+    conflicts,
+    summary: {
+      adjustment_count: adjustments.length,
+      penalty_rows: penaltyRows,
+      score_penalty_rows: scorePenaltyRows,
+      total_penalty_amount: penaltyAmount,
+      total_score_delta: scoreDelta,
+      payroll_rows_to_refund: payrollRefunds.length,
+      total_payroll_refund: payrollRefunds.reduce((sum, item) => sum + item.amount, 0),
+      unlinked_approved_penalty_rows: unlinkedApprovedPenaltyRows,
+    },
+  };
+}
+
+async function resetPenaltyPolicyAdjustments(env, actor) {
+  const preview = await getPenaltyPolicyResetPreview(env);
+  if (preview.conflicts.length) {
+    const error = new Error('Không thể hoàn phạt vì deduction hiện tại không khớp các row phạt đã duyệt');
+    error.conflicts = preview.conflicts;
+    throw error;
+  }
+  const statements = [];
+  for (const item of preview.payrollRefunds) {
+    const payroll = item.payroll;
+    const before = {
+      deduction: Number(payroll.payroll_deduction || 0),
+      net_salary: Number(payroll.net_salary || 0),
+    };
+    const nextDeduction = before.deduction - item.amount;
+    const nextNet = Number(payroll.base_salary || 0) + Number(payroll.kpi_bonus || 0) + Number(payroll.allowance || 0) - nextDeduction;
+    const after = { ...before, deduction: nextDeduction, net_salary: nextNet };
+    statements.push(
+      env.DB.prepare('UPDATE payroll SET deduction=?,net_salary=? WHERE id=?').bind(nextDeduction, nextNet, payroll.payroll_id),
+      env.DB.prepare('INSERT INTO payroll_change_log (payroll_id,changed_by,changed_by_name,change_note,before_data,after_data) VALUES (?,?,?,?,?,?)')
+        .bind(payroll.payroll_id, actor.id, actor.full_name || '', `Hoàn ${item.amount.toLocaleString('vi-VN')}đ do thay quy định phạt từ ${PENALTY_POLICY_EFFECTIVE_MONTH}`, JSON.stringify(before), JSON.stringify(after))
+    );
+  }
+  statements.push(env.DB.prepare("DELETE FROM payroll_adjustments WHERE type IN ('penalty','score_penalty')"));
+  if (statements.length) await env.DB.batch(statements);
+  return preview.summary;
+}
+
 async function buildPayrollAdjustmentSuggestions(env, month) {
   const suggestions = [];
   const { results: payrollRows = [] } = await env.DB.prepare(
@@ -1679,6 +2043,8 @@ async function buildPayrollAdjustmentSuggestions(env, month) {
       employee_code: row.employee_code || payroll?.employee_code || '',
       department: row.department || payroll?.department || '',
       month,
+      violation_date: row.violation_date || row.date || null,
+      policy_month: row.policy_month || month,
       type: row.type || payrollAdjustmentType(row.source, Number(row.amount || 0), Number(row.score_delta || 0)),
       source: row.source,
       source_ref: row.source_ref,
@@ -1728,24 +2094,32 @@ async function buildPayrollAdjustmentSuggestions(env, month) {
     }
   }
 
-  const { results: attendanceRows = [] } = await env.DB.prepare(
+  const policyIsActive = month >= PENALTY_POLICY_EFFECTIVE_MONTH;
+  const { results: attendanceRows = [] } = policyIsActive ? await env.DB.prepare(
     `SELECT a.id AS attendance_id, a.user_id AS employee_id, a.date, a.late_minutes, a.checkin_time, a.checkout_time,
             u.full_name AS employee_name, u.employee_code, u.department
        FROM attendance a JOIN users u ON a.user_id=u.id
-      WHERE a.date LIKE ?`
-  ).bind(`${month}-%`).all();
+      WHERE a.date LIKE ? ORDER BY a.user_id,a.date,a.id`
+  ).bind(`${month}-%`).all() : { results: [] };
+  const lateCountByEmployee = new Map();
   for (const a of attendanceRows) {
     const late = Number(a.late_minutes || 0);
     if (late > 0) {
-      const amount = late < 15 ? 20000 : 50000;
-      pushSuggestion({ ...a, source: 'attendance', source_ref: `att-late:${a.attendance_id}`, amount, score_delta: 0, reason: `Di tre ${late} phut ngay ${a.date}: phat ${amount.toLocaleString('vi-VN')}d.` });
+      const lateCount = (lateCountByEmployee.get(Number(a.employee_id)) || 0) + 1;
+      lateCountByEmployee.set(Number(a.employee_id), lateCount);
+      if (lateCount >= 3) {
+        pushSuggestion({ ...a, violation_date: a.date, policy_month: month, source: 'attendance', source_ref: `att-late:${a.attendance_id}`, amount: 20000, score_delta: 0, reason: `Đi trễ lần thứ ${lateCount} trong ${month}: phạt 20.000đ theo quy định.` });
+      }
     }
-    if (!a.checkin_time || !a.checkout_time) {
-      pushSuggestion({ ...a, source: 'attendance', source_ref: `att-missing:${a.attendance_id}`, amount: 50000, score_delta: 0, reason: `Thieu check-in/out ngay ${a.date}: phat 50.000d.` });
+    // A workday is only final after 00:00 Asia/Ho_Chi_Minh on the following day.
+    // This prevents an employee who is still working from receiving a premature
+    // missing check-out proposal during the current day.
+    if (a.date < vnTodayStr() && (!a.checkin_time || !a.checkout_time)) {
+      pushSuggestion({ ...a, violation_date: a.date, policy_month: month, source: 'attendance', source_ref: `att-missing:${a.attendance_id}`, amount: 50000, score_delta: 0, reason: 'Thiếu check-in/out: phạt 50.000đ.' });
     }
   }
 
-  const { results: taskRows = [] } = await env.DB.prepare(
+  const { results: taskRows = [] } = policyIsActive ? await env.DB.prepare(
     `SELECT t.assigned_to AS employee_id, COUNT(*) AS late_count,
             u.full_name AS employee_name, u.employee_code, u.department
        FROM tasks t JOIN users u ON t.assigned_to=u.id
@@ -1754,7 +2128,7 @@ async function buildPayrollAdjustmentSuggestions(env, month) {
         AND t.status NOT IN ('done','cancelled')
       GROUP BY t.assigned_to
      HAVING COUNT(*) >= 3`
-  ).bind(`${month}-%`).all();
+  ).bind(`${month}-%`).all() : { results: [] };
   for (const row of taskRows) {
     pushSuggestion({ ...row, source: 'tasks', source_ref: `task-deadline:${row.employee_id}:${month}`, amount: 0, score_delta: -5, reason: `Tre deadline ${row.late_count} lan trong thang: de xuat tru 5 diem theo chinh sach.` });
   }
@@ -1767,8 +2141,12 @@ async function buildPayrollAdjustmentSuggestions(env, month) {
       ORDER BY pa.approved_at DESC, pa.id DESC`
   ).bind(month).all();
   const approvedRefs = new Set(approved.map(a => a.source_ref).filter(Boolean));
+  const { results: dismissed = [] } = await env.DB.prepare(
+    'SELECT source_ref FROM payroll_adjustment_dismissals WHERE month=?'
+  ).bind(month).all();
+  const dismissedRefs = new Set(dismissed.map(row => row.source_ref));
   return {
-    suggestions: suggestions.filter(s => !approvedRefs.has(s.source_ref)),
+    suggestions: suggestions.filter(s => !approvedRefs.has(s.source_ref) && !dismissedRefs.has(s.source_ref)),
     approved,
   };
 }
@@ -2352,6 +2730,28 @@ async function canUseTaskProject(env, projectId, me) {
   return !!row;
 }
 
+async function taskActivityAssignee(env, userId) {
+  const id = intOrNull(userId);
+  if (!id) return { id: null, name: null };
+  const user = await env.DB.prepare('SELECT id,full_name FROM users WHERE id=?').bind(id).first();
+  return { id, name: user?.full_name || null };
+}
+
+async function recordTaskActivity(env, {
+  taskId, projectId, user, action, entityType, entityId, entityTitle,
+  assigneeId = null, assigneeName = null, detail = null,
+}) {
+  await env.DB.prepare(
+    `INSERT INTO task_activity
+      (task_id,user_id,action,detail,project_id,entity_type,entity_id,entity_title,assignee_id,assignee_name,actor_name)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(
+    taskId, user.id, action, detail, intOrNull(projectId), entityType,
+    intOrNull(entityId), String(entityTitle || '').trim() || null,
+    intOrNull(assigneeId), assigneeName || null, user.full_name || null,
+  ).run();
+}
+
 async function resolveTaskLabel(env, labelId, projectId) {
   if (!labelId) return null;
   return await env.DB.prepare(
@@ -2688,7 +3088,9 @@ export async function handle(request, env) {
 
   try {
     await migrate(env);
-    await seedIfNeeded(env);
+    // Seed data is already versioned. Never make an operational API request
+    // fail merely because a legacy seed repair cannot run on this database.
+    try { await seedIfNeeded(env); } catch (error) { console.error('Seed check failed', error); }
   } catch (e) {
     console.error('DB init failed', e);
     return json({ error: 'Không thể khởi tạo dữ liệu, vui lòng thử lại sau' }, 500);
@@ -4743,6 +5145,63 @@ export async function handle(request, env) {
     return json({ ok: true, id: projectId });
   }
 
+  const projectTimelineMatch = path.match(/^\/api\/task-projects\/(\d+)\/timeline$/);
+  if (projectTimelineMatch && request.method === 'GET') {
+    const projectId = parseInt(projectTimelineMatch[1]);
+    const project = await env.DB.prepare(
+      'SELECT id,name,code,created_by,manager_id FROM task_projects WHERE id=?'
+    ).bind(projectId).first();
+    if (!project) return json({ error: 'Khong tim thay Project' }, 404);
+
+    const canView = isTaskAdmin(me)
+      || Number(project.created_by) === Number(me.id)
+      || Number(project.manager_id) === Number(me.id);
+    if (!canView) return json({ error: 'Khong co quyen xem Timeline cua Project nay' }, 403);
+
+    const kind = String(url.searchParams.get('kind') || 'all').toLowerCase();
+    const allowedKinds = {
+      all: ['task_created', 'task_completed', 'task_reopened', 'subtask_created', 'subtask_completed', 'subtask_reopened', 'created'],
+      created: ['task_created', 'subtask_created', 'created'],
+      completed: ['task_completed', 'subtask_completed'],
+      reopened: ['task_reopened', 'subtask_reopened'],
+    };
+    const actions = allowedKinds[kind] || allowedKinds.all;
+    const requestedLimit = Number(url.searchParams.get('limit') || 50);
+    const limit = Math.max(1, Math.min(Number.isFinite(requestedLimit) ? Math.trunc(requestedLimit) : 50, 100));
+    const before = intOrNull(url.searchParams.get('before'));
+    const placeholders = actions.map(() => '?').join(',');
+    const binds = [projectId, projectId, ...actions];
+    let q = `SELECT a.id,a.action,a.detail,a.project_id,a.entity_type,a.entity_id,
+                    COALESCE(a.entity_title,t.title) AS entity_title,
+                    a.assignee_id,a.assignee_name,a.created_at,
+                    COALESCE(a.actor_name,u.full_name,'Nguoi dung') AS actor_name,
+                    u.avatar_color,u.avatar_initials
+               FROM task_activity a
+               LEFT JOIN tasks t ON t.id=a.task_id
+               LEFT JOIN users u ON u.id=a.user_id
+              WHERE (a.project_id=? OR (a.project_id IS NULL AND t.team_project_id=?))
+                AND a.action IN (${placeholders})`;
+    if (before) { q += ' AND a.id<?'; binds.push(before); }
+    q += ' ORDER BY a.created_at DESC,a.id DESC LIMIT ?';
+    binds.push(limit + 1);
+    const { results = [] } = await env.DB.prepare(q).bind(...binds).all();
+    const hasMore = results.length > limit;
+    const events = results.slice(0, limit).map(activity => ({
+      ...activity,
+      // `created` is the only legacy action exposed. It has no reliable
+      // completion state, so never infer one from the current task status.
+      action: activity.action === 'created' ? 'task_created' : activity.action,
+      entity_type: activity.entity_type || 'task',
+      legacy: activity.action === 'created',
+    }));
+    return json({
+      project: { id: project.id, name: project.name, code: project.code },
+      events,
+      has_more: hasMore,
+      next_before: hasMore && events.length ? events[events.length - 1].id : null,
+    });
+  }
+
   const projectMatch = path.match(/^\/api\/task-projects\/(\d+)$/);
   if (projectMatch) {
     if (!isTaskAdmin(me)) return json({ error: 'Khong co quyen' }, 403);
@@ -5005,8 +5464,13 @@ export async function handle(request, env) {
       'INSERT INTO tasks (title,description,assigned_to,assigned_by,department,date,due_date,status,priority,label_color,checkin_time,checkout_time,workspace_id,team_project_id,group_id,label_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)'
     ).bind(b.title,b.description||'',b.assigned_to||null,me.id,b.department||'',b.date||null,b.due_date||null,status,priority,labelColor,b.checkin_time||null,b.checkout_time||null,projectId,groupId,labelId).run();
     const taskId = r.meta.last_row_id;
-    await env.DB.prepare('INSERT INTO task_activity (task_id,user_id,action,detail) VALUES (?,?,?,?)')
-      .bind(taskId, me.id, 'created', 'Tạo công việc: ' + b.title).run();
+    const assignee = await taskActivityAssignee(env, b.assigned_to);
+    await recordTaskActivity(env, {
+      taskId, projectId, user: me, action: 'task_created',
+      entityType: 'task', entityId: taskId, entityTitle: b.title,
+      assigneeId: assignee.id, assigneeName: assignee.name,
+      detail: 'Tạo công việc: ' + b.title,
+    });
     return json({ ok: true, id: taskId });
   }
 
@@ -5060,11 +5524,23 @@ export async function handle(request, env) {
       const label = await resolveTaskLabel(env, nextLabelId, nextProjectId);
       if (nextLabelId && !label) return json({ error: 'Nhan cong viec khong hop le' }, 400);
       const nextColor = label ? label.color : taskLabelColor(nextStatus, nextPriority, b.label_color || task.label_color);
+      const nextTitle = b.title || task.title;
+      const nextAssigneeId = b.assigned_to ?? task.assigned_to;
       await env.DB.prepare(
         "UPDATE tasks SET title=?,description=?,assigned_to=?,department=?,date=?,due_date=?,status=?,priority=?,label_color=?,checkin_time=?,checkout_time=?,team_project_id=?,group_id=?,label_id=?,updated_at=datetime('now') WHERE id=?"
-      ).bind(b.title||task.title,b.description??task.description,b.assigned_to??task.assigned_to,b.department??task.department,b.date??task.date,b.due_date??task.due_date,nextStatus,nextPriority,nextColor,b.checkin_time??task.checkin_time,b.checkout_time??task.checkout_time,nextProjectId,nextGroupId,nextLabelId,tid).run();
-      await env.DB.prepare('INSERT INTO task_activity (task_id,user_id,action,detail) VALUES (?,?,?,?)')
-        .bind(tid, me.id, 'updated', 'Cập nhật: ' + (b.title||task.title)).run();
+      ).bind(nextTitle,b.description??task.description,nextAssigneeId,b.department??task.department,b.date??task.date,b.due_date??task.due_date,nextStatus,nextPriority,nextColor,b.checkin_time??task.checkin_time,b.checkout_time??task.checkout_time,nextProjectId,nextGroupId,nextLabelId,tid).run();
+      let activityAction = null;
+      if (task.status !== nextStatus && nextStatus === 'done') activityAction = 'task_completed';
+      if (task.status === 'done' && task.status !== nextStatus) activityAction = 'task_reopened';
+      if (activityAction) {
+        const assignee = await taskActivityAssignee(env, nextAssigneeId);
+        await recordTaskActivity(env, {
+          taskId: tid, projectId: nextProjectId, user: me, action: activityAction,
+          entityType: 'task', entityId: tid, entityTitle: nextTitle,
+          assigneeId: assignee.id, assigneeName: assignee.name,
+          detail: `${activityAction === 'task_completed' ? 'Hoàn thành' : 'Mở lại'} công việc: ${nextTitle}`,
+        });
+      }
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
@@ -5078,7 +5554,8 @@ export async function handle(request, env) {
       await env.DB.prepare('DELETE FROM tasks WHERE id=?').bind(tid).run();
       await env.DB.prepare('DELETE FROM subtasks WHERE task_id=?').bind(tid).run();
       await env.DB.prepare('DELETE FROM task_comments WHERE task_id=?').bind(tid).run();
-      await env.DB.prepare('DELETE FROM task_activity WHERE task_id=?').bind(tid).run();
+      // Retain timeline snapshots for auditability even when the task itself
+      // is removed. New rows carry project_id and entity_title explicitly.
       await env.DB.prepare('DELETE FROM task_followers WHERE task_id=?').bind(tid).run();
       return json({ ok: true });
     }
@@ -5088,10 +5565,23 @@ export async function handle(request, env) {
   if (subMatch && request.method === 'POST') {
     const tid = parseInt(subMatch[1]);
     const b = await request.json();
+    const parent = await env.DB.prepare('SELECT id,title,assigned_to,team_project_id FROM tasks WHERE id=?').bind(tid).first();
+    if (!parent) return json({ error: 'Không tìm thấy công việc' }, 404);
+    if (!isManager && Number(parent.assigned_to) !== Number(me.id)) return json({ error: 'Không có quyền' }, 403);
+    const title = String(b.title || '').trim();
+    if (!title) return json({ error: 'Thiếu tiêu đề công việc con' }, 400);
     const r = await env.DB.prepare(
       'INSERT INTO subtasks (task_id,title,assigned_to,due_date) VALUES (?,?,?,?)'
-    ).bind(tid, b.title, b.assigned_to||null, b.due_date||null).run();
-    return json({ ok: true, id: r.meta.last_row_id });
+    ).bind(tid, title, b.assigned_to||null, b.due_date||null).run();
+    const subtaskId = r.meta.last_row_id;
+    const assignee = await taskActivityAssignee(env, b.assigned_to);
+    await recordTaskActivity(env, {
+      taskId: tid, projectId: parent.team_project_id, user: me, action: 'subtask_created',
+      entityType: 'subtask', entityId: subtaskId, entityTitle: title,
+      assigneeId: assignee.id, assigneeName: assignee.name,
+      detail: `Tạo công việc con: ${title}`,
+    });
+    return json({ ok: true, id: subtaskId });
   }
 
   const subtaskMatch = path.match(/^\/api\/subtasks\/(\d+)$/);
@@ -5099,8 +5589,30 @@ export async function handle(request, env) {
     const sid = parseInt(subtaskMatch[1]);
     if (request.method === 'PUT') {
       const b = await request.json();
+      const subtask = await env.DB.prepare(
+        `SELECT s.*,t.assigned_to AS task_assigned_to,t.team_project_id
+           FROM subtasks s JOIN tasks t ON t.id=s.task_id WHERE s.id=?`
+      ).bind(sid).first();
+      if (!subtask) return json({ error: 'Không tìm thấy công việc con' }, 404);
+      if (!isManager && Number(subtask.task_assigned_to) !== Number(me.id)) return json({ error: 'Không có quyền' }, 403);
+      const nextTitle = String(b.title ?? subtask.title).trim();
+      if (!nextTitle) return json({ error: 'Thiếu tiêu đề công việc con' }, 400);
+      const nextDone = b.is_done === undefined ? Number(subtask.is_done) : (b.is_done ? 1 : 0);
+      const nextAssigneeId = b.assigned_to ?? subtask.assigned_to;
       await env.DB.prepare('UPDATE subtasks SET title=?,is_done=?,assigned_to=?,due_date=? WHERE id=?')
-        .bind(b.title,b.is_done??0,b.assigned_to||null,b.due_date||null,sid).run();
+        .bind(nextTitle,nextDone,nextAssigneeId,b.due_date ?? subtask.due_date ?? null,sid).run();
+      let activityAction = null;
+      if (!Number(subtask.is_done) && nextDone) activityAction = 'subtask_completed';
+      if (Number(subtask.is_done) && !nextDone) activityAction = 'subtask_reopened';
+      if (activityAction) {
+        const assignee = await taskActivityAssignee(env, nextAssigneeId);
+        await recordTaskActivity(env, {
+          taskId: subtask.task_id, projectId: subtask.team_project_id, user: me, action: activityAction,
+          entityType: 'subtask', entityId: sid, entityTitle: nextTitle,
+          assigneeId: assignee.id, assigneeName: assignee.name,
+          detail: `${activityAction === 'subtask_completed' ? 'Hoàn thành' : 'Mở lại'} công việc con: ${nextTitle}`,
+        });
+      }
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
@@ -5697,8 +6209,47 @@ export async function handle(request, env) {
       month,
       suggestions: data.suggestions,
       approved: data.approved,
-      manual_sources: [{ source: 'manual', label: 'Y tuong/sang kien/top tuan/bao cao thu cong' }],
+      manual_sources: [{ source: 'manual', label: 'HCNS: báo cáo không chủ động / quản lý phải hỏi tiến độ' }],
     });
+  }
+
+  if (path === '/api/payroll-adjustments/dismiss' && request.method === 'POST') {
+    if (!isHcns(me)) return json({ error: 'Chỉ HCNS/Admin được xóa đề xuất' }, 403);
+    const body = await request.json().catch(() => ({}));
+    const month = String(body.month || '').trim();
+    const sourceRef = String(body.source_ref || '').trim();
+    if (!/^\d{4}-\d{2}$/.test(month) || !sourceRef || sourceRef.length > 160) {
+      return json({ error: 'Dữ liệu xóa đề xuất không hợp lệ' }, 400);
+    }
+    // Only dismiss a currently valid calculated proposal; never accept an
+    // arbitrary reference that could suppress another payroll period.
+    const data = await buildPayrollAdjustmentSuggestions(env, month);
+    if (!data.suggestions.some(suggestion => suggestion.source_ref === sourceRef)) {
+      return json({ error: 'Đề xuất không còn tồn tại hoặc đã được xử lý' }, 404);
+    }
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO payroll_adjustment_dismissals (month,source_ref,dismissed_by,dismissed_by_name)
+       VALUES (?,?,?,?)`
+    ).bind(month, sourceRef, me.id, me.full_name || '').run();
+    return json({ ok: true, month, source_ref: sourceRef });
+  }
+
+  if (path === '/api/payroll-adjustments/penalty-policy-reset-preview' && request.method === 'GET') {
+    if (!isHcns(me)) return json({ error: 'Chỉ HCNS/Admin được xem dọn dữ liệu phạt' }, 403);
+    const preview = await getPenaltyPolicyResetPreview(env);
+    return json({ ...preview.summary, conflicts: preview.conflicts });
+  }
+
+  if (path === '/api/payroll-adjustments/penalty-policy-reset' && request.method === 'POST') {
+    if (!isHcns(me)) return json({ error: 'Chỉ HCNS/Admin được cập nhật quy định phạt' }, 403);
+    const confirmation = String((await request.json().catch(() => ({}))).confirmation || '');
+    if (confirmation !== PENALTY_POLICY_RESET_CONFIRMATION) return json({ error: 'Xác nhận cập nhật quy định phạt không hợp lệ' }, 400);
+    try {
+      return json({ ok: true, ...await resetPenaltyPolicyAdjustments(env, me) });
+    } catch (error) {
+      if (error.conflicts) return json({ error: error.message, conflicts: error.conflicts }, 409);
+      throw error;
+    }
   }
 
   if (path === '/api/payroll-adjustments/apply' && request.method === 'POST') {
@@ -5708,6 +6259,9 @@ export async function handle(request, env) {
     if (!/^\d{4}-\d{2}$/.test(month)) return json({ error: 'Thieu hoac sai thang bang luong' }, 400);
     const incoming = Array.isArray(b.items) ? b.items : [];
     if (!incoming.length) return json({ error: 'Chua co de xuat nao duoc chon' }, 400);
+    if (incoming.some(item => item?.source === 'manual' || !item?.source_ref) && !isHcns(me)) {
+      return json({ error: 'Chỉ HCNS/Admin được tạo phạt thủ công' }, 403);
+    }
 
     const data = await buildPayrollAdjustmentSuggestions(env, month);
     const suggestionByRef = new Map(data.suggestions.map(s => [s.source_ref, s]));
@@ -5723,6 +6277,8 @@ export async function handle(request, env) {
         type: item.type || payrollAdjustmentType(item.source || 'manual', Number(item.amount || 0), Number(item.score_delta || 0)),
         source: 'manual',
         source_ref: `manual:${month}:${Date.now()}:${Math.random().toString(16).slice(2)}`,
+        violation_date: /^\d{4}-\d{2}-\d{2}$/.test(String(item.violation_date || '')) ? item.violation_date : null,
+        policy_month: month,
         amount: Number(item.amount || 0),
         score_delta: Number(item.score_delta || 0),
         reason: String(item.reason || '').trim(),
@@ -5747,9 +6303,9 @@ export async function handle(request, env) {
       if (existing) { skipped++; continue; }
 
       await env.DB.prepare(
-        `INSERT INTO payroll_adjustments (employee_id,payroll_id,month,type,source,source_ref,amount,score_delta,reason,status,created_by,created_by_name,approved_by,approved_by_name,approved_at,updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,'approved',?,?,?,?,datetime('now','localtime'),datetime('now','localtime'))`
-      ).bind(base.employee_id, payroll?.id || null, month, type, base.source, base.source_ref, amount, scoreDelta, String(item.reason || base.reason).trim(), me.id, me.full_name || '', me.id, me.full_name || '').run();
+        `INSERT INTO payroll_adjustments (employee_id,payroll_id,month,violation_date,policy_month,type,source,source_ref,amount,score_delta,reason,status,created_by,created_by_name,approved_by,approved_by_name,approved_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,'approved',?,?,?,?,datetime('now','localtime'),datetime('now','localtime'))`
+      ).bind(base.employee_id, payroll?.id || null, month, base.violation_date || null, base.policy_month || month, type, base.source, base.source_ref, amount, scoreDelta, String(item.reason || base.reason).trim(), me.id, me.full_name || '', me.id, me.full_name || '').run();
 
       if (amount > 0 && payroll) {
         const nextKpi = Number(payroll.kpi_bonus || 0) + (type === 'bonus' ? amount : 0);
@@ -6757,6 +7313,10 @@ export async function handle(request, env) {
   // CHAT MODULE
   // ═══════════════════════════════════════════════════════════════
 
+  if (path === '/api/chat/emojis' && request.method === 'GET') {
+    return json({ emojis: await getChatEmojis(), source: 'emojihub-with-unicode-fallback' });
+  }
+
   // ── Conversations ────────────────────────────────────────────────
   if (path === '/api/conversations' && request.method === 'GET') {
     const search = (url.searchParams.get('q') || '').trim();
@@ -6863,9 +7423,11 @@ export async function handle(request, env) {
   const msgListMatch = path.match(/^\/api\/conversations\/(\d+)\/messages$/);
   if (msgListMatch && request.method === 'GET') {
     const convId = parseInt(msgListMatch[1]);
+    if (!(await chatMember(env, convId, me.id))) return json({ error: 'Không có quyền truy cập hội thoại này' }, 403);
     const before = url.searchParams.get('before');
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '30'), 100);
-    let q = `SELECT m.*, u.full_name AS sender_name, u.employee_code AS sender_code, u.avatar_url AS sender_avatar
+    let q = `SELECT m.*, u.full_name AS sender_name, u.employee_code AS sender_code, u.avatar_url AS sender_avatar,
+       EXISTS(SELECT 1 FROM pinned_messages pm WHERE pm.message_id = m.id) AS is_pinned
        FROM messages m JOIN users u ON u.id = m.sender_id
        WHERE m.conversation_id = ?`;
     const binds = [convId];
@@ -6893,11 +7455,24 @@ export async function handle(request, env) {
     for (const a of attachments) { if (!attMap[a.message_id]) attMap[a.message_id] = []; attMap[a.message_id].push(a); }
     const reacMap = {};
     for (const r of reactions) { if (!reacMap[r.message_id]) reacMap[r.message_id] = []; reacMap[r.message_id].push(r); }
-    const messages = results.map(m => ({
+    let mentions = [];
+    if (messageIds.length) {
+      const placeholders = messageIds.map(() => '?').join(',');
+      const { results = [] } = await env.DB.prepare(
+        `SELECT mm.message_id, mm.mentioned_user_id AS user_id, u.full_name
+         FROM message_mentions mm JOIN users u ON u.id = mm.mentioned_user_id
+         WHERE mm.message_id IN (${placeholders})`
+      ).bind(...messageIds).all();
+      mentions = results;
+    }
+    const mentionMap = {};
+    for (const mention of mentions) { if (!mentionMap[mention.message_id]) mentionMap[mention.message_id] = []; mentionMap[mention.message_id].push(mention); }
+    const messages = await hydrateChatMessages(env, results.map(m => ({
       ...m,
       attachments: attMap[m.id] || [],
       reactions: reacMap[m.id] || [],
-    }));
+      mentions: mentionMap[m.id] || [],
+    })), me.id);
     return json({ messages, has_more: results.length >= limit });
   }
 
@@ -6905,11 +7480,62 @@ export async function handle(request, env) {
     const convId = parseInt(msgListMatch[1]);
     const b = await request.json().catch(() => ({}));
     const content = String(b.content || '').trim();
-    if (!content && !b.attachments?.length) return json({ error: 'Nội dung không được để trống' }, 400);
+    const messageType = ['text', 'poll', 'event'].includes(String(b.message_type || 'text')) ? String(b.message_type || 'text') : 'text';
+    const member = await chatMember(env, convId, me.id);
+    if (!member) return json({ error: 'Không có quyền truy cập hội thoại này' }, 403);
+    if (messageType !== 'text' && member.type === 'direct') return json({ error: 'Poll và sự kiện chỉ dùng trong nhóm' }, 400);
+    if (b.mention_all && (member.type === 'direct' || !/(^|\s)@all\b/i.test(content))) return json({ error: '@all chỉ dùng được trong nhóm' }, 400);
+    if (messageType === 'text' && !content && !b.attachments?.length) return json({ error: 'Nội dung không được để trống' }, 400);
+    const poll = b.poll && typeof b.poll === 'object' ? b.poll : null;
+    const event = b.event && typeof b.event === 'object' ? b.event : null;
+    if (messageType === 'poll') {
+      const question = String(poll?.question || '').trim();
+      const options = Array.isArray(poll?.options) ? poll.options.map(value => String(value || '').trim()).filter(Boolean) : [];
+      if (!question || question.length > 500 || options.length < 2 || options.length > 10 || options.some(value => value.length > 200)) {
+        return json({ error: 'Poll cần câu hỏi và từ 2 đến 10 lựa chọn hợp lệ' }, 400);
+      }
+    }
+    if (messageType === 'event') {
+      const title = String(event?.title || '').trim();
+      const description = String(event?.description || '').trim();
+      const location = String(event?.location || '').trim();
+      const meetingUrl = String(event?.meeting_url || '').trim();
+      const startAt = new Date(event?.start_at || '');
+      const endAt = event?.end_at ? new Date(event.end_at) : null;
+      if (!title || title.length > 200 || description.length > 2000 || location.length > 500 || (meetingUrl && !/^https?:\/\//i.test(meetingUrl)) || Number.isNaN(startAt.getTime()) || (endAt && (Number.isNaN(endAt.getTime()) || endAt < startAt))) {
+        return json({ error: 'Thông tin thời gian sự kiện không hợp lệ' }, 400);
+      }
+    }
     const result = await env.DB.prepare(
-      'INSERT INTO messages (conversation_id, sender_id, content, reply_to_id, task_id) VALUES (?, ?, ?, ?, ?)'
-    ).bind(convId, me.id, content || null, b.reply_to_id ? Number(b.reply_to_id) : null, b.task_id ? Number(b.task_id) : null).run();
+      'INSERT INTO messages (conversation_id, sender_id, content, reply_to_id, task_id, message_type) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(convId, me.id, content || null, b.reply_to_id ? Number(b.reply_to_id) : null, b.task_id ? Number(b.task_id) : null, messageType).run();
     const messageId = result.meta?.last_row_id;
+    const mentionedUserIds = await saveMessageMentions(env, {
+      conversationId: convId, messageId, mentionedBy: me.id, mentionIds: b.mention_ids,
+    });
+    await saveAllMention(env, { conversationId: convId, messageId, mentionedBy: me.id, requested: !!b.mention_all, content });
+    if (messageType === 'poll') {
+      await env.DB.prepare('INSERT INTO chat_polls (message_id,question,allows_multiple) VALUES (?,?,1)')
+        .bind(messageId, String(poll.question).trim()).run();
+      const options = poll.options.map(value => String(value || '').trim()).filter(Boolean);
+      for (let index = 0; index < options.length; index++) {
+        await env.DB.prepare('INSERT INTO chat_poll_options (message_id,option_text,position) VALUES (?,?,?)')
+          .bind(messageId, options[index], index).run();
+      }
+    }
+    if (messageType === 'event') {
+      await env.DB.prepare(
+        'INSERT INTO chat_events (message_id,title,start_at,end_at,description,location,meeting_url) VALUES (?,?,?,?,?,?,?)'
+      ).bind(messageId, String(event.title).trim(), event.start_at, event.end_at || null, String(event.description || '').trim() || null, String(event.location || '').trim() || null, String(event.meeting_url || '').trim() || null).run();
+      const { results: members } = await env.DB.prepare('SELECT user_id FROM conversation_members WHERE conversation_id=?').bind(convId).all();
+      const requested = Array.isArray(event.attendee_ids) ? new Set(event.attendee_ids.map(Number).filter(Boolean)) : null;
+      for (const attendee of members) {
+        if (!requested || requested.has(Number(attendee.user_id))) {
+          await env.DB.prepare('INSERT INTO chat_event_attendees (message_id,user_id,response) VALUES (?,?,?)')
+            .bind(messageId, attendee.user_id, Number(attendee.user_id) === Number(me.id) ? 'going' : 'invited').run();
+        }
+      }
+    }
     if (b.attachments?.length) {
       for (const att of b.attachments) {
         await env.DB.prepare(
@@ -6917,10 +7543,146 @@ export async function handle(request, env) {
         ).bind(messageId, att.type || 'file', att.file_name, att.file_size || 0, att.mime_type || '', att.storage_key, att.width || null, att.height || null).run();
       }
     }
-    const msg = await env.DB.prepare(
-      `SELECT m.*, u.full_name AS sender_name, u.employee_code AS sender_code, u.avatar_url AS sender_avatar FROM messages m JOIN users u ON u.id = m.sender_id WHERE m.id = ?`
-    ).bind(messageId).first();
-    return json({ message: msg });
+    const message = await getChatMessage(env, messageId, me.id);
+    await broadcastChatUpdate(env, convId, { type: 'message:new', message });
+    return json({ message, mentioned_user_ids: mentionedUserIds });
+  }
+
+  const convPinnedMatch = path.match(/^\/api\/conversations\/(\d+)\/pinned$/);
+  if (convPinnedMatch && request.method === 'GET') {
+    const convId = Number(convPinnedMatch[1]);
+    const member = await env.DB.prepare(
+      'SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?'
+    ).bind(convId, me.id).first();
+    if (!member) return json({ error: 'Không có quyền truy cập hội thoại này' }, 403);
+    const { results = [] } = await env.DB.prepare(
+      `SELECT m.*, u.full_name AS sender_name, u.avatar_url AS sender_avatar, pm.pinned_by, pm.created_at AS pinned_at,
+       1 AS is_pinned FROM pinned_messages pm JOIN messages m ON m.id = pm.message_id
+       JOIN users u ON u.id = m.sender_id WHERE pm.conversation_id = ? AND m.deleted_at IS NULL
+       ORDER BY pm.created_at DESC LIMIT 30`
+    ).bind(convId).all();
+    return json({ messages: await attachChatAttachments(env, results) });
+  }
+
+  const convSharedMatch = path.match(/^\/api\/conversations\/(\d+)\/shared\/(images|files|links)$/);
+  if (convSharedMatch && request.method === 'GET') {
+    const convId = Number(convSharedMatch[1]);
+    const kind = convSharedMatch[2];
+    const member = await env.DB.prepare(
+      'SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?'
+    ).bind(convId, me.id).first();
+    if (!member) return json({ error: 'Không có quyền truy cập hội thoại này' }, 403);
+    const limit = Math.min(Math.max(Number(url.searchParams.get('limit') || 24), 1), 100);
+    if (kind === 'images' || kind === 'files') {
+      const attachmentFilter = kind === 'images' ? "a.type = 'image'" : "a.type != 'image'";
+      const { results = [] } = await env.DB.prepare(
+        `SELECT a.*, m.id AS message_id, m.sender_id, m.created_at AS message_created_at, u.full_name AS sender_name
+         FROM message_attachments a JOIN messages m ON m.id = a.message_id JOIN users u ON u.id = m.sender_id
+         WHERE m.conversation_id = ? AND m.deleted_at IS NULL AND ${attachmentFilter}
+         ORDER BY a.id DESC LIMIT ?`
+      ).bind(convId, limit).all();
+      return json({ items: results });
+    }
+    const { results = [] } = await env.DB.prepare(
+      `SELECT m.id AS message_id, m.content, m.created_at AS message_created_at, u.full_name AS sender_name
+       FROM messages m JOIN users u ON u.id = m.sender_id
+       WHERE m.conversation_id = ? AND m.deleted_at IS NULL AND m.content LIKE '%http%'
+       ORDER BY m.id DESC LIMIT ?`
+    ).bind(convId, limit).all();
+    return json({ items: results });
+  }
+
+  const pollVoteMatch = path.match(/^\/api\/messages\/(\d+)\/poll-votes$/);
+  if (pollVoteMatch && request.method === 'PUT') {
+    const messageId = Number(pollVoteMatch[1]);
+    const message = await env.DB.prepare('SELECT conversation_id FROM messages WHERE id=? AND message_type=? AND deleted_at IS NULL')
+      .bind(messageId, 'poll').first();
+    if (!message) return json({ error: 'Không tìm thấy poll' }, 404);
+    if (!(await chatMember(env, message.conversation_id, me.id))) return json({ error: 'Không có quyền' }, 403);
+    const poll = await env.DB.prepare('SELECT is_closed FROM chat_polls WHERE message_id=?').bind(messageId).first();
+    if (!poll || poll.is_closed) return json({ error: 'Poll đã đóng' }, 400);
+    const body = await request.json().catch(() => ({}));
+    const optionIds = [...new Set((Array.isArray(body.option_ids) ? body.option_ids : []).map(Number).filter(Number.isInteger))];
+    const { results: options } = await env.DB.prepare('SELECT id FROM chat_poll_options WHERE message_id=?').bind(messageId).all();
+    const validIds = new Set(options.map(option => Number(option.id)));
+    if (optionIds.some(id => !validIds.has(id))) return json({ error: 'Lựa chọn không thuộc poll này' }, 400);
+    await env.DB.prepare('DELETE FROM chat_poll_votes WHERE user_id=? AND option_id IN (SELECT id FROM chat_poll_options WHERE message_id=?)')
+      .bind(me.id, messageId).run();
+    for (const optionId of optionIds) {
+      await env.DB.prepare('INSERT OR IGNORE INTO chat_poll_votes (option_id,user_id) VALUES (?,?)').bind(optionId, me.id).run();
+    }
+    const updated = await getChatMessage(env, messageId, me.id);
+    await broadcastChatUpdate(env, message.conversation_id, { type: 'poll:update', message_id: messageId, poll: updated?.poll });
+    return json({ poll: updated?.poll || null });
+  }
+
+  const pollCloseMatch = path.match(/^\/api\/messages\/(\d+)\/poll\/close$/);
+  if (pollCloseMatch && request.method === 'POST') {
+    const messageId = Number(pollCloseMatch[1]);
+    const message = await env.DB.prepare('SELECT conversation_id,sender_id FROM messages WHERE id=? AND message_type=? AND deleted_at IS NULL')
+      .bind(messageId, 'poll').first();
+    if (!message) return json({ error: 'Không tìm thấy poll' }, 404);
+    if (Number(message.sender_id) !== Number(me.id)) return json({ error: 'Chỉ người tạo được đóng poll' }, 403);
+    await env.DB.prepare("UPDATE chat_polls SET is_closed=1,closed_by=?,closed_at=datetime('now','localtime') WHERE message_id=?")
+      .bind(me.id, messageId).run();
+    const updated = await getChatMessage(env, messageId, me.id);
+    await broadcastChatUpdate(env, message.conversation_id, { type: 'poll:update', message_id: messageId, poll: updated?.poll });
+    return json({ poll: updated?.poll || null });
+  }
+
+  const eventResponseMatch = path.match(/^\/api\/messages\/(\d+)\/event-response$/);
+  const eventUpdateMatch = path.match(/^\/api\/messages\/(\d+)\/event$/);
+  if (eventUpdateMatch && request.method === 'PUT') {
+    const messageId = Number(eventUpdateMatch[1]);
+    const message = await env.DB.prepare('SELECT conversation_id,sender_id FROM messages WHERE id=? AND message_type=? AND deleted_at IS NULL')
+      .bind(messageId, 'event').first();
+    if (!message) return json({ error: 'Không tìm thấy sự kiện' }, 404);
+    if (Number(message.sender_id) !== Number(me.id)) return json({ error: 'Chỉ người tạo được sửa sự kiện' }, 403);
+    const event = (await request.json().catch(() => ({}))).event || {};
+    const title = String(event.title || '').trim();
+    const description = String(event.description || '').trim();
+    const location = String(event.location || '').trim();
+    const meetingUrl = String(event.meeting_url || '').trim();
+    const startAt = new Date(event.start_at || '');
+    const endAt = event.end_at ? new Date(event.end_at) : null;
+    if (!title || title.length > 200 || description.length > 2000 || location.length > 500 || (meetingUrl && !/^https?:\/\//i.test(meetingUrl)) || Number.isNaN(startAt.getTime()) || (endAt && (Number.isNaN(endAt.getTime()) || endAt < startAt))) {
+      return json({ error: 'Thông tin thời gian sự kiện không hợp lệ' }, 400);
+    }
+    await env.DB.prepare('UPDATE chat_events SET title=?,start_at=?,end_at=?,description=?,location=?,meeting_url=? WHERE message_id=? AND cancelled_at IS NULL')
+      .bind(title, event.start_at, event.end_at || null, description || null, location || null, meetingUrl || null, messageId).run();
+    const updated = await getChatMessage(env, messageId, me.id);
+    await broadcastChatUpdate(env, message.conversation_id, { type: 'event:update', message_id: messageId, event: updated?.event });
+    return json({ event: updated?.event || null });
+  }
+
+  if (eventResponseMatch && request.method === 'PUT') {
+    const messageId = Number(eventResponseMatch[1]);
+    const message = await env.DB.prepare('SELECT conversation_id FROM messages WHERE id=? AND message_type=? AND deleted_at IS NULL')
+      .bind(messageId, 'event').first();
+    if (!message || !(await chatMember(env, message.conversation_id, me.id))) return json({ error: 'Không có quyền hoặc sự kiện không tồn tại' }, 403);
+    const response = String((await request.json().catch(() => ({}))).response || '');
+    if (!['going', 'interested', 'declined'].includes(response)) return json({ error: 'Phản hồi không hợp lệ' }, 400);
+    const invited = await env.DB.prepare('SELECT 1 FROM chat_event_attendees WHERE message_id=? AND user_id=?').bind(messageId, me.id).first();
+    if (!invited) return json({ error: 'Bạn không nằm trong danh sách mời' }, 403);
+    await env.DB.prepare("UPDATE chat_event_attendees SET response=?,responded_at=datetime('now','localtime') WHERE message_id=? AND user_id=?")
+      .bind(response, messageId, me.id).run();
+    const updated = await getChatMessage(env, messageId, me.id);
+    await broadcastChatUpdate(env, message.conversation_id, { type: 'event:update', message_id: messageId, event: updated?.event });
+    return json({ event: updated?.event || null });
+  }
+
+  const eventCancelMatch = path.match(/^\/api\/messages\/(\d+)\/event$/);
+  if (eventCancelMatch && request.method === 'DELETE') {
+    const messageId = Number(eventCancelMatch[1]);
+    const message = await env.DB.prepare('SELECT conversation_id,sender_id FROM messages WHERE id=? AND message_type=? AND deleted_at IS NULL')
+      .bind(messageId, 'event').first();
+    if (!message) return json({ error: 'Không tìm thấy sự kiện' }, 404);
+    if (Number(message.sender_id) !== Number(me.id)) return json({ error: 'Chỉ người tạo được hủy sự kiện' }, 403);
+    await env.DB.prepare("UPDATE chat_events SET cancelled_at=datetime('now','localtime'),cancelled_by=? WHERE message_id=?")
+      .bind(me.id, messageId).run();
+    const updated = await getChatMessage(env, messageId, me.id);
+    await broadcastChatUpdate(env, message.conversation_id, { type: 'event:update', message_id: messageId, event: updated?.event });
+    return json({ event: updated?.event || null });
   }
 
   const msgMatch = path.match(/^\/api\/messages\/(\d+)$/);
@@ -6941,6 +7703,25 @@ export async function handle(request, env) {
     await env.DB.prepare('UPDATE messages SET deleted_at = ? WHERE id = ? AND sender_id = ?')
       .bind(now, msgId, me.id).run();
     return json({ ok: true });
+  }
+
+  const msgPinMatch = path.match(/^\/api\/messages\/(\d+)\/pin$/);
+  if (msgPinMatch && (request.method === 'POST' || request.method === 'DELETE')) {
+    const messageId = Number(msgPinMatch[1]);
+    const message = await env.DB.prepare('SELECT id, conversation_id FROM messages WHERE id = ? AND deleted_at IS NULL').bind(messageId).first();
+    if (!message) return json({ error: 'Không tìm thấy tin nhắn' }, 404);
+    const member = await env.DB.prepare(
+      'SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?'
+    ).bind(message.conversation_id, me.id).first();
+    if (!member) return json({ error: 'Không có quyền ghim tin nhắn này' }, 403);
+    if (request.method === 'POST') {
+      await env.DB.prepare('INSERT OR IGNORE INTO pinned_messages (conversation_id, message_id, pinned_by) VALUES (?, ?, ?)')
+        .bind(message.conversation_id, messageId, me.id).run();
+    } else {
+      await env.DB.prepare('DELETE FROM pinned_messages WHERE conversation_id = ? AND message_id = ?')
+        .bind(message.conversation_id, messageId).run();
+    }
+    return json({ ok: true, pinned: request.method === 'POST' });
   }
 
   const msgReactionMatch = path.match(/^\/api\/messages\/(\d+)\/reactions$/);
@@ -6977,6 +7758,7 @@ export async function handle(request, env) {
     await env.DB.prepare(
       'UPDATE conversation_members SET last_read_message_id = MAX(COALESCE(last_read_message_id,0), ?) WHERE conversation_id = ? AND user_id = ?'
     ).bind(msgId, msg.conversation_id, me.id).run();
+    await broadcastChatUpdate(env, msg.conversation_id, { type: 'conversation:read', user_id: me.id, message_id: msgId });
     return json({ ok: true });
   }
 
@@ -6999,9 +7781,37 @@ export async function handle(request, env) {
   }
 
   // ── File upload ───────────────────────────────────────────────────
+  const chatDocumentMatch = path.match(/^\/api\/documents\/(.+)$/);
+  if (chatDocumentMatch && request.method === 'GET') {
+    let storageKey = '';
+    try { storageKey = decodeURIComponent(chatDocumentMatch[1]); } catch (_) { return json({ error: 'Đường dẫn tệp không hợp lệ' }, 400); }
+    if (!storageKey.startsWith('chat/')) return json({ error: 'Không tìm thấy tệp' }, 404);
+    const attachment = await env.DB.prepare(
+      `SELECT a.file_name, a.mime_type, m.conversation_id
+       FROM message_attachments a JOIN messages m ON m.id = a.message_id
+       JOIN conversation_members cm ON cm.conversation_id = m.conversation_id AND cm.user_id = ?
+       WHERE a.storage_key = ? AND m.deleted_at IS NULL LIMIT 1`
+    ).bind(me.id, storageKey).first();
+    if (!attachment) return json({ error: 'Không có quyền truy cập tệp này' }, 403);
+    if (!env.HR_DOCUMENTS) return json({ error: 'Lưu trữ tệp chat chưa được cấu hình' }, 503);
+    const object = await env.HR_DOCUMENTS.get(storageKey);
+    if (!object) return json({ error: 'Tệp không tồn tại trên kho lưu trữ' }, 404);
+    const filename = safeDownloadName(attachment.file_name || storageKey.split('/').pop() || 'download');
+    const disposition = url.searchParams.get('disposition') === 'attachment' ? 'attachment' : 'inline';
+    return new Response(object.body, { headers: {
+      'Content-Type': attachment.mime_type || object.httpMetadata?.contentType || 'application/octet-stream',
+      'Content-Disposition': `${disposition}; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
+    } });
+  }
+
   const convUploadMatch = path.match(/^\/api\/conversations\/(\d+)\/upload$/);
   if (convUploadMatch && request.method === 'POST') {
     const convId = parseInt(convUploadMatch[1]);
+    const isMember = await env.DB.prepare(
+      'SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?'
+    ).bind(convId, me.id).first();
+    if (!isMember) return json({ error: 'Không có quyền tải tệp lên hội thoại này' }, 403);
     const formData = await request.formData();
     const file = formData.get('file');
     if (!file || typeof file.name !== 'string') return json({ error: 'Vui lòng chọn file' }, 400);

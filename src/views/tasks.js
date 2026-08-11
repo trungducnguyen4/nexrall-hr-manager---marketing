@@ -204,6 +204,115 @@ export async function renderTasks(el, me) {
     return projects.find(p => String(p.id) === String(selectedProjectId));
   }
 
+  function canViewProjectTimeline(project) {
+    return !!project && (canManage
+      || Number(project.created_by) === Number(me.id)
+      || Number(project.manager_id) === Number(me.id));
+  }
+
+  function openProjectTimeline(project) {
+    let kind = 'all';
+    let before = null;
+    let hasMore = false;
+
+    openModal(`Timeline · ${projectLabel(project)}`, `
+      <div class="project-timeline-toolbar">
+        <label for="project-timeline-filter">Hiển thị</label>
+        <select id="project-timeline-filter" aria-label="Lọc sự kiện Timeline">
+          <option value="all">Tất cả hoạt động</option>
+          <option value="created">Đã tạo</option>
+          <option value="completed">Đã hoàn thành</option>
+          <option value="reopened">Đã mở lại</option>
+        </select>
+      </div>
+      <div id="project-timeline-list" class="project-timeline-list">${loadingHTML()}</div>
+      <div id="project-timeline-more"></div>
+    `, `<button type="button" class="btn-secondary" id="btn-close-project-timeline">Đóng</button>`);
+    const modal = document.getElementById('modal');
+    modal?.classList.add('modal--project-timeline', 'modal--scroll-fixed');
+
+    const formatDate = value => {
+      const date = new Date(String(value || '').replace(' ', 'T'));
+      return Number.isNaN(date.getTime()) ? 'Không rõ ngày' : date.toLocaleDateString('vi-VN', {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      });
+    };
+    const formatTime = value => {
+      const date = new Date(String(value || '').replace(' ', 'T'));
+      return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+    };
+    const actionText = event => ({
+      task_created: 'đã tạo công việc',
+      task_completed: 'đã hoàn thành công việc',
+      task_reopened: 'đã mở lại công việc',
+      subtask_created: 'đã tạo công việc con',
+      subtask_completed: 'đã hoàn thành công việc con',
+      subtask_reopened: 'đã mở lại công việc con',
+    })[event.action] || 'đã cập nhật công việc';
+    const renderEvents = events => {
+      const list = document.getElementById('project-timeline-list');
+      if (!list) return;
+      if (!events.length) {
+        list.innerHTML = emptyHTML('🕘', 'Chưa có hoạt động phù hợp', 'Timeline bắt đầu ghi chính xác từ lúc tính năng được triển khai.');
+        return;
+      }
+      const groupsByDay = new Map();
+      events.forEach(event => {
+        const key = String(event.created_at || '').slice(0, 10) || 'unknown';
+        if (!groupsByDay.has(key)) groupsByDay.set(key, []);
+        groupsByDay.get(key).push(event);
+      });
+      list.innerHTML = [...groupsByDay.values()].map(group => `
+        <section class="project-timeline-day">
+          <h4>${esc(formatDate(group[0].created_at))}</h4>
+          ${group.map(event => {
+            const actor = event.actor_name || 'Người dùng';
+            const initials = event.avatar_initials || actor.split(/\s+/).filter(Boolean).slice(-2).map(part => part[0]).join('').toUpperCase() || '?';
+            return `<div class="project-timeline-event">
+              <div class="project-timeline-avatar" style="background:${esc(event.avatar_color || '#6366F1')}">${esc(initials)}</div>
+              <div class="project-timeline-event-copy">
+                <div><strong>${esc(actor)}</strong> ${esc(actionText(event))}</div>
+                <div class="project-timeline-entity">${esc(event.entity_title || 'Công việc không còn nhận diện được')}</div>
+                <time>${esc(formatTime(event.created_at))}${event.legacy ? ' · Dữ liệu cũ' : ''}</time>
+              </div>
+            </div>`;
+          }).join('')}
+        </section>
+      `).join('');
+    };
+    const renderMore = () => {
+      const more = document.getElementById('project-timeline-more');
+      if (!more) return;
+      more.innerHTML = hasMore ? '<button type="button" id="btn-project-timeline-more" class="btn-secondary btn-sm" style="width:100%;">Xem thêm</button>' : '';
+      more.querySelector('#btn-project-timeline-more')?.addEventListener('click', () => load(true));
+    };
+    const load = async (append = false) => {
+      const list = document.getElementById('project-timeline-list');
+      if (!list) return;
+      if (!append) list.innerHTML = loadingHTML();
+      try {
+        const response = await api.getTaskProjectTimeline(project.id, { kind, limit: 40, ...(append && before ? { before } : {}) });
+        const previous = append ? (list._timelineEvents || []) : [];
+        list._timelineEvents = [...previous, ...(response.events || [])];
+        before = response.next_before || null;
+        hasMore = !!response.has_more;
+        renderEvents(list._timelineEvents);
+        renderMore();
+      } catch (error) {
+        if (error.status === 403) toast('Bạn không có quyền xem Timeline của Project này', 'error');
+        list.innerHTML = emptyHTML('⚠️', 'Không thể tải Timeline', error.message || 'Vui lòng thử lại.');
+      }
+    };
+    document.getElementById('project-timeline-filter')?.addEventListener('change', event => {
+      kind = event.target.value;
+      before = null;
+      hasMore = false;
+      load(false);
+    });
+    document.getElementById('btn-close-project-timeline')?.addEventListener('click', closeModal);
+    load(false);
+  }
+
   function renderProjectsOld() {
     const list = el.querySelector('#project-list');
     if (!list) return;
@@ -305,6 +414,7 @@ export async function renderTasks(el, me) {
             <div style="font-size:12px;color:var(--text-2);margin-top:2px;">${esc(project.department || 'Chưa chọn phòng ban')} · ${Number(project.member_count || 0)} thành viên</div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            ${canViewProjectTimeline(project) ? `<button id="btn-project-timeline" class="btn-secondary btn-sm">🕘 Timeline</button>` : ''}
             ${canManage ? `<button id="btn-new-group" class="btn-secondary btn-sm">+ Nhóm công việc</button>` : ''}
           </div>
         </div>
@@ -323,6 +433,7 @@ export async function renderTasks(el, me) {
     `;
 
     board.querySelector('#btn-new-group')?.addEventListener('click', () => openGroupForm(null, selectedProjectId, groups.length, loadBoard));
+    board.querySelector('#btn-project-timeline')?.addEventListener('click', () => openProjectTimeline(project));
     board.querySelectorAll('[data-edit-group]').forEach(btn => btn.addEventListener('click', () => {
       const group = groups.find(g => String(g.id) === btn.dataset.editGroup);
       openGroupForm(group, selectedProjectId, groups.length, loadBoard);

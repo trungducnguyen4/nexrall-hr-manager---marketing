@@ -10,6 +10,7 @@ import { icon } from '../icons.js';
 
 let conversations = [];
 let activeConvId = null;
+let activeConversation = null;
 let messages = [];
 let ws = null;
 let wsAuthenticated = false;
@@ -21,6 +22,10 @@ let replyTo = null;
 let uploading = false;
 let loadingMore = false;
 let activeTab = 'all';
+let selectedMentions = [];
+let selectedMentionAll = false;
+const DEFAULT_REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '😡'];
+const FALLBACK_PICKER_EMOJIS = ['😀','😁','😂','🤣','😊','😍','😘','😎','🤔','😭','😡','👍','👎','❤️','🎉','✅','🔥','👏','🙏','👀'];
 
 // ── Render entry ────────────────────────────────────────────────────
 export async function renderChat(el, user) {
@@ -210,6 +215,9 @@ function renderConvItem(c, name) {
 // ── Open conversation ───────────────────────────────────────────────
 async function openConversation(convId) {
   activeConvId = convId;
+  activeConversation = null;
+  selectedMentions = [];
+  selectedMentionAll = false;
   replyTo = null;
   messages = [];
   disconnectWS();
@@ -227,6 +235,7 @@ async function openConversation(convId) {
 
   try {
     const conv = await api.get(`/api/conversations/${convId}`);
+    activeConversation = conv;
     const { messages: msgs } = await api.get(`/api/conversations/${convId}/messages?limit=50`);
     messages = msgs;
     renderConversation(conv);
@@ -314,8 +323,11 @@ function renderConversation(conv) {
   document.getElementById('chat-more-btn')?.addEventListener('click', () => openMoreMenu(conv));
   document.getElementById('chat-send-btn')?.addEventListener('click', sendMessage);
   document.getElementById('chat-attach-btn')?.addEventListener('click', () => document.getElementById('chat-file-input')?.click());
-  document.getElementById('chat-emoji-btn')?.addEventListener('click', openQuickReactionFromComposer);
+  document.getElementById('chat-emoji-btn')?.addEventListener('click', () => openEmojiPicker());
   document.getElementById('chat-task-btn')?.addEventListener('click', openTaskPicker);
+  document.getElementById('chat-mention-btn')?.addEventListener('click', insertMentionTrigger);
+  document.getElementById('chat-poll-btn')?.addEventListener('click', openPollComposer);
+  document.getElementById('chat-event-btn')?.addEventListener('click', openEventComposer);
   document.getElementById('chat-composer-reply-close')?.addEventListener('click', () => { replyTo = null; updateReplyPreview(); });
 
   // Hidden file input
@@ -330,7 +342,9 @@ function renderConversation(conv) {
   // Textarea auto-grow + Enter to send
   const input = document.getElementById('chat-input');
   input?.addEventListener('input', autoGrow);
+  input?.addEventListener('input', updateMentionSuggestions);
   input?.addEventListener('keydown', e => {
+    if (handleMentionKeydown(e)) return;
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   });
 
@@ -349,14 +363,22 @@ function renderComposer() {
         <button class="chat-composer-btn" id="chat-attach-btn" aria-label="Đính kèm">${icon('paperclip', 'md')}</button>
         <button class="chat-composer-btn" id="chat-emoji-btn" aria-label="Biểu cảm">${icon('smile', 'md')}</button>
         <button class="chat-composer-btn" id="chat-task-btn" aria-label="Gắn task">${icon('clipboardList', 'md')}</button>
+        <button class="chat-composer-btn" id="chat-mention-btn" aria-label="Tag thành viên">${icon('atSign', 'md')}</button>
+        <button class="chat-composer-btn" id="chat-poll-btn" aria-label="Tạo bình chọn">▥</button>
+        <button class="chat-composer-btn" id="chat-event-btn" aria-label="Đặt lịch hẹn">◷</button>
         <textarea class="chat-composer-input" id="chat-input" rows="1" placeholder="Nhập tin nhắn..."></textarea>
         <button class="chat-composer-send" id="chat-send-btn" aria-label="Gửi">${icon('send', 'md')}</button>
       </div>
+      <div class="chat-mention-menu" id="chat-mention-menu" role="listbox" aria-label="Gợi ý thành viên" hidden></div>
+      <div class="chat-composer-hint">Gõ <kbd>@</kbd> để tag thành viên. Nhấn Shift + Enter để xuống dòng.</div>
     </div>`;
 }
 
 function renderEmptyChat() {
   disconnectWS();
+  activeConversation = null;
+  selectedMentions = [];
+  selectedMentionAll = false;
   document.querySelectorAll('.chat-conv-item').forEach(i => i.classList.remove('active'));
   const convEl = document.getElementById('chat-conversation');
   convEl.innerHTML = renderMainEmpty();
@@ -372,6 +394,9 @@ function renderMessages() {
   let lastDate = '';
   let lastSender = null;
   let lastTime = null;
+  // Keep receipts compact like Zalo: only show them under the latest message
+  // sent by the current user, while still retaining the full read state.
+  const latestOwnMessageId = [...messages].reverse().find(message => Number(message.sender_id) === Number(me.id) && !message.deleted_at)?.id;
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
@@ -419,6 +444,9 @@ function renderMessages() {
       </div>`;
     }
 
+    const interactionHtml = !deleted && msg.poll ? renderPollCard(msg, isMe)
+      : (!deleted && msg.event ? renderEventCard(msg, isMe) : '');
+
     // Attachments
     let attHtml = '';
     for (const att of (msg.attachments || [])) {
@@ -445,25 +473,38 @@ function renderMessages() {
       reactHtml += '</div>';
     }
 
+    const readers = (msg.read_by || []).filter(reader => Number(reader.user_id) !== Number(me.id));
+    const showReadReceipt = isMe && !deleted && Number(msg.id) === Number(latestOwnMessageId) && readers.length > 0;
+    const shownReaders = readers.slice(0, 5);
+    const readerNames = readers.map(reader => reader.full_name || 'Thành viên').join(', ');
+    const readReceiptHtml = showReadReceipt ? `<div class="chat-read-receipts" title="Đã xem: ${esc(readerNames)}" aria-label="Đã xem bởi ${esc(readerNames)}">
+      ${shownReaders.map(reader => `<span class="chat-read-avatar-wrap" title="${esc(reader.full_name || 'Thành viên')}">${renderChatAvatar(reader, 18, 'chat-read-avatar')}</span>`).join('')}
+      ${readers.length > shownReaders.length ? `<span class="chat-read-more">+${readers.length - shownReaders.length}</span>` : ''}
+    </div>` : '';
+
     const content = deleted
       ? '<span class="chat-msg-bubble deleted">Tin nhắn đã bị xóa</span>'
-      : `<span class="chat-msg-bubble">${esc(msg.content || '')}</span>${edited ? '<span class="chat-msg-edited">(đã sửa)</span>' : ''}`;
+      : `${msg.content ? `<span class="chat-msg-bubble">${renderMessageContent(msg)}</span>` : ''}${edited ? '<span class="chat-msg-edited">(đã sửa)</span>' : ''}`;
 
-    html += `<div class="${cls}" data-msg-id="${msg.id}">
+    html += `<div class="${cls}${msg.is_pinned ? ' chat-msg-pinned' : ''}" data-msg-id="${msg.id}">
       ${showAvatar ? renderChatAvatar({ full_name: msg.sender_name, avatar_url: msg.sender_avatar }, 32, 'chat-msg-avatar') : '<div class="chat-msg-avatar"></div>'}
       <div class="chat-msg-body">
         ${!grouped ? `<div class="chat-msg-header">
           <span class="chat-msg-sender">${isMe ? 'Bạn' : esc(msg.sender_name || 'Unknown')}</span>
           <span class="chat-msg-time">${formatTime(msg.created_at)}</span>
+          ${msg.is_pinned ? `<span class="chat-msg-pin-label">${icon('pin', 'xs')} Đã ghim</span>` : ''}
         </div>` : ''}
         ${replyHtml}
         ${content}
+        ${interactionHtml}
         ${taskHtml}
         ${attHtml}
         ${reactHtml}
+        ${readReceiptHtml}
         ${!deleted ? `<div class="chat-msg-actions">
           <button class="chat-msg-action-btn" data-action="reply" data-msg-id="${msg.id}" aria-label="Trả lời">${icon('arrowRight', 'sm')}</button>
           <button class="chat-msg-action-btn" data-action="react" data-msg-id="${msg.id}" aria-label="Biểu cảm">${icon('smile', 'sm')}</button>
+          <button class="chat-msg-action-btn" data-action="pin" data-msg-id="${msg.id}" aria-label="${msg.is_pinned ? 'Bỏ ghim' : 'Ghim tin nhắn'}">${icon('pin', 'sm')}</button>
           ${isMe ? `<button class="chat-msg-action-btn" data-action="edit" data-msg-id="${msg.id}" aria-label="Sửa">${icon('pencil', 'sm')}</button>
           <button class="chat-msg-action-btn" data-action="delete" data-msg-id="${msg.id}" aria-label="Xóa">${icon('trash2', 'sm')}</button>` : ''}
         </div>` : ''}
@@ -483,6 +524,44 @@ function renderMessages() {
   bindMessageActions(container);
 }
 
+function renderPollCard(message, isOwner) {
+  const poll = message.poll;
+  const selected = new Set((poll.voted_option_ids || []).map(Number));
+  const total = (poll.options || []).reduce((sum, option) => sum + Number(option.vote_count || 0), 0);
+  return `<section class="chat-interaction-card chat-poll-card" data-poll-message-id="${message.id}">
+    <div class="chat-card-kicker">▥ BÌNH CHỌN ${poll.is_closed ? '· ĐÃ ĐÓNG' : ''}</div>
+    <div class="chat-card-title">${esc(poll.question)}</div>
+    <div class="chat-card-sub">Chọn nhiều phương án · ${total} lượt chọn</div>
+    <div class="chat-poll-options">${(poll.options || []).map(option => {
+      const checked = selected.has(Number(option.id));
+      return `<label class="chat-poll-option${checked ? ' selected' : ''}">
+        <input type="checkbox" data-poll-option="${option.id}" ${checked ? 'checked' : ''} ${poll.is_closed ? 'disabled' : ''}/>
+        <span>${esc(option.option_text)}</span><b>${Number(option.vote_count || 0)}</b>
+      </label>`;
+    }).join('')}</div>
+    ${!poll.is_closed ? `<div class="chat-card-actions"><button class="btn-secondary btn-xs" data-save-poll="${message.id}">Lưu lựa chọn</button>${isOwner ? `<button class="btn-secondary btn-xs" data-close-poll="${message.id}">Đóng poll</button>` : ''}</div>` : ''}
+  </section>`;
+}
+
+function renderEventCard(message, isOwner) {
+  const event = message.event;
+  const when = formatChatDateTime(event.start_at) + (event.end_at ? ` – ${formatTime(event.end_at)}` : '');
+  const responseLabels = { going: '✓ Tham gia', interested: 'Quan tâm', declined: 'Từ chối' };
+  return `<section class="chat-interaction-card chat-event-card${event.cancelled_at ? ' cancelled' : ''}" data-event-message-id="${message.id}">
+    <div class="chat-card-kicker">◷ SỰ KIỆN ${event.cancelled_at ? '· ĐÃ HỦY' : ''}</div>
+    <div class="chat-card-title">${esc(event.title)}</div>
+    <div class="chat-event-when">${esc(when)}</div>
+    ${event.location ? `<div class="chat-event-detail">📍 ${esc(event.location)}</div>` : ''}
+    ${event.meeting_url ? `<a class="chat-event-link" href="${esc(event.meeting_url)}" target="_blank" rel="noopener noreferrer">Mở link họp</a>` : ''}
+    ${event.description ? `<div class="chat-event-detail">${esc(event.description)}</div>` : ''}
+    <div class="chat-card-sub">${Number(event.going_count || 0)} tham gia · ${Number(event.attendee_count || 0)} người được mời</div>
+    ${!event.cancelled_at ? `<div class="chat-card-actions">
+      ${Object.entries(responseLabels).map(([value, label]) => `<button class="btn-secondary btn-xs ${event.my_response === value ? 'active' : ''}" data-event-response="${value}" data-event-message="${message.id}">${label}</button>`).join('')}
+      ${isOwner ? `<button class="btn-secondary btn-xs" data-edit-event="${message.id}">Sửa</button><button class="btn-secondary btn-xs" data-cancel-event="${message.id}">Hủy sự kiện</button>` : ''}
+    </div>` : ''}
+  </section>`;
+}
+
 function bindMessageActions(container) {
   container.querySelectorAll('.chat-msg-action-btn').forEach(btn => {
     btn.addEventListener('click', e => {
@@ -494,6 +573,7 @@ function bindMessageActions(container) {
 
       if (action === 'reply') setReplyTo(msg);
       else if (action === 'react') openQuickReaction(msgId);
+      else if (action === 'pin') togglePinMessage(msg);
       else if (action === 'edit') editMessage(msg);
       else if (action === 'delete') deleteMessage(msgId);
     });
@@ -513,6 +593,49 @@ function bindMessageActions(container) {
       } catch (e) { toast(e.message, 'error'); }
     });
   });
+
+  container.querySelectorAll('[data-save-poll]').forEach(btn => btn.addEventListener('click', async event => {
+    event.stopPropagation();
+    const messageId = Number(btn.dataset.savePoll);
+    const card = btn.closest('[data-poll-message-id]');
+    const option_ids = [...(card?.querySelectorAll('[data-poll-option]:checked') || [])].map(input => Number(input.dataset.pollOption));
+    try {
+      const { poll } = await api.put(`/api/messages/${messageId}/poll-votes`, { option_ids });
+      const message = messages.find(item => Number(item.id) === messageId);
+      if (message) { message.poll = poll; renderMessages(); }
+    } catch (error) { toast(error.message, 'error'); }
+  }));
+  container.querySelectorAll('[data-close-poll]').forEach(btn => btn.addEventListener('click', async event => {
+    event.stopPropagation();
+    try {
+      const { poll } = await api.post(`/api/messages/${Number(btn.dataset.closePoll)}/poll/close`, {});
+      const message = messages.find(item => Number(item.id) === Number(btn.dataset.closePoll));
+      if (message) { message.poll = poll; renderMessages(); }
+    } catch (error) { toast(error.message, 'error'); }
+  }));
+  container.querySelectorAll('[data-event-response]').forEach(btn => btn.addEventListener('click', async event => {
+    event.stopPropagation();
+    const messageId = Number(btn.dataset.eventMessage);
+    try {
+      const { event: eventData } = await api.put(`/api/messages/${messageId}/event-response`, { response: btn.dataset.eventResponse });
+      const message = messages.find(item => Number(item.id) === messageId);
+      if (message) { message.event = eventData; renderMessages(); }
+    } catch (error) { toast(error.message, 'error'); }
+  }));
+  container.querySelectorAll('[data-edit-event]').forEach(btn => btn.addEventListener('click', event => {
+    event.stopPropagation();
+    const message = messages.find(item => Number(item.id) === Number(btn.dataset.editEvent));
+    if (message?.event) editEvent(message);
+  }));
+  container.querySelectorAll('[data-cancel-event]').forEach(btn => btn.addEventListener('click', async event => {
+    event.stopPropagation();
+    if (!confirm('Hủy sự kiện này?')) return;
+    try {
+      const { event: eventData } = await api.delete(`/api/messages/${Number(btn.dataset.cancelEvent)}/event`);
+      const message = messages.find(item => Number(item.id) === Number(btn.dataset.cancelEvent));
+      if (message) { message.event = eventData; renderMessages(); }
+    } catch (error) { toast(error.message, 'error'); }
+  }));
 
   container.querySelectorAll('.chat-reply-preview').forEach(r => {
     r.addEventListener('click', () => {
@@ -555,6 +678,9 @@ async function sendMessage() {
   const success = await trySend(content);
   if (success) {
     if (input) { input.value = ''; autoGrow(input); }
+    selectedMentions = [];
+    selectedMentionAll = false;
+    closeMentionMenu();
     replyTo = null;
     updateReplyPreview();
   }
@@ -563,24 +689,30 @@ async function sendMessage() {
 }
 
 async function trySend(content) {
-  const payload = { type: 'message:send', content };
+  const mention_ids = selectedMentions
+    .filter(member => content.includes(`@${member.full_name}`))
+    .map(member => Number(member.user_id));
+  const mention_all = /(^|\s)@all\b/i.test(content);
+  const payload = { type: 'message:send', content, mention_ids, mention_all };
   if (replyTo) payload.reply_to_id = replyTo.id;
 
-  if (ws && ws.readyState === WebSocket.OPEN && wsAuthenticated) {
+  // @all needs an authoritative REST response so the sender sees a clear
+  // permission error in a direct conversation instead of clearing the draft.
+  if (!mention_all && ws && ws.readyState === WebSocket.OPEN && wsAuthenticated) {
     ws.send(JSON.stringify(payload));
     return true;
   }
 
   if (ws && ws.readyState === WebSocket.OPEN && !wsAuthenticated) {
     await waitForWsAuth(3000);
-    if (wsAuthenticated) {
+    if (wsAuthenticated && !mention_all) {
       ws.send(JSON.stringify(payload));
       return true;
     }
   }
 
   try {
-    const { message } = await api.post(`/api/conversations/${activeConvId}/messages`, { content, reply_to_id: replyTo?.id });
+    const { message } = await api.post(`/api/conversations/${activeConvId}/messages`, { content, reply_to_id: replyTo?.id, mention_ids, mention_all });
     if (message && !messages.find(m => m.id === message.id)) {
       messages.push(message);
       renderMessages();
@@ -646,26 +778,146 @@ async function deleteMessage(msgId) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
+async function togglePinMessage(message) {
+  try {
+    if (message.is_pinned) await api.delete(`/api/messages/${message.id}/pin`);
+    else await api.post(`/api/messages/${message.id}/pin`, {});
+    await refreshMessages();
+    toast(message.is_pinned ? 'Đã bỏ ghim tin nhắn' : 'Đã ghim tin nhắn', 'success');
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
 // ── Quick reaction ──────────────────────────────────────────────────
-function openQuickReaction(msgId) {
-  const emojis = ['👍', '❤️', '😄', '🎉', '👀', '✅', '👎', '🔥'];
-  openModal('Biểu cảm', `<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;padding:16px">
-    ${emojis.map(e => `<button class="chat-composer-btn" style="font-size:26px;width:48px;height:48px" data-emoji="${e}">${e}</button>`).join('')}
+async function openQuickReaction(msgId) {
+  await openEmojiPicker(msgId);
+}
+
+async function openEmojiPicker(reactionMessageId = null) {
+  let emojis = FALLBACK_PICKER_EMOJIS;
+  try {
+    const response = await api.get('/api/chat/emojis');
+    emojis = [...new Set([...DEFAULT_REACTION_EMOJIS, ...(response.emojis || [])])].slice(0, 120);
+  } catch (_) {}
+  openModal(reactionMessageId ? 'Biểu cảm tin nhắn' : 'Chọn emoji', `<div class="chat-emoji-picker">
+    <div class="chat-emoji-defaults">${DEFAULT_REACTION_EMOJIS.map(emoji => `<button type="button" data-chat-emoji="${emoji}">${emoji}</button>`).join('')}</div>
+    <div class="chat-emoji-grid">${emojis.map(emoji => `<button type="button" data-chat-emoji="${emoji}">${emoji}</button>`).join('')}</div>
   </div>`);
-  document.querySelectorAll('#modal [data-emoji]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      try {
-        await api.post(`/api/messages/${msgId}/reactions`, { emoji: btn.dataset.emoji });
-        closeModal();
-        await refreshMessages();
-      } catch (err) { toast(err.message, 'error'); }
-    });
+  document.querySelectorAll('#modal [data-chat-emoji]').forEach(btn => btn.addEventListener('click', async () => {
+    const emoji = btn.dataset.chatEmoji;
+    if (!reactionMessageId) {
+      const input = document.getElementById('chat-input');
+      if (input) {
+        input.setRangeText(emoji, input.selectionStart || 0, input.selectionEnd || 0, 'end');
+        input.focus(); autoGrow(input);
+      }
+      closeModal();
+      return;
+    }
+    try {
+      await api.post(`/api/messages/${reactionMessageId}/reactions`, { emoji });
+      closeModal();
+      await refreshMessages();
+    } catch (error) { toast(error.message, 'error'); }
+  }));
+}
+
+function openPollComposer() {
+  if (activeConversation?.type === 'direct') return toast('Bình chọn chỉ dùng trong nhóm', 'info');
+  openModal('Tạo cuộc bình chọn', `<div class="field"><label>Câu hỏi *</label><textarea id="chat-poll-question" rows="3" placeholder="Bạn muốn hỏi điều gì?"></textarea></div>
+    <div class="field"><label>Lựa chọn (chọn nhiều đáp án)</label>
+      <div id="chat-poll-options" class="chat-poll-options">
+        <input class="chat-poll-input" placeholder="Lựa chọn 1"/><input class="chat-poll-input" placeholder="Lựa chọn 2"/>
+      </div>
+      <button type="button" class="chat-poll-add-option" id="chat-poll-add-option">+ Thêm lựa chọn</button>
+      <div class="chat-poll-option-note">Tối thiểu 2, tối đa 10 lựa chọn.</div>
+    </div>`, '<button class="btn-secondary" id="chat-poll-cancel">Hủy</button><button class="btn-primary" id="chat-poll-create">Tạo bình chọn</button>');
+  const optionsEl = document.getElementById('chat-poll-options');
+  const addOptionBtn = document.getElementById('chat-poll-add-option');
+  const addOption = () => {
+    const count = optionsEl?.querySelectorAll('.chat-poll-input').length || 0;
+    if (!optionsEl || count >= 10) return;
+    const input = document.createElement('input');
+    input.className = 'chat-poll-input';
+    input.placeholder = `Lựa chọn ${count + 1}${count > 1 ? ' (không bắt buộc)' : ''}`;
+    optionsEl.append(input);
+    input.focus();
+    if (addOptionBtn) addOptionBtn.disabled = count + 1 >= 10;
+  };
+  addOptionBtn?.addEventListener('click', addOption);
+  document.getElementById('chat-poll-cancel')?.addEventListener('click', closeModal);
+  document.getElementById('chat-poll-create')?.addEventListener('click', async event => {
+    const question = document.getElementById('chat-poll-question')?.value.trim() || '';
+    const options = [...document.querySelectorAll('.chat-poll-input')].map(input => input.value.trim()).filter(Boolean);
+    event.currentTarget.disabled = true;
+    try {
+      const { message } = await api.post(`/api/conversations/${activeConvId}/messages`, { message_type: 'poll', poll: { question, options } });
+      if (message && !messages.some(item => item.id === message.id)) { messages.push(message); renderMessages(); scrollToBottom(); }
+      closeModal();
+    } catch (error) { toast(error.message, 'error'); event.currentTarget.disabled = false; }
   });
 }
 
-function openQuickReactionFromComposer() {
-  if (!activeConvId) return;
-  openQuickReaction(messages[messages.length - 1]?.id || 0);
+function openEventComposer() {
+  if (activeConversation?.type === 'direct') return toast('Sự kiện chỉ dùng trong nhóm', 'info');
+  const members = activeConversation.members || [];
+  const memberRows = members.map(member => `<label class="chat-event-invitee"><input type="checkbox" value="${member.user_id}" checked/> ${esc(member.full_name || '')}</label>`).join('');
+  openModal('Đặt lịch trong nhóm', `<div class="field"><label>Tiêu đề *</label><input id="chat-event-title" placeholder="Ví dụ: Họp cập nhật tiến độ"/></div>
+    <div class="input-row"><div class="field"><label>Bắt đầu *</label><input id="chat-event-start" type="datetime-local"/></div><div class="field"><label>Kết thúc</label><input id="chat-event-end" type="datetime-local"/></div></div>
+    <div class="field"><label>Địa điểm hoặc link họp</label><input id="chat-event-location" placeholder="Phòng họp / https://..."/></div>
+    <div class="field"><label>Mô tả</label><textarea id="chat-event-description" rows="3"></textarea></div>
+    <div class="field"><label>Mời thành viên</label><div class="chat-event-invitees">${memberRows}</div></div>`, '<button class="btn-secondary" id="chat-event-cancel">Hủy</button><button class="btn-primary" id="chat-event-create">Tạo sự kiện</button>');
+  document.getElementById('chat-event-cancel')?.addEventListener('click', closeModal);
+  document.getElementById('chat-event-create')?.addEventListener('click', async event => {
+    const location = document.getElementById('chat-event-location')?.value.trim() || '';
+    const payload = {
+      message_type: 'event',
+      event: {
+        title: document.getElementById('chat-event-title')?.value.trim() || '',
+        start_at: document.getElementById('chat-event-start')?.value || '',
+        end_at: document.getElementById('chat-event-end')?.value || '',
+        location: location.startsWith('http') ? '' : location,
+        meeting_url: location.startsWith('http') ? location : '',
+        description: document.getElementById('chat-event-description')?.value.trim() || '',
+        attendee_ids: [...document.querySelectorAll('.chat-event-invitee input:checked')].map(input => Number(input.value)),
+      },
+    };
+    event.currentTarget.disabled = true;
+    try {
+      const { message } = await api.post(`/api/conversations/${activeConvId}/messages`, payload);
+      if (message && !messages.some(item => item.id === message.id)) { messages.push(message); renderMessages(); scrollToBottom(); }
+      closeModal();
+    } catch (error) { toast(error.message, 'error'); event.currentTarget.disabled = false; }
+  });
+}
+
+function editEvent(message) {
+  const existing = message.event;
+  const toLocalValue = value => value ? String(value).replace(' ', 'T').slice(0, 16) : '';
+  openModal('Sửa sự kiện', `<div class="field"><label>Tiêu đề *</label><input id="chat-event-edit-title" value="${esc(existing.title || '')}"/></div>
+    <div class="input-row"><div class="field"><label>Bắt đầu *</label><input id="chat-event-edit-start" type="datetime-local" value="${esc(toLocalValue(existing.start_at))}"/></div><div class="field"><label>Kết thúc</label><input id="chat-event-edit-end" type="datetime-local" value="${esc(toLocalValue(existing.end_at))}"/></div></div>
+    <div class="field"><label>Địa điểm hoặc link họp</label><input id="chat-event-edit-location" value="${esc(existing.meeting_url || existing.location || '')}"/></div>
+    <div class="field"><label>Mô tả</label><textarea id="chat-event-edit-description" rows="3">${esc(existing.description || '')}</textarea></div>`, '<button class="btn-secondary" id="chat-event-edit-cancel">Hủy</button><button class="btn-primary" id="chat-event-edit-save">Lưu thay đổi</button>');
+  document.getElementById('chat-event-edit-cancel')?.addEventListener('click', closeModal);
+  document.getElementById('chat-event-edit-save')?.addEventListener('click', async event => {
+    const location = document.getElementById('chat-event-edit-location')?.value.trim() || '';
+    const payload = { event: {
+      title: document.getElementById('chat-event-edit-title')?.value.trim() || '',
+      start_at: document.getElementById('chat-event-edit-start')?.value || '',
+      end_at: document.getElementById('chat-event-edit-end')?.value || '',
+      location: location.startsWith('http') ? '' : location,
+      meeting_url: location.startsWith('http') ? location : '',
+      description: document.getElementById('chat-event-edit-description')?.value.trim() || '',
+    }};
+    event.currentTarget.disabled = true;
+    try {
+      const { event: eventData } = await api.put(`/api/messages/${message.id}/event`, payload);
+      const current = messages.find(item => Number(item.id) === Number(message.id));
+      if (current) { current.event = eventData; renderMessages(); }
+      closeModal();
+    } catch (error) { toast(error.message, 'error'); event.currentTarget.disabled = false; }
+  });
 }
 
 // ── File upload ─────────────────────────────────────────────────────
@@ -748,6 +1000,19 @@ function openSearchModal() {
 // ── More menu ───────────────────────────────────────────────────────
 function openMoreMenu(conv) {
   const isDM = conv.type === 'direct';
+  const attachmentCount = messages.reduce((total, message) => total + (message.attachments || []).length, 0);
+  const latestMessage = messages[messages.length - 1];
+  const summary = `
+    <div class="chat-info-hero">
+      ${renderChatAvatar(isDM ? (conv.members || []).find(m => m.user_id !== me.id) : { full_name: conv.name || 'Nhóm' }, 54, 'chat-info-avatar')}
+      <div><strong>${esc(isDM ? ((conv.members || []).find(m => m.user_id !== me.id)?.full_name || 'Hội thoại trực tiếp') : (conv.name || 'Nhóm làm việc'))}</strong>
+      <span>${isDM ? 'Hội thoại trực tiếp' : `Nhóm làm việc · ${conv.members.length} thành viên`}</span></div>
+    </div>
+    <div class="chat-info-stats">
+      <div><strong>${conv.members.length}</strong><span>Thành viên</span></div>
+      <div><strong>${attachmentCount}</strong><span>Tệp gần đây</span></div>
+      <div><strong>${latestMessage ? formatChatTime(latestMessage.created_at) : '—'}</strong><span>Hoạt động cuối</span></div>
+    </div>`;
   const members = (conv.members || []).map(m => `
     <div style="display:flex;align-items:center;gap:10px;padding:8px 0">
       ${renderChatAvatar(m, 34)}
@@ -763,7 +1028,9 @@ function openMoreMenu(conv) {
 
   openModal('Thông tin cuộc trò chuyện', `
     <div style="padding:4px">
+      ${summary}
       ${actions}
+      <div id="chat-shared-panel" class="chat-shared-panel">${loadingHTML()}</div>
       <div style="font-size:12px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Thành viên (${conv.members.length})</div>
       <div>${members}</div>
     </div>`,
@@ -772,6 +1039,98 @@ function openMoreMenu(conv) {
 
   document.getElementById('chat-rename-btn')?.addEventListener('click', () => renameConversation(conv));
   document.getElementById('chat-add-member-btn')?.addEventListener('click', () => addMemberFlow(conv));
+  loadConversationInfoPanel(conv.id);
+}
+
+async function loadConversationInfoPanel(conversationId) {
+  const panel = document.getElementById('chat-shared-panel');
+  if (!panel) return;
+  try {
+    const [pinned, images, files, links] = await Promise.all([
+      api.get(`/api/conversations/${conversationId}/pinned`),
+      api.get(`/api/conversations/${conversationId}/shared/images?limit=12`),
+      api.get(`/api/conversations/${conversationId}/shared/files?limit=6`),
+      api.get(`/api/conversations/${conversationId}/shared/links?limit=30`),
+    ]);
+    const linkItems = (links.items || []).flatMap(item => extractLinks(item.content).map(url => ({ ...item, url }))).slice(0, 6);
+    panel.innerHTML = `
+      ${renderPinnedSection(pinned.messages || [])}
+      ${renderSharedImages(images.items || [])}
+      ${renderSharedFiles(files.items || [])}
+      ${renderSharedLinks(linkItems)}
+    `;
+    bindSharedPanelActions(panel, { pinned: pinned.messages || [], images: images.items || [], files: files.items || [], links: linkItems });
+  } catch (error) {
+    panel.innerHTML = `<div class="chat-shared-error">Không thể tải nội dung đã chia sẻ: ${esc(error.message)}</div>`;
+  }
+}
+
+function renderPinnedSection(items) {
+  return `<section class="chat-info-section">
+    <div class="chat-info-section-head"><span>${icon('pin', 'sm')} Tin nhắn đã ghim</span><span class="chat-info-count">${items.length}</span></div>
+    ${items.length ? `<div class="chat-pinned-list">${items.slice(0, 3).map(item => `
+      <button class="chat-pinned-item" data-jump-message="${item.id}">
+        <strong>${esc(item.sender_name || 'Thành viên')}</strong><span>${esc((item.content || (item.attachments?.length ? 'Tệp đính kèm' : 'Tin nhắn')).slice(0, 86))}</span>
+      </button>`).join('')}</div>` : '<div class="chat-shared-empty">Chưa có tin nhắn nào được ghim.</div>'}
+  </section>`;
+}
+
+function renderSharedImages(items) {
+  return `<section class="chat-info-section">
+    <div class="chat-info-section-head"><span>${icon('image', 'sm')} Ảnh</span>${items.length > 6 ? '<button class="chat-info-all" data-shared-all="images">Xem tất cả</button>' : ''}</div>
+    ${items.length ? `<div class="chat-media-grid">${items.slice(0, 6).map(item => `
+      <button class="chat-media-thumb" data-open-image="${esc(item.storage_key)}" aria-label="Mở ${esc(item.file_name)}"><img src="${getFileUrl(item.storage_key)}" alt="${esc(item.file_name)}" /></button>`).join('')}</div>` : '<div class="chat-shared-empty">Chưa có ảnh hoặc video được chia sẻ.</div>'}
+  </section>`;
+}
+
+function renderSharedFiles(items) {
+  return `<section class="chat-info-section">
+    <div class="chat-info-section-head"><span>${icon('fileText', 'sm')} File</span>${items.length > 3 ? '<button class="chat-info-all" data-shared-all="files">Xem tất cả</button>' : ''}</div>
+    ${items.length ? `<div class="chat-shared-file-list">${items.slice(0, 3).map(item => `
+      <button class="chat-shared-file" data-open-file="${esc(item.storage_key)}">
+        <span class="chat-shared-file-icon">${icon('fileText', 'md')}</span><span><strong>${esc(item.file_name || 'Tệp đính kèm')}</strong><small>${formatSize(item.file_size)} · ${formatChatTime(item.message_created_at)}</small></span>
+      </button>`).join('')}</div>` : '<div class="chat-shared-empty">Chưa có file được chia sẻ.</div>'}
+  </section>`;
+}
+
+function renderSharedLinks(items) {
+  return `<section class="chat-info-section">
+    <div class="chat-info-section-head"><span>${icon('link', 'sm')} Link</span>${items.length > 3 ? '<button class="chat-info-all" data-shared-all="links">Xem tất cả</button>' : ''}</div>
+    ${items.length ? `<div class="chat-shared-link-list">${items.slice(0, 3).map(item => `
+      <a class="chat-shared-link" href="${esc(item.url)}" target="_blank" rel="noopener noreferrer"><span class="chat-shared-link-icon">${icon('link', 'sm')}</span><span><strong>${esc(linkLabel(item.url))}</strong><small>${esc(linkDomain(item.url))} · ${formatChatTime(item.message_created_at)}</small></span></a>`).join('')}</div>` : '<div class="chat-shared-empty">Chưa có link được chia sẻ.</div>'}
+  </section>`;
+}
+
+function bindSharedPanelActions(panel, data) {
+  panel.querySelectorAll('[data-jump-message]').forEach(button => button.addEventListener('click', () => {
+    closeModal();
+    const target = document.querySelector(`.chat-msg[data-msg-id="${Number(button.dataset.jumpMessage)}"]`);
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    else toast('Tin nhắn này nằm ngoài lịch sử đang tải.', 'info');
+  }));
+  panel.querySelectorAll('[data-open-image]').forEach(button => button.addEventListener('click', () => window.open(getFileUrl(button.dataset.openImage), '_blank', 'noopener')));
+  panel.querySelectorAll('[data-open-file]').forEach(button => button.addEventListener('click', () => window.open(getFileUrl(button.dataset.openFile), '_blank', 'noopener')));
+  panel.querySelectorAll('[data-shared-all]').forEach(button => button.addEventListener('click', () => openSharedItemsModal(button.dataset.sharedAll, data)));
+}
+
+function openSharedItemsModal(kind, data) {
+  const items = data[kind] || [];
+  const title = kind === 'images' ? 'Ảnh đã chia sẻ' : kind === 'files' ? 'File đã chia sẻ' : 'Link đã chia sẻ';
+  const content = kind === 'images' ? `<div class="chat-media-grid chat-media-grid-all">${items.map(item => `<button class="chat-media-thumb" data-open-image="${esc(item.storage_key)}"><img src="${getFileUrl(item.storage_key)}" alt="${esc(item.file_name)}" /></button>`).join('')}</div>`
+    : kind === 'files' ? `<div class="chat-shared-file-list">${items.map(item => `<button class="chat-shared-file" data-open-file="${esc(item.storage_key)}"><span class="chat-shared-file-icon">${icon('fileText', 'md')}</span><span><strong>${esc(item.file_name || 'Tệp đính kèm')}</strong><small>${formatSize(item.file_size)} · ${formatChatTime(item.message_created_at)}</small></span></button>`).join('')}</div>`
+    : `<div class="chat-shared-link-list">${items.map(item => `<a class="chat-shared-link" href="${esc(item.url)}" target="_blank" rel="noopener noreferrer"><span class="chat-shared-link-icon">${icon('link', 'sm')}</span><span><strong>${esc(linkLabel(item.url))}</strong><small>${esc(linkDomain(item.url))} · ${formatChatTime(item.message_created_at)}</small></span></a>`).join('')}</div>`;
+  openModal(title, `<div class="chat-shared-all-modal">${content || '<div class="chat-shared-empty">Chưa có nội dung để hiển thị.</div>'}</div>`);
+  document.querySelectorAll('#modal [data-open-image]').forEach(button => button.addEventListener('click', () => window.open(getFileUrl(button.dataset.openImage), '_blank', 'noopener')));
+  document.querySelectorAll('#modal [data-open-file]').forEach(button => button.addEventListener('click', () => window.open(getFileUrl(button.dataset.openFile), '_blank', 'noopener')));
+}
+
+function extractLinks(content) { return String(content || '').match(/https?:\/\/[^\s<]+/g) || []; }
+function linkDomain(url) { try { return new URL(url).hostname.replace(/^www\./, ''); } catch (_) { return url; } }
+function linkLabel(url) {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.hostname.replace(/^www\./, '')}${parsed.pathname.replace(/\/$/, '')}` || url;
+  } catch (_) { return url; }
 }
 
 async function renameConversation(conv) {
@@ -931,9 +1290,15 @@ function connectWS(convId) {
         }
       } else if (data.type === 'message:edit' || data.type === 'message:delete') {
         refreshMessages();
+      } else if (data.type === 'conversation:read') {
+        applyReadReceipt(data);
       } else if (data.type === 'reaction:update') {
         const msg = messages.find(m => m.id === data.message_id);
         if (msg) { msg.reactions = data.reactions; renderMessages(); }
+      } else if (data.type === 'poll:update') {
+        refreshMessages();
+      } else if (data.type === 'event:update') {
+        refreshMessages();
       }
     };
     ws.onclose = () => {
@@ -1012,6 +1377,33 @@ function autoGrow(el) {
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, 140) + 'px';
 }
+
+function applyReadReceipt(data) {
+  if (Number(data.user_id) === Number(me.id) || !data.message_id) return;
+  const reader = activeConversation?.members?.find(member => Number(member.user_id) === Number(data.user_id));
+  if (!reader) return;
+  let changed = false;
+  for (const message of messages) {
+    if (Number(message.sender_id) !== Number(me.id) || Number(message.id) > Number(data.message_id)) continue;
+    message.read_by ||= [];
+    if (!message.read_by.some(item => Number(item.user_id) === Number(reader.user_id))) {
+      message.read_by.push(reader);
+      changed = true;
+    }
+  }
+  if (changed) renderMessages();
+}
+function renderMessageContent(message) {
+  let html = esc(message.content || '');
+  if (message.mention_all) html = html.replace(/(^|\s)(@all)\b/gi, '$1<mark class="chat-mention chat-mention-all">$2</mark>');
+  for (const mention of (message.mentions || [])) {
+    const label = `@${mention.full_name || ''}`;
+    if (!mention.full_name) continue;
+    const escapedLabel = esc(label);
+    html = html.split(escapedLabel).join(`<mark class="chat-mention" title="Đã tag ${esc(mention.full_name)}">${escapedLabel}</mark>`);
+  }
+  return html;
+}
 function timeDiffMin(a, b) {
   const da = new Date(a.endsWith('Z') ? a : a + 'Z');
   const db = new Date(b.endsWith('Z') ? b : b + 'Z');
@@ -1021,6 +1413,11 @@ function formatTime(iso) {
   if (!iso) return '';
   const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z');
   return d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+}
+function formatChatDateTime(value) {
+  if (!value) return '';
+  const date = new Date(String(value).endsWith('Z') ? value : String(value).replace(' ', 'T'));
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 function formatDate(iso) {
   const d = new Date(iso + 'T00:00:00Z');
@@ -1061,4 +1458,90 @@ function getFileUrl(storageKey) {
 function debounce(fn, ms) {
   let timer;
   return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
+}
+
+let mentionState = null;
+
+function insertMentionTrigger() {
+  const input = document.getElementById('chat-input');
+  if (!input) return;
+  const start = input.selectionStart || 0;
+  const prefix = start && !/\s/.test(input.value[start - 1]) ? ' ' : '';
+  input.setRangeText(`${prefix}@`, start, input.selectionEnd || start, 'end');
+  input.focus();
+  autoGrow(input);
+  updateMentionSuggestions();
+}
+
+function updateMentionSuggestions() {
+  const input = document.getElementById('chat-input');
+  const menu = document.getElementById('chat-mention-menu');
+  if (!input || !menu || !activeConversation) return;
+  const cursor = input.selectionStart || 0;
+  const beforeCursor = input.value.slice(0, cursor);
+  const match = /(^|\s)@([^@\n]*)$/.exec(beforeCursor);
+  if (!match) return closeMentionMenu();
+  const query = match[2].trim();
+  const normalize = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const candidates = (activeConversation.members || [])
+    .filter(member => Number(member.user_id) !== Number(me.id))
+    .filter(member => !query || normalize(member.full_name).includes(normalize(query)))
+    .slice(0, 6);
+  if (activeConversation.type !== 'direct' && (!query || 'all'.startsWith(normalize(query)))) {
+    candidates.unshift({ user_id: 'all', full_name: 'All', department: 'Thông báo toàn bộ nhóm', mention_all: true });
+  }
+  if (!candidates.length) return closeMentionMenu();
+  mentionState = { start: cursor - match[2].length - 1, end: cursor, candidates, index: 0 };
+  renderMentionMenu();
+}
+
+function renderMentionMenu() {
+  const menu = document.getElementById('chat-mention-menu');
+  if (!menu || !mentionState) return;
+  menu.hidden = false;
+  menu.innerHTML = `<div class="chat-mention-title">Tag thành viên</div>${mentionState.candidates.map((member, index) => `
+    <button class="chat-mention-option${index === mentionState.index ? ' active' : ''}" data-mention-index="${index}" role="option" aria-selected="${index === mentionState.index}">
+      ${member.mention_all ? '<div class="chat-mention-avatar chat-mention-all">@</div>' : renderChatAvatar(member, 30, 'chat-mention-avatar')}
+      <span><strong>${esc(member.full_name || '')}</strong><small>${esc(member.department || member.employee_code || 'Thành viên')}</small></span>
+    </button>`).join('')}`;
+  menu.querySelectorAll('[data-mention-index]').forEach(option => option.addEventListener('mousedown', event => {
+    event.preventDefault();
+    chooseMention(Number(option.dataset.mentionIndex));
+  }));
+}
+
+function handleMentionKeydown(event) {
+  if (!mentionState) return false;
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    const size = mentionState.candidates.length;
+    mentionState.index = (mentionState.index + (event.key === 'ArrowDown' ? 1 : size - 1)) % size;
+    renderMentionMenu();
+    return true;
+  }
+  if (event.key === 'Enter' || event.key === 'Tab') {
+    event.preventDefault();
+    chooseMention(mentionState.index);
+    return true;
+  }
+  if (event.key === 'Escape') { event.preventDefault(); closeMentionMenu(); return true; }
+  return false;
+}
+
+function chooseMention(index) {
+  const input = document.getElementById('chat-input');
+  const member = mentionState?.candidates[index];
+  if (!input || !member || !mentionState) return;
+  input.setRangeText(`@${member.full_name} `, mentionState.start, mentionState.end, 'end');
+  if (member.mention_all) selectedMentionAll = true;
+  else selectedMentions = [...selectedMentions.filter(item => item.user_id !== member.user_id), member];
+  closeMentionMenu();
+  input.focus();
+  autoGrow(input);
+}
+
+function closeMentionMenu() {
+  mentionState = null;
+  const menu = document.getElementById('chat-mention-menu');
+  if (menu) { menu.hidden = true; menu.innerHTML = ''; }
 }

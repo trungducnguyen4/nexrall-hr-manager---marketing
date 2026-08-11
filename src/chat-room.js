@@ -2,7 +2,8 @@
 // One DO instance per conversation. Manages WebSocket connections,
 // broadcasts real-time events, persists messages to D1.
 // Events: message:send, message:edit, message:delete, reaction:add,
-//          reaction:remove, typing:start, typing:stop, conversation:read
+//          reaction:remove, poll:update, event:update, typing:start,
+//          typing:stop, conversation:read
 // =====================================================================
 
 export class ChatRoom {
@@ -34,7 +35,17 @@ export class ChatRoom {
   // ── HTTP fetch — handles WebSocket upgrade ──────────────────────────
   async fetch(request) {
     const url = new URL(request.url);
-    this.conversationId = url.searchParams.get('conv') || '0';
+    const requestedConversationId = url.searchParams.get('conv');
+    if (requestedConversationId) this.conversationId = requestedConversationId;
+
+    // Worker-only fan-out used by REST fallbacks (poll/event updates). This
+    // Durable Object binding is not publicly routable, so no browser client
+    // can invoke it directly.
+    if (request.method === 'POST' && url.pathname === '/broadcast') {
+      const payload = await request.json().catch(() => null);
+      if (payload?.type) this.broadcast(payload);
+      return new Response(JSON.stringify({ ok: true }), { headers: { 'Content-Type': 'application/json' } });
+    }
 
     const upgradeHeader = request.headers.get('Upgrade');
     if (upgradeHeader !== 'websocket') {
@@ -155,6 +166,12 @@ export class ChatRoom {
     const convId = Number(this.conversationId);
     const content = String(msg.content || '').trim();
     const replyToId = msg.reply_to_id ? Number(msg.reply_to_id) : null;
+    if (msg.mention_all) {
+      const conversation = await this.env.DB.prepare('SELECT type FROM conversations WHERE id=?').bind(convId).first();
+      if (conversation?.type === 'direct' || !/(^|\s)@all\b/i.test(content)) {
+        return;
+      }
+    }
 
     const result = await this.env.DB.prepare(
       `INSERT INTO messages (conversation_id, sender_id, content, reply_to_id, task_id)
@@ -163,6 +180,9 @@ export class ChatRoom {
 
     const messageId = result.meta?.last_row_id;
     if (!messageId) return;
+
+    await this.saveMentions(convId, messageId, session.userId, msg.mention_ids);
+    await this.saveAllMention(convId, messageId, session.userId, msg.mention_all, content);
 
     // Handle attachments
     if (msg.attachments?.length) {
@@ -239,7 +259,8 @@ export class ChatRoom {
   // ── Helpers ───────────────────────────────────────────────────────
   async fetchMessage(messageId, userId) {
     const row = await this.env.DB.prepare(
-      `SELECT m.*, u.full_name AS sender_name, u.employee_code AS sender_code, u.avatar_url AS sender_avatar
+      `SELECT m.*, u.full_name AS sender_name, u.employee_code AS sender_code, u.avatar_url AS sender_avatar,
+       EXISTS(SELECT 1 FROM pinned_messages pm WHERE pm.message_id = m.id) AS is_pinned
        FROM messages m JOIN users u ON u.id = m.sender_id
        WHERE m.id = ?`
     ).bind(messageId).first();
@@ -250,11 +271,19 @@ export class ChatRoom {
     ).bind(messageId).all().then(r => r.results || []);
 
     const reactions = await this.fetchReactions(messageId);
+    const mentions = await this.env.DB.prepare(
+      `SELECT mm.mentioned_user_id AS user_id, u.full_name
+       FROM message_mentions mm JOIN users u ON u.id = mm.mentioned_user_id
+       WHERE mm.message_id = ?`
+    ).bind(messageId).all().then(r => r.results || []);
+    const mentionAll = await this.env.DB.prepare('SELECT 1 FROM message_all_mentions WHERE message_id=?').bind(messageId).first();
 
     return {
       ...row,
       attachments,
       reactions,
+      mentions,
+      mention_all: !!mentionAll,
       deleted_at: row.deleted_at || null,
       edited_at: row.edited_at || null,
     };
@@ -267,6 +296,29 @@ export class ChatRoom {
        WHERE mr.message_id = ?`
     ).bind(messageId).all();
     return results;
+  }
+
+  async saveMentions(conversationId, messageId, mentionedBy, mentionIds) {
+    const requestedIds = [...new Set((Array.isArray(mentionIds) ? mentionIds : [])
+      .map(Number).filter(id => Number.isInteger(id) && id > 0 && id !== mentionedBy))].slice(0, 25);
+    if (!requestedIds.length) return;
+    const placeholders = requestedIds.map(() => '?').join(',');
+    const { results = [] } = await this.env.DB.prepare(
+      `SELECT user_id FROM conversation_members WHERE conversation_id = ? AND user_id IN (${placeholders})`
+    ).bind(conversationId, ...requestedIds).all();
+    for (const row of results) {
+      await this.env.DB.prepare(
+        'INSERT OR IGNORE INTO message_mentions (message_id, mentioned_user_id, mentioned_by) VALUES (?, ?, ?)'
+      ).bind(messageId, row.user_id, mentionedBy).run();
+    }
+  }
+
+  async saveAllMention(conversationId, messageId, mentionedBy, requested, content) {
+    if (!requested) return;
+    const conversation = await this.env.DB.prepare('SELECT type FROM conversations WHERE id=?').bind(conversationId).first();
+    if (conversation?.type === 'direct' || !/(^|\s)@all\b/i.test(String(content || ''))) return;
+    await this.env.DB.prepare('INSERT OR IGNORE INTO message_all_mentions (message_id,mentioned_by) VALUES (?,?)')
+      .bind(messageId, mentionedBy).run();
   }
 
   // ── Broadcast ─────────────────────────────────────────────────────

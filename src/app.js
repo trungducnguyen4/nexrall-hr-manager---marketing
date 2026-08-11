@@ -12,7 +12,7 @@ async function getView(name) {
   if (!_viewModules[name]) {
     if (name === 'dashboard')    _viewModules[name] = await import('./views/dashboard.js?v=20260730-notification-center-v1');
     else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js?v=20260804-monthly-attendance-board-v1');
-    else if (name === 'tasks')       _viewModules[name] = await import('./views/tasks.js?v=20260803-task-status-actions');
+    else if (name === 'tasks')       _viewModules[name] = await import('./views/tasks.js?v=20260811-project-timeline-v1');
     else if (name === 'invoices')    _viewModules[name] = await import('./views/invoices.js?v=20260730-payslip-detail-v1');
     else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260806-admin-password-reset-v1');
     else if (name === 'wifi')        _viewModules[name] = await import('./views/wifi.js?v=20260804-office-network-v1');
@@ -20,15 +20,15 @@ async function getView(name) {
     else if (name === 'taskpanel')   _viewModules[name] = await import('./views/taskpanel.js?v=20260722-rich-task-editor');
     else if (name === 'departments') _viewModules[name] = await import('./views/departments.js');
     else if (name === 'recruitment') _viewModules[name] = await import('./views/recruitment.js');
-    else if (name === 'payroll')     _viewModules[name] = await import('./views/payroll.js?v=20260804-payroll-column-grid-v1');
+    else if (name === 'payroll')     _viewModules[name] = await import('./views/payroll.js?v=20260811-penalty-policy-v3');
     else if (name === 'leave')       _viewModules[name] = await import('./views/leave.js?v=20260804-leave-policy-v4');
     else if (name === 'campaigns')   _viewModules[name] = await import('./views/campaigns.js');
-    else if (name === 'evaluation')  _viewModules[name] = await import('./views/evaluation.js?v=20260804-eval-report-pagination-v1');
+    else if (name === 'evaluation')  _viewModules[name] = await import('./views/evaluation.js?v=20260811-penalty-policy-v1');
     else if (name === 'kpis')        _viewModules[name] = await import('./views/kpis.js?v=20260730-manual-kpi');
     else if (name === 'notifications') _viewModules[name] = await import('./views/notifications.js?v=20260730-notification-center-v1');
     else if (name === 'assets')      _viewModules[name] = await import('./views/assets.js?v=20260804-project-handover-v1');
     else if (name === 'db-admin')    _viewModules[name] = await import('./views/dbadmin.js');
-    else if (name === 'chat')        _viewModules[name] = await import('./views/chat.js?v=20260810-chat-v5');
+    else if (name === 'chat')        _viewModules[name] = await import('./views/chat.js?v=20260811-chat-interactions-v2');
   }
   return _viewModules[name];
 }

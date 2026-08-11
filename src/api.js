@@ -328,6 +328,10 @@ export const api = {
     const q = new URLSearchParams(params).toString();
     return cachedGet('/api/task-projects' + (q ? '?' + q : ''));
   },
+  getTaskProjectTimeline: (id, params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return req('GET', `/api/task-projects/${id}/timeline` + (q ? '?' + q : ''));
+  },
   createTaskProject: (d) => req('POST', '/api/task-projects', d).then(r => { inv('/api/task-projects', '/api/tasks'); return r; }),
   updateTaskProject: (id, d) => req('PUT', `/api/task-projects/${id}`, d).then(r => { inv('/api/task-projects', '/api/tasks'); return r; }),
   archiveTaskProject: (id) => req('DELETE', `/api/task-projects/${id}`).then(r => { inv('/api/task-projects', '/api/tasks'); return r; }),
@@ -431,6 +435,10 @@ export const api = {
   getPayrollAdjustmentSuggestions: (month) => req('GET', `/api/payroll-adjustments/suggestions?month=${encodeURIComponent(month)}`),
   applyPayrollAdjustments: (month, items) =>
     req('POST', '/api/payroll-adjustments/apply', { month, items }).then(r => { inv('/api/payroll'); return r; }),
+  dismissPayrollAdjustment: (month, sourceRef) =>
+    req('POST', '/api/payroll-adjustments/dismiss', { month, source_ref: sourceRef }).then(r => { inv('/api/payroll'); return r; }),
+  previewPenaltyPolicyReset: () => req('GET', '/api/payroll-adjustments/penalty-policy-reset-preview'),
+  resetPenaltyPolicy: () => req('POST', '/api/payroll-adjustments/penalty-policy-reset', { confirmation: 'RESET_PENALTY_POLICY_2026_08' }).then(r => { inv('/api/payroll'); return r; }),
 
   // Campaigns (marketing specific)
   getCampaigns: (params = {}) => {
