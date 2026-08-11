@@ -28,6 +28,15 @@ export const DEPT_CODE = {
   'Phòng Kế Toán': 'KT',
 };
 
+// Legacy employee data may still contain "Nhân sự", "HR" or an unaccented
+// variant instead of the canonical "Phòng HCNS". Keep the client-side access
+// check aligned with the Worker permission helper without changing user data.
+export function isHcnsDepartment(department) {
+  const key = String(department || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/gi, 'd').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return ['phong hcns', 'hcns', 'nhan su', 'phong nhan su', 'hanh chinh nhan su', 'hr'].includes(key);
+}
+
 export function esc(s) {
   if (s == null) return '';
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -81,6 +90,7 @@ export function setAvatar(el, name, color, ini, imageUrl = '') {
 export function statusBadge(status) {
   const map = {
     present: ['badge-success', '✅ Đúng giờ'],
+    registered: ['badge-info', '📝 Chờ check-in'],
     late: ['badge-warning', '⏰ Đi muộn'],
     absent: ['badge-danger', '❌ Vắng'],
     leave: ['badge-info', '🏖 Nghỉ phép'],

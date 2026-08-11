@@ -121,6 +121,11 @@ function projectLabel(p) {
   return `${p.name}${p.code ? ` · ${p.code}` : ''}`;
 }
 
+function taskGroupLabel(name) {
+  const value = String(name || '').trim();
+  return value.toLocaleLowerCase('vi-VN') === 'cong viec chung' ? 'Công việc chung' : (value || 'Công việc chung');
+}
+
 function groupColor(group, index = 0) {
   return group?.color || GROUP_COLORS[index % GROUP_COLORS.length];
 }
@@ -415,7 +420,7 @@ export async function renderTasks(el, me) {
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
             ${canViewProjectTimeline(project) ? `<button id="btn-project-timeline" class="btn-secondary btn-sm">🕘 Timeline</button>` : ''}
-            ${canManage ? `<button id="btn-new-group" class="btn-secondary btn-sm">+ Nhóm công việc</button>` : ''}
+            ${canManage ? `<button id="btn-new-group" class="btn-primary btn-task-group-create btn-sm">+ Nhóm công việc</button>` : ''}
           </div>
         </div>
         <div class="filter-bar" id="task-status-bar" style="margin-top:8px;margin-bottom:0;">
@@ -480,7 +485,7 @@ export async function renderTasks(el, me) {
       <section style="min-width:310px;max-width:360px;flex:0 0 330px;background:${esc(groupColor(group, index))};border:1px solid var(--border);border-radius:8px;padding:10px;">
         <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:8px;">
           <div>
-            <div style="font-weight:800;color:var(--text);">${esc(group.name || 'Công việc chung')}</div>
+            <div style="font-weight:800;color:var(--text);">${esc(taskGroupLabel(group.name))}</div>
             <div style="font-size:12px;color:var(--text-2);">${groupTasks.length} công việc</div>
           </div>
           ${canManage ? `<div style="display:flex;gap:4px;"><button class="btn-secondary btn-xs" data-edit-group="${group.id}">Sửa</button><button class="btn-danger btn-xs" data-archive-group="${group.id}">Ẩn</button></div>` : ''}
@@ -502,7 +507,7 @@ export async function renderTasks(el, me) {
       <section class="task-group-column">
         <div class="task-group-head">
           <div>
-            <div class="task-group-title">${esc(group.name || 'Công việc chung')}</div>
+            <div class="task-group-title">${esc(taskGroupLabel(group.name))}</div>
             <div class="task-group-count">${groupTasks.length} công việc</div>
           </div>
           ${canManage ? `<div style="display:flex;gap:4px;"><button class="btn-secondary btn-xs" data-edit-group="${group.id}">Sửa</button><button class="btn-danger btn-xs" data-archive-group="${group.id}">Ẩn</button></div>` : ''}
@@ -585,7 +590,7 @@ export function openTaskForm(task, users, me, onDone, options = {}) {
   const selectedProjectId = task?.team_project_id || project?.id || '';
   const selectedGroupId = task?.group_id || options.selectedGroupId || groups[0]?.id || '';
   const projectOptions = projects.map(p => `<option value="${p.id}" ${String(selectedProjectId) === String(p.id) ? 'selected' : ''}>${esc(projectLabel(p))}</option>`).join('');
-  const groupOptions = groups.map(g => `<option value="${g.id}" ${String(selectedGroupId) === String(g.id) ? 'selected' : ''}>${esc(g.name)}</option>`).join('');
+  const groupOptions = groups.map(g => `<option value="${g.id}" ${String(selectedGroupId) === String(g.id) ? 'selected' : ''}>${esc(taskGroupLabel(g.name))}</option>`).join('');
   const selectedLabelId = task?.label_id || '';
   const selectedLabelColor = selectedLabelId ? '' : (task?.label_color || '');
 

@@ -144,6 +144,12 @@ async function migrate(env) {
   // production databases may already carry an older matching schema marker.
   try { await ensureTaskActivityTimelineSchema(env); } catch (error) { console.error('Task timeline schema check failed', error); }
   try { await ensureChatInteractionSchema(env); } catch (error) { console.error('Chat interaction schema check failed', error); }
+  try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS dissolved_conversations (
+    conversation_id INTEGER PRIMARY KEY,
+    dissolved_by INTEGER NOT NULL,
+    dissolved_by_name TEXT,
+    dissolved_at TEXT DEFAULT (datetime('now','localtime'))
+  )`); } catch (error) { console.error('Dissolved conversation schema check failed', error); }
   // Leave-policy schema is additive. A partially migrated legacy D1 must not
   // block every authenticated request; the individual leave endpoints still
   // fail closed if their required data is unavailable.
@@ -164,6 +170,8 @@ async function migrate(env) {
   try { await ensurePayrollLineChangeLog(env); } catch (_) {}
   try { await ensurePayrollAdjustmentPolicySchema(env); } catch (error) { console.error('Payroll adjustment policy schema check failed', error); }
   try { await ensurePayrollAdjustmentDismissalSchema(env); } catch (error) { console.error('Payroll adjustment dismissal schema check failed', error); }
+  // Repair the old unaccented default label without touching custom group names.
+  try { await normalizeDefaultTaskGroupNames(env); } catch (error) { console.error('Task group label repair failed', error); }
   try {
     const row = await env.DB.prepare("SELECT setting_value FROM settings WHERE setting_key='schema_version'").first();
     if (row?.setting_value === SCHEMA_VERSION) {
@@ -485,10 +493,16 @@ async function migrate(env) {
     team_id INTEGER,
     project_id INTEGER,
     created_by INTEGER NOT NULL,
+    dissolved_at TEXT,
+    dissolved_by INTEGER,
+    dissolved_by_name TEXT,
     created_at TEXT DEFAULT (datetime('now','localtime'))
   )`).run();
   try { await env.DB.exec('ALTER TABLE conversations ADD COLUMN team_id INTEGER'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE conversations ADD COLUMN project_id INTEGER'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE conversations ADD COLUMN dissolved_at TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE conversations ADD COLUMN dissolved_by INTEGER'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE conversations ADD COLUMN dissolved_by_name TEXT'); } catch (_) {}
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS conversation_members (
     conversation_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
@@ -1248,12 +1262,12 @@ function nameInitials(name) {
 // HCNS (Phòng HCNS) and Ban Giám Đốc (both are DEPARTMENTS, not roles) may edit
 // lifecycle status and fully manage asset handovers. Admin always has owner-level access.
 function isHrOrBod(u) {
-  return !!u && (u.role === 'admin' || u.department === 'Phòng HCNS' || u.department === 'Ban Giám Đốc');
+  return !!u && (u.role === 'admin' || normalizeDeptName(u.department) === 'Phòng HCNS' || normalizeDeptName(u.department) === 'Ban Giám Đốc');
 }
 // Narrower than isHrOrBod — used to tell the HCNS-only actions (Tiếp nhận/Khóa phiếu) apart
 // from the Ban Giám Đốc-only actions (Phê duyệt/Trả lại) in the Đánh giá hiệu suất workflow.
-function isHcns(u) { return !!u && (u.role === 'admin' || u.department === 'Phòng HCNS'); }
-function isBgd(u)  { return !!u && (u.role === 'admin' || u.department === 'Ban Giám Đốc'); }
+function isHcns(u) { return !!u && (u.role === 'admin' || normalizeDeptName(u.department) === 'Phòng HCNS'); }
+function isBgd(u)  { return !!u && (u.role === 'admin' || normalizeDeptName(u.department) === 'Ban Giám Đốc'); }
 // Quản lý/Trưởng phòng (role='manager') xử lý tài sản của nhân sự thuộc phòng ban mình phụ trách.
 function isDeptManager(u, ownerDept) {
   return !!u && u.role === 'manager' && !!ownerDept && u.department === ownerDept;
@@ -1713,9 +1727,19 @@ async function saveMessageMentions(env, { conversationId, messageId, mentionedBy
 }
 
 async function chatMember(env, conversationId, userId) {
-  return await env.DB.prepare(
-    'SELECT cm.role,c.type FROM conversation_members cm JOIN conversations c ON c.id=cm.conversation_id WHERE cm.conversation_id=? AND cm.user_id=?'
-  ).bind(conversationId, userId).first();
+  const baseSql = `SELECT cm.role,c.type FROM conversation_members cm JOIN conversations c ON c.id=cm.conversation_id
+      WHERE cm.conversation_id=? AND cm.user_id=?`;
+  try {
+    return await env.DB.prepare(
+      `${baseSql} AND NOT EXISTS (SELECT 1 FROM dissolved_conversations dc WHERE dc.conversation_id=c.id)`
+    ).bind(conversationId, userId).first();
+  } catch (error) {
+    // Do not make existing conversations unreadable when a legacy D1 database
+    // has not yet received the additive dissolve registry. This returns only
+    // the current user's own membership; schema bootstrap continues separately.
+    console.error('Conversation dissolve membership filter unavailable; using legacy membership check', error);
+    return await env.DB.prepare(baseSql).bind(conversationId, userId).first();
+  }
 }
 
 async function saveAllMention(env, { conversationId, messageId, mentionedBy, requested, content }) {
@@ -1884,11 +1908,20 @@ async function ensureChatInteractionSchema(env) {
     responded_at TEXT,
     UNIQUE(message_id,user_id)
   )`);
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS dissolved_conversations (
+    conversation_id INTEGER PRIMARY KEY,
+    dissolved_by INTEGER NOT NULL,
+    dissolved_by_name TEXT,
+    dissolved_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
   for (const statement of [
     'CREATE INDEX IF NOT EXISTS idx_chat_poll_options_message ON chat_poll_options(message_id,position,id)',
     'CREATE INDEX IF NOT EXISTS idx_chat_poll_votes_option ON chat_poll_votes(option_id,user_id)',
     'CREATE INDEX IF NOT EXISTS idx_chat_event_attendees_user ON chat_event_attendees(user_id,message_id)',
   ]) { try { await env.DB.exec(statement); } catch (_) {} }
+  for (const [column, type] of Object.entries({
+    dissolved_at: 'TEXT', dissolved_by: 'INTEGER', dissolved_by_name: 'TEXT',
+  })) { try { await env.DB.exec(`ALTER TABLE conversations ADD COLUMN ${column} ${type}`); } catch (_) {} }
 }
 
 async function attachChatAttachments(env, messageRows) {
@@ -2211,6 +2244,9 @@ const ATT_STANDARD_SHIFTS = {
   afternoon: { start: '13:30', lateAfter: '13:45', end: '17:00' },
   full:      { start: '08:30', lateAfter: '08:45', end: '17:00' },
 };
+// Checking out shortly before the scheduled end is still a completed shift.
+// Keep this separate from the lateness grace period: it only affects checkout.
+const ATT_EARLY_CHECKOUT_TOLERANCE_MINUTES = 10;
 
 function attToMinutes(t) {
   if (!t) return null;
@@ -2557,6 +2593,32 @@ function attShiftBounds(workType, shift, expectedStart, expectedEnd) {
   return std;
 }
 
+function attTimeIsValid(value) {
+  const minutes = attToMinutes(value);
+  return minutes !== null && minutes >= 0 && minutes < 24 * 60 && /^\d{2}:\d{2}$/.test(String(value || ''));
+}
+
+function attEarlyCheckoutMinutes(bounds, checkoutTime) {
+  const end = attToMinutes(bounds.end);
+  const checkout = attToMinutes(checkoutTime);
+  if (end === null || checkout === null) return 0;
+  return Math.max(0, end - checkout - ATT_EARLY_CHECKOUT_TOLERANCE_MINUTES);
+}
+
+function attManualTimingMetrics(record, checkinTime, checkoutTime) {
+  const bounds = attShiftBounds(record.work_type || 'office', record.shift || 'full', record.expected_start, record.expected_end);
+  const checkinMinutes = attToMinutes(checkinTime);
+  const checkoutMinutes = attToMinutes(checkoutTime);
+  const lateMinutes = Math.max(0, checkinMinutes - attToMinutes(bounds.lateAfter));
+  const earlyMinutes = attEarlyCheckoutMinutes(bounds, checkoutTime);
+  let workedMinutes = Math.max(0, checkoutMinutes - checkinMinutes);
+  if ((record.work_type || 'office') !== 'business' && (record.shift || 'full') === 'full') {
+    const lunchStart = 12 * 60, lunchEnd = 13 * 60 + 30;
+    workedMinutes -= Math.max(0, Math.min(checkoutMinutes, lunchEnd) - Math.max(checkinMinutes, lunchStart));
+  }
+  return { bounds, lateMinutes, earlyMinutes, workHours: Math.max(0, workedMinutes) / 60 };
+}
+
 // ── NIGHTLY AUTO-CHECKOUT ─────────────────────────────────────────
 // Any day in the past that has a check-in but no check-out is closed
 // automatically at the end of the shift, tagged "Quên checkout"
@@ -2768,8 +2830,14 @@ async function ensureDefaultTaskGroup(env, projectId, userId = null) {
   if (existing) return existing;
   const r = await env.DB.prepare(
     "INSERT INTO task_groups (project_id,name,position,color,created_by) VALUES (?,?,?,?,?)"
-  ).bind(projectId, 'Cong viec chung', 0, '#6366F1', userId).run();
+  ).bind(projectId, 'Công việc chung', 0, '#6366F1', userId).run();
   return await env.DB.prepare('SELECT * FROM task_groups WHERE id=?').bind(r.meta.last_row_id).first();
+}
+
+async function normalizeDefaultTaskGroupNames(env) {
+  await env.DB.prepare(
+    "UPDATE task_groups SET name='Công việc chung' WHERE lower(trim(name))='cong viec chung'"
+  ).run();
 }
 
 async function canUseTaskGroup(env, groupId, projectId, me) {
@@ -4648,8 +4716,55 @@ export async function handle(request, env) {
     return json({ period: { from, to }, employees });
   }
 
+  // Personal monthly compliance is intentionally scoped to the authenticated
+  // employee. Missing check-in/out is counted only after the workday has
+  // ended (00:00 HCM next day), matching the payroll proposal policy.
+  if (path === '/api/attendance/my-compliance' && request.method === 'GET') {
+    const requestedMonth = String(url.searchParams.get('month') || '').trim();
+    const month = /^\d{4}-\d{2}$/.test(requestedMonth) ? requestedMonth : vnTodayStr().slice(0, 7);
+    const todayHcm = vnTodayStr();
+    const { results = [] } = await env.DB.prepare(
+      `SELECT
+        COALESCE(SUM(CASE WHEN COALESCE(late_minutes,0) > 0 THEN 1 ELSE 0 END),0) AS late_count,
+        COALESCE(SUM(CASE
+          WHEN date < ?
+           AND status NOT IN ('absent','leave','cancelled','rejected')
+           AND (checkin_time IS NULL OR checkout_time IS NULL)
+          THEN 1 ELSE 0 END),0) AS missing_checkinout_count
+       FROM attendance
+       WHERE user_id=? AND date LIKE ?`
+    ).bind(todayHcm, me.id, `${month}-%`).all();
+    const row = results[0] || {};
+    const lateCount = Number(row.late_count || 0);
+    const missingCount = Number(row.missing_checkinout_count || 0);
+    const policyActive = month >= PENALTY_POLICY_EFFECTIVE_MONTH;
+    return json({
+      month,
+      policy_active: policyActive,
+      late_count: lateCount,
+      missing_checkinout_count: missingCount,
+      late_free_remaining: policyActive ? Math.max(0, 2 - lateCount) : null,
+      late_penalty_count: policyActive ? Math.max(0, lateCount - 2) : 0,
+      late_penalty_amount: policyActive ? Math.max(0, lateCount - 2) * 20000 : 0,
+      missing_penalty_amount: policyActive ? missingCount * 50000 : 0,
+      policy: {
+        effective_month: PENALTY_POLICY_EFFECTIVE_MONTH,
+        late_free_times: 2,
+        late_penalty_from: 3,
+        late_penalty_amount: 20000,
+        missing_checkinout_penalty_amount: 50000,
+      },
+    });
+  }
+
   if (path === '/api/attendance/today' && request.method === 'GET') {
     const today = vnTodayStr();
+    // Older registrations inherited the table default "present" even though
+    // no clock-in happened. Repair only today's incomplete registrations so
+    // they cannot be displayed or interpreted as on-time attendance.
+    await env.DB.prepare(
+      "UPDATE attendance SET status='registered' WHERE date=? AND registered=1 AND checkin_time IS NULL AND status='present'"
+    ).bind(today).run();
     let rows;
     if (isManager) {
       const scope = (!isAdmin && !isAttendanceHcns) ? ' AND u.department=?' : '';
@@ -4686,11 +4801,11 @@ export async function handle(request, env) {
     const note = b.note || '';
     if (existing) {
       await env.DB.prepare(
-        'UPDATE attendance SET work_type=?,shift=?,expected_start=?,expected_end=?,registered=1,note=? WHERE id=?'
+        "UPDATE attendance SET work_type=?,shift=?,expected_start=?,expected_end=?,registered=1,status=CASE WHEN checkin_time IS NULL THEN 'registered' ELSE status END,note=? WHERE id=?"
       ).bind(workType, shift, expectedStart, expectedEnd, note, existing.id).run();
     } else {
       await env.DB.prepare(
-        'INSERT INTO attendance (user_id,date,work_type,shift,expected_start,expected_end,registered,note) VALUES (?,?,?,?,?,?,1,?)'
+        "INSERT INTO attendance (user_id,date,work_type,shift,expected_start,expected_end,registered,status,note) VALUES (?,?,?,?,?,?,1,'registered',?)"
       ).bind(me.id, today, workType, shift, expectedStart, expectedEnd, note).run();
     }
     return json({ ok: true });
@@ -4757,7 +4872,7 @@ export async function handle(request, env) {
     const bounds = attShiftBounds(workType, shift, record.expected_start, record.expected_end);
     const ciMin = attToMinutes(record.checkin_time) ?? attToMinutes(bounds.start);
     const coMin = attToMinutes(timeStr);
-    const earlyMinutes = Math.max(0, attToMinutes(bounds.end) - coMin);
+    const earlyMinutes = attEarlyCheckoutMinutes(bounds, timeStr);
     let workMinutes = Math.max(0, coMin - ciMin);
     if (workType !== 'business' && shift === 'full') {
       // Exclude the 12:00–13:30 lunch break from total worked time
@@ -4960,17 +5075,41 @@ export async function handle(request, env) {
   if (attMatch && request.method === 'PUT') {
     if (!isManager) return json({ error: 'Không có quyền' }, 403);
     const aid = parseInt(attMatch[1]);
-    const record = await env.DB.prepare('SELECT a.id,u.department FROM attendance a JOIN users u ON u.id=a.user_id WHERE a.id=?').bind(aid).first();
+    const record = await env.DB.prepare('SELECT a.*,u.department FROM attendance a JOIN users u ON u.id=a.user_id WHERE a.id=?').bind(aid).first();
     if (!record) return json({ error: 'Không tìm thấy chấm công' }, 404);
     if (!isAdmin && !isAttendanceHcns && record.department !== me.department) return json({ error: 'Không có quyền sửa chấm công ngoài phòng ban' }, 403);
     const b = await request.json().catch(() => ({}));
     const allowedStatus = ['present','late','absent','leave','cancelled','rejected'];
-    const status = allowedStatus.includes(b.status) ? b.status : 'present';
-    const workHours = Math.max(0, Math.min(24, Number(b.work_hours) || 0));
+    const requestedStatus = allowedStatus.includes(b.status) ? b.status : 'present';
+    if (['absent','leave','cancelled','rejected'].includes(requestedStatus)) {
+      await env.DB.prepare(
+        'UPDATE attendance SET checkin_time=NULL,checkout_time=NULL,status=?,work_hours=0,late_minutes=0,early_minutes=0,auto_checkout=0,note=? WHERE id=?'
+      ).bind(requestedStatus, String(b.note || '').slice(0, 2000), aid).run();
+      return json({ ok: true, status: requestedStatus, late_minutes: 0, early_minutes: 0, work_hours: 0 });
+    }
+
+    const checkinTime = String(b.checkin_time || '').trim();
+    const checkoutTime = String(b.checkout_time || '').trim();
+    if (!attTimeIsValid(checkinTime) || !attTimeIsValid(checkoutTime)) {
+      return json({ error: 'Vui lòng nhập đầy đủ giờ check-in và check-out hợp lệ' }, 400);
+    }
+    if (attToMinutes(checkoutTime) <= attToMinutes(checkinTime)) {
+      return json({ error: 'Giờ check-out phải sau giờ check-in' }, 400);
+    }
+    const metrics = attManualTimingMetrics(record, checkinTime, checkoutTime);
+    // The status is derived from the actual times, never trusted as a cosmetic
+    // manual flag. Marking a record "Đúng giờ" therefore also requires a valid
+    // arrival before the allowed cutoff and checkout within the 10-minute grace.
+    if (requestedStatus === 'present' && (metrics.lateMinutes > 0 || metrics.earlyMinutes > 0)) {
+      const allowedCheckout = Math.max(0, attToMinutes(metrics.bounds.end) - ATT_EARLY_CHECKOUT_TOLERANCE_MINUTES);
+      const allowedLabel = `${String(Math.floor(allowedCheckout / 60)).padStart(2, '0')}:${String(allowedCheckout % 60).padStart(2, '0')}`;
+      return json({ error: `Muốn chỉnh Đúng giờ, check-in phải không muộn hơn ${metrics.bounds.lateAfter} và check-out không sớm hơn ${allowedLabel} của ca.` }, 400);
+    }
+    const status = metrics.lateMinutes > 0 ? 'late' : 'present';
     await env.DB.prepare(
-      'UPDATE attendance SET checkin_time=?,checkout_time=?,status=?,work_hours=?,note=? WHERE id=?'
-    ).bind(b.checkin_time||null,b.checkout_time||null,status,workHours,String(b.note||'').slice(0,2000),aid).run();
-    return json({ ok: true });
+      'UPDATE attendance SET checkin_time=?,checkout_time=?,status=?,work_hours=?,late_minutes=?,early_minutes=?,auto_checkout=0,note=? WHERE id=?'
+    ).bind(checkinTime, checkoutTime, status, metrics.workHours, metrics.lateMinutes, metrics.earlyMinutes, String(b.note || '').slice(0, 2000), aid).run();
+    return json({ ok: true, status, late_minutes: metrics.lateMinutes, early_minutes: metrics.earlyMinutes, work_hours: metrics.workHours });
   }
 
   // Aggregated monthly attendance summary — used to auto-fill "Ngày công" when
@@ -6657,6 +6796,7 @@ export async function handle(request, env) {
     return json({ campaigns: results });
   }
   if (path === '/api/campaigns' && request.method === 'POST') {
+    if (!isManager) return json({ error: 'Chỉ HCNS, quản lý hoặc Admin được quản lý chiến dịch' }, 403);
     const b = await request.json();
     if (!b.name) return json({ error: 'Thiếu tên chiến dịch' }, 400);
     const r = await env.DB.prepare(
@@ -6668,6 +6808,7 @@ export async function handle(request, env) {
   if (campMatch) {
     const id = parseInt(campMatch[1]);
     if (request.method === 'PUT') {
+      if (!isManager) return json({ error: 'Chỉ HCNS, quản lý hoặc Admin được quản lý chiến dịch' }, 403);
       const b = await request.json();
       await env.DB.prepare(
         'UPDATE campaigns SET name=?,type=?,status=?,start_date=?,end_date=?,budget=?,spent=?,goal_reach=?,goal_leads=?,goal_conversions=?,owner_name=?,description=? WHERE id=?'
@@ -6675,6 +6816,7 @@ export async function handle(request, env) {
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
+      if (!isManager) return json({ error: 'Chỉ HCNS, quản lý hoặc Admin được quản lý chiến dịch' }, 403);
       await env.DB.prepare('DELETE FROM campaigns WHERE id=?').bind(id).run();
       return json({ ok: true });
     }
@@ -7320,15 +7462,38 @@ export async function handle(request, env) {
   // ── Conversations ────────────────────────────────────────────────
   if (path === '/api/conversations' && request.method === 'GET') {
     const search = (url.searchParams.get('q') || '').trim();
-    const { results = [] } = await env.DB.prepare(
-      `SELECT c.id, c.type, c.name, c.team_id, c.project_id, c.created_by, c.created_at,
+    // Keep the conversation list available while a legacy D1 database is
+    // receiving the additive dissolve-audit table. The fallback is deliberately
+    // read-only: it never exposes data outside the current member's rows.
+    const buildConversationListQuery = (includeDissolvedFilter) => {
+      let sql = `SELECT c.id, c.type, c.name, c.team_id, c.project_id, c.created_by, c.created_at,
         (SELECT COUNT(*) FROM conversation_members cm WHERE cm.conversation_id = c.id) AS member_count,
         (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.id > COALESCE((SELECT cm2.last_read_message_id FROM conversation_members cm2 WHERE cm2.conversation_id = c.id AND cm2.user_id = ?), 0) AND m.sender_id != ?) AS unread_count
        FROM conversations c
        JOIN conversation_members cm ON cm.conversation_id = c.id AND cm.user_id = ?
-       ${search ? 'AND (c.name LIKE ?1 OR EXISTS (SELECT 1 FROM conversation_members cm2 JOIN users u ON u.id = cm2.user_id WHERE cm2.conversation_id = c.id AND cm2.user_id != ? AND u.full_name LIKE ?1))' : ''}
-       ORDER BY (SELECT MAX(m.created_at) FROM messages m WHERE m.conversation_id = c.id) DESC`
-    ).bind(me.id, me.id, me.id, ...(search ? [me.id] : [])).all();
+       WHERE 1=1`;
+      const binds = [me.id, me.id, me.id];
+      if (includeDissolvedFilter) sql += ' AND NOT EXISTS (SELECT 1 FROM dissolved_conversations dc WHERE dc.conversation_id=c.id)';
+      if (search) {
+        const like = `%${search}%`;
+        sql += ' AND (c.name LIKE ? OR EXISTS (SELECT 1 FROM conversation_members cm2 JOIN users u ON u.id = cm2.user_id WHERE cm2.conversation_id = c.id AND cm2.user_id != ? AND u.full_name LIKE ?))';
+        binds.push(like, me.id, like);
+      }
+      sql += ' ORDER BY (SELECT MAX(m.created_at) FROM messages m WHERE m.conversation_id = c.id) DESC';
+      return { sql, binds };
+    };
+
+    let results = [];
+    try {
+      const query = buildConversationListQuery(true);
+      ({ results = [] } = await env.DB.prepare(query.sql).bind(...query.binds).all());
+    } catch (error) {
+      // A partial historical migration must not make the whole chat unusable.
+      // migrate() will retry table creation on the next cold start/request.
+      console.error('Conversation dissolve filter unavailable; using safe legacy list', error);
+      const query = buildConversationListQuery(false);
+      ({ results = [] } = await env.DB.prepare(query.sql).bind(...query.binds).all());
+    }
 
     const conversations = await Promise.all(results.map(async c => {
       const lastMsg = await env.DB.prepare(
@@ -7378,6 +7543,7 @@ export async function handle(request, env) {
   const convMatch = path.match(/^\/api\/conversations\/(\d+)$/);
   if (convMatch && request.method === 'GET') {
     const convId = parseInt(convMatch[1]);
+    if (!(await chatMember(env, convId, me.id))) return json({ error: 'Không có quyền truy cập hội thoại này' }, 403);
     const conv = await env.DB.prepare('SELECT * FROM conversations WHERE id = ?').bind(convId).first();
     if (!conv) return json({ error: 'Không tìm thấy hội thoại' }, 404);
     const members = await env.DB.prepare(
@@ -7385,6 +7551,27 @@ export async function handle(request, env) {
        FROM conversation_members cm JOIN users u ON u.id = cm.user_id WHERE cm.conversation_id = ?`
     ).bind(convId).all().then(r => r.results || []);
     return json({ ...conv, members });
+  }
+
+  if (convMatch && request.method === 'DELETE') {
+    const convId = parseInt(convMatch[1]);
+    const conv = await env.DB.prepare(
+      `SELECT c.id,c.type,c.name,cm.role,
+              EXISTS(SELECT 1 FROM dissolved_conversations dc WHERE dc.conversation_id=c.id) AS is_dissolved
+         FROM conversations c JOIN conversation_members cm ON cm.conversation_id=c.id
+        WHERE c.id=? AND cm.user_id=?`
+    ).bind(convId, me.id).first();
+    if (!conv) return json({ error: 'Không tìm thấy nhóm' }, 404);
+    if (conv.type === 'direct') return json({ error: 'Hội thoại trực tiếp không thể giải tán' }, 400);
+    if (conv.is_dissolved) return json({ error: 'Nhóm này đã được giải tán' }, 400);
+    if (conv.role !== 'owner') return json({ error: 'Chỉ Owner mới được giải tán nhóm' }, 403);
+    // Preserve messages and member rows for audit, but seal the group for every
+    // member so it disappears from all lists and cannot receive new messages.
+    await env.DB.prepare(
+      'INSERT INTO dissolved_conversations (conversation_id,dissolved_by,dissolved_by_name) VALUES (?,?,?)'
+    ).bind(convId, me.id, me.full_name || '').run();
+    await broadcastChatUpdate(env, convId, { type: 'conversation:dissolved', conversation_id: convId });
+    return json({ ok: true, dissolved: true });
   }
 
   if (convMatch && request.method === 'PUT') {

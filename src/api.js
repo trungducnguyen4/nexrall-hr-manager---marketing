@@ -270,6 +270,7 @@ export const api = {
     return cachedGet('/api/attendance' + (q ? '?' + q : ''));
   },
   getAttendanceToday: () => cachedGet('/api/attendance/today'),
+  getMyAttendanceCompliance: (month = '') => cachedGet('/api/attendance/my-compliance' + (month ? `?month=${encodeURIComponent(month)}` : '')),
   // Not cached — used to auto-fill "Ngày công" right before creating a payroll invoice,
   // must always reflect the latest attendance data (and support an explicit retry on error).
   getAttendanceSummary: (params = {}) => {

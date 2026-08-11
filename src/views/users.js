@@ -1,8 +1,8 @@
 import { api } from '../api.js';
 import {
   esc, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtMoney, fmtDate,
-  fmtDateTime, initials, avatarColor, lifecycleBadge, LIFECYCLE_STATUSES, safeCb,
-} from '../utils.js';
+  fmtDateTime, initials, avatarColor, lifecycleBadge, LIFECYCLE_STATUSES, safeCb, isHcnsDepartment,
+} from '../utils.js?v=20260811-hr-access-v1';
 import { icon } from '../icons.js';
 import { navigate, invalidateView } from '../app.js';
 
@@ -39,7 +39,7 @@ const TAB_ITEMS = [
 ];
 
 function isHr(user) {
-  return user?.role === 'admin' || user?.department === 'Phòng HCNS';
+  return user?.role === 'admin' || isHcnsDepartment(user?.department);
 }
 
 function avatarMarkup(user, size = 'md') {
@@ -120,7 +120,7 @@ export async function renderUsers(el, me, route = {}) {
 }
 
 async function renderEmployeeDirectory(el, me) {
-  const canOpen = me.role === 'admin' || me.role === 'manager' || me.department === 'Phòng HCNS';
+  const canOpen = me.role === 'admin' || me.role === 'manager' || isHcnsDepartment(me.department);
   if (!canOpen) {
     el.innerHTML = emptyHTML('', 'Bạn không có quyền truy cập danh sách nhân viên');
     return;

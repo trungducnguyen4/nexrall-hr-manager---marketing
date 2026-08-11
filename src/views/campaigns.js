@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtMoney, noop, safeCb } from '../utils.js';
+import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtMoney, noop, safeCb, isHcnsDepartment } from '../utils.js?v=20260811-hr-access-v1';
 
 const CAMPAIGN_TYPES = [
   { value: 'social',    label: 'Social Media',    icon: '📱', color: '#6366F1' },
@@ -23,7 +23,9 @@ function campaignType(v) { return CAMPAIGN_TYPES.find(t => t.value === v) || { l
 function campaignStatus(v) { return CAMPAIGN_STATUS.find(s => s.value === v) || { label: v||'—', cls:'badge-gray' }; }
 
 export async function renderCampaigns(el, me) {
-  const isAdmin = me.role === 'admin' || me.role === 'manager';
+  // HCNS needs to maintain cross-department campaigns for staffing plans,
+  // while the Worker remains the authority for write permission.
+  const isAdmin = me.role === 'admin' || me.role === 'manager' || isHcnsDepartment(me.department);
 
   el.innerHTML = `
     <div class="page-header">

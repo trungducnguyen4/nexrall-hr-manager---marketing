@@ -1,5 +1,5 @@
-import { api } from '../api.js';
-import { esc, fmtDate, statusBadge, setAvatar, toast, openModal, closeModal, loadingHTML, emptyHTML, today, initials, avatarColor, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js';
+import { api } from '../api.js?v=20260811-attendance-correction-v1';
+import { esc, fmtDate, statusBadge, setAvatar, toast, openModal, closeModal, loadingHTML, emptyHTML, today, initials, avatarColor, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js?v=20260811-attendance-registration-v1';
 import { attendanceClosingMonth } from '../attendance-period.js';
 
 const WORK_TYPE_LABEL = { office: '🏢 Văn phòng', wfh: '🏠 WFH', business: '✈️ Công tác' };
@@ -29,6 +29,7 @@ export async function renderAttendance(el, me, route = {}) {
       <div class="att-clock-status" id="att-status-line">
         <span style="font-size:13px;opacity:.8">Đang tải...</span>
       </div>
+      <div id="att-compliance" aria-live="polite" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px;"></div>
 
       <!-- Registration form (shown when not yet registered today) -->
       <div id="att-register-wrap" style="display:none;margin-top:14px;">
@@ -181,8 +182,45 @@ export async function renderAttendance(el, me, route = {}) {
       if (regShifts.size === 0) { regShifts.add('morning'); regShifts.add('afternoon'); }
       updateShiftChips();
       renderClockState();
+      void loadAttendanceCompliance();
     } catch(e) {
       document.getElementById('att-status-line').innerHTML = `<span style="font-size:12px;opacity:.7">Lỗi tải trạng thái</span>`;
+    }
+  }
+
+  function complianceTile(title, value, detail, tone = 'rgba(255,255,255,.12)') {
+    return `<div style="background:${tone};border:1px solid rgba(255,255,255,.18);border-radius:9px;padding:9px 10px;min-width:0;">
+      <div style="font-size:11px;opacity:.7;text-transform:uppercase;letter-spacing:.03em;">${title}</div>
+      <div style="font-size:16px;font-weight:800;margin:2px 0 3px;">${value}</div>
+      <div style="font-size:11px;line-height:1.35;opacity:.84;">${detail}</div>
+    </div>`;
+  }
+
+  async function loadAttendanceCompliance() {
+    const target = document.getElementById('att-compliance');
+    if (!target) return;
+    target.innerHTML = complianceTile('Tuân thủ tháng này', 'Đang tải…', 'Đang kiểm tra chấm công tháng hiện tại');
+    try {
+      const data = await api.getMyAttendanceCompliance();
+      if (!data.policy_active) {
+        target.innerHTML = complianceTile('Tuân thủ tháng này', 'Chưa áp dụng', `Chế tài hiện hành áp dụng từ ${esc(data.policy?.effective_month || '2026-08')}`);
+        return;
+      }
+      const lateCount = Number(data.late_count || 0);
+      const missingCount = Number(data.missing_checkinout_count || 0);
+      const lateDetail = lateCount === 0
+        ? 'Chưa ghi nhận đi trễ. Bạn được miễn tối đa 2 lần/tháng.'
+        : lateCount <= 2
+          ? `Lần thứ ${lateCount}; còn miễn ${Number(data.late_free_remaining || 0)} lần trong tháng.`
+          : `Lần thứ ${lateCount}; ${Number(data.late_penalty_count || 0)} lần vượt mức, đề xuất ${Number(data.late_penalty_amount || 0).toLocaleString('vi-VN')}đ sau xác nhận HCNS.`;
+      const missingDetail = missingCount === 0
+        ? 'Chưa có vi phạm đã chốt. Ngày hôm nay chưa được tính.'
+        : `${missingCount} lần đã chốt qua ngày kế tiếp; đề xuất ${Number(data.missing_penalty_amount || 0).toLocaleString('vi-VN')}đ (50.000đ/lần) sau xác nhận HCNS.`;
+      target.innerHTML =
+        complianceTile('Đi trễ', lateCount ? `Lần thứ ${lateCount}` : '0 lần', lateDetail, lateCount > 2 ? 'rgba(198,47,47,.27)' : 'rgba(255,255,255,.12)') +
+        complianceTile('Quên check-in/out', `${missingCount} lần`, missingDetail, missingCount ? 'rgba(198,47,47,.27)' : 'rgba(255,255,255,.12)');
+    } catch (_) {
+      target.innerHTML = complianceTile('Tuân thủ tháng này', 'Chưa tải được', 'Vui lòng tải lại để xem số liệu chế tài.');
     }
   }
 
@@ -463,7 +501,8 @@ export async function renderAttendance(el, me, route = {}) {
   document.getElementById('att-dept-filter')?.addEventListener('change', () => { historyPage = 1; loadHistory(); });
 
   function statusWithMinutes(a) {
-    const badge = statusBadge(a.status);
+    const awaitingCheckin = Number(a.registered) === 1 && !a.checkin_time && !['absent', 'leave', 'cancelled', 'rejected'].includes(a.status);
+    const badge = awaitingCheckin ? '<span class="badge badge-info">📝 Đã đăng ký · chưa check-in</span>' : statusBadge(a.status);
     const bits = [];
     if (a.late_minutes > 0) bits.push(`Trễ ${a.late_minutes}p`);
     if (a.early_minutes > 0) bits.push(`Sớm ${a.early_minutes}p`);
@@ -651,7 +690,11 @@ export async function renderAttendance(el, me, route = {}) {
         const work = document.getElementById('att-detail-work').value;
         const exception = document.getElementById('att-detail-exception').value;
         const rows = data.records.filter(r => (!status || r.status === status) && (!work || r.work_type === work) && (!exception || (exception === 'late' && r.late_minutes > 0) || (exception === 'early' && r.early_minutes > 0) || (exception === 'missing' && (!r.checkin_time || !r.checkout_time))));
-        document.getElementById('att-detail-rows').innerHTML = rows.length ? rows.map(r => `<tr><td>${esc(r.date)}</td><td>${esc(new Date(r.date + 'T00:00:00').toLocaleDateString('vi-VN', { weekday: 'short' }))}</td><td>${esc(WORK_TYPE_LABEL[r.work_type] || WORK_TYPE_LABEL.office)}</td><td>${esc(SHIFT_LABEL_SHORT[r.shift] || SHIFT_LABEL_SHORT.full)}</td><td>${esc(r.checkin_time || '—')}</td><td>${esc(r.checkout_time || '—')}</td><td>${r.work_hours ? Number(r.work_hours).toFixed(1) + 'h' : '—'}</td><td>${r.late_minutes ? r.late_minutes + 'p' : '—'}</td><td>${r.early_minutes ? r.early_minutes + 'p' : '—'}</td><td>${statusBadge(r.status)}</td><td>${esc(r.note || '—')}</td>${isManager ? `<td><button class="btn-icon att-summary-edit" data-id="${r.id}" data-checkin="${esc(r.checkin_time || '')}" data-checkout="${esc(r.checkout_time || '')}" data-status="${esc(r.status)}" data-note="${esc(r.note || '')}" title="Sửa">✏️</button></td>` : ''}</tr>`).join('') : `<tr><td colspan="${isManager ? 12 : 11}" class="att-summary-empty">Không có bản ghi phù hợp.</td></tr>`;
+        document.getElementById('att-detail-rows').innerHTML = rows.length ? rows.map(r => {
+          const awaitingCheckin = Number(r.registered) === 1 && !r.checkin_time && !['absent', 'leave', 'cancelled', 'rejected'].includes(r.status);
+          const displayStatus = awaitingCheckin ? '<span class="badge badge-info">📝 Chưa check-in</span>' : statusBadge(r.status);
+          return `<tr><td>${esc(r.date)}</td><td>${esc(new Date(r.date + 'T00:00:00').toLocaleDateString('vi-VN', { weekday: 'short' }))}</td><td>${esc(WORK_TYPE_LABEL[r.work_type] || WORK_TYPE_LABEL.office)}</td><td>${esc(SHIFT_LABEL_SHORT[r.shift] || SHIFT_LABEL_SHORT.full)}</td><td>${esc(r.checkin_time || '—')}</td><td>${esc(r.checkout_time || '—')}</td><td>${r.work_hours ? Number(r.work_hours).toFixed(1) + 'h' : '—'}</td><td>${r.late_minutes ? r.late_minutes + 'p' : '—'}</td><td>${r.early_minutes ? r.early_minutes + 'p' : '—'}</td><td>${displayStatus}</td><td>${esc(r.note || '—')}</td>${isManager ? `<td><button class="btn-icon att-summary-edit" data-id="${r.id}" data-checkin="${esc(r.checkin_time || '')}" data-checkout="${esc(r.checkout_time || '')}" data-status="${esc(r.status)}" data-note="${esc(r.note || '')}" data-work-type="${esc(r.work_type || 'office')}" data-shift="${esc(r.shift || 'full')}" data-expected-start="${esc(r.expected_start || '')}" data-expected-end="${esc(r.expected_end || '')}" title="Sửa">✏️</button></td>` : ''}</tr>`;
+        }).join('') : `<tr><td colspan="${isManager ? 12 : 11}" class="att-summary-empty">Không có bản ghi phù hợp.</td></tr>`;
         document.querySelectorAll('.att-summary-edit').forEach(btn => btn.addEventListener('click', () => openEditAttModal(btn.dataset)));
       };
       ['att-detail-status', 'att-detail-work', 'att-detail-exception'].forEach(id => document.getElementById(id).addEventListener('change', renderRows));
@@ -666,6 +709,12 @@ export async function renderAttendance(el, me, route = {}) {
   document.getElementById('btn-att-monthly-board')?.addEventListener('click', openMonthlyAttendanceBoard);
 
   function openEditAttModal(data) {
+    const standard = { morning: { lateAfter: '08:45', end: '12:00' }, afternoon: { lateAfter: '13:45', end: '17:00' }, full: { lateAfter: '08:45', end: '17:00' } }[data.shift] || { lateAfter: '08:45', end: '17:00' };
+    const lateAfter = data.workType === 'business' ? (data.expectedStart || standard.lateAfter) : standard.lateAfter;
+    const shiftEnd = data.workType === 'business' ? (data.expectedEnd || standard.end) : standard.end;
+    const minutes = value => /^\d{2}:\d{2}$/.test(value || '') ? Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5)) : null;
+    const allowedCheckoutMinutes = Math.max(0, (minutes(shiftEnd) || 0) - 10);
+    const allowedCheckout = `${String(Math.floor(allowedCheckoutMinutes / 60)).padStart(2, '0')}:${String(allowedCheckoutMinutes % 60).padStart(2, '0')}`;
     openModal('Sửa chấm công', `
       <div class="field"><label>Check in</label><input type="time" id="edit-ci" value="${esc(data.checkin||'')}"/></div>
       <div class="field"><label>Check out</label><input type="time" id="edit-co" value="${esc(data.checkout||'')}"/></div>
@@ -677,14 +726,38 @@ export async function renderAttendance(el, me, route = {}) {
           <option value="leave" ${data.status==='leave'?'selected':''}>Nghỉ phép</option>
         </select>
       </div>
+      <div id="edit-att-rule" style="padding:9px 10px;border-radius:8px;background:#FFF7ED;border:1px solid #FED7AA;color:#9A3412;font-size:12px;line-height:1.45;">Chọn <b>Đúng giờ</b> chỉ khi check-in không muộn hơn <b>${esc(lateAfter)}</b> và check-out không sớm hơn <b>${esc(allowedCheckout)}</b> (được sớm 10 phút). Hệ thống sẽ tự tính lại phút đi muộn/về sớm theo giờ đã nhập.</div>
       <div class="field"><label>Ghi chú</label><input type="text" id="edit-anote" value="${esc(data.note||'')}"/></div>
     `, `
       <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Hủy</button>
       <button class="btn-primary" id="save-att-btn">Lưu</button>
     `);
     let savingEdit = false;
+    const validatePresentTiming = () => {
+      if (document.getElementById('edit-ast').value !== 'present') return '';
+      const checkin = minutes(document.getElementById('edit-ci').value);
+      const checkout = minutes(document.getElementById('edit-co').value);
+      if (checkin === null || checkout === null) return 'Đúng giờ cần nhập đủ giờ check-in và check-out.';
+      if (checkin > minutes(lateAfter) || checkout < allowedCheckoutMinutes) return `Đúng giờ yêu cầu vào không muộn hơn ${lateAfter} và ra không sớm hơn ${allowedCheckout} (được sớm 10 phút).`;
+      return '';
+    };
+    const refreshRule = () => {
+      const rule = document.getElementById('edit-att-rule');
+      const error = validatePresentTiming();
+      rule.style.background = error ? '#FEF2F2' : '#FFF7ED';
+      rule.style.borderColor = error ? '#FECACA' : '#FED7AA';
+      rule.style.color = error ? '#991B1B' : '#9A3412';
+      rule.innerHTML = error || `Chọn <b>Đúng giờ</b> chỉ khi check-in không muộn hơn <b>${esc(lateAfter)}</b> và check-out không sớm hơn <b>${esc(allowedCheckout)}</b> (được sớm 10 phút). Hệ thống sẽ tự tính lại phút đi muộn/về sớm theo giờ đã nhập.`;
+    };
+    ['edit-ci', 'edit-co', 'edit-ast'].forEach(id => {
+      document.getElementById(id).addEventListener('input', refreshRule);
+      document.getElementById(id).addEventListener('change', refreshRule);
+    });
+    refreshRule();
     document.getElementById('save-att-btn').addEventListener('click', async () => {
       if (savingEdit) return;
+      const timingError = validatePresentTiming();
+      if (timingError) { toast(timingError, 'error'); return; }
       const saveBtn = document.getElementById('save-att-btn');
       savingEdit = true; saveBtn.disabled = true; saveBtn.textContent = 'Đang lưu...';
       try {

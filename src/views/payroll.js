@@ -1,5 +1,5 @@
 import { api } from '../api.js?v=20260811-penalty-policy-v3';
-import { esc, fmtMoney, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination, avatarColor, initials } from '../utils.js?v=20260722-payroll-export-ux';
+import { esc, fmtMoney, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination, avatarColor, initials, isHcnsDepartment } from '../utils.js?v=20260811-hr-access-v1';
 import { payslipDetailHTML, hydratePayslipAttendance, preparePayslipModal } from './payslip-detail.js?v=20260804-inline-line-notes-v1';
 
 function formatMonth(month) {
@@ -63,8 +63,8 @@ function payrollRowHTML(p) {
 }
 
 export async function renderPayroll(el, me) {
-  const isHr = me.role === 'admin' || me.role === 'manager';
-  const canEditPayroll = me.role === 'admin' || /(^|\s)(hcns|hành chính nhân sự)(\s|$)/i.test(String(me.department || ''));
+  const isHr = me.role === 'admin' || me.role === 'manager' || isHcnsDepartment(me.department);
+  const canEditPayroll = me.role === 'admin' || isHcnsDepartment(me.department);
   if (!isHr) {
     el.innerHTML = `<div class="empty-state"><div class="empty-icon">🔒</div><div class="empty-text">Không có quyền truy cập</div></div>`;
     return;

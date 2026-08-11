@@ -24,6 +24,7 @@ let loadingMore = false;
 let activeTab = 'all';
 let selectedMentions = [];
 let selectedMentionAll = false;
+let conversationRefreshTimer = null;
 const DEFAULT_REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '😡'];
 const FALLBACK_PICKER_EMOJIS = ['😀','😁','😂','🤣','😊','😍','😘','😎','🤔','😭','😡','👍','👎','❤️','🎉','✅','🔥','👏','🙏','👀'];
 
@@ -43,7 +44,12 @@ export async function renderChat(el, user) {
 
   bindGlobalEvents(el);
   loadConversations();
-  el._cleanup = () => disconnectWS();
+  conversationRefreshTimer = setInterval(loadConversationsSilently, 10_000);
+  el._cleanup = () => {
+    disconnectWS();
+    if (conversationRefreshTimer) clearInterval(conversationRefreshTimer);
+    conversationRefreshTimer = null;
+  };
 }
 
 // ── Component: Page header ──────────────────────────────────────────
@@ -322,12 +328,21 @@ function renderConversation(conv) {
   document.getElementById('chat-search-btn')?.addEventListener('click', openSearchModal);
   document.getElementById('chat-more-btn')?.addEventListener('click', () => openMoreMenu(conv));
   document.getElementById('chat-send-btn')?.addEventListener('click', sendMessage);
-  document.getElementById('chat-attach-btn')?.addEventListener('click', () => document.getElementById('chat-file-input')?.click());
-  document.getElementById('chat-emoji-btn')?.addEventListener('click', () => openEmojiPicker());
-  document.getElementById('chat-task-btn')?.addEventListener('click', openTaskPicker);
-  document.getElementById('chat-mention-btn')?.addEventListener('click', insertMentionTrigger);
-  document.getElementById('chat-poll-btn')?.addEventListener('click', openPollComposer);
-  document.getElementById('chat-event-btn')?.addEventListener('click', openEventComposer);
+  document.querySelectorAll('[data-composer-action]').forEach(button => button.addEventListener('click', () => {
+    const menu = document.getElementById('chat-actions-menu');
+    if (menu) menu.hidden = true;
+    const trigger = document.getElementById('chat-actions-btn');
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+    runComposerAction(button.dataset.composerAction);
+  }));
+  document.getElementById('chat-actions-btn')?.addEventListener('click', () => {
+    const menu = document.getElementById('chat-actions-menu');
+    const trigger = document.getElementById('chat-actions-btn');
+    if (!menu || !trigger) return;
+    const willOpen = menu.hidden;
+    menu.hidden = !willOpen;
+    trigger.setAttribute('aria-expanded', String(willOpen));
+  });
   document.getElementById('chat-composer-reply-close')?.addEventListener('click', () => { replyTo = null; updateReplyPreview(); });
 
   // Hidden file input
@@ -353,6 +368,9 @@ function renderConversation(conv) {
 }
 
 function renderComposer() {
+  const groupOnlyActions = activeConversation?.type === 'direct' ? '' : `
+    <button type="button" class="chat-mobile-action" data-composer-action="poll">▥<span>Bình chọn</span></button>
+    <button type="button" class="chat-mobile-action" data-composer-action="event">◷<span>Đặt lịch</span></button>`;
   return `
     <div class="chat-composer" id="chat-composer">
       <div class="chat-composer-reply" id="chat-composer-reply" style="display:none">
@@ -360,14 +378,21 @@ function renderComposer() {
         <button class="chat-composer-reply-close" id="chat-composer-reply-close" aria-label="Hủy trả lời">${icon('x', 'sm')}</button>
       </div>
       <div class="chat-composer-box">
-        <button class="chat-composer-btn" id="chat-attach-btn" aria-label="Đính kèm">${icon('paperclip', 'md')}</button>
-        <button class="chat-composer-btn" id="chat-emoji-btn" aria-label="Biểu cảm">${icon('smile', 'md')}</button>
-        <button class="chat-composer-btn" id="chat-task-btn" aria-label="Gắn task">${icon('clipboardList', 'md')}</button>
-        <button class="chat-composer-btn" id="chat-mention-btn" aria-label="Tag thành viên">${icon('atSign', 'md')}</button>
-        <button class="chat-composer-btn" id="chat-poll-btn" aria-label="Tạo bình chọn">▥</button>
-        <button class="chat-composer-btn" id="chat-event-btn" aria-label="Đặt lịch hẹn">◷</button>
+        <button type="button" class="chat-composer-btn chat-composer-tool" data-composer-action="attach" aria-label="Đính kèm">${icon('paperclip', 'md')}</button>
+        <button type="button" class="chat-composer-btn chat-composer-tool" data-composer-action="emoji" aria-label="Biểu cảm">${icon('smile', 'md')}</button>
+        <button type="button" class="chat-composer-btn chat-composer-tool" data-composer-action="task" aria-label="Gắn task">${icon('clipboardList', 'md')}</button>
+        <button type="button" class="chat-composer-btn chat-composer-tool" data-composer-action="mention" aria-label="Tag thành viên">${icon('atSign', 'md')}</button>
+        <button type="button" class="chat-composer-btn chat-composer-tool" data-composer-action="poll" aria-label="Tạo bình chọn">▥</button>
+        <button type="button" class="chat-composer-btn chat-composer-tool" data-composer-action="event" aria-label="Đặt lịch hẹn">◷</button>
+        <button type="button" class="chat-composer-btn chat-composer-actions-trigger" id="chat-actions-btn" aria-label="Thêm công cụ" aria-expanded="false">${icon('plus', 'md')}</button>
         <textarea class="chat-composer-input" id="chat-input" rows="1" placeholder="Nhập tin nhắn..."></textarea>
         <button class="chat-composer-send" id="chat-send-btn" aria-label="Gửi">${icon('send', 'md')}</button>
+      </div>
+      <div class="chat-actions-menu" id="chat-actions-menu" hidden aria-label="Công cụ trò chuyện">
+        <button type="button" class="chat-mobile-action" data-composer-action="attach">${icon('paperclip', 'md')}<span>Đính kèm</span></button>
+        <button type="button" class="chat-mobile-action" data-composer-action="emoji">${icon('smile', 'md')}<span>Biểu cảm</span></button>
+        <button type="button" class="chat-mobile-action" data-composer-action="task">${icon('clipboardList', 'md')}<span>Gắn công việc</span></button>
+        <button type="button" class="chat-mobile-action" data-composer-action="mention">${icon('atSign', 'md')}<span>Tag thành viên</span></button>${groupOnlyActions}
       </div>
       <div class="chat-mention-menu" id="chat-mention-menu" role="listbox" aria-label="Gợi ý thành viên" hidden></div>
       <div class="chat-composer-hint">Gõ <kbd>@</kbd> để tag thành viên. Nhấn Shift + Enter để xuống dòng.</div>
@@ -522,6 +547,15 @@ function renderMessages() {
 
   container.innerHTML = html;
   bindMessageActions(container);
+}
+
+function runComposerAction(action) {
+  if (action === 'attach') return document.getElementById('chat-file-input')?.click();
+  if (action === 'emoji') return openEmojiPicker();
+  if (action === 'task') return openTaskPicker();
+  if (action === 'mention') return insertMentionTrigger();
+  if (action === 'poll') return openPollComposer();
+  if (action === 'event') return openEventComposer();
 }
 
 function renderPollCard(message, isOwner) {
@@ -1020,10 +1054,12 @@ function openMoreMenu(conv) {
       ${m.role === 'owner' ? '<span class="badge badge-success">Owner</span>' : ''}
     </div>`).join('');
 
+  const isOwner = !isDM && (conv.members || []).some(member => Number(member.user_id) === Number(me.id) && member.role === 'owner');
   const actions = !isDM ? `
     <div style="display:flex;gap:8px;margin-bottom:12px">
       <button class="btn-secondary btn-sm" id="chat-rename-btn">${icon('pencil', 'sm')} Đổi tên</button>
       <button class="btn-secondary btn-sm" id="chat-add-member-btn">${icon('userPlus', 'sm')} Thêm</button>
+      ${isOwner ? `<button class="btn-danger btn-sm" id="chat-dissolve-btn">${icon('trash2', 'sm')} Giải tán nhóm</button>` : ''}
     </div>` : '';
 
   openModal('Thông tin cuộc trò chuyện', `
@@ -1039,7 +1075,23 @@ function openMoreMenu(conv) {
 
   document.getElementById('chat-rename-btn')?.addEventListener('click', () => renameConversation(conv));
   document.getElementById('chat-add-member-btn')?.addEventListener('click', () => addMemberFlow(conv));
+  document.getElementById('chat-dissolve-btn')?.addEventListener('click', () => dissolveConversation(conv));
   loadConversationInfoPanel(conv.id);
+}
+
+async function dissolveConversation(conv) {
+  const confirmation = window.prompt(`Giải tán nhóm “${conv.name || 'Nhóm làm việc'}”?\n\nToàn bộ thành viên sẽ mất quyền truy cập. Nhập GIẢI TÁN để xác nhận:`);
+  if (confirmation !== 'GIẢI TÁN') return;
+  try {
+    await api.delete(`/api/conversations/${conv.id}`);
+    closeModal();
+    if (Number(activeConvId) === Number(conv.id)) renderEmptyChat();
+    conversations = conversations.filter(item => Number(item.id) !== Number(conv.id));
+    renderSidebarList();
+    toast('Nhóm đã được giải tán. Lịch sử được lưu audit.', 'success');
+  } catch (error) {
+    toast(error.message || 'Không thể giải tán nhóm', 'error');
+  }
 }
 
 async function loadConversationInfoPanel(conversationId) {
@@ -1288,6 +1340,10 @@ function connectWS(convId) {
             loadConversationsSilently();
           }
         }
+      } else if (data.type === 'conversation:dissolved') {
+        toast('Nhóm này đã được Owner giải tán.', 'info');
+        renderEmptyChat();
+        loadConversationsSilently();
       } else if (data.type === 'message:edit' || data.type === 'message:delete') {
         refreshMessages();
       } else if (data.type === 'conversation:read') {
