@@ -2265,6 +2265,10 @@ function normalizeOvertimeItems(items, periodMonth, { allowFuture = false } = {}
   const now = Date.now();
   const seen = new Set();
   const normalized = [];
+  // Compute today's date boundary in local time for future-date check
+  const todayLocal = new Date();
+  const todayDateStr = `${todayLocal.getFullYear()}-${String(todayLocal.getMonth() + 1).padStart(2, '0')}-${String(todayLocal.getDate()).padStart(2, '0')}`;
+  const todayDate = new Date(todayDateStr + 'T00:00:00');
   for (const raw of items) {
     const startAt = String(raw?.start_at || '');
     const endAt = String(raw?.end_at || '');
@@ -2275,7 +2279,9 @@ function normalizeOvertimeItems(items, periodMonth, { allowFuture = false } = {}
     if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(startAt) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(endAt) || Number.isNaN(start.valueOf()) || Number.isNaN(end.valueOf())) return { error: 'Mỗi dòng OT phải có ngày giờ bắt đầu và kết thúc hợp lệ' };
     if (!startAt.startsWith(`${periodMonth}-`)) return { error: 'Ngày bắt đầu OT phải thuộc đúng tháng của form' };
     if (end <= start || end.valueOf() - start.valueOf() > 24 * 60 * 60 * 1000) return { error: 'Thời gian OT phải lớn hơn 0 và không quá 24 giờ' };
-    if (!allowFuture && start.valueOf() > now) return { error: 'Không thể khai báo OT trong tương lai' };
+    // Compare dates only (not timestamps) so same-day OT entries are always allowed.
+    // Only reject when the start date is strictly after today.
+    if (!allowFuture && new Date(startAt.slice(0, 10) + 'T00:00:00').valueOf() > todayDate.valueOf()) return { error: 'Không thể khai báo OT trong tương lai' };
     if (!reason || reason.length > 1000) return { error: 'Lý do OT là bắt buộc và tối đa 1000 ký tự' };
     const key = `${startAt}|${endAt}`;
     if (seen.has(key)) return { error: 'Không được nhập hai dòng OT trùng thời gian' };
