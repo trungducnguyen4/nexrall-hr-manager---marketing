@@ -159,6 +159,8 @@ export async function renderTasks(el, me) {
         </div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
           <input type="text" id="project-search" placeholder="Tìm Project..." style="min-width:220px;"/>
+          ${canManage ? `<button id="btn-new-project-side" class="btn-primary btn-sm" title="Tạo Project mới">+ Project</button>` : ''}
+          ${canManage ? `<button id="btn-new-project-group" class="btn-secondary btn-sm" title="Tạo Nhóm dự án (Project Group/Category)">+ Nhóm dự án</button>` : ''}
           ${canManage ? `<label style="font-size:12px;color:var(--text-2);display:flex;gap:6px;align-items:center;"><input type="checkbox" id="project-archived"/> Hiện lưu trữ</label>` : ''}
         </div>
       </div>
@@ -410,7 +412,7 @@ export async function renderTasks(el, me) {
     list.querySelectorAll('[data-edit-project]').forEach(btn => btn.addEventListener('click', e => {
       e.stopPropagation();
       const project = projects.find(p => String(p.id) === btn.dataset.editProject);
-      openProjectForm(project, users, departments, refreshProjectsAfterMutation);
+      openProjectForm(project, users, departments, projects, project?.department || '', refreshProjectsAfterMutation);
     }));
   }
 
@@ -475,7 +477,7 @@ export async function renderTasks(el, me) {
     list.querySelectorAll('[data-edit-project]').forEach(btn => btn.addEventListener('click', e => {
       e.stopPropagation();
       const project = projects.find(p => String(p.id) === btn.dataset.editProject);
-      openProjectForm(project, users, departments, refreshProjectsAfterMutation);
+      openProjectForm(project, users, departments, projects, project?.department || '', refreshProjectsAfterMutation);
     }));
   }
 
@@ -714,7 +716,14 @@ export async function renderTasks(el, me) {
   });
   el.querySelector('#project-archived')?.addEventListener('change', loadProjects);
   el.querySelector('#btn-import-myxteam')?.addEventListener('click', openMyxteamImport);
-  el.querySelector('#btn-new-project')?.addEventListener('click', () => openProjectForm(null, users, departments, refreshProjectsAfterMutation));
+  const prefillProjectGroup = () => { const p = projects.find(c => String(c.id) === String(selectedProjectId)); return p?.department || ''; };
+  el.querySelector('#btn-new-project')?.addEventListener('click', () => openProjectForm(null, users, departments, projects, prefillProjectGroup(), refreshProjectsAfterMutation));
+  el.querySelector('#btn-new-project-side')?.addEventListener('click', () => openProjectForm(null, users, departments, projects, prefillProjectGroup(), refreshProjectsAfterMutation));
+  el.querySelector('#btn-new-project-group')?.addEventListener('click', () => openProjectGroupForm(async createdId => {
+    if (createdId) selectedProjectId = String(createdId);
+    await loadProjects();
+    if (selectedProjectId) await loadBoard(); else renderEmptyBoard();
+  }));
   el.querySelector('#btn-new-task').addEventListener('click', () => {
     const project = selectedProject();
     if (!project) { toast('Vui lòng chọn Project trước khi tạo việc', 'error'); return; }
@@ -870,10 +879,41 @@ function openProjectFormOld(project, users, departments, onDone) {
   });
 }
 
-function openProjectForm(project, users, departments, onDone) {
+function openProjectGroupForm(onDone) {
+  // A "Project Group / Category" in the left navigator is simply the grouping
+  // label (project.department) shared by Projects (e.g. BOD, HC-NS THÔNG BÁO,
+  // vp-hcm). It is NOT the HR department entity. Creating a group here creates
+  // the first Project carrying that label so the group becomes visible.
+  openModal('Tạo Nhóm dự án (Project Group)', `
+    <div class="field"><label>Tên nhóm dự án *</label><input id="pg-name" placeholder="VD: vp-hcm, THỰC TẬP SINH, PHÒNG MARKETING"/></div>
+    <div class="field" style="margin-top:10px;"><label>Tên Project khởi tạo trong nhóm</label><input id="pg-project-name" placeholder="Để trống = trùng tên nhóm"/></div>
+    <p style="font-size:12px;color:var(--text-2);margin-top:8px;">Nhóm dự án chỉ là nhãn phân loại tự do để gom các Project (VD: vp-hcm, THỰC TẬP SINH, PHÒNG MARKETING). Không cần trùng với phòng ban HR. Hệ thống sẽ tạo một Project đầu tiên mang nhãn này để nhóm xuất hiện trên board bên trái.</p>
+  `, `
+    <button class="btn-secondary" id="pg-cancel">Hủy</button>
+    <button class="btn-primary" id="pg-save">Tạo nhóm</button>
+  `);
+  document.getElementById('pg-cancel').addEventListener('click', closeModal);
+  document.getElementById('pg-save').addEventListener('click', async () => {
+    const groupName = document.getElementById('pg-name').value.trim();
+    if (!groupName) { toast('Vui lòng nhập tên nhóm dự án', 'error'); return; }
+    const projectName = document.getElementById('pg-project-name').value.trim() || groupName;
+    const saveBtn = document.getElementById('pg-save');
+    saveBtn.disabled = true;
+    try {
+      const created = await api.createTaskProject({ name: projectName, code: '', type: 'project', status: 'active', department: groupName, description: '', start_date: null, end_date: null, members: [] });
+      closeModal();
+      toast(`Đã tạo nhóm dự án "${groupName}" (kèm Project "${projectName}")`, 'success');
+      onDone?.(created?.id || null);
+    } catch (e) { toast(e.message || 'Không tạo được nhóm dự án', 'error'); saveBtn.disabled = false; }
+  });
+}
+
+function openProjectForm(project, users, departments, projects, prefillGroup, onDone) {
   const isEdit = !!project;
   const selectedMembers = new Set(String(project?.member_ids || '').split(',').map(x => Number(x)).filter(Boolean));
   const departmentOptions = departments.map(d => `<option value="${esc(d.name)}">${esc(d.name)}</option>`).join('');
+  const groupSet = new Set((projects || []).map(p => (p.department || '').trim()).filter(Boolean));
+  const groupOptions = [...groupSet].sort((a, b) => String(a).localeCompare(String(b), 'vi', { sensitivity: 'base' }));
 
   openModal(isEdit ? 'Sửa Project' : 'Tạo Project', `
     <div class="project-form-grid">
@@ -884,7 +924,7 @@ function openProjectForm(project, users, departments, onDone) {
         </div>
         <div class="input-row">
           <div class="field"><label>Trạng thái</label><select id="pf-status"><option value="active" ${(!project||project.status==='active')?'selected':''}>Đang hoạt động</option><option value="paused" ${project?.status==='paused'?'selected':''}>Tạm dừng</option><option value="done" ${project?.status==='done'?'selected':''}>Hoàn tất</option><option value="archived" ${project?.status==='archived'?'selected':''}>Lưu trữ</option></select></div>
-          <div class="field"><label>Phòng ban</label><select id="pf-dept"><option value="">-- Chưa chọn --</option>${departments.map(d => `<option value="${esc(d.name)}" ${project?.department===d.name?'selected':''}>${esc(d.name)}</option>`).join('')}</select></div>
+          <div class="field"><label>Nhóm / Danh mục</label><input id="pf-dept" list="pf-dept-list" value="${esc(project?.department || prefillGroup || '')}" placeholder="Chọn hoặc gõ tên nhóm dự án"/><datalist id="pf-dept-list">${groupOptions.map(g => `<option value="${esc(g)}"></option>`).join('')}</datalist></div>
         </div>
         <div class="field"><label>Quản lý</label><select id="pf-manager"><option value="">-- Chưa chọn --</option>${users.map(u => `<option value="${u.id}" ${project?.manager_id==u.id?'selected':''}>${esc(u.full_name)}${u.employee_code ? ` · ${esc(u.employee_code)}` : ''}</option>`).join('')}</select></div>
         <div class="input-row">

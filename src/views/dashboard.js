@@ -1,5 +1,6 @@
-import { esc, lifecycleBadge } from '../utils.js';
+import { esc, lifecycleBadge, today } from '../utils.js';
 import { api } from '../api.js';
+import { renderGeoMap, classifyMarker } from '../geo-map.js?v=20260817-dash-geo-v1';
 
 const stats = [
   ['clipboardList', '0', 'Việc hôm nay', 'indigo'],
@@ -125,4 +126,106 @@ async function renderAdminDashboard(el, me) {
   el.innerHTML = `<section class="admin-dashboard"><header class="admin-dash-hero"><div><p>TỔNG QUAN VẬN HÀNH</p><h1>Chào ${esc(me.full_name || 'Admin')}</h1><small>${esc(date)} · Cập nhật ${esc(data.generated_at || '')}</small></div><div class="admin-dash-health"><b>Hệ thống đang hoạt động</b><span>${data.action_items.length ? `${data.action_items.length} vấn đề cần chú ý` : 'Không có vấn đề quan trọng cần xử lý'}</span></div></header><div class="admin-dash-stat-grid">${dashLink('#/users','users',number(p.active),'Nhân sự hoạt động',`${number(p.new_hires_month)} mới · ${number(p.probation)} thử việc · ${number(p.interns)} TTS`)}${dashLink('#/attendance','clock3',`${number(a.checked_in)} / ${number(a.eligible)}`,'Đã check-in',`${percent(a.checkin_rate)} · ${number(a.late)} đi muộn · ${number(a.approved_leave)} nghỉ phép`,a.checkin_rate>=80?'success':'warning')}${dashLink('#/tasks','clipboardList',number(t.overdue),'Việc quá hạn',t.overdue?'Cần theo dõi tiến độ':'Công việc đúng tiến độ',t.overdue?'danger':'success')}${dashLink(ap.leave>=ap.kpi?'#/leave':'#/kpis','circleAlert',number(ap.total),'Chờ xử lý',`${number(ap.leave)} nghỉ phép · ${number(ap.kpi)} KPI · ${number(ap.overtime)} tăng ca`,ap.total?'warning':'success')}${dashLink('#/notifications','bell',number(al.total),'Cảnh báo nhân sự',`${number(al.critical)} khẩn · ${number(al.warning)} cần chú ý`,al.critical?'danger':al.total?'warning':'success')}</div><div class="admin-dash-primary"><article class="admin-dash-panel"><header><h2>Cần xử lý ngay</h2><a href="#/notifications">Xem tất cả</a></header>${actions}</article><article class="admin-dash-panel"><header><h2>Insight hôm nay</h2></header><ul class="admin-insights">${insights}</ul></article></div><div class="admin-dash-grid"><article class="admin-dash-panel"><header><h2>Tình hình chấm công hôm nay</h2><a href="#/attendance">Xem chấm công →</a></header>${progress(a.checkin_rate,'success')}<div class="admin-metric-list"><span>Đã check-in <b>${number(a.checked_in)} · ${percent(a.checkin_rate)}</b></span><span>Đi muộn <b>${number(a.late)}</b></span><span>Nghỉ phép <b>${number(a.approved_leave)}</b></span><span>Chưa check-in <b>${number(a.not_checked_in)}</b></span></div><h3>Chưa check-in</h3><ul class="admin-people">${missing}</ul></article><article class="admin-dash-panel"><header><h2>Tiến độ công việc</h2><a href="#/tasks">Xem công việc →</a></header><div class="admin-metric-list"><span>Đang mở <b>${number(t.open)}</b></span><span>Đang làm <b>${number(t.in_progress)}</b></span><span>Review <b>${number(t.review)}</b></span><span>Hoàn thành 7 ngày <b>${number(t.done_last_7_days)}</b></span></div><h3>Việc quá hạn theo phòng ban</h3>${deptBars}</article><article class="admin-dash-panel"><header><h2>KPI tháng ${k.month}/${k.year}</h2><a href="#/kpis">Xem KPI nhân viên →</a></header><strong class="admin-kpi-coverage">${number(k.with_plan)} / ${number(k.eligible_employees)}</strong><span>Đã có kế hoạch KPI · ${percent(k.coverage_percent)} coverage</span>${progress(k.coverage_percent,'primary')}<div class="admin-metric-list"><span>Chưa thiết lập <b>${number(k.without_plan)}</b></span><span>Đang thực hiện <b>${number(k.draft)}</b></span><span>Chờ review <b>${number(k.submitted)}</b></span><span>Đã duyệt <b>${number(k.approved)}</b></span></div></article><article class="admin-dash-panel"><header><h2>Tuyển dụng</h2><a href="#/recruitment">Xem tuyển dụng →</a></header><div class="admin-metric-list"><span>Đang xử lý <b>${number(data.recruitment.active)}</b></span><span>Phỏng vấn <b>${number(data.recruitment.interview)}</b></span><span>Đang offer <b>${number(data.recruitment.offer)}</b></span><span>Đã tuyển tháng này <b>${number(data.recruitment.hired_this_month)}</b></span></div></article></div><article class="admin-dash-panel admin-campaign-panel"><header><h2>Chiến dịch Marketing</h2><a href="#/campaigns">Xem chiến dịch →</a></header><div class="admin-campaign-summary"><b>${number(data.campaigns.active)} đang chạy</b><span>${number(data.campaigns.spent)} / ${number(data.campaigns.budget)} đ${data.campaigns.spent_percent===null?'':' · '+percent(data.campaigns.spent_percent)}</span></div><div class="admin-campaigns">${campaigns}</div></article></section>`;
 }
 
-export async function renderDashboard(el, me) { return me.role === 'admin' ? renderAdminDashboard(el, me) : renderEmployeeDashboard(el, me); }
+// ── Admin dashboard: today's attendance location map (geofence viz) ──
+// Reuses the shared schematic renderer. Office selector lets admin switch
+// between e.g. Văn phòng HCM and Văn phòng Hà Nội. Server enforces the scope.
+async function renderAdminGeoPanel(el, me) {
+  const host = el.querySelector('.admin-dashboard') || el;
+  host.insertAdjacentHTML('beforeend', `
+    <article class="admin-dash-panel admin-dash-geo">
+      <header>
+        <h2>📍 Vị trí chấm công hôm nay</h2>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <select id="dash-geo-office" class="btn-secondary btn-sm"><option value="">Tự động</option></select>
+          <button type="button" id="dash-geo-refresh" class="btn-secondary btn-sm">🔄 Làm mới</button>
+        </div>
+      </header>
+      <div id="dash-geo-meta" style="font-size:12px;color:var(--text-2);margin-bottom:8px;">Đang tải…</div>
+      <div id="dash-geo-map" style="height:320px;"></div>
+      <div class="att-clock-geo-legend" style="margin-top:10px;">
+        <span class="att-geo-legend-item"><i class="att-geo-dot" style="background:#3B82F6"></i>Trong phạm vi</span>
+        <span class="att-geo-legend-item"><i class="att-geo-dot" style="background:#EF4444"></i>Ngoài phạm vi</span>
+        <span class="att-geo-legend-item"><i class="att-geo-dot geo-dot-current"></i>Tôi</span>
+      </div>
+      <div id="dash-geo-status" style="font-size:12px;color:var(--text-2);margin-top:8px;"></div>
+      <div style="font-size:10.5px;color:var(--text-3);margin-top:8px;">Điểm đánh dấu là vị trí check-in gần nhất của ngày hôm nay — không phải theo dõi liên tục.</div>
+    </article>`);
+
+  const mapEl = document.getElementById('dash-geo-map');
+  const metaEl = document.getElementById('dash-geo-meta');
+  const statusEl = document.getElementById('dash-geo-status');
+  const officeSelect = document.getElementById('dash-geo-office');
+  const todayStr = today();
+  let geoMap = null;
+  let geoOfficeId = '';
+  let geoAutoSelected = false;
+
+  async function loadOffices() {
+    try {
+      const { locations = [] } = await api.getAttendanceLocations();
+      if (officeSelect) {
+        officeSelect.innerHTML = `<option value="">Tự động</option>` + locations.map(l => `<option value="${l.id}">${esc(l.name)}</option>`).join('');
+        if (!geoAutoSelected && geoOfficeId === '' && me?.work_location) {
+          const wl = String(me.work_location).trim().toLowerCase();
+          const match = locations.find(l => {
+            const code = String(l.code || '').toLowerCase();
+            const name = String(l.name || '').toLowerCase();
+            if (code && code.includes(wl)) return true;
+            if (wl === 'hcm' && (code.includes('hcm') || name.includes('hồ chí minh') || name.includes('ho chi minh'))) return true;
+            if (wl === 'hn' && (code.includes('hn') || name.includes('hà nội') || name.includes('ha noi'))) return true;
+            return false;
+          });
+          if (match) { geoOfficeId = String(match.id); geoAutoSelected = true; }
+        }
+        officeSelect.value = geoOfficeId || '';
+      }
+    } catch (_) { /* optional */ }
+  }
+  await loadOffices();
+
+  async function loadPanel() {
+    if (!mapEl) return;
+    try {
+      const data = await api.getAttendanceCheckinPoints({ date: todayStr, office_id: geoOfficeId || '' });
+      if (!data.office) { if (metaEl) metaEl.textContent = data.reason || 'Chưa cấu hình địa điểm chấm công'; return; }
+      const office = data.office;
+      if (metaEl) metaEl.textContent = `${office.name} · Bán kính: ${Number(office.radius_meters)} m · ${data.markers.length} điểm chấm công`;
+      const markers = (data.markers || []).map(m => ({
+        latitude: m.latitude, longitude: m.longitude,
+        label: m.employee_name, employee_id: m.employee_id,
+        is_current_user: m.is_current_user, inside_geofence: m.inside_geofence,
+        requires_location_review: m.requires_location_review,
+        checkin_time: m.checkin_time, checkin_accuracy_meters: m.checkin_accuracy_meters,
+        distance_m: m.distance_m, kind: classifyMarker(m, me.id),
+        tooltipHTML: `<div class="geo-tooltip-name">${esc(m.employee_name || `NV ${m.employee_id}`)}</div>${m.checkin_time ? `<div>Check-in: ${esc(m.checkin_time)}</div>` : ''}${m.distance_m != null ? `<div>Khoảng cách: ${Math.round(Number(m.distance_m))} m</div>` : ''}${m.inside_geofence !== false ? '<div class="geo-tooltip-status geo-tooltip-inside">Trong phạm vi</div>' : '<div class="geo-tooltip-status geo-tooltip-outside">Ngoài phạm vi · Cần xem xét</div>'}`,
+      }));
+      if (geoMap) {
+        geoMap.setOffice({ latitude: Number(office.latitude), longitude: Number(office.longitude) }, Number(office.radius_meters), office.name);
+        geoMap.setMarkers(markers, { fit: true });
+      } else {
+        geoMap = renderGeoMap(mapEl, {
+          center: { latitude: Number(office.latitude), longitude: Number(office.longitude) },
+          radiusMeters: Number(office.radius_meters || 100),
+          officeName: office.name,
+          markers,
+          theme: 'light',
+          height: 320,
+        });
+      }
+      if (statusEl) {
+        const mine = (data.markers || []).find(m => m.is_current_user);
+        statusEl.textContent = mine
+          ? `Bạn: ghi nhận lúc ${mine.checkin_time || '—'} · khoảng cách ${Math.round(Number(mine.distance_m))} m · ${mine.inside_geofence !== false ? 'Trong phạm vi' : 'Ngoài phạm vi'}${mine.requires_location_review ? ' · cần xem xét' : ''}`
+          : 'Bạn chưa có điểm check-in GPS hôm nay.';
+      }
+    } catch (e) { if (metaEl) metaEl.textContent = e.message || 'Không tải được bản đồ'; }
+  }
+  await loadPanel();
+  officeSelect?.addEventListener('change', e => { geoOfficeId = e.target.value || ''; loadPanel(); });
+  document.getElementById('dash-geo-refresh')?.addEventListener('click', () => loadPanel());
+}
+
+export async function renderDashboard(el, me) {
+  if (me.role === 'admin') { await renderAdminDashboard(el, me); void renderAdminGeoPanel(el, me); }
+  else await renderEmployeeDashboard(el, me);
+}

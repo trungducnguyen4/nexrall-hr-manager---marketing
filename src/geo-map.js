@@ -1,42 +1,43 @@
 // ════════════════════════════════════════════════
-//  Shared 2D map renderer — OpenStreetMap tiles + SVG overlay.
+//  Shared schematic geofence renderer (SVG, no external tiles).
 //
 //  Used by:
-//    · Office configuration page  → markers: []
-//    · Attendance page            → markers: today's check-in points
+//    · Office configuration page → markers: []
+//    · Attendance page           → markers: today's check-in points
 //
-//  No external map library. If tiles cannot load (offline / blocked) the
-//  renderer falls back to a neutral grid so the geofence circle and the
-//  employee markers remain usable.
+//  This is a "geofence visualization", NOT a street map: it draws a local
+//  2D plane around the office origin (equirectangular approximation) with the
+//  geofence circle, the office pin and the employee check-in markers.
 //
-//  One renderer for both screens — never copy-paste a second map.
+//  - No OpenStreetMap / tile / zoom / attribution / network dependency.
+//  - The shortest distance / inside-outside decision is ALWAYS computed by the
+//    backend (Haversine). This projection only places markers in the right
+//    relative direction around the office.
 // ════════════════════════════════════════════════
 
-const TILE_SIZE = 256;
-const MAX_LAT = 85.05112878;
-const TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+const INSIDE_COLOR = '#3B82F6';  // blue  = within radius
+const OUTSIDE_COLOR = '#EF4444'; // red   = outside radius
+const OFFICE_COLOR = '#EF4444';
 
-const KIND_COLORS = { me: '#3B82F6', inside: '#10B981', outside: '#EF4444' };
-
-// ── Projection helpers (pure, exported for tests) ──
-export function projectLatLng(lat, lng, zoom) {
-  const clamped = Math.max(-MAX_LAT, Math.min(MAX_LAT, Number(lat)));
-  const scale = TILE_SIZE * Math.pow(2, zoom);
-  const x = ((Number(lng) + 180) / 360) * scale;
-  const sin = Math.sin((clamped * Math.PI) / 180);
-  const y = (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * scale;
-  return { x, y };
+// ── Local plane helpers (pure, exported for tests) ──
+// Office origin → meters East / North (equirectangular approximation).
+export function projectToLocalPlane(officeLat, officeLng, lat, lng) {
+  const cosLat = Math.max(0.0001, Math.cos((Number(officeLat) * Math.PI) / 180));
+  const metersE = (Number(lng) - Number(officeLng)) * 111320 * cosLat;
+  const metersN = (Number(lat) - Number(officeLat)) * 111320;
+  return { metersE, metersN };
 }
 
-export function metersPerPixelAt(lat, zoom) {
-  return (156543.03392 * Math.cos((Number(lat) * Math.PI) / 180)) / Math.pow(2, zoom);
+export function distanceFromOfficeMeters(officeLat, officeLng, lat, lng) {
+  const p = projectToLocalPlane(officeLat, officeLng, lat, lng);
+  return Math.hypot(p.metersE, p.metersN);
 }
 
-// Marker → visual kind: current user = blue, inside = green, outside = red.
+// Marker → visual kind: within = 'inside', without = 'outside', current user = 'me'.
 export function classifyMarker(marker, currentUserId) {
   if (marker?.is_current_user) return 'me';
   if (currentUserId !== undefined && Number(marker?.employee_id) === Number(currentUserId)) return 'me';
-  return marker?.inside_geofence ? 'inside' : 'outside';
+  return marker?.inside_geofence === false ? 'outside' : 'inside';
 }
 
 function escapeHtml(value) {
@@ -45,172 +46,113 @@ function escapeHtml(value) {
 
 function defaultTooltipHTML(marker) {
   const name = escapeHtml(marker.label || marker.employee_name || 'Nhân viên');
-  const status = marker.inside_geofence
+  const isInside = marker.inside_geofence !== false;
+  const status = isInside
     ? '<span class="geo-tooltip-status geo-tooltip-inside">Trong phạm vi</span>'
-    : '<span class="geo-tooltip-status geo-tooltip-outside">Ngoài phạm vi</span>';
+    : '<span class="geo-tooltip-status geo-tooltip-outside">Ngoài phạm vi · Cần xem xét</span>';
   return `<div class="geo-tooltip-name">${name}</div>`
     + (marker.checkin_time ? `<div>Check-in: ${escapeHtml(marker.checkin_time)}</div>` : '')
-    + (marker.distance_m != null ? `<div>Cách văn phòng: ${Math.round(Number(marker.distance_m))} m</div>` : '')
+    + (marker.distance_m != null ? `<div>Khoảng cách: ${Math.round(Number(marker.distance_m))} m</div>` : '')
+    + (marker.checkin_accuracy_meters != null ? `<div>Độ chính xác GPS: ±${Math.round(Number(marker.checkin_accuracy_meters))} m</div>` : '')
     + status;
 }
 
 /**
- * Render an interactive 2D map into `container`.
+ * Render an interactive schematic geofence view into `container`.
  *
  * @param {HTMLElement} container
  * @param {Object} options
  *   center            {latitude, longitude} office center
  *   radiusMeters      geofence radius
- *   officeName        label next to the office pin
+ *   officeName        label under the office pin
  *   markers           [{ latitude, longitude, label, kind, tooltipHTML,
  *                        employee_id, is_current_user, inside_geofence,
- *                        checkin_time, distance_m }]
+ *                        checkin_time, distance_m, checkin_accuracy_meters }]
  *   theme             'light' | 'dark'
  *   height            px (number)
- *   interactive       enable pan/zoom
+ *   interactive       enable pan
  * @returns {{ setMarkers, setOffice, fit, destroy }}
  */
 export function renderGeoMap(container, options = {}) {
   const {
-    center = { latitude: 21.0285, longitude: 105.8542 },
+    center = { latitude: 0, longitude: 0 },
     radiusMeters = 100,
     officeName = 'Văn phòng',
     markers = [],
     theme = 'light',
     height = 240,
     interactive = true,
-    fitMinZoom = 13,
-    fitMaxZoom = 17.5,
-    minZoom = 4,
-    maxZoom = 19,
   } = options;
+
+  const office = { latitude: Number(center?.latitude ?? 0), longitude: Number(center?.longitude ?? 0) };
+  let radius = Number(radiusMeters) || 100;
+  let officeLabel = String(officeName || 'Văn phòng');
+  let markerList = (markers || []).map(marker => ({ ...marker }));
+  let width = Math.max(200, container.clientWidth || 300);
+  let heightPx = Math.max(120, container.clientHeight || (typeof height === 'number' ? height : 240));
+  let view = { scale: 10, panX: 0, panY: 0 };
+  let rafId = 0;
+  let destroyed = false;
+  let userMoved = false;
+
+  const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
 
   // ── DOM scaffold ───────────────────────────────
   container.classList.add('geo-map');
   container.classList.toggle('geo-map--dark', theme === 'dark');
   container.style.height = typeof height === 'number' ? `${height}px` : String(height);
-
-  const fallbackEl = document.createElement('div');
-  fallbackEl.className = 'geo-map-fallback';
-  const tilesEl = document.createElement('div');
-  tilesEl.className = 'geo-map-tiles';
+  container.innerHTML = '';
   const svgNS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(svgNS, 'svg');
   svg.setAttribute('class', 'geo-map-svg');
   const tooltipEl = document.createElement('div');
   tooltipEl.className = 'geo-map-tooltip';
   tooltipEl.hidden = true;
-  const attributionEl = document.createElement('div');
-  attributionEl.className = 'geo-map-attribution';
-  attributionEl.textContent = '© OpenStreetMap';
+  container.append(svg, tooltipEl);
 
-  container.innerHTML = '';
-  container.append(fallbackEl, tilesEl, svg, tooltipEl, attributionEl);
+  const screenX = metersE => width / 2 + view.panX + metersE * view.scale;
+  const screenY = metersN => heightPx / 2 + view.panY - metersN * view.scale;
 
-  let btnIn = null, btnOut = null;
-  if (interactive) {
-    const zoomBox = document.createElement('div');
-    zoomBox.className = 'geo-map-zoom';
-    btnIn = document.createElement('button');
-    btnIn.type = 'button'; btnIn.textContent = '+'; btnIn.title = 'Phóng to';
-    btnOut = document.createElement('button');
-    btnOut.type = 'button'; btnOut.textContent = '−'; btnOut.title = 'Thu nhỏ';
-    zoomBox.append(btnIn, btnOut);
-    container.append(zoomBox);
+  // Auto-fit: geofence + farthest marker, padded, but never zoom out too far.
+  function computeFitScale() {
+    let maxDist = radius;
+    markerList.forEach(marker => {
+      if (!Number.isFinite(Number(marker.latitude)) || !Number.isFinite(Number(marker.longitude))) return;
+      const d = distanceFromOfficeMeters(office.latitude, office.longitude, Number(marker.latitude), Number(marker.longitude));
+      if (d > maxDist) maxDist = d;
+    });
+    const viewportRadius = clamp(maxDist * 1.25, radius * 1.25, 3000);
+    return Math.max(1, Math.min((width - 24) / (2 * viewportRadius), (heightPx - 24) / (2 * viewportRadius)));
   }
 
-  // ── State ──────────────────────────────────────
-  let office = { latitude: Number(center.latitude), longitude: Number(center.longitude) };
-  let radius = Number(radiusMeters) || 100;
-  let officeLabel = String(officeName || 'Văn phòng');
-  let markerList = (markers || []).map(marker => ({ ...marker }));
-  let view = { latitude: office.latitude, longitude: office.longitude, zoom: 16 };
-  let pan = { x: 0, y: 0 };
-  let width = Math.max(220, container.clientWidth || 300);
-  let heightPx = Math.max(120, container.clientHeight || (typeof height === 'number' ? height : 240));
-  let tilesBroken = false;
-  let userMoved = false; // once the user pans/zooms, auto-fit stops overriding
-  let rafId = 0;
-  let destroyed = false;
-
-  const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
-
-  const worldCenter = () => projectLatLng(view.latitude, view.longitude, view.zoom);
-  const topLeft = () => {
-    const wc = worldCenter();
-    return { x: wc.x - width / 2 + pan.x, y: wc.y - heightPx / 2 + pan.y };
-  };
-  const screenPoint = (lat, lng) => {
-    const p = projectLatLng(lat, lng, view.zoom);
-    const tl = topLeft();
-    return { x: p.x - tl.x, y: p.y - tl.y };
-  };
-
-  // ── Rendering ──────────────────────────────────
-  function renderTiles() {
-    tilesEl.innerHTML = '';
-    if (tilesBroken) {
-      tilesEl.style.display = 'none';
-      attributionEl.style.display = 'none';
-      return;
-    }
-    tilesEl.style.display = '';
-    attributionEl.style.display = '';
-    const z = view.zoom;
-    const n = Math.pow(2, z);
-    const tl = topLeft();
-    const startX = Math.floor(tl.x / TILE_SIZE);
-    const endX = Math.floor((tl.x + width) / TILE_SIZE);
-    const startY = Math.floor(tl.y / TILE_SIZE);
-    const endY = Math.floor((tl.y + heightPx) / TILE_SIZE);
-    const fragment = document.createDocumentFragment();
-    for (let tx = startX; tx <= endX; tx++) {
-      for (let ty = startY; ty <= endY; ty++) {
-        if (ty < 0 || ty >= n) continue;
-        const wrappedX = ((tx % n) + n) % n;
-        const img = document.createElement('img');
-        img.className = 'geo-map-tile';
-        img.alt = '';
-        img.draggable = false;
-        img.loading = 'lazy';
-        img.src = TILE_URL.replace('{z}', z).replace('{x}', wrappedX).replace('{y}', ty);
-        img.style.left = `${tx * TILE_SIZE - tl.x}px`;
-        img.style.top = `${ty * TILE_SIZE - tl.y}px`;
-        img.style.width = `${TILE_SIZE}px`;
-        img.style.height = `${TILE_SIZE}px`;
-        img.addEventListener('error', () => {
-          if (!tilesBroken) { tilesBroken = true; scheduleRender(); }
-        });
-        fragment.appendChild(img);
-      }
-    }
-    tilesEl.appendChild(fragment);
-  }
-
-  function renderOverlay() {
+  function render() {
     while (svg.firstChild) svg.removeChild(svg.firstChild);
     svg.setAttribute('viewBox', `0 0 ${width} ${heightPx}`);
-    svg.setAttribute('width', String(width));
-    svg.setAttribute('height', String(heightPx));
-    const textColor = theme === 'dark' ? '#F1F5F9' : '#0F172A';
-    const haloColor = theme === 'dark' ? 'rgba(15,23,42,.92)' : 'rgba(255,255,255,.92)';
 
-    const officePoint = screenPoint(office.latitude, office.longitude);
+    const textColor = theme === 'dark' ? '#F1F5F9' : '#1E293B';
+    const haloColor = theme === 'dark' ? 'rgba(15,23,42,.92)' : 'rgba(255,255,255,.94)';
 
-    // Geofence circle + radius label
-    const radiusPx = Math.max(6, radius / metersPerPixelAt(office.latitude, view.zoom));
+    const bg = document.createElementNS(svgNS, 'rect');
+    bg.setAttribute('x', 0); bg.setAttribute('y', 0);
+    bg.setAttribute('width', width); bg.setAttribute('height', heightPx);
+    bg.setAttribute('rx', '8');
+    bg.setAttribute('fill', theme === 'dark' ? '#14202b' : '#FFFFFF');
+    svg.appendChild(bg);
+
+    const officePoint = { x: screenX(0), y: screenY(0) };
+
+    // Geofence circle: light translucent fill + dashed dark border.
+    const circleR = Math.max(6, radius * view.scale);
     const circle = document.createElementNS(svgNS, 'circle');
-    circle.setAttribute('cx', officePoint.x);
-    circle.setAttribute('cy', officePoint.y);
-    circle.setAttribute('r', radiusPx);
-    circle.setAttribute('fill', 'rgba(99,102,241,.14)');
-    circle.setAttribute('stroke', '#6366F1');
-    circle.setAttribute('stroke-width', '2');
-    circle.setAttribute('stroke-dasharray', '5 4');
+    circle.setAttribute('cx', officePoint.x); circle.setAttribute('cy', officePoint.y); circle.setAttribute('r', circleR);
+    circle.setAttribute('fill', 'rgba(59,130,246,.10)');
+    circle.setAttribute('stroke', '#1D4ED8');
+    circle.setAttribute('stroke-width', '1.6');
+    circle.setAttribute('stroke-dasharray', '6 5');
     svg.appendChild(circle);
 
     const radiusText = document.createElementNS(svgNS, 'text');
-    radiusText.setAttribute('x', officePoint.x + radiusPx + 5);
+    radiusText.setAttribute('x', officePoint.x + circleR + 6);
     radiusText.setAttribute('y', officePoint.y + 3);
     radiusText.setAttribute('font-size', '10');
     radiusText.setAttribute('font-weight', '700');
@@ -221,46 +163,47 @@ export function renderGeoMap(container, options = {}) {
     radiusText.textContent = `${Math.round(radius)} m`;
     svg.appendChild(radiusText);
 
-    // Office pin
-    const pin = document.createElementNS(svgNS, 'g');
-    pin.setAttribute('transform', `translate(${officePoint.x},${officePoint.y})`);
+    // Office pin.
+    const pinG = document.createElementNS(svgNS, 'g');
+    pinG.setAttribute('transform', `translate(${officePoint.x},${officePoint.y})`);
     const pinPath = document.createElementNS(svgNS, 'path');
     pinPath.setAttribute('d', 'M0,0 C-4.5,-10 -11,-14.5 -11,-21.5 A11,11 0 1,1 11,-21.5 C11,-14.5 4.5,-10 0,0 Z');
-    pinPath.setAttribute('fill', '#EF4444');
+    pinPath.setAttribute('fill', OFFICE_COLOR);
     pinPath.setAttribute('stroke', '#ffffff');
     pinPath.setAttribute('stroke-width', '1.6');
-    pin.appendChild(pinPath);
+    pinG.appendChild(pinPath);
     const pinDot = document.createElementNS(svgNS, 'circle');
-    pinDot.setAttribute('cy', '-21.5');
-    pinDot.setAttribute('r', '4.2');
-    pinDot.setAttribute('fill', '#ffffff');
-    pin.appendChild(pinDot);
-    svg.appendChild(pin);
+    pinDot.setAttribute('cy', '-21.5'); pinDot.setAttribute('r', '4.2'); pinDot.setAttribute('fill', '#ffffff');
+    pinG.appendChild(pinDot);
+    svg.appendChild(pinG);
 
     const officeText = document.createElementNS(svgNS, 'text');
-    officeText.setAttribute('x', officePoint.x);
-    officeText.setAttribute('y', officePoint.y + 26);
-    officeText.setAttribute('font-size', '11');
-    officeText.setAttribute('font-weight', '800');
-    officeText.setAttribute('text-anchor', 'middle');
-    officeText.setAttribute('fill', textColor);
-    officeText.setAttribute('paint-order', 'stroke');
-    officeText.setAttribute('stroke', haloColor);
-    officeText.setAttribute('stroke-width', '3');
+    officeText.setAttribute('x', officePoint.x); officeText.setAttribute('y', officePoint.y + 28);
+    officeText.setAttribute('font-size', '11'); officeText.setAttribute('font-weight', '800'); officeText.setAttribute('text-anchor', 'middle');
+    officeText.setAttribute('fill', textColor); officeText.setAttribute('paint-order', 'stroke'); officeText.setAttribute('stroke', haloColor); officeText.setAttribute('stroke-width', '3');
     officeText.textContent = officeLabel;
     svg.appendChild(officeText);
 
-    // Employee check-in markers (never render on the config page: markers=[])
+    // Employee check-in markers (never rendered on the config page: markers=[]).
     markerList.forEach(marker => {
       if (!Number.isFinite(Number(marker.latitude)) || !Number.isFinite(Number(marker.longitude))) return;
-      const point = screenPoint(Number(marker.latitude), Number(marker.longitude));
       const kind = marker.kind || classifyMarker(marker);
-      const color = KIND_COLORS[kind] || KIND_COLORS.inside;
+      const isInside = kind !== 'outside';
+      const isCurrent = kind === 'me';
+      const color = isInside ? INSIDE_COLOR : OUTSIDE_COLOR;
+      const p = projectToLocalPlane(office.latitude, office.longitude, Number(marker.latitude), Number(marker.longitude));
+      const point = { x: screenX(p.metersE), y: screenY(p.metersN) };
+
+      if (isCurrent) {
+        const ring = document.createElementNS(svgNS, 'circle');
+        ring.setAttribute('cx', point.x); ring.setAttribute('cy', point.y); ring.setAttribute('r', 12);
+        ring.setAttribute('fill', 'none'); ring.setAttribute('stroke', color); ring.setAttribute('stroke-width', '2');
+        ring.setAttribute('opacity', '.5');
+        svg.appendChild(ring);
+      }
 
       const dot = document.createElementNS(svgNS, 'circle');
-      dot.setAttribute('cx', point.x);
-      dot.setAttribute('cy', point.y);
-      dot.setAttribute('r', kind === 'me' ? 9 : 7);
+      dot.setAttribute('cx', point.x); dot.setAttribute('cy', point.y); dot.setAttribute('r', isCurrent ? 8 : 6);
       dot.setAttribute('fill', color);
       dot.setAttribute('stroke', '#ffffff');
       dot.setAttribute('stroke-width', '2');
@@ -269,16 +212,17 @@ export function renderGeoMap(container, options = {}) {
       dot.addEventListener('click', event => { event.stopPropagation(); showTooltip(marker, point); });
       svg.appendChild(dot);
 
+      const name = String(marker.label || marker.employee_name || `NV ${marker.employee_id ?? ''}`) + (isCurrent ? ' · Tôi' : '');
       const label = document.createElementNS(svgNS, 'text');
-      label.setAttribute('x', point.x + (kind === 'me' ? 12 : 10));
-      label.setAttribute('y', point.y - (kind === 'me' ? 11 : 9));
-      label.setAttribute('font-size', '10.5');
+      label.setAttribute('x', point.x + (isCurrent ? 12 : 10));
+      label.setAttribute('y', point.y - (isCurrent ? 11 : 8));
+      label.setAttribute('font-size', isCurrent ? '11' : '10.5');
       label.setAttribute('font-weight', '700');
       label.setAttribute('fill', textColor);
       label.setAttribute('paint-order', 'stroke');
       label.setAttribute('stroke', haloColor);
       label.setAttribute('stroke-width', '3');
-      label.textContent = String(marker.label || marker.employee_name || `NV ${marker.employee_id ?? ''}`);
+      label.textContent = name;
       svg.appendChild(label);
 
       if (kind === 'outside') {
@@ -287,7 +231,7 @@ export function renderGeoMap(container, options = {}) {
         tag.setAttribute('y', point.y + 5);
         tag.setAttribute('font-size', '9');
         tag.setAttribute('font-weight', '800');
-        tag.setAttribute('fill', '#EF4444');
+        tag.setAttribute('fill', OUTSIDE_COLOR);
         tag.setAttribute('paint-order', 'stroke');
         tag.setAttribute('stroke', haloColor);
         tag.setAttribute('stroke-width', '3');
@@ -313,52 +257,7 @@ export function renderGeoMap(container, options = {}) {
   function keepTooltipOnScreen() {
     if (!activeTooltipPoint) return;
     tooltipEl.style.left = `${clamp(activeTooltipPoint.x + 14, 4, Math.max(4, width - 220))}px`;
-    tooltipEl.style.top = `${clamp(activeTooltipPoint.y - 8, 4, Math.max(4, heightPx - 90))}px`;
-  }
-
-  // ── Fit viewport: geofence circle + visible markers ──
-  function fitView({ force = false } = {}) {
-    if (!force && userMoved) return;
-    const dLat = radius / 111320;
-    const dLng = radius / (111320 * Math.max(0.05, Math.cos((office.latitude * Math.PI) / 180)));
-    let minLat = office.latitude - dLat, maxLat = office.latitude + dLat;
-    let minLng = office.longitude - dLng, maxLng = office.longitude + dLng;
-    markerList.forEach(marker => {
-      if (!Number.isFinite(Number(marker.latitude)) || !Number.isFinite(Number(marker.longitude))) return;
-      minLat = Math.min(minLat, Number(marker.latitude));
-      maxLat = Math.max(maxLat, Number(marker.latitude));
-      minLng = Math.min(minLng, Number(marker.longitude));
-      maxLng = Math.max(maxLng, Number(marker.longitude));
-    });
-    const padLat = Math.max(dLat, (maxLat - minLat) * 0.18);
-    const padLng = Math.max(dLng, (maxLng - minLng) * 0.18);
-    minLat -= padLat; maxLat += padLat; minLng -= padLng; maxLng += padLng;
-
-    let chosenZoom = fitMinZoom;
-    for (let z = fitMaxZoom; z >= fitMinZoom; z -= 0.5) {
-      const a = projectLatLng(minLat, minLng, z);
-      const b = projectLatLng(maxLat, maxLng, z);
-      if (b.x - a.x <= width && b.y - a.y <= heightPx) { chosenZoom = z; break; }
-    }
-    // Never zoom out past fitMinZoom even if a marker is far away.
-    view = {
-      latitude: (minLat + maxLat) / 2,
-      longitude: (minLng + maxLng) / 2,
-      zoom: clamp(Math.round(chosenZoom), minZoom, maxZoom),
-    };
-    pan = { x: 0, y: 0 };
-    scheduleRender();
-  }
-
-  // ── View manipulation ──────────────────────────
-  function setZoom(next, fromUser = false) {
-    const target = clamp(Math.round(Number(next)), minZoom, maxZoom);
-    if (fromUser) userMoved = true;
-    if (target === view.zoom) return;
-    const centerWorld = { x: worldCenter().x + pan.x, y: worldCenter().y + pan.y };
-    view.zoom = target;
-    pan = { x: centerWorld.x - worldCenter().x, y: centerWorld.y - worldCenter().y };
-    scheduleRender();
+    tooltipEl.style.top = `${clamp(activeTooltipPoint.y - 8, 4, Math.max(4, heightPx - 92))}px`;
   }
 
   function scheduleRender() {
@@ -366,39 +265,38 @@ export function renderGeoMap(container, options = {}) {
     rafId = requestAnimationFrame(() => {
       rafId = 0;
       if (destroyed) return;
-      renderTiles();
-      renderOverlay();
+      render();
     });
   }
 
-  // ── Interactions ───────────────────────────────
+  function fitView({ force = false } = {}) {
+    if (!force && userMoved) return;
+    view.scale = computeFitScale();
+    view.panX = 0;
+    view.panY = 0;
+    scheduleRender();
+  }
+
+  // ── Interactions (pan only; no zoom) ──────────
   let dragging = false;
   let lastPoint = null;
   if (interactive) {
-    btnIn?.addEventListener('click', () => setZoom(view.zoom + 1, true));
-    btnOut?.addEventListener('click', () => setZoom(view.zoom - 1, true));
     container.addEventListener('pointerdown', event => {
-      if (event.target.closest('.geo-map-zoom')) return;
       dragging = true;
       lastPoint = { x: event.clientX, y: event.clientY };
       hideTooltip();
     });
     container.addEventListener('pointermove', event => {
       if (!dragging || !lastPoint) return;
-      const dx = event.clientX - lastPoint.x;
-      const dy = event.clientY - lastPoint.y;
+      view.panX += event.clientX - lastPoint.x;
+      view.panY += event.clientY - lastPoint.y;
       lastPoint = { x: event.clientX, y: event.clientY };
-      pan = { x: pan.x + dx, y: pan.y + dy };
       userMoved = true;
       scheduleRender();
     });
     const endDrag = () => { dragging = false; lastPoint = null; };
     container.addEventListener('pointerup', endDrag);
     container.addEventListener('pointercancel', endDrag);
-    container.addEventListener('wheel', event => {
-      event.preventDefault();
-      setZoom(view.zoom + (event.deltaY > 0 ? -1 : 1), true);
-    }, { passive: false });
   }
 
   // ── Resize ─────────────────────────────────────
@@ -406,6 +304,7 @@ export function renderGeoMap(container, options = {}) {
     const w = container.clientWidth, h = container.clientHeight;
     if (w > 0 && h > 0 && (w !== width || h !== heightPx)) {
       width = w; heightPx = h;
+      view.scale = computeFitScale();
       scheduleRender();
     }
   }) : null;
@@ -419,7 +318,8 @@ export function renderGeoMap(container, options = {}) {
       else scheduleRender();
     },
     setOffice(nextCenter, nextRadius, nextName, { fit = true } = {}) {
-      office = { latitude: Number(nextCenter?.latitude ?? office.latitude), longitude: Number(nextCenter?.longitude ?? office.longitude) };
+      office.latitude = Number(nextCenter?.latitude ?? office.latitude);
+      office.longitude = Number(nextCenter?.longitude ?? office.longitude);
       radius = Number(nextRadius) || 100;
       officeLabel = String(nextName || officeName || 'Văn phòng');
       if (fit) { userMoved = false; fitView({ force: true }); }
@@ -435,7 +335,6 @@ export function renderGeoMap(container, options = {}) {
     },
   };
 
-  // Initial render + fit
   fitView({ force: true });
   return api;
 }

@@ -2,7 +2,7 @@ import { api } from '../api.js?v=20260811-attendance-correction-v1';
 import { esc, fmtDate, statusBadge, setAvatar, toast, openModal, closeModal, loadingHTML, emptyHTML, today, initials, avatarColor, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js?v=20260811-attendance-registration-v1';
 import { attendanceClosingMonth } from '../attendance-period.js';
 import { getDeviceLocation } from '../location.js?v=20260816-location-v1';
-import { renderGeoMap, classifyMarker } from '../geo-map.js?v=20260816-geo-map-v1';
+import { renderGeoMap, classifyMarker } from '../geo-map.js?v=20260817-geofence-soft-v1';
 
 const WORK_TYPE_LABEL = { office: '🏢 Văn phòng', wfh: '🏠 WFH', business: '✈️ Công tác' };
 const SHIFT_LABEL = { morning: 'Ca sáng (08:30–12:00)', afternoon: 'Ca chiều (13:30–17:00)', full: 'Cả ngày' };
@@ -92,9 +92,9 @@ export async function renderAttendance(el, me, route = {}) {
           <div class="att-clock-geo-meta" id="att-geo-meta">Đang tải…</div>
           <div id="att-geo-map"></div>
           <div class="att-clock-geo-legend">
-            <span class="att-geo-legend-item"><i class="att-geo-dot" style="background:#10B981"></i>Trong phạm vi</span>
+            <span class="att-geo-legend-item"><i class="att-geo-dot" style="background:#3B82F6"></i>Trong phạm vi</span>
             <span class="att-geo-legend-item"><i class="att-geo-dot" style="background:#EF4444"></i>Ngoài phạm vi</span>
-            <span class="att-geo-legend-item"><i class="att-geo-dot" style="background:#3B82F6"></i>Tôi</span>
+            <span class="att-geo-legend-item"><i class="att-geo-dot geo-dot-current"></i>Tôi</span>
           </div>
           <div id="att-geo-my-status" class="att-clock-geo-status">Đang tải trạng thái…</div>
           <div class="att-clock-geo-note">Điểm đánh dấu là vị trí check-in gần nhất của ngày đang xem — không phải theo dõi liên tục.</div>
@@ -173,27 +173,41 @@ export async function renderAttendance(el, me, route = {}) {
   let geoMap = null;
   let geoOffices = [];
   let geoOfficeId = ''; // '' = let the backend resolve the right office
+  let geoAutoSelected = false; // only auto-pick the employee's work-location office once
 
   async function loadGeoOffices() {
     try {
       const { locations = [] } = await api.getAttendanceLocations();
       geoOffices = locations;
       const select = document.getElementById('att-geo-office');
-      if (select) {
-        select.innerHTML = `<option value="">Tự động</option>` + geoOffices.map(location => `<option value="${location.id}">${esc(location.name)}</option>`).join('');
-        select.value = geoOfficeId || '';
+      if (!select) return;
+      select.innerHTML = `<option value="">Tự động</option>` + geoOffices.map(location => `<option value="${location.id}">${esc(location.name)}</option>`).join('');
+      // Auto-select the office matching the employee's work location (HN/HCM),
+      // so e.g. a Hà Nội-based employee sees the Hà Nội geofence, not a default.
+      if (!geoAutoSelected && geoOfficeId === '' && me?.work_location) {
+        const wl = String(me.work_location).trim().toLowerCase();
+        const match = geoOffices.find(location => {
+          const code = String(location.code || '').toLowerCase();
+          const name = String(location.name || '').toLowerCase();
+          if (code && code.includes(wl)) return true;
+          if (wl === 'hcm' && (code.includes('hcm') || name.includes('hồ chí minh') || name.includes('ho chi minh'))) return true;
+          if (wl === 'hn' && (code.includes('hn') || name.includes('hà nội') || name.includes('ha noi'))) return true;
+          return false;
+        });
+        if (match) { geoOfficeId = String(match.id); geoAutoSelected = true; }
       }
+      select.value = geoOfficeId || '';
     } catch (_) { /* office selector is optional */ }
   }
 
   function markerTooltipHTML(m) {
     const name = esc(m.employee_name || `NV ${m.employee_id}`);
     const timeLine = m.checkin_time ? `<div>Check-in: ${esc(m.checkin_time)}</div>` : '';
-    const distLine = m.distance_m != null ? `<div>Cách văn phòng: ${Math.round(Number(m.distance_m))} m</div>` : '';
+    const distLine = m.distance_m != null ? `<div>Khoảng cách: ${Math.round(Number(m.distance_m))} m</div>` : '';
     const accLine = m.checkin_accuracy_meters != null ? `<div>Độ chính xác GPS: ±${Math.round(Number(m.checkin_accuracy_meters))} m</div>` : '';
-    const status = m.inside_geofence
+    const status = m.inside_geofence !== false
       ? '<div class="geo-tooltip-status geo-tooltip-inside">Trong phạm vi</div>'
-      : '<div class="geo-tooltip-status geo-tooltip-outside">Ngoài phạm vi</div>';
+      : `<div class="geo-tooltip-status geo-tooltip-outside">Ngoài phạm vi · ${m.requires_location_review ? 'Cần xem xét' : ''}</div>`;
     return `<div class="geo-tooltip-name">${name}</div>${timeLine}${distLine}${accLine}${status}`;
   }
 
@@ -203,8 +217,8 @@ export async function renderAttendance(el, me, route = {}) {
     if (!mapEl) return;
     const dateVal = document.getElementById('att-geo-date')?.value || today();
     try {
+      if (!geoOffices.length) await loadGeoOffices(); // also auto-selects the employee's work-location office
       const data = await api.getAttendanceCheckinPoints({ date: dateVal, office_id: geoOfficeId || '' });
-      if (!geoOffices.length) void loadGeoOffices();
       if (!data.office) {
         if (metaEl) metaEl.textContent = data.reason || 'Chưa cấu hình địa điểm chấm công';
         mapEl.innerHTML = '';
@@ -250,7 +264,9 @@ export async function renderAttendance(el, me, route = {}) {
     const mine = (data?.markers || []).find(m => m.is_current_user);
     if (mine) {
       const acc = mine.checkin_accuracy_meters != null ? ` · Độ chính xác GPS ±${Math.round(Number(mine.checkin_accuracy_meters))} m` : '';
-      statusEl.innerHTML = `<b>${mine.inside_geofence ? '🟢' : '🔴'} Vị trí check-in của bạn</b>: ghi nhận lúc ${esc(mine.checkin_time || '—')} · cách văn phòng ${Math.round(Number(mine.distance_m))} m · ${mine.inside_geofence ? 'Trong phạm vi' : 'Ngoài phạm vi'}${acc}`;
+      const inRange = mine.inside_geofence !== false;
+      const flag = !inRange && mine.requires_location_review ? ' · cần xem xét' : '';
+      statusEl.innerHTML = `<b>${inRange ? '🔵' : '🔴'} Vị trí check-in của bạn</b>: ghi nhận lúc ${esc(mine.checkin_time || '—')} · khoảng cách ${Math.round(Number(mine.distance_m))} m · ${inRange ? 'Trong phạm vi' : 'Ngoài phạm vi'}${flag}${acc}`;
     } else if (data?.office) {
       statusEl.textContent = 'Bạn chưa có điểm check-in GPS trong ngày đang xem. GPS: Không có dữ liệu.';
     }
@@ -444,9 +460,13 @@ document.getElementById('btn-register').addEventListener('click', async () => {
     const result = await api.checkin({ note, ...geo });
     const gf = result.geofence;
     if (gf?.status === 'verified' && gf.location) {
-      toast(`Check in thành công · ${gf.location.name} · Cách tâm văn phòng ${Math.round(Number(gf.distance_meters ?? gf.location.distance_meters) || 0)} m`, 'success', 4000);
-    } else if (gf?.status === 'outside' && gf.location) {
-      toast(`Check-in được ghi nhận nhưng nằm ngoài phạm vi · Khoảng cách: ${Math.round(Number(gf.distance_meters ?? gf.location.distance_meters) || 0)} m · Giới hạn: ${Math.round(Number(gf.location.radius_meters) || 0)} m`, 'warning', 5000);
+      toast(`Check in thành công · ${gf.location.name} · Cách điểm chấm công: ${Math.round(Number(gf.distance_meters ?? gf.location.distance_meters) || 0)} m · Trong phạm vi cho phép`, 'success', 4500);
+    } else if (result.geofence_status === 'outside') {
+      const dist = Math.round(Number(result.distance_meters ?? gf?.location?.distance_meters) || 0);
+      const lim = Math.round(Number(gf?.location?.radius_meters) || 0);
+      toast(`Check-in đã được ghi nhận · ⚠ Bạn đang ngoài phạm vi ${gf?.location?.name || 'văn phòng'} — Khoảng cách: ${dist} m · Bán kính cho phép: ${lim} m — Lượt chấm công này sẽ được gửi để quản trị viên xem xét.`, 'warning', 6500);
+    } else if (result.requires_location_review) {
+      toast(`Check-in đã được ghi nhận · Vị trí đang ở sát biên hoặc độ chính xác GPS chưa đủ — Lượt chấm công này sẽ được gửi để quản trị viên xem xét.`, 'warning', 6500);
     } else {
       toast(needsRegistration ? 'Đăng ký & Check In thành công!' : 'Check in thành công!', 'success');
     }
@@ -872,9 +892,33 @@ document.getElementById('btn-register').addEventListener('click', async () => {
           const displayStatus = awaitingCheckin ? '<span class="badge badge-info">📝 Chưa check-in</span>' : statusBadge(r.status);
           const checkinValid = r.checkin_time && r.late_minutes === 0;
           const checkoutValid = r.checkout_time && r.early_minutes === 0;
-          return `<tr><td>${esc(r.date)}</td><td>${esc(new Date(r.date + 'T00:00:00').toLocaleDateString('vi-VN', { weekday: 'short' }))}</td><td>${esc(WORK_TYPE_LABEL[r.work_type] || WORK_TYPE_LABEL.office)}</td><td>${esc(SHIFT_LABEL_SHORT[r.shift] || SHIFT_LABEL_SHORT.full)}</td><td>${timeCell(r.checkin_time, checkinValid)}</td><td>${timeCell(r.checkout_time, checkoutValid)}</td><td>${r.work_hours ? Number(r.work_hours).toFixed(1) + 'h' : '—'}</td><td>${r.late_minutes ? r.late_minutes + 'p' : '—'}</td><td>${r.early_minutes ? r.early_minutes + 'p' : '—'}</td><td>${displayStatus}</td><td>${esc(r.note || '—')}</td>${isManager ? `<td><button class="btn-icon att-summary-edit" data-id="${r.id}" data-checkin="${esc(r.checkin_time || '')}" data-checkout="${esc(r.checkout_time || '')}" data-status="${esc(r.status)}" data-note="${esc(r.note || '')}" data-work-type="${esc(r.work_type || 'office')}" data-shift="${esc(r.shift || 'full')}" data-expected-start="${esc(r.expected_start || '')}" data-expected-end="${esc(r.expected_end || '')}" title="Sửa">✏️</button></td>` : ''}</tr>`;
+          // Location-review (ngoài phạm vi GPS) indicator + admin action.
+          let locReviewHtml = '';
+          if (Number(r.checkin_requires_review) && r.checkin_review_status !== 'approved' && r.checkin_review_status !== 'rejected') {
+            locReviewHtml = `<div class="att-loc-review att-loc-review--pending"><span>🔴 Ngoài phạm vi · Cần xem xét</span><br><small>${Math.round(Number(r.checkin_distance_meters) || 0)} m / giới hạn ${Math.round(Number(r.checkin_office_radius) || 0)} m${r.checkin_accuracy_meters != null ? ` · GPS ±${Math.round(Number(r.checkin_accuracy_meters))} m` : ''}</small></div>`;
+          } else if (r.checkin_review_status === 'approved') {
+            locReviewHtml = `<div class="att-loc-review att-loc-review--approved"><span>✅ Đã xác nhận vị trí</span></div>`;
+          } else if (r.checkin_review_status === 'rejected') {
+            locReviewHtml = `<div class="att-loc-review att-loc-review--rejected"><span>⛔ Vị trí không hợp lệ</span>${r.checkin_review_note ? `<br><small>${esc(r.checkin_review_note)}</small>` : ''}</div>`;
+          }
+          const actions = [];
+          if (isManager) actions.push(`<button class="btn-icon att-summary-edit" data-id="${r.id}" data-checkin="${esc(r.checkin_time || '')}" data-checkout="${esc(r.checkout_time || '')}" data-status="${esc(r.status)}" data-note="${esc(r.note || '')}" data-work-type="${esc(r.work_type || 'office')}" data-shift="${esc(r.shift || 'full')}" data-expected-start="${esc(r.expected_start || '')}" data-expected-end="${esc(r.expected_end || '')}" title="Sửa">✏️</button>`);
+          if (isManager && Number(r.checkin_requires_review) && r.checkin_review_status !== 'approved' && r.checkin_review_status !== 'rejected') {
+            actions.push(`<button class="btn-secondary btn-xs att-review-btn" data-id="${r.id}" data-decision="approved">✓ Xác nhận</button><button class="btn-danger btn-xs att-review-btn" data-id="${r.id}" data-decision="rejected">✕ Không hợp lệ</button>`);
+          }
+          return `<tr><td>${esc(r.date)}</td><td>${esc(new Date(r.date + 'T00:00:00').toLocaleDateString('vi-VN', { weekday: 'short' }))}</td><td>${esc(WORK_TYPE_LABEL[r.work_type] || WORK_TYPE_LABEL.office)}</td><td>${esc(SHIFT_LABEL_SHORT[r.shift] || SHIFT_LABEL_SHORT.full)}</td><td>${timeCell(r.checkin_time, checkinValid)}</td><td>${timeCell(r.checkout_time, checkoutValid)}</td><td>${r.work_hours ? Number(r.work_hours).toFixed(1) + 'h' : '—'}</td><td>${r.late_minutes ? r.late_minutes + 'p' : '—'}</td><td>${r.early_minutes ? r.early_minutes + 'p' : '—'}</td><td>${displayStatus}${locReviewHtml}</td><td>${esc(r.note || '—')}</td>${isManager ? `<td style="white-space:nowrap">${actions.join(' ')}</td>` : ''}</tr>`;
         }).join('') : `<tr><td colspan="${isManager ? 12 : 11}" class="att-summary-empty">Không có bản ghi phù hợp.</td></tr>`;
         document.querySelectorAll('.att-summary-edit').forEach(btn => btn.addEventListener('click', () => openEditAttModal(btn.dataset)));
+        document.querySelectorAll('.att-review-btn').forEach(btn => btn.addEventListener('click', async () => {
+          const aid = btn.dataset.id; const decision = btn.dataset.decision;
+          const rec = rows.find(x => String(x.id) === String(aid));
+          try {
+            await api.reviewAttendanceLocation(aid, { status: decision, note: '' });
+            toast(decision === 'approved' ? 'Đã xác nhận vị trí hợp lệ' : 'Đã đánh dấu vị trí không hợp lệ', 'success');
+            if (rec) { rec.checkin_review_status = decision; rec.checkin_requires_review = 0; rec.checkin_reviewed_by = me.id; }
+            renderRows();
+          } catch (error) { toast(error.message || 'Lỗi khi xác nhận', 'error'); }
+        }));
       };
       ['att-detail-status', 'att-detail-work', 'att-detail-exception'].forEach(id => document.getElementById(id).addEventListener('change', renderRows));
       renderRows();
@@ -922,6 +966,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
       <div id="edit-att-rule" style="padding:9px 10px;border-radius:8px;background:#FFF7ED;border:1px solid #FED7AA;color:#9A3412;font-size:12px;line-height:1.45;">Chọn <b>Đúng giờ</b> chỉ khi check-in không muộn hơn <b>${esc(lateAfter)}</b> và check-out không sớm hơn <b>${esc(allowedCheckout)}</b> (được sớm 10 phút). Hệ thống sẽ tự tính lại phút đi muộn/về sớm theo giờ đã nhập.</div>
       <div class="field"><label>Ghi chú</label><input type="text" id="edit-anote" value="${esc(data.note||'')}"/></div>
     `, `
+      <button class="btn-danger" id="delete-att-btn">🗑 Xóa</button>
       <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Hủy</button>
       <button class="btn-primary" id="save-att-btn">Lưu</button>
     `);
@@ -978,6 +1023,16 @@ document.getElementById('btn-register').addEventListener('click', async () => {
         toast(e.message, 'error');
         savingEdit = false; saveBtn.disabled = false; saveBtn.textContent = 'Lưu';
       }
+    });
+
+    // Delete this attendance row — guarded by a double confirmation.
+    document.getElementById('delete-att-btn')?.addEventListener('click', async () => {
+      if (!confirm('Xóa dòng chấm công này của nhân viên?')) return;
+      if (!confirm('Bạn có chắc chắn muốn XÓA nó? Hành động này không thể hoàn tác.')) return;
+      try {
+        await api.deleteAttendance(parseInt(data.id));
+        closeModal(); toast('Đã xóa dòng chấm công', 'success'); loadHistory();
+      } catch (error) { toast(error.message || 'Không xóa được', 'error'); }
     });
   }
 

@@ -993,7 +993,7 @@ tr:hover td { background: var(--surface-2); }
 .task-project-nav-department-toggle:hover { background:var(--surface-2); }
 .task-project-nav-department-toggle:focus-visible { outline:3px solid rgba(79,70,229,.22); outline-offset:1px; }
 .task-project-nav-department-arrow { display:grid; place-items:center; color:var(--text-3); font-size:15px; line-height:1; transition:transform .15s ease; }
-.task-project-nav-department-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); font-size:11px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
+.task-project-nav-department-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); font-size:13px; font-weight:800; letter-spacing:.02em; }
 .task-project-nav-department-count { min-width:22px; padding:2px 6px; border-radius:999px; background:var(--surface-2); color:var(--text-2); font-size:10px; font-weight:800; text-align:center; }
 .task-project-nav-department-content { padding-top:5px; }
 .task-project-nav-department-content[hidden] { display:none; }
@@ -1001,7 +1001,7 @@ tr:hover td { background: var(--surface-2); }
 .task-project-nav-item { display:flex; flex-direction:column; text-align:left; min-width:0; padding:10px; border:1px solid transparent; border-radius:9px; background:transparent; color:var(--text); cursor:pointer; font:inherit; }
 .task-project-nav-item:hover { background:var(--surface-2); border-color:var(--border); }
 .task-project-nav-item.active { background:#fff0eb; border-color:#fdc8bc; box-shadow:inset 3px 0 0 var(--primary); }
-.task-project-nav-item-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; font-weight:800; }
+.task-project-nav-item-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:700; }
 .task-project-nav-item-meta { margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-2); font-size:11px; }
 .task-project-board { min-width:0; }
 .task-project-board-title { min-width:0; flex:1; }
@@ -1192,7 +1192,7 @@ tr:hover td { background: var(--surface-2); }
   position: fixed; inset: 0; background: rgba(11,31,58,.35); z-index: 150;
 }
 .task-panel {
-  position: fixed; top: 0; right: 0; bottom: 0; width: 100%; max-width: 480px;
+  position: fixed; top: 0; right: 0; bottom: 0; width: 100%; max-width: 760px;
   background: var(--surface); z-index: 151; display: flex; flex-direction: column;
   overflow: hidden; animation: slideInRight .25s cubic-bezier(.4,0,.2,1);
   border-left: 1px solid var(--border); box-shadow: -4px 0 24px rgba(11,31,58,.12);
@@ -1204,6 +1204,49 @@ tr:hover td { background: var(--surface-2); }
 }
 #task-panel-title { font-size: 15px; font-weight: 700; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-panel-body { flex: 1; overflow-y: auto; padding: 16px; }
+
+/* ── Task Panel Detail redesign ─────────────── */
+.tp-header { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 16px; }
+.tp-header-main { flex: 1; min-width: 0; }
+.tp-title { font-size: 19px; line-height: 1.35; font-weight: 800; color: var(--text); }
+.tp-badges { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.tp-section { margin-bottom: 14px; padding: 14px 16px; }
+.tp-section-title { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.tp-section-label { font-size: 13px; font-weight: 700; color: var(--text); flex: 0 0 auto; }
+.tp-sub-count { font-size: 11px; font-weight: 700; color: var(--text-2); background: var(--surface-2); border-radius: 999px; padding: 2px 8px; }
+.tp-section-title .btn-primary, .tp-section-title .btn-secondary { margin-left: auto; }
+.tp-empty { font-size: 13px; color: var(--text-2); text-align: center; padding: 14px 0; }
+.progress-text { font-size: 11px; color: var(--text-2); margin: 6px 0 10px; font-weight: 600; }
+.tp-subtask-list { margin-top: 4px; }
+.subtask-row { display: flex; align-items: flex-start; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--divider); }
+.subtask-row:last-child { border-bottom: 0; }
+.subtask-check { padding-top: 2px; }
+.subtask-check input { width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer; }
+.subtask-content { flex: 1; min-width: 0; }
+.subtask-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.subtask-title.is-done { text-decoration: line-through; color: var(--text-2); }
+.subtask-desc { font-size: 12px; color: var(--text-2); margin-top: 3px; white-space: pre-wrap; word-break: break-word; }
+.subtask-desc.is-done { color: var(--text-3); }
+.subtask-meta { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 2px; }
+.subtask-meta-chip { font-size: 11px; color: var(--text-2); }
+.subtask-actions { display: flex; gap: 4px; align-items: center; }
+.tp-comments { display: flex; flex-direction: column; gap: 12px; }
+.tp-comment-input { margin-top: 12px; }
+.tp-comment-input textarea { width: 100%; resize: vertical; min-height: 58px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; font: inherit; font-size: 13px; background: var(--surface); color: var(--text); }
+.tp-comment-input textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
+.tp-comment-input-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+.tp-comment-hint { font-size: 11px; color: var(--text-3); }
+.comment:last-child { margin-bottom: 0; }
+.comment-meta b { color: var(--text); font-weight: 700; }
+.comment-meta span { margin-left: 6px; }
+.tp-meta { display: flex; flex-direction: column; }
+.tp-meta .detail-item { padding: 8px 0; border-bottom: 1px solid var(--divider); }
+.tp-meta .detail-item:last-child { border-bottom: 0; padding-bottom: 0; }
+.tp-meta .detail-label { font-size: 10px; margin-bottom: 2px; }
+.tp-meta .detail-val { font-size: 13px; font-weight: 600; }
+.tp-actions { display: flex; flex-direction: column; gap: 8px; }
+.tp-action { width: 100%; text-align: left; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text); font: 600 13px inherit; cursor: pointer; }
+.tp-action:hover { border-color: var(--primary); background: var(--primary-light); }
 
 /* ── Toast ────────────────────────────────────── */
 #toast-container {
@@ -1960,6 +2003,7 @@ html.native-private body::after { content: 'NetViet HR'; position: fixed; inset:
 
 /* ══ Attendance location map panel (Chấm công) + shared geo map ══ */
 .att-clock-grid { display:grid; grid-template-columns:minmax(300px,5fr) minmax(330px,6fr); gap:16px; margin-top:16px; align-items:stretch; }
+.att-clock-grid--single { grid-template-columns:1fr; }
 .att-clock-main { min-width:0; display:flex; flex-direction:column; }
 .att-clock-geo { min-width:0; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.15); border-radius:12px; padding:12px; display:flex; flex-direction:column; gap:9px; }
 .att-clock-geo-head { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
@@ -2004,3 +2048,13 @@ html.native-private body::after { content: 'NetViet HR'; position: fixed; inset:
 .attendance-location-map { position:relative; margin:-2px -2px 10px; }
 
 @media(max-width:900px){ .att-clock-grid { grid-template-columns:1fr; } }
+
+/* ── Attendance location-review (ngoài phạm vi GPS) indicator ── */
+.att-loc-review { margin-top:5px; padding:4px 6px; border-radius:6px; font-size:11px; line-height:1.42; }
+.att-loc-review--pending { background:rgba(239,68,68,.10); border:1px solid rgba(239,68,68,.35); color:var(--danger); }
+.att-loc-review--pending span { font-weight:700; }
+.att-loc-review--approved { background:rgba(22,163,74,.10); border:1px solid rgba(22,163,74,.32); color:var(--success); }
+.att-loc-review--approved span { font-weight:700; }
+.att-loc-review--rejected { background:rgba(239,68,68,.10); border:1px solid rgba(239,68,68,.35); color:var(--danger); }
+.att-loc-review--rejected span { font-weight:700; }
+.att-geo-dot.geo-dot-current { background:#3B82F6; box-shadow:0 0 0 2px #fff, 0 0 0 3.5px #3B82F6; }

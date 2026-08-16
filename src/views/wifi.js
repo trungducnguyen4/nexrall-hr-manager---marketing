@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML } from '../utils.js';
 import { getDeviceLocation } from '../location.js?v=20260816-location-v1';
-import { renderGeoMap } from '../geo-map.js?v=20260816-geo-map-v1';
+import { renderGeoMap } from '../geo-map.js?v=20260817-geofence-soft-v1';
 
 export async function renderWifi(el, me) {
   if (me.role !== 'admin') {

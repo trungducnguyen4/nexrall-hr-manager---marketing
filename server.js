@@ -511,6 +511,18 @@ async function migrate(env) {
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkout_lng REAL'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkin_geofence_status TEXT'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkout_geofence_status TEXT'); } catch (_) {}
+  // Soft geofence policy: outside-radius check-ins are kept but flagged for Admin review.
+  try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkin_requires_review INTEGER DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkin_review_status TEXT DEFAULT 'none'"); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkin_reviewed_by INTEGER'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkin_review_note TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkin_reviewed_at TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkout_requires_review INTEGER DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkout_review_status TEXT DEFAULT 'none'"); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkout_reviewed_by INTEGER'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkout_review_note TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkout_reviewed_at TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE subtasks ADD COLUMN description TEXT'); } catch (_) {}
   // ── Chat module ─────────────────────────────────────────────────
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS conversations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2862,7 +2874,7 @@ async function ensureAttendanceLocationSchema(env) {
   } catch (error) {
     console.error('Unable to seed Hanoi attendance location', error);
   }
-  for (const column of ['checkin_location_id INTEGER','checkout_location_id INTEGER','checkin_distance_meters REAL','checkout_distance_meters REAL','checkin_accuracy_meters REAL','checkout_accuracy_meters REAL','checkin_verification_method TEXT','checkout_verification_method TEXT','checkin_lat REAL','checkin_lng REAL','checkout_lat REAL','checkout_lng REAL','checkin_geofence_status TEXT','checkout_geofence_status TEXT']) {
+  for (const column of ['checkin_location_id INTEGER','checkout_location_id INTEGER','checkin_distance_meters REAL','checkout_distance_meters REAL','checkin_accuracy_meters REAL','checkout_accuracy_meters REAL','checkin_verification_method TEXT','checkout_verification_method TEXT','checkin_lat REAL','checkin_lng REAL','checkout_lat REAL','checkout_lng REAL','checkin_geofence_status TEXT','checkout_geofence_status TEXT','checkin_requires_review INTEGER DEFAULT 0','checkin_review_status TEXT DEFAULT \'none\'','checkin_reviewed_by INTEGER','checkin_review_note TEXT','checkin_reviewed_at TEXT','checkout_requires_review INTEGER DEFAULT 0','checkout_review_status TEXT DEFAULT \'none\'','checkout_reviewed_by INTEGER','checkout_review_note TEXT','checkout_reviewed_at TEXT']) {
     try { await env.DB.exec(`ALTER TABLE attendance ADD COLUMN ${column}`); } catch (_) {}
   }
   return true;
@@ -3384,7 +3396,7 @@ async function getSessionFromToken(token, env) {
   try {
     const row = await env.DB.prepare(
       'SELECT s.*, u.id as uid, u.full_name, u.email, u.role, u.department, u.position,' +
-      ' u.avatar_color, u.avatar_initials, u.avatar_url, u.employee_code, u.salary, u.phone,' +
+      ' u.avatar_color, u.avatar_initials, u.avatar_url, u.work_location, u.employee_code, u.salary, u.phone,' +
       ' u.bank_account, u.bank_name, u.is_active, u.lifecycle_status, u.must_change_password' +
       ' FROM sessions s JOIN users u ON s.user_id = u.id' +
       " WHERE s.token=? AND s.revoked=0 AND CAST(s.expires_at AS INTEGER) > CAST(strftime('%s','now') AS INTEGER)"
@@ -3537,7 +3549,7 @@ export async function handle(request, env) {
       id: user.id, full_name: user.full_name, email: user.email,
       role: user.role, department: user.department, position: user.position,
       avatar_color: user.avatar_color, avatar_initials: user.avatar_initials, avatar_url: user.avatar_url,
-      employee_code: user.employee_code, salary: user.salary, phone: user.phone,
+      employee_code: user.employee_code, work_location: user.work_location, salary: user.salary, phone: user.phone,
       bank_account: user.bank_account, bank_name: user.bank_name,
       lifecycle_status: user.lifecycle_status, must_change_password: !!user.must_change_password,
     };
@@ -3583,7 +3595,7 @@ export async function handle(request, env) {
         id: userId, full_name: session.full_name, email: session.email,
         role: session.role, department: session.department, position: session.position,
         avatar_color: session.avatar_color, avatar_initials: session.avatar_initials, avatar_url: session.avatar_url,
-        employee_code: session.employee_code, salary: session.salary,
+        employee_code: session.employee_code, work_location: session.work_location, salary: session.salary,
         phone: session.phone, bank_account: session.bank_account,
         bank_name: session.bank_name, is_active: session.is_active,
         lifecycle_status: session.lifecycle_status, must_change_password: !!session.must_change_password,
@@ -3626,7 +3638,7 @@ export async function handle(request, env) {
       id: mainSession.uid, full_name: mainSession.full_name, email: mainSession.email,
       role: mainSession.role, department: mainSession.department, position: mainSession.position,
       avatar_color: mainSession.avatar_color, avatar_initials: mainSession.avatar_initials, avatar_url: mainSession.avatar_url,
-      employee_code: mainSession.employee_code, salary: mainSession.salary,
+      employee_code: mainSession.employee_code, work_location: mainSession.work_location, salary: mainSession.salary,
       phone: mainSession.phone, bank_account: mainSession.bank_account,
       bank_name: mainSession.bank_name, is_active: mainSession.is_active,
       lifecycle_status: mainSession.lifecycle_status, must_change_password: !!mainSession.must_change_password,
@@ -5212,23 +5224,27 @@ export async function handle(request, env) {
     const geo = await verifyAttendanceGeofence(env, b);
     const gpsConstraintEnabled = await isGpsConstraintEnabled(env);
     if (geo.status === 'invalid') return json({ error: geo.reason || 'Tọa độ GPS không hợp lệ' }, 400);
-    if (gpsConstraintEnabled && workType === 'office' && geo.status !== 'not_configured' && geo.status !== 'verified') {
-      return json({ error: geo.reason || 'Không thể xác minh vị trí chấm công', geofence: geo }, 403);
-    }
-    if (gpsConstraintEnabled && workType === 'office' && geo.status === 'not_configured' && !ipInfo.matched) {
-      return json({ error: `IP hien tai (${ipInfo.ip}) khong nam trong whitelist van phong`, ip: ipInfo.ip, matched: false, warning: ipInfo.warning }, 403);
+    // Soft geofence policy: OUTSIDE / RETRY are NOT rejected — the record is kept
+    // and flagged for Admin review. Only a fully missing GPS still blocks when the
+    // constraint is on; a not-configured office falls back to Public IP.
+    if (gpsConstraintEnabled && workType === 'office') {
+      if (geo.status === 'unavailable') return json({ error: geo.reason || 'Chưa nhận được vị trí GPS hợp lệ', geofence: geo }, 403);
+      if (geo.status === 'not_configured' && !ipInfo.matched) return json({ error: `IP hien tai (${ipInfo.ip}) khong nam trong whitelist van phong`, ip: ipInfo.ip, matched: false, warning: ipInfo.warning }, 403);
     }
     const timeStr = vnTimeStr();
     const bounds = attShiftBounds(workType, existing.shift || 'full', existing.expected_start, existing.expected_end);
     const lateMinutes = Math.max(0, attToMinutes(timeStr) - attToMinutes(bounds.lateAfter));
     const status = lateMinutes > 0 ? 'late' : 'present';
-    // Store raw coordinates for audit. Geofence status is only meaningful for office work.
+    // Store raw coordinates for audit. Geofence is now a control/audit signal, not a hard block.
     const geoLat = Number.isFinite(Number(b.latitude)) ? Number(b.latitude) : null;
     const geoLng = Number.isFinite(Number(b.longitude)) ? Number(b.longitude) : null;
-    const geofenceStatus = workType === 'office' ? (geo.status === 'verified' ? 'inside' : geo.status === 'outside' ? 'outside' : geo.status === 'retry' ? 'unconfirmed' : null) : null;
-    await env.DB.prepare('UPDATE attendance SET checkin_time=?,checkin_ip=?,status=?,late_minutes=?,checkin_location_id=?,checkin_distance_meters=?,checkin_accuracy_meters=?,checkin_verification_method=?,checkin_lat=?,checkin_lng=?,checkin_geofence_status=?,note=? WHERE id=?')
-      .bind(timeStr, ipInfo.ip, status, lateMinutes, geo.location?.id||null, geo.location?.distance_meters||null, geo.accuracy_meters||null, geo.status === 'verified' ? 'geofence' : (ipInfo.matched ? 'ip' : null), geoLat, geoLng, geofenceStatus, b.note || existing.note || '', existing.id).run();
-    return json({ ok: true, status, time: timeStr, late_minutes: lateMinutes, geofence: geo, gps_constraint_enabled: gpsConstraintEnabled, distance_meters: geo.location?.distance_meters ?? null, inside_geofence: geo.inside_geofence ?? null });
+    const isOffice = workType === 'office';
+    const geofenceStatus = isOffice ? (geo.status === 'verified' ? 'inside' : geo.status === 'outside' ? 'outside' : geo.status === 'retry' ? (geo.inside_geofence ? 'inside' : 'outside') : null) : null;
+    const requiresReview = isOffice && (geo.status === 'outside' || geo.status === 'retry');
+    const reviewStatus = requiresReview ? 'pending' : 'none';
+    await env.DB.prepare('UPDATE attendance SET checkin_time=?,checkin_ip=?,status=?,late_minutes=?,checkin_location_id=?,checkin_distance_meters=?,checkin_accuracy_meters=?,checkin_verification_method=?,checkin_lat=?,checkin_lng=?,checkin_geofence_status=?,checkin_requires_review=?,checkin_review_status=?,note=? WHERE id=?')
+      .bind(timeStr, ipInfo.ip, status, lateMinutes, geo.location?.id||null, geo.location?.distance_meters||null, geo.accuracy_meters||null, geo.status === 'verified' ? 'geofence' : (geo.location?.id ? 'geofence' : (ipInfo.matched ? 'ip' : null)), geoLat, geoLng, geofenceStatus, requiresReview ? 1 : 0, reviewStatus, b.note || existing.note || '', existing.id).run();
+    return json({ ok: true, status, time: timeStr, late_minutes: lateMinutes, geofence: geo, gps_constraint_enabled: gpsConstraintEnabled, distance_meters: geo.location?.distance_meters ?? null, inside_geofence: geo.inside_geofence ?? null, geofence_status: geofenceStatus, requires_location_review: requiresReview, location_review_status: reviewStatus });
   }
 
   if (path === '/api/attendance/checkout' && request.method === 'POST') {
@@ -5268,11 +5284,10 @@ export async function handle(request, env) {
     const geo = await verifyAttendanceGeofence(env, b);
     const gpsConstraintEnabled = await isGpsConstraintEnabled(env);
     if (geo.status === 'invalid') return json({ error: geo.reason || 'Tọa độ GPS không hợp lệ' }, 400);
-    if (gpsConstraintEnabled && workType === 'office' && geo.status !== 'not_configured' && geo.status !== 'verified') {
-      return json({ error: geo.reason || 'Không thể xác minh vị trí chấm công', geofence: geo }, 403);
-    }
-    if (gpsConstraintEnabled && workType === 'office' && geo.status === 'not_configured' && !ipInfo.matched) {
-      return json({ error: `IP hien tai (${ipInfo.ip}) khong nam trong whitelist van phong`, ip: ipInfo.ip, matched: false, warning: ipInfo.warning }, 403);
+    // Soft geofence policy: allow checkout outside radius too, flag for review.
+    if (gpsConstraintEnabled && workType === 'office') {
+      if (geo.status === 'unavailable') return json({ error: geo.reason || 'Chưa nhận được vị trí GPS hợp lệ', geofence: geo }, 403);
+      if (geo.status === 'not_configured' && !ipInfo.matched) return json({ error: `IP hien tai (${ipInfo.ip}) khong nam trong whitelist van phong`, ip: ipInfo.ip, matched: false, warning: ipInfo.warning }, 403);
     }
     const timeStr = vnTimeStr();
     const shift = record.shift || 'full';
@@ -5290,10 +5305,13 @@ export async function handle(request, env) {
     const workHours = Math.max(0, workMinutes) / 60;
     const geoLat = Number.isFinite(Number(b.latitude)) ? Number(b.latitude) : null;
     const geoLng = Number.isFinite(Number(b.longitude)) ? Number(b.longitude) : null;
-    const geofenceStatus = workType === 'office' ? (geo.status === 'verified' ? 'inside' : geo.status === 'outside' ? 'outside' : geo.status === 'retry' ? 'unconfirmed' : null) : null;
-    await env.DB.prepare('UPDATE attendance SET checkout_time=?,checkout_ip=?,work_hours=?,early_minutes=?,checkout_location_id=?,checkout_distance_meters=?,checkout_accuracy_meters=?,checkout_verification_method=?,checkout_lat=?,checkout_lng=?,checkout_geofence_status=? WHERE id=?')
-      .bind(timeStr, ipInfo.ip, workHours, earlyMinutes, geo.location?.id||null, geo.location?.distance_meters||null, geo.accuracy_meters||null, geo.status === 'verified' ? 'geofence' : (ipInfo.matched ? 'ip' : null), geoLat, geoLng, geofenceStatus, record.id).run();
-    return json({ ok: true, attendance_id: record.id, time: timeStr, work_hours: workHours, early_minutes: earlyMinutes, geofence: geo, gps_constraint_enabled: gpsConstraintEnabled, distance_meters: geo.location?.distance_meters ?? null, inside_geofence: geo.inside_geofence ?? null });
+    const isOffice = workType === 'office';
+    const geofenceStatus = isOffice ? (geo.status === 'verified' ? 'inside' : geo.status === 'outside' ? 'outside' : geo.status === 'retry' ? (geo.inside_geofence ? 'inside' : 'outside') : null) : null;
+    const requiresReview = isOffice && (geo.status === 'outside' || geo.status === 'retry');
+    const reviewStatus = requiresReview ? 'pending' : 'none';
+    await env.DB.prepare('UPDATE attendance SET checkout_time=?,checkout_ip=?,work_hours=?,early_minutes=?,checkout_location_id=?,checkout_distance_meters=?,checkout_accuracy_meters=?,checkout_verification_method=?,checkout_lat=?,checkout_lng=?,checkout_geofence_status=?,checkout_requires_review=?,checkout_review_status=? WHERE id=?')
+      .bind(timeStr, ipInfo.ip, workHours, earlyMinutes, geo.location?.id||null, geo.location?.distance_meters||null, geo.accuracy_meters||null, geo.status === 'verified' ? 'geofence' : (geo.location?.id ? 'geofence' : (ipInfo.matched ? 'ip' : null)), geoLat, geoLng, geofenceStatus, requiresReview ? 1 : 0, reviewStatus, record.id).run();
+    return json({ ok: true, attendance_id: record.id, time: timeStr, work_hours: workHours, early_minutes: earlyMinutes, geofence: geo, gps_constraint_enabled: gpsConstraintEnabled, distance_meters: geo.location?.distance_meters ?? null, inside_geofence: geo.inside_geofence ?? null, geofence_status: geofenceStatus, requires_location_review: requiresReview, location_review_status: reviewStatus });
   }
 
   // ── CHECK-IN POINTS MAP ─────────────────────────────────────────
@@ -5332,7 +5350,7 @@ export async function handle(request, env) {
     }
     const viewerScope = isAdmin || isAttendanceHcns ? 'company' : (me.role === 'manager' ? 'department' : 'self');
     if (!office) return json({ date, office: null, viewer: { can_view_all_markers: viewerScope === 'company', scope: viewerScope }, markers: [], reason: 'Chưa cấu hình địa điểm chấm công' });
-    let q = `SELECT a.user_id, a.checkin_time, a.checkin_lat, a.checkin_lng, a.checkin_accuracy_meters, a.checkin_location_id, a.checkin_distance_meters, u.full_name, u.employee_code, u.department
+    let q = `SELECT a.user_id, a.checkin_time, a.checkin_lat, a.checkin_lng, a.checkin_accuracy_meters, a.checkin_location_id, a.checkin_distance_meters, a.checkin_requires_review, a.checkin_review_status, u.full_name, u.employee_code, u.department
       FROM attendance a JOIN users u ON u.id=a.user_id
       WHERE a.date=? AND a.checkin_lat IS NOT NULL AND a.checkin_lng IS NOT NULL`;
     const binds = [date];
@@ -5356,6 +5374,8 @@ export async function handle(request, env) {
         office_location_id: row.checkin_location_id ?? null,
         distance_m: Math.round(geoDistanceMeters(lat, lng, office.latitude, office.longitude)),
         inside_geofence: decision.inside,
+        requires_location_review: !!row.checkin_requires_review,
+        location_review_status: row.checkin_review_status || 'none',
         is_current_user: Number(row.user_id) === Number(me.id),
       };
     });
@@ -5367,6 +5387,28 @@ export async function handle(request, env) {
       viewer: { can_view_all_markers: viewerScope === 'company', scope: viewerScope },
       markers,
     });
+  }
+
+  // ── ATTENDANCE LOCATION REVIEW ─────────────────────────────────
+  // Admin/HCNS (or a department-scoped manager) approves/rejects a check-in
+  // that fell outside the office geofence. This is an audit signal only — it
+  // never edits/deletes the attendance record.
+  const attendanceReviewMatch = path.match(/^\/api\/attendance\/(\d+)\/location-review$/);
+  if (attendanceReviewMatch && request.method === 'POST') {
+    const aid = Number(attendanceReviewMatch[1]);
+    if (!isAttendanceAdmin) return json({ error: 'Không có quyền' }, 403);
+    const b = await request.json().catch(() => ({}));
+    const decision = ['approved', 'rejected'].includes(b.status) ? b.status : null;
+    if (!decision) return json({ error: 'Trạng thái duyệt không hợp lệ' }, 400);
+    if (!Number.isInteger(aid) || aid <= 0) return json({ error: 'ID bản ghi không hợp lệ' }, 400);
+    const row = await env.DB.prepare('SELECT a.*, u.department FROM attendance a JOIN users u ON u.id=a.user_id WHERE a.id=?').bind(aid).first();
+    if (!row) return json({ error: 'Không tìm thấy bản ghi chấm công' }, 404);
+    if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && row.department !== me.department) return json({ error: 'Không có quyền xem nhân sự ngoài phòng ban' }, 403);
+    if (!Number(row.checkin_requires_review)) return json({ error: 'Bản ghi này không cần xem xét vị trí' }, 400);
+    const note = String(b.note || '').trim() || null;
+    await env.DB.prepare("UPDATE attendance SET checkin_review_status=?, checkin_reviewed_by=?, checkin_review_note=?, checkin_reviewed_at=datetime('now','localtime') WHERE id=?")
+      .bind(decision, me.id, note, aid).run();
+    return json({ ok: true, attendance_id: aid, status: decision });
   }
 
   // ── OVERTIME ────────────────────────────────────────────────────
@@ -5598,6 +5640,20 @@ export async function handle(request, env) {
     return json({ ok: true, status, late_minutes: metrics.lateMinutes, early_minutes: metrics.earlyMinutes, work_hours: metrics.workHours });
   }
 
+  // Delete an attendance row (with a guard on the same permissions as edit).
+  if (attMatch && request.method === 'DELETE') {
+    if (!isManager) return json({ error: 'Không có quyền' }, 403);
+    const aid = parseInt(attMatch[1]);
+    const record = await env.DB.prepare('SELECT a.*, u.department FROM attendance a JOIN users u ON u.id=a.user_id WHERE a.id=?').bind(aid).first();
+    if (!record) return json({ error: 'Không tìm thấy chấm công' }, 404);
+    if (!isAdmin && !isAttendanceHcns && record.department !== me.department) return json({ error: 'Không có quyền xóa chấm công ngoài phòng ban' }, 403);
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM overtime_requests WHERE attendance_id=?').bind(aid),
+      env.DB.prepare('DELETE FROM attendance WHERE id=?').bind(aid),
+    ]);
+    return json({ ok: true, deleted_id: aid });
+  }
+
   // Aggregated monthly attendance summary — used to auto-fill "Ngày công" when
   // creating/reviewing a payroll invoice (Phiếu lương ← Chấm công).
   if (path === '/api/attendance/summary' && request.method === 'GET') {
@@ -5643,7 +5699,7 @@ export async function handle(request, env) {
     }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return json({ error: 'Khoảng ngày không hợp lệ' }, 400);
     const { results: records = [] } = await env.DB.prepare(
-      'SELECT * FROM attendance WHERE user_id=? AND date BETWEEN ? AND ? ORDER BY date ASC'
+      'SELECT a.*, loc.name AS checkin_office_name, COALESCE(loc.radius_meters,0) AS checkin_office_radius FROM attendance a LEFT JOIN attendance_locations loc ON loc.id=a.checkin_location_id WHERE a.user_id=? AND a.date BETWEEN ? AND ? ORDER BY a.date ASC'
     ).bind(employeeId, from, to).all();
     let paidLeaveDays = 0;
     try {
@@ -6269,8 +6325,8 @@ export async function handle(request, env) {
     const title = String(b.title || '').trim();
     if (!title) return json({ error: 'Thiếu tiêu đề công việc con' }, 400);
     const r = await env.DB.prepare(
-      'INSERT INTO subtasks (task_id,title,assigned_to,due_date) VALUES (?,?,?,?)'
-    ).bind(tid, title, b.assigned_to||null, b.due_date||null).run();
+      'INSERT INTO subtasks (task_id,title,description,assigned_to,due_date) VALUES (?,?,?,?,?)'
+    ).bind(tid, title, b.description||null, b.assigned_to||null, b.due_date||null).run();
     const subtaskId = r.meta.last_row_id;
     const assignee = await taskActivityAssignee(env, b.assigned_to);
     await recordTaskActivity(env, {
@@ -6297,8 +6353,8 @@ export async function handle(request, env) {
       if (!nextTitle) return json({ error: 'Thiếu tiêu đề công việc con' }, 400);
       const nextDone = b.is_done === undefined ? Number(subtask.is_done) : (b.is_done ? 1 : 0);
       const nextAssigneeId = b.assigned_to ?? subtask.assigned_to;
-      await env.DB.prepare('UPDATE subtasks SET title=?,is_done=?,assigned_to=?,due_date=? WHERE id=?')
-        .bind(nextTitle,nextDone,nextAssigneeId,b.due_date ?? subtask.due_date ?? null,sid).run();
+      await env.DB.prepare('UPDATE subtasks SET title=?,description=?,is_done=?,assigned_to=?,due_date=? WHERE id=?')
+        .bind(nextTitle,b.description ?? subtask.description ?? null,nextDone,nextAssigneeId,b.due_date ?? subtask.due_date ?? null,sid).run();
       let activityAction = null;
       if (!Number(subtask.is_done) && nextDone) activityAction = 'subtask_completed';
       if (Number(subtask.is_done) && !nextDone) activityAction = 'subtask_reopened';

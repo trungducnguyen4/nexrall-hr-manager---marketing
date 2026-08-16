@@ -91,6 +91,8 @@ function makeDB({
             return (mine && mine.checkin_lat != null) ? mine : null;
           }
           if (sql.includes('GROUP BY checkin_location_id')) return null;
+          // Admin location-review lookup (attendance joined with its employee).
+          if (sql.includes('FROM attendance a JOIN users u ON u.id=a.user_id')) return attendanceRows.find(row => String(row.id) === String(stmt.args[0])) || null;
           if (/FROM attendance_locations WHERE id=\?/.test(sql)) return attendanceLocations.find(l => String(l.id) === String(stmt.args[0])) || null;
           return null;
         },
@@ -140,24 +142,35 @@ console.log('Backend validation & persistence');
   assert.strictEqual(r.status, 200, `inside checkin should succeed, got ${r.status}: ${JSON.stringify(r.body)}`);
   assert.strictEqual(r.body.ok, true);
   assert.strictEqual(r.body.inside_geofence, true);
-  const up = updates.find(u => u.args && String(u.args[12]) === '10');
+  const up = updates.find(u => u.args && String(u.args[14]) === '10');
   assert.ok(up, 'UPDATE attendance captured');
-  // order: time,ip,status,late,locId,distance,accuracy,method,lat,lng,geofenceStatus,note,id
+  // order: time,ip,status,late,locId,distance,accuracy,method,lat,lng,geofenceStatus,reqReview,reviewStatus,note,id
   assert.strictEqual(up.args[8], insideLat, 'checkin_lat persisted');
   assert.strictEqual(up.args[9], office.longitude, 'checkin_lng persisted');
   assert.strictEqual(up.args[10], 'inside', 'checkin_geofence_status persisted');
+  assert.strictEqual(up.args[11], 0, 'inside: no review required');
+  assert.strictEqual(up.args[12], 'none', 'inside: review_status none');
   assert.strictEqual(Math.round(Number(up.args[5])), 33, `distance persisted (~33m), got ${up.args[5]}`);
   assert.strictEqual(up.args[6], 18, 'accuracy persisted');
   assert.strictEqual(up.args[4], 1, 'checkin_location_id persisted');
-  ok('inside check-in: lat/lng/accuracy/location/distance/geofence persisted (server-computed)');
+  ok('inside check-in: persisted (no review flag)');
 
-  // client fake flag ignored → outside is still blocked
-  await new Promise(res => setTimeout(res, 1)); // reset rate? not used here
+  // client fake flag ignored → outside is NOT rejected, but flagged for review,
+  // and the server recomputed that it is outside regardless of the client's claim.
   const outsideLat = office.latitude + 0.002; // ~222 m
   r = await call('POST', '/api/attendance/checkin', { latitude: outsideLat, longitude: office.longitude, accuracy: 18, inside_geofence: true, distance_meters: 5 }, { db });
-  assert.strictEqual(r.status, 403, `faked inside should still be blocked, got ${r.status}`);
-  assert.strictEqual(r.body.geofence.inside_geofence, false, 'server must recompute inside_geofence');
-  ok('client cannot fake inside_geofence=true (outside payload blocked)');
+  assert.strictEqual(r.status, 200, `outside check-in must NOT be rejected, got ${r.status}: ${JSON.stringify(r.body)}`);
+  assert.strictEqual(r.body.ok, true);
+  assert.strictEqual(r.body.inside_geofence, false, 'server must recompute inside_geofence');
+  assert.strictEqual(r.body.geofence_status, 'outside');
+  assert.strictEqual(r.body.requires_location_review, true);
+  assert.strictEqual(r.body.location_review_status, 'pending');
+  const out = [...updates].reverse().find(u => u.args && String(u.args[14]) === '10');
+  assert.ok(out, 'captured outside UPDATE');
+  assert.strictEqual(out.args[10], 'outside', 'checkin_geofence_status persisted');
+  assert.strictEqual(out.args[11], 1, 'checkin_requires_review persisted');
+  assert.strictEqual(out.args[12], 'pending', 'checkin_review_status persisted');
+  ok('outside check-in: success + flagged for review (client flag ignored)');
 }
 
 {
@@ -186,10 +199,28 @@ console.log('Backend validation & persistence');
   const outsideLat = office.latitude + 0.002;
   const r = await call('POST', '/api/attendance/checkin', { latitude: outsideLat, longitude: office.longitude, accuracy: 10 }, { db });
   assert.strictEqual(r.status, 200, `WFH outside geofence should succeed, got ${r.status}: ${JSON.stringify(r.body)}`);
-  const up = updates.find(u => u.args && String(u.args[12]) === '13');
+  const up = updates.find(u => u.args && String(u.args[14]) === '13');
   assert.ok(up, 'WFH UPDATE captured');
   assert.strictEqual(up.args[10], null, 'WFH check-in must NOT store office geofence status');
+  assert.strictEqual(up.args[11], 0, 'WFH: no review flag');
   ok('WFH is not blocked by office geofence (status left null)');
+}
+
+// ── 2b. Admin/institution location-review ───
+console.log('Location-review endpoint');
+{
+  const office = HCMOffice();
+  const rec = { id: 20, user_id: 5, department: 'Phòng Kinh Doanh', date: TODAY, work_type: 'office', shift: 'full', registered: 1, checkin_time: '08:31', status: 'present', checkin_requires_review: 1, checkin_review_status: 'pending', checkin_distance_meters: 143, checkin_accuracy_meters: 12, checkin_location_id: 1, checkin_office_radius: 100, note: 'Đứng cửa sau toà nhà' };
+  const r = await call('POST', '/api/attendance/20/location-review', { status: 'approved', note: 'hợp lệ' }, { db: makeDB({ session: makeSession({ role: 'admin', id: 5 }), attendanceRows: [rec], attendanceLocations: [office] }).db });
+  assert.strictEqual(r.status, 200, `admin review should succeed, got ${r.status}: ${JSON.stringify(r.body)}`);
+  assert.strictEqual(r.body.status, 'approved');
+  ok('admin can approve an out-of-geofence check-in');
+}
+{
+  const rec = { id: 21, user_id: 6, department: 'Phòng Kinh Doanh', date: TODAY, work_type: 'office', registered: 1, checkin_time: '08:31', status: 'present', checkin_requires_review: 1, checkin_review_status: 'pending' };
+  const r = await call('POST', '/api/attendance/21/location-review', { status: 'approved' }, { db: makeDB({ session: makeSession({ role: 'employee', id: 6 }), attendanceRows: [rec], attendanceLocations: [HCMOffice()] }).db });
+  assert.strictEqual(r.status, 403, 'regular employee must NOT review');
+  ok('regular employee cannot review location (403)');
 }
 
 // ── 3. check-in-points authorization + legacy ───

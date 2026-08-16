@@ -294,7 +294,10 @@ export const api = {
   registerAttendance: (body) => req('POST', '/api/attendance/register', body).then(r => { inv('/api/attendance'); return r; }),
   checkin:  (body) => req('POST', '/api/attendance/checkin', body).then(r => { inv('/api/attendance'); return r; }),
   checkout: (body) => req('POST', '/api/attendance/checkout', body).then(r => { inv('/api/attendance'); return r; }),
+  // Admin/HCNS review of an out-of-geofence check-in (approved/rejected). Audit only.
+  reviewAttendanceLocation: (id, data) => req('POST', `/api/attendance/${id}/location-review`, data).then(r => { inv('/api/attendance'); return r; }),
   updateAttendance: (id, d) => req('PUT', `/api/attendance/${id}`, d).then(r => { inv('/api/attendance'); return r; }),
+  deleteAttendance: (id) => req('DELETE', `/api/attendance/${id}`).then(r => { inv('/api/attendance'); return r; }),
   getOvertimeRequests: (params = {}) => { const q = new URLSearchParams(params).toString(); return req('GET', '/api/overtime-requests' + (q ? '?' + q : '')); },
   createOvertimeRequest: (d) => req('POST', '/api/overtime-requests', d).then(r => { inv('/api/attendance'); return r; }),
   decideOvertimeRequest: (id, action, d = {}) => req('POST', `/api/overtime-requests/${id}/${action}`, d).then(r => { inv('/api/attendance', '/api/invoices'); return r; }),
