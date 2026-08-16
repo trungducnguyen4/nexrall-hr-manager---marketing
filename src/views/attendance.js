@@ -1,6 +1,8 @@
 import { api } from '../api.js?v=20260811-attendance-correction-v1';
 import { esc, fmtDate, statusBadge, setAvatar, toast, openModal, closeModal, loadingHTML, emptyHTML, today, initials, avatarColor, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js?v=20260811-attendance-registration-v1';
 import { attendanceClosingMonth } from '../attendance-period.js';
+import { getDeviceLocation } from '../location.js?v=20260816-location-v1';
+import { renderGeoMap, classifyMarker } from '../geo-map.js?v=20260816-geo-map-v1';
 
 const WORK_TYPE_LABEL = { office: '🏢 Văn phòng', wfh: '🏠 WFH', business: '✈️ Công tác' };
 const SHIFT_LABEL = { morning: 'Ca sáng (08:30–12:00)', afternoon: 'Ca chiều (13:30–17:00)', full: 'Cả ngày' };
@@ -31,8 +33,11 @@ export async function renderAttendance(el, me, route = {}) {
       </div>
       <div id="att-compliance" aria-live="polite" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px;"></div>
 
-      <!-- Registration form (shown when not yet registered today) -->
-      <div id="att-register-wrap" style="display:none;margin-top:14px;">
+      <div class="att-clock-grid">
+        <div class="att-clock-main">
+
+        <!-- Registration form (shown when not yet registered today) -->
+        <div id="att-register-wrap" style="display:none;margin-top:14px;">
         <div class="field" style="margin-bottom:10px;">
           <label style="color:rgba(255,255,255,.7)">Hình thức làm việc</label>
           <div class="att-chip-row" id="att-worktype-row">
@@ -72,6 +77,30 @@ export async function renderAttendance(el, me, route = {}) {
       <div class="att-clock-btns">
         <button id="btn-checkout" class="att-btn-out" disabled>🏁 Check Out</button>
       </div>
+
+        </div><!-- /att-clock-main -->
+
+        <div class="att-clock-geo" id="att-clock-geo">
+          <div class="att-clock-geo-head">
+            <div class="att-clock-geo-title">📍 Vị trí chấm công</div>
+            <div class="att-clock-geo-controls">
+              <input type="date" id="att-geo-date" value="${esc(routeDate || today())}"/>
+              <select id="att-geo-office"><option value="">Tự động</option></select>
+              <button type="button" id="btn-geo-refresh" class="att-geo-refresh" title="Làm mới bản đồ">🔄</button>
+            </div>
+          </div>
+          <div class="att-clock-geo-meta" id="att-geo-meta">Đang tải…</div>
+          <div id="att-geo-map"></div>
+          <div class="att-clock-geo-legend">
+            <span class="att-geo-legend-item"><i class="att-geo-dot" style="background:#10B981"></i>Trong phạm vi</span>
+            <span class="att-geo-legend-item"><i class="att-geo-dot" style="background:#EF4444"></i>Ngoài phạm vi</span>
+            <span class="att-geo-legend-item"><i class="att-geo-dot" style="background:#3B82F6"></i>Tôi</span>
+          </div>
+          <div id="att-geo-my-status" class="att-clock-geo-status">Đang tải trạng thái…</div>
+          <div class="att-clock-geo-note">Điểm đánh dấu là vị trí check-in gần nhất của ngày đang xem — không phải theo dõi liên tục.</div>
+        </div>
+
+      </div><!-- /att-clock-grid -->
     </div>
 
     <div class="card" style="margin:14px 0;">
@@ -131,17 +160,101 @@ export async function renderAttendance(el, me, route = {}) {
   tickClock();
   const clockInterval = setInterval(tickClock, 1000);
   // Clean up on next navigation
-  el._cleanup = () => clearInterval(clockInterval);
+  el._cleanup = () => { clearInterval(clockInterval); try { geoMap?.destroy(); } catch (_) {} };
 
   // Load today's record
   let todayRecord = null;
   let regWorkType = 'office';
   let regShifts = new Set(); // subset of {morning, afternoon}
   let submitting = false; // guards against double-click across register/checkin/checkout
-  const gpsPayload = () => new Promise((resolve, reject) => {
-    if (!navigator.geolocation) return reject(new Error('Thiết bị không hỗ trợ GPS'));
-    navigator.geolocation.getCurrentPosition(position => resolve({ latitude: position.coords.latitude, longitude: position.coords.longitude, accuracy: position.coords.accuracy }), () => reject(new Error('Hãy cho phép truy cập vị trí để chấm công tại văn phòng')), { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 });
-  });
+  const gpsPayload = () => getDeviceLocation({ purposeLabel: 'chấm công tại văn phòng' });
+
+  // ── Attendance location map panel (Vị trí chấm công) ────────────
+  let geoMap = null;
+  let geoOffices = [];
+  let geoOfficeId = ''; // '' = let the backend resolve the right office
+
+  async function loadGeoOffices() {
+    try {
+      const { locations = [] } = await api.getAttendanceLocations();
+      geoOffices = locations;
+      const select = document.getElementById('att-geo-office');
+      if (select) {
+        select.innerHTML = `<option value="">Tự động</option>` + geoOffices.map(location => `<option value="${location.id}">${esc(location.name)}</option>`).join('');
+        select.value = geoOfficeId || '';
+      }
+    } catch (_) { /* office selector is optional */ }
+  }
+
+  function markerTooltipHTML(m) {
+    const name = esc(m.employee_name || `NV ${m.employee_id}`);
+    const timeLine = m.checkin_time ? `<div>Check-in: ${esc(m.checkin_time)}</div>` : '';
+    const distLine = m.distance_m != null ? `<div>Cách văn phòng: ${Math.round(Number(m.distance_m))} m</div>` : '';
+    const accLine = m.checkin_accuracy_meters != null ? `<div>Độ chính xác GPS: ±${Math.round(Number(m.checkin_accuracy_meters))} m</div>` : '';
+    const status = m.inside_geofence
+      ? '<div class="geo-tooltip-status geo-tooltip-inside">Trong phạm vi</div>'
+      : '<div class="geo-tooltip-status geo-tooltip-outside">Ngoài phạm vi</div>';
+    return `<div class="geo-tooltip-name">${name}</div>${timeLine}${distLine}${accLine}${status}`;
+  }
+
+  async function loadGeoPanel() {
+    const mapEl = document.getElementById('att-geo-map');
+    const metaEl = document.getElementById('att-geo-meta');
+    if (!mapEl) return;
+    const dateVal = document.getElementById('att-geo-date')?.value || today();
+    try {
+      const data = await api.getAttendanceCheckinPoints({ date: dateVal, office_id: geoOfficeId || '' });
+      if (!geoOffices.length) void loadGeoOffices();
+      if (!data.office) {
+        if (metaEl) metaEl.textContent = data.reason || 'Chưa cấu hình địa điểm chấm công';
+        mapEl.innerHTML = '';
+        geoMap = null;
+        updateGeoMyStatus(data);
+        return;
+      }
+      const office = data.office;
+      if (metaEl) metaEl.innerHTML = `${esc(office.name)} · Bán kính: ${Number(office.radius_meters)} m · ${data.markers.length} điểm chấm công`;
+      const markers = (data.markers || []).map(m => ({
+        latitude: m.latitude, longitude: m.longitude,
+        label: m.employee_name, employee_id: m.employee_id,
+        is_current_user: m.is_current_user,
+        inside_geofence: m.inside_geofence,
+        checkin_time: m.checkin_time,
+        checkin_accuracy_meters: m.checkin_accuracy_meters,
+        distance_m: m.distance_m,
+        kind: classifyMarker(m, me.id),
+        tooltipHTML: markerTooltipHTML(m),
+      }));
+      if (geoMap) {
+        geoMap.setOffice({ latitude: Number(office.latitude), longitude: Number(office.longitude) }, Number(office.radius_meters), office.name);
+        geoMap.setMarkers(markers, { fit: true });
+      } else {
+        geoMap = renderGeoMap(mapEl, {
+          center: { latitude: Number(office.latitude), longitude: Number(office.longitude) },
+          radiusMeters: Number(office.radius_meters || 100),
+          officeName: office.name,
+          markers,
+          theme: 'dark',
+          height: 250,
+        });
+      }
+      updateGeoMyStatus(data);
+    } catch (e) {
+      if (metaEl) metaEl.textContent = e.message || 'Không tải được bản đồ';
+    }
+  }
+
+  function updateGeoMyStatus(data) {
+    const statusEl = document.getElementById('att-geo-my-status');
+    if (!statusEl) return;
+    const mine = (data?.markers || []).find(m => m.is_current_user);
+    if (mine) {
+      const acc = mine.checkin_accuracy_meters != null ? ` · Độ chính xác GPS ±${Math.round(Number(mine.checkin_accuracy_meters))} m` : '';
+      statusEl.innerHTML = `<b>${mine.inside_geofence ? '🟢' : '🔴'} Vị trí check-in của bạn</b>: ghi nhận lúc ${esc(mine.checkin_time || '—')} · cách văn phòng ${Math.round(Number(mine.distance_m))} m · ${mine.inside_geofence ? 'Trong phạm vi' : 'Ngoài phạm vi'}${acc}`;
+    } else if (data?.office) {
+      statusEl.textContent = 'Bạn chưa có điểm check-in GPS trong ngày đang xem. GPS: Không có dữ liệu.';
+    }
+  }
 
   // ── Registration form interactivity ──
   function updateWorktypeChips() {
@@ -191,6 +304,7 @@ export async function renderAttendance(el, me, route = {}) {
       updateShiftChips();
       renderClockState();
       void loadAttendanceCompliance();
+      void loadGeoPanel();
     } catch(e) {
       document.getElementById('att-status-line').innerHTML = `<span style="font-size:12px;opacity:.7">Lỗi tải trạng thái</span>`;
     }
@@ -327,8 +441,15 @@ document.getElementById('btn-register').addEventListener('click', async () => {
     const note = document.getElementById('att-note')?.value || '';
     const activeWorkType = todayRecord?.work_type || regWorkType;
     const geo = activeWorkType === 'office' ? await gpsPayload() : {};
-    await api.checkin({ note, ...geo });
-    toast(needsRegistration ? 'Đăng ký & Check In thành công!' : 'Check in thành công!', 'success');
+    const result = await api.checkin({ note, ...geo });
+    const gf = result.geofence;
+    if (gf?.status === 'verified' && gf.location) {
+      toast(`Check in thành công · ${gf.location.name} · Cách tâm văn phòng ${Math.round(Number(gf.distance_meters ?? gf.location.distance_meters) || 0)} m`, 'success', 4000);
+    } else if (gf?.status === 'outside' && gf.location) {
+      toast(`Check-in được ghi nhận nhưng nằm ngoài phạm vi · Khoảng cách: ${Math.round(Number(gf.distance_meters ?? gf.location.distance_meters) || 0)} m · Giới hạn: ${Math.round(Number(gf.location.radius_meters) || 0)} m`, 'warning', 5000);
+    } else {
+      toast(needsRegistration ? 'Đăng ký & Check In thành công!' : 'Check in thành công!', 'success');
+    }
     await loadTodayStatus();
     loadHistory();
   } catch(e) {
@@ -879,6 +1000,10 @@ document.getElementById('btn-register').addEventListener('click', async () => {
       closeModal();
     });
   });
+
+  document.getElementById('att-geo-office')?.addEventListener('change', event => { geoOfficeId = event.target.value || ''; loadGeoPanel(); });
+  document.getElementById('att-geo-date')?.addEventListener('change', () => loadGeoPanel());
+  document.getElementById('btn-geo-refresh')?.addEventListener('click', () => loadGeoPanel());
 
   await loadTodayStatus();
   await loadHistory();

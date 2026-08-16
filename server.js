@@ -503,6 +503,14 @@ async function migrate(env) {
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkout_accuracy_meters REAL'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkin_verification_method TEXT'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkout_verification_method TEXT'); } catch (_) {}
+  // Raw GPS coordinates recorded at the moment of check-in/check-out — audit data,
+  // NOT continuous tracking. Old rows remain readable without these columns.
+  try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkin_lat REAL'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkin_lng REAL'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkout_lat REAL'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkout_lng REAL'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkin_geofence_status TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkout_geofence_status TEXT'); } catch (_) {}
   // ── Chat module ─────────────────────────────────────────────────
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS conversations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2802,11 +2810,20 @@ async function currentIpInfo(env, request) {
   };
 }
 
-function geoDistanceMeters(lat1, lng1, lat2, lng2) {
+// Haversine distance in meters. Exported for unit tests.
+export function geoDistanceMeters(lat1, lng1, lat2, lng2) {
   const r = 6371000, toRad = value => Number(value) * Math.PI / 180;
   const dLat = toRad(lat2 - lat1), dLng = toRad(lng2 - lng1);
   const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
   return r * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+// Boundary rule: distance <= radius counts as inside (inclusive).
+export function geofenceDecision(distanceMeters, radiusMeters) {
+  const distance = Number(distanceMeters);
+  const radius = Number(radiusMeters);
+  if (!Number.isFinite(distance) || !Number.isFinite(radius) || radius <= 0) return { inside: false, outside_meters: null };
+  const inside = distance <= radius;
+  return { inside, outside_meters: Math.max(0, distance - radius) };
 }
 async function ensureAttendanceLocationSchema(env) {
   // Some already-deployed D1 databases have passed the one-time bootstrap
@@ -2845,7 +2862,7 @@ async function ensureAttendanceLocationSchema(env) {
   } catch (error) {
     console.error('Unable to seed Hanoi attendance location', error);
   }
-  for (const column of ['checkin_location_id INTEGER','checkout_location_id INTEGER','checkin_distance_meters REAL','checkout_distance_meters REAL','checkin_accuracy_meters REAL','checkout_accuracy_meters REAL','checkin_verification_method TEXT','checkout_verification_method TEXT']) {
+  for (const column of ['checkin_location_id INTEGER','checkout_location_id INTEGER','checkin_distance_meters REAL','checkout_distance_meters REAL','checkin_accuracy_meters REAL','checkout_accuracy_meters REAL','checkin_verification_method TEXT','checkout_verification_method TEXT','checkin_lat REAL','checkin_lng REAL','checkout_lat REAL','checkout_lng REAL','checkin_geofence_status TEXT','checkout_geofence_status TEXT']) {
     try { await env.DB.exec(`ALTER TABLE attendance ADD COLUMN ${column}`); } catch (_) {}
   }
   return true;
@@ -2866,16 +2883,24 @@ async function verifyAttendanceGeofence(env, payload = {}) {
   if (!(await ensureAttendanceLocationSchema(env))) {
     return { status: 'unavailable', reason: 'Chưa thể khởi tạo dữ liệu địa điểm chấm công' };
   }
-  const latitude = Number(payload.latitude), longitude = Number(payload.longitude), accuracy = Number(payload.accuracy || 0);
+  // The server ALWAYS recomputes distance/geofence from raw coordinates.
+  // Any inside_geofence / distance sent by the client is intentionally ignored.
+  const latitude = Number(payload.latitude), longitude = Number(payload.longitude);
+  const rawAccuracy = payload.accuracy === undefined || payload.accuracy === null || payload.accuracy === '' ? null : Number(payload.accuracy);
+  const accuracy = rawAccuracy === null ? 0 : rawAccuracy;
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return { status: 'unavailable', reason: 'Chưa nhận được vị trí GPS hợp lệ' };
+  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return { status: 'invalid', reason: 'Tọa độ GPS ngoài phạm vi hợp lệ' };
+  if (!Number.isFinite(accuracy) || accuracy < 0) return { status: 'invalid', reason: 'Độ chính xác GPS không hợp lệ' };
   const { results: locations = [] } = await env.DB.prepare('SELECT * FROM attendance_locations WHERE is_active=1').all();
   if (!locations.length) return { status: 'not_configured', reason: 'Chưa cấu hình địa điểm GPS' };
   const ranked = locations.map(location => ({ ...location, distance_meters: geoDistanceMeters(latitude, longitude, location.latitude, location.longitude) })).sort((a,b) => a.distance_meters - b.distance_meters);
   const location = ranked[0];
   const radius = Number(location.radius_meters || 100), maxAccuracy = Number(location.max_accuracy_meters || 100);
-  if (accuracy > maxAccuracy || (location.distance_meters <= radius && location.distance_meters + accuracy > radius)) return { status: 'retry', location, accuracy_meters: accuracy, reason: 'Vị trí đang ở sát biên hoặc độ chính xác GPS chưa đủ' };
-  if (location.distance_meters <= radius) return { status: 'verified', location, accuracy_meters: accuracy };
-  return { status: 'outside', location, accuracy_meters: accuracy, reason: 'Bạn ở ngoài khu vực chấm công' };
+  const decision = geofenceDecision(location.distance_meters, radius);
+  const base = { location, accuracy_meters: accuracy, distance_meters: location.distance_meters, inside_geofence: decision.inside, outside_meters: decision.outside_meters };
+  if (accuracy > maxAccuracy || (decision.inside && location.distance_meters + accuracy > radius)) return { status: 'retry', ...base, reason: 'Vị trí đang ở sát biên hoặc độ chính xác GPS chưa đủ' };
+  if (decision.inside) return { status: 'verified', ...base };
+  return { status: 'outside', ...base, reason: 'Bạn ở ngoài khu vực chấm công' };
 }
 
 function taskLabelColor(status, priority, provided) {
@@ -5174,22 +5199,36 @@ export async function handle(request, env) {
       ).bind(me.id, today, 'office', 'full', b.note || '').run();
       existing = await env.DB.prepare('SELECT * FROM attendance WHERE user_id=? AND date=?').bind(me.id, today).first();
     }
+    const workType = existing.work_type || 'office';
+    // Reject malformed coordinates up-front. The backend always recomputes
+    // distance and geofence itself — client flags are never trusted.
+    if (b.latitude !== undefined || b.longitude !== undefined || b.accuracy !== undefined) {
+      const lat = Number(b.latitude), lng = Number(b.longitude);
+      const acc = (b.accuracy === undefined || b.accuracy === null || b.accuracy === '') ? null : Number(b.accuracy);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) return json({ error: 'Tọa độ GPS không hợp lệ' }, 400);
+      if (acc !== null && (!Number.isFinite(acc) || acc < 0)) return json({ error: 'Độ chính xác GPS không hợp lệ' }, 400);
+    }
     const ipInfo = await currentIpInfo(env, request);
     const geo = await verifyAttendanceGeofence(env, b);
     const gpsConstraintEnabled = await isGpsConstraintEnabled(env);
-    if (gpsConstraintEnabled && (existing.work_type || 'office') === 'office' && geo.status !== 'not_configured' && geo.status !== 'verified') {
+    if (geo.status === 'invalid') return json({ error: geo.reason || 'Tọa độ GPS không hợp lệ' }, 400);
+    if (gpsConstraintEnabled && workType === 'office' && geo.status !== 'not_configured' && geo.status !== 'verified') {
       return json({ error: geo.reason || 'Không thể xác minh vị trí chấm công', geofence: geo }, 403);
     }
-    if (gpsConstraintEnabled && (existing.work_type || 'office') === 'office' && geo.status === 'not_configured' && !ipInfo.matched) {
+    if (gpsConstraintEnabled && workType === 'office' && geo.status === 'not_configured' && !ipInfo.matched) {
       return json({ error: `IP hien tai (${ipInfo.ip}) khong nam trong whitelist van phong`, ip: ipInfo.ip, matched: false, warning: ipInfo.warning }, 403);
     }
     const timeStr = vnTimeStr();
-    const bounds = attShiftBounds(existing.work_type || 'office', existing.shift || 'full', existing.expected_start, existing.expected_end);
+    const bounds = attShiftBounds(workType, existing.shift || 'full', existing.expected_start, existing.expected_end);
     const lateMinutes = Math.max(0, attToMinutes(timeStr) - attToMinutes(bounds.lateAfter));
     const status = lateMinutes > 0 ? 'late' : 'present';
-    await env.DB.prepare('UPDATE attendance SET checkin_time=?,checkin_ip=?,status=?,late_minutes=?,checkin_location_id=?,checkin_distance_meters=?,checkin_accuracy_meters=?,checkin_verification_method=?,note=? WHERE id=?')
-      .bind(timeStr, ipInfo.ip, status, lateMinutes, geo.location?.id||null, geo.location?.distance_meters||null, geo.accuracy_meters||null, geo.status === 'verified' ? 'geofence' : (ipInfo.matched ? 'ip' : null), b.note || existing.note || '', existing.id).run();
-    return json({ ok: true, status, time: timeStr, late_minutes: lateMinutes, geofence: geo, gps_constraint_enabled: gpsConstraintEnabled });
+    // Store raw coordinates for audit. Geofence status is only meaningful for office work.
+    const geoLat = Number.isFinite(Number(b.latitude)) ? Number(b.latitude) : null;
+    const geoLng = Number.isFinite(Number(b.longitude)) ? Number(b.longitude) : null;
+    const geofenceStatus = workType === 'office' ? (geo.status === 'verified' ? 'inside' : geo.status === 'outside' ? 'outside' : geo.status === 'retry' ? 'unconfirmed' : null) : null;
+    await env.DB.prepare('UPDATE attendance SET checkin_time=?,checkin_ip=?,status=?,late_minutes=?,checkin_location_id=?,checkin_distance_meters=?,checkin_accuracy_meters=?,checkin_verification_method=?,checkin_lat=?,checkin_lng=?,checkin_geofence_status=?,note=? WHERE id=?')
+      .bind(timeStr, ipInfo.ip, status, lateMinutes, geo.location?.id||null, geo.location?.distance_meters||null, geo.accuracy_meters||null, geo.status === 'verified' ? 'geofence' : (ipInfo.matched ? 'ip' : null), geoLat, geoLng, geofenceStatus, b.note || existing.note || '', existing.id).run();
+    return json({ ok: true, status, time: timeStr, late_minutes: lateMinutes, geofence: geo, gps_constraint_enabled: gpsConstraintEnabled, distance_meters: geo.location?.distance_meters ?? null, inside_geofence: geo.inside_geofence ?? null });
   }
 
   if (path === '/api/attendance/checkout' && request.method === 'POST') {
@@ -5219,8 +5258,16 @@ export async function handle(request, env) {
     if (record.checkout_time) return json({ ok: true, time: record.checkout_time, work_hours: record.work_hours, early_minutes: record.early_minutes || 0, already: true });
     const ipInfo = await currentIpInfo(env, request);
     const workType = record.work_type || 'office';
+    // Reject malformed coordinates up-front (server recomputes geofence).
+    if (b.latitude !== undefined || b.longitude !== undefined || b.accuracy !== undefined) {
+      const lat = Number(b.latitude), lng = Number(b.longitude);
+      const acc = (b.accuracy === undefined || b.accuracy === null || b.accuracy === '') ? null : Number(b.accuracy);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) return json({ error: 'Tọa độ GPS không hợp lệ' }, 400);
+      if (acc !== null && (!Number.isFinite(acc) || acc < 0)) return json({ error: 'Độ chính xác GPS không hợp lệ' }, 400);
+    }
     const geo = await verifyAttendanceGeofence(env, b);
     const gpsConstraintEnabled = await isGpsConstraintEnabled(env);
+    if (geo.status === 'invalid') return json({ error: geo.reason || 'Tọa độ GPS không hợp lệ' }, 400);
     if (gpsConstraintEnabled && workType === 'office' && geo.status !== 'not_configured' && geo.status !== 'verified') {
       return json({ error: geo.reason || 'Không thể xác minh vị trí chấm công', geofence: geo }, 403);
     }
@@ -5241,9 +5288,85 @@ export async function handle(request, env) {
       workMinutes -= overlap;
     }
     const workHours = Math.max(0, workMinutes) / 60;
-    await env.DB.prepare('UPDATE attendance SET checkout_time=?,checkout_ip=?,work_hours=?,early_minutes=?,checkout_location_id=?,checkout_distance_meters=?,checkout_accuracy_meters=?,checkout_verification_method=? WHERE id=?')
-      .bind(timeStr, ipInfo.ip, workHours, earlyMinutes, geo.location?.id||null, geo.location?.distance_meters||null, geo.accuracy_meters||null, geo.status === 'verified' ? 'geofence' : (ipInfo.matched ? 'ip' : null), record.id).run();
-    return json({ ok: true, attendance_id: record.id, time: timeStr, work_hours: workHours, early_minutes: earlyMinutes, geofence: geo, gps_constraint_enabled: gpsConstraintEnabled });
+    const geoLat = Number.isFinite(Number(b.latitude)) ? Number(b.latitude) : null;
+    const geoLng = Number.isFinite(Number(b.longitude)) ? Number(b.longitude) : null;
+    const geofenceStatus = workType === 'office' ? (geo.status === 'verified' ? 'inside' : geo.status === 'outside' ? 'outside' : geo.status === 'retry' ? 'unconfirmed' : null) : null;
+    await env.DB.prepare('UPDATE attendance SET checkout_time=?,checkout_ip=?,work_hours=?,early_minutes=?,checkout_location_id=?,checkout_distance_meters=?,checkout_accuracy_meters=?,checkout_verification_method=?,checkout_lat=?,checkout_lng=?,checkout_geofence_status=? WHERE id=?')
+      .bind(timeStr, ipInfo.ip, workHours, earlyMinutes, geo.location?.id||null, geo.location?.distance_meters||null, geo.accuracy_meters||null, geo.status === 'verified' ? 'geofence' : (ipInfo.matched ? 'ip' : null), geoLat, geoLng, geofenceStatus, record.id).run();
+    return json({ ok: true, attendance_id: record.id, time: timeStr, work_hours: workHours, early_minutes: earlyMinutes, geofence: geo, gps_constraint_enabled: gpsConstraintEnabled, distance_meters: geo.location?.distance_meters ?? null, inside_geofence: geo.inside_geofence ?? null });
+  }
+
+  // ── CHECK-IN POINTS MAP ─────────────────────────────────────────
+  // Server-recorded GPS points at check-in time for a given date (default today).
+  // This is NOT live tracking: only the most recent check-in coordinates stored
+  // with the attendance record are exposed, and only within the viewer's scope.
+  if (path === '/api/attendance/checkin-points' && request.method === 'GET') {
+    await ensureAttendanceLocationSchema(env);
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(url.searchParams.get('date') || '')) ? String(url.searchParams.get('date')) : vnTodayStr();
+    const officeIdParam = parseInt(url.searchParams.get('office_id'), 10);
+    // Office resolution priority:
+    //   1) office_id query param
+    //   2) office recorded on the viewer's own check-in for this date
+    //   3) nearest active office to the viewer's recorded check-in GPS
+    //   4) office with the most check-ins on this date
+    //   5) first active office
+    let office = null;
+    if (Number.isInteger(officeIdParam)) {
+      office = await env.DB.prepare('SELECT * FROM attendance_locations WHERE id=? AND is_active=1').bind(officeIdParam).first();
+    }
+    if (!office) {
+      const mine = await env.DB.prepare('SELECT checkin_location_id, checkin_lat, checkin_lng FROM attendance WHERE user_id=? AND date=?').bind(me.id, date).first();
+      if (mine?.checkin_location_id) office = await env.DB.prepare('SELECT * FROM attendance_locations WHERE id=?').bind(mine.checkin_location_id).first();
+      if (!office && Number.isFinite(Number(mine?.checkin_lat)) && Number.isFinite(Number(mine?.checkin_lng))) {
+        const { results: nearestCandidates = [] } = await env.DB.prepare('SELECT * FROM attendance_locations WHERE is_active=1').all();
+        office = nearestCandidates.map(location => ({ ...location, distance_meters: geoDistanceMeters(Number(mine.checkin_lat), Number(mine.checkin_lng), location.latitude, location.longitude) })).sort((a, b) => a.distance_meters - b.distance_meters)[0] || null;
+      }
+    }
+    if (!office) {
+      const topOffice = await env.DB.prepare('SELECT checkin_location_id AS id, COUNT(*) AS cnt FROM attendance WHERE date=? AND checkin_location_id IS NOT NULL GROUP BY checkin_location_id ORDER BY cnt DESC LIMIT 1').bind(date).first();
+      if (topOffice?.id) office = await env.DB.prepare('SELECT * FROM attendance_locations WHERE id=?').bind(topOffice.id).first();
+    }
+    if (!office) {
+      const { results: fallbackOffices = [] } = await env.DB.prepare('SELECT * FROM attendance_locations WHERE is_active=1 ORDER BY id LIMIT 1').all();
+      office = fallbackOffices[0] || null;
+    }
+    const viewerScope = isAdmin || isAttendanceHcns ? 'company' : (me.role === 'manager' ? 'department' : 'self');
+    if (!office) return json({ date, office: null, viewer: { can_view_all_markers: viewerScope === 'company', scope: viewerScope }, markers: [], reason: 'Chưa cấu hình địa điểm chấm công' });
+    let q = `SELECT a.user_id, a.checkin_time, a.checkin_lat, a.checkin_lng, a.checkin_accuracy_meters, a.checkin_location_id, a.checkin_distance_meters, u.full_name, u.employee_code, u.department
+      FROM attendance a JOIN users u ON u.id=a.user_id
+      WHERE a.date=? AND a.checkin_lat IS NOT NULL AND a.checkin_lng IS NOT NULL`;
+    const binds = [date];
+    if (viewerScope === 'self') { q += ' AND a.user_id=?'; binds.push(me.id); }
+    else if (viewerScope === 'department') { q += ' AND u.department=?'; binds.push(me.department); }
+    q += ' ORDER BY a.checkin_time ASC, a.id ASC';
+    const { results: gpsRows = [] } = await env.DB.prepare(q).bind(...binds).all();
+    const radius = Number(office.radius_meters || 100);
+    const markers = gpsRows.map(row => {
+      const lat = Number(row.checkin_lat), lng = Number(row.checkin_lng);
+      const decision = geofenceDecision(geoDistanceMeters(lat, lng, office.latitude, office.longitude), radius);
+      return {
+        employee_id: row.user_id,
+        employee_name: row.full_name,
+        employee_code: row.employee_code || null,
+        department: row.department || null,
+        checkin_time: row.checkin_time || null,
+        latitude: lat,
+        longitude: lng,
+        checkin_accuracy_meters: row.checkin_accuracy_meters ?? null,
+        office_location_id: row.checkin_location_id ?? null,
+        distance_m: Math.round(geoDistanceMeters(lat, lng, office.latitude, office.longitude)),
+        inside_geofence: decision.inside,
+        is_current_user: Number(row.user_id) === Number(me.id),
+      };
+    });
+    // Keep the viewer's own marker first so the map centers on relevant context.
+    markers.sort((a, b) => (b.is_current_user ? 1 : 0) - (a.is_current_user ? 1 : 0));
+    return json({
+      date,
+      office: { id: office.id, name: office.name, code: office.code, address: office.address, latitude: office.latitude, longitude: office.longitude, radius_meters: Number(office.radius_meters || 100), max_accuracy_meters: Number(office.max_accuracy_meters || 100) },
+      viewer: { can_view_all_markers: viewerScope === 'company', scope: viewerScope },
+      markers,
+    });
   }
 
   // ── OVERTIME ────────────────────────────────────────────────────

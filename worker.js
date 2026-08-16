@@ -10,7 +10,7 @@ function secureAssetResponse(response, pathname) {
   if (pathname === '/' || pathname.endsWith('.html')) {
     headers.set('Cache-Control', 'no-store, max-age=0');
     // The UI is a module SPA and currently loads a vetted logo from R2.
-    headers.set('Content-Security-Policy', "default-src 'self'; img-src 'self' https://pub-84c3902526ad4c82b488275b43b39e3a.r2.dev https://api.vietqr.io data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
+    headers.set('Content-Security-Policy', "default-src 'self'; img-src 'self' https://pub-84c3902526ad4c82b488275b43b39e3a.r2.dev https://api.vietqr.io https://tile.openstreetmap.org https://*.tile.openstreetmap.org data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
   }
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }

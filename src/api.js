@@ -270,6 +270,12 @@ export const api = {
     return cachedGet('/api/attendance' + (q ? '?' + q : ''));
   },
   getAttendanceToday: () => cachedGet('/api/attendance/today'),
+  // Map panel: server-recorded check-in GPS points for a date (never cached — must
+  // reflect the latest check-in right away, and the response depends on the viewer's role).
+  getAttendanceCheckinPoints: (params = {}) => {
+    const q = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== '' && value !== null && value !== undefined)).toString();
+    return req('GET', '/api/attendance/checkin-points' + (q ? '?' + q : ''));
+  },
   getMyAttendanceCompliance: (month = '') => cachedGet('/api/attendance/my-compliance' + (month ? `?month=${encodeURIComponent(month)}` : '')),
   // Not cached — used to auto-fill "Ngày công" right before creating a payroll invoice,
   // must always reflect the latest attendance data (and support an explicit retry on error).
