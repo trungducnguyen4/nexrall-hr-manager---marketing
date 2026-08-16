@@ -309,6 +309,11 @@ export const api = {
   createWifi: (d) => req('POST', '/api/wifi-whitelist', d).then(r => { inv('/api/wifi-whitelist'); return r; }),
   updateWifi: (id, d) => req('PUT', `/api/wifi-whitelist/${id}`, d).then(r => { inv('/api/wifi-whitelist'); return r; }),
   deleteWifi: (id) => req('DELETE', `/api/wifi-whitelist/${id}`).then(r => { inv('/api/wifi-whitelist'); return r; }),
+  getAttendanceLocations: () => cachedGet('/api/attendance-locations'),
+  verifyAttendanceLocation: (d) => req('POST', '/api/attendance-locations/verify', d),
+  createAttendanceLocation: (d) => req('POST', '/api/attendance-locations', d).then(r => { inv('/api/attendance-locations'); return r; }),
+  updateAttendanceLocation: (id, d) => req('PUT', `/api/attendance-locations/${id}`, d).then(r => { inv('/api/attendance-locations'); return r; }),
+  deleteAttendanceLocation: (id) => req('DELETE', `/api/attendance-locations/${id}`).then(r => { inv('/api/attendance-locations'); return r; }),
 
   // Database Admin (admin only, never cached)
   getDbTables: () => req('GET', '/api/db-admin/tables'),
@@ -337,6 +342,11 @@ export const api = {
   updateTaskProject: (id, d) => req('PUT', `/api/task-projects/${id}`, d).then(r => { inv('/api/task-projects', '/api/tasks'); return r; }),
   archiveTaskProject: (id) => req('DELETE', `/api/task-projects/${id}`).then(r => { inv('/api/task-projects', '/api/tasks'); return r; }),
   saveTaskProjectMembers: (id, members) => req('PUT', `/api/task-projects/${id}/members`, { members }).then(r => { inv('/api/task-projects', '/api/tasks'); return r; }),
+  getTaskProjectMembers: (id) => req('GET', `/api/task-projects/${id}/members`),
+  importMyxteamProject: (project) => req('POST', '/api/task-imports/myxteam/project', { project }).then(r => {
+    inv('/api/task-projects', '/api/task-groups', '/api/tasks');
+    return r;
+  }),
   getTaskGroups: (params = {}) => {
     const q = new URLSearchParams(params).toString();
     return cachedGet('/api/task-groups' + (q ? '?' + q : ''));
@@ -362,6 +372,8 @@ export const api = {
   deleteSubtask: (id) => req('DELETE', `/api/subtasks/${id}`).then(r => { inv('/api/tasks'); return r; }),
   getComments: (taskId) => req('GET', `/api/tasks/${taskId}/comments`), // always fresh (no cache)
   addComment:  (taskId, content) => req('POST', `/api/tasks/${taskId}/comments`, { content }).then(r => { inv('/api/tasks'); return r; }),
+  addTaskFollower: (taskId, userId) => req('POST', `/api/tasks/${taskId}/followers`, userId ? { user_id: userId } : {}).then(r => { inv('/api/tasks'); return r; }),
+  removeTaskFollower: (taskId, userId) => req('DELETE', `/api/tasks/${taskId}/followers/${userId}`).then(r => { inv('/api/tasks'); return r; }),
 
   // Invoices
   getInvoices: (params = {}) => {
@@ -469,6 +481,7 @@ export const api = {
     const q = new URLSearchParams(params).toString();
     return cachedGet('/api/evaluations/dashboard' + (q ? '?' + q : ''));
   },
+  getAdminDashboard: () => req('GET', '/api/dashboard/admin'),
   // KPI theo nhân viên: giữ các thao tác thủ công (nhập kết quả, minh chứng và HCNS chấm KPI văn bản).
   getKpiDashboard: (params = {}) => { const q = new URLSearchParams(params).toString(); return cachedGet('/api/kpis/dashboard' + (q ? '?' + q : '')); },
   getKpis: (params = {}) => { const q = new URLSearchParams(params).toString(); return cachedGet('/api/kpis' + (q ? '?' + q : '')); },

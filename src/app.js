@@ -10,14 +10,14 @@ import { icon } from './icons.js';
 let _viewModules = {};
 async function getView(name) {
   if (!_viewModules[name]) {
-    if (name === 'dashboard')    _viewModules[name] = await import('./views/dashboard.js?v=20260730-notification-center-v1');
-    else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js?v=20260811-attendance-registration-v1');
-    else if (name === 'tasks')       _viewModules[name] = await import('./views/tasks.js?v=20260811-project-timeline-v1');
+    if (name === 'dashboard')    _viewModules[name] = await import('./views/dashboard.js?v=20260814-admin-operations-v1');
+    else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js?v=20260814-geofence-v1');
+    else if (name === 'tasks')       _viewModules[name] = await import('./views/tasks.js?v=20260814-project-collapse-v2');
     else if (name === 'invoices')    _viewModules[name] = await import('./views/invoices.js?v=20260730-payslip-detail-v1');
     else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260811-hr-access-v1');
-    else if (name === 'wifi')        _viewModules[name] = await import('./views/wifi.js?v=20260804-office-network-v1');
+    else if (name === 'wifi')        _viewModules[name] = await import('./views/wifi.js?v=20260814-attendance-locations-v1');
     else if (name === 'settings')    _viewModules[name] = await import('./views/settings.js?v=20260804-password-policy-v2');
-    else if (name === 'taskpanel')   _viewModules[name] = await import('./views/taskpanel.js?v=20260722-rich-task-editor');
+    else if (name === 'taskpanel')   _viewModules[name] = await import('./views/taskpanel.js?v=20260814-myxtasks-v1');
     else if (name === 'departments') _viewModules[name] = await import('./views/departments.js');
     else if (name === 'recruitment') _viewModules[name] = await import('./views/recruitment.js');
     else if (name === 'payroll')     _viewModules[name] = await import('./views/payroll.js?v=20260811-hr-access-v1');
@@ -28,7 +28,7 @@ async function getView(name) {
     else if (name === 'notifications') _viewModules[name] = await import('./views/notifications.js?v=20260730-notification-center-v1');
     else if (name === 'assets')      _viewModules[name] = await import('./views/assets.js?v=20260804-project-handover-v1');
     else if (name === 'db-admin')    _viewModules[name] = await import('./views/dbadmin.js');
-    else if (name === 'chat')        _viewModules[name] = await import('./views/chat.js?v=20260811-chat-dissolve-v1');
+    else if (name === 'chat')        _viewModules[name] = await import('./views/chat.js?v=20260814-event-rsvp-v2');
   }
   return _viewModules[name];
 }
@@ -40,6 +40,9 @@ let _appInitialized = false;
 let _activeViewNode = null;
 let _activeViewCleanup = null;
 let _routeGeneration = 0;
+let _chatUnreadTimer = null;
+let _chatUnreadRequestInFlight = false;
+let _chatUnreadWatchersBound = false;
 
 // ── DOM refs ────────────────────────────────────
 const loginScreen  = document.getElementById('login-screen');
@@ -145,6 +148,110 @@ async function refreshEmployeeAlertBadge() {
   }
 }
 
+function setChatUnreadBadge(value) {
+  const count = Math.max(0, Number(value) || 0);
+  const button = document.getElementById('header-chat-button');
+  const iconHost = document.getElementById('header-chat-icon');
+  const countHost = document.getElementById('header-chat-count');
+  if (iconHost && !iconHost.firstElementChild) iconHost.innerHTML = icon('messageCircle', 'sm');
+  if (!button || !countHost) return;
+  button.classList.remove('hidden');
+  countHost.textContent = count > 99 ? '99+' : String(count);
+  countHost.classList.toggle('hidden', count < 1);
+  button.setAttribute('aria-label', count > 0 ? `Chat, ${count > 99 ? '99+' : count} tin nhắn chưa đọc` : 'Mở Chat');
+}
+
+function clearChatAttention() {
+  const container = document.getElementById('header-chat-attention');
+  const mention = document.getElementById('header-chat-mention');
+  const event = document.getElementById('header-chat-event');
+  mention?.classList.add('hidden');
+  event?.classList.add('hidden');
+  container?.classList.add('hidden');
+}
+
+function setChatAttention(summary = {}) {
+  const container = document.getElementById('header-chat-attention');
+  const mentionChip = document.getElementById('header-chat-mention');
+  const eventChip = document.getElementById('header-chat-event');
+  const mention = summary.mention;
+  const upcoming = summary.upcoming_event;
+  const setChip = (chip, iconName, text, label, data, className = '') => {
+    if (!chip || !data) { chip?.classList.add('hidden'); return; }
+    chip.className = `header-attention-chip ${className}`.trim();
+    chip.innerHTML = `${icon(iconName, 'sm')}<span></span>`;
+    chip.querySelector('span').textContent = text;
+    chip.setAttribute('aria-label', label);
+    chip.dataset.conversationId = String(data.conversation_id || '');
+    chip.dataset.messageId = String(data.message_id || '');
+  };
+  const mentionText = mention ? (Number(mention.mention_all) ? `@all ${mention.sender_name} đã nhắc cả nhóm` : `${mention.sender_name} đã nhắc bạn`) : '';
+  setChip(mentionChip, 'atSign', mentionText, mention ? `${mentionText} trong ${mention.conversation_name || 'Chat'}` : '', mention);
+  let eventText = '';
+  let eventClass = '';
+  if (upcoming) {
+    const start = new Date(String(upcoming.start_at || '').replace(' ', 'T'));
+    const end = upcoming.end_at ? new Date(String(upcoming.end_at).replace(' ', 'T')) : null;
+    const mins = Number.isNaN(start.getTime()) ? null : Math.round((start - new Date()) / 60000);
+    if (end && !Number.isNaN(end.getTime()) && start <= new Date() && end >= new Date()) { eventText = `Đang họp · ${upcoming.title}`; eventClass = 'header-attention-chip--active'; }
+    else if (mins !== null && mins >= 0 && mins <= 30) { eventText = `Còn ${mins} phút · ${upcoming.title}`; eventClass = 'header-attention-chip--soon'; }
+    else eventText = `${start.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} · ${upcoming.title}`;
+  }
+  setChip(eventChip, 'calendarDays', eventText, upcoming ? `Lịch họp ${upcoming.title} lúc ${eventText.split(' · ')[0]}` : '', upcoming, eventClass);
+  container?.classList.toggle('hidden', !mention && !upcoming);
+}
+
+async function refreshChatHeaderSummary() {
+  if (!me || _chatUnreadRequestInFlight) return;
+  const userIdAtStart = me.id;
+  _chatUnreadRequestInFlight = true;
+  try {
+    const summary = await api.get('/api/chat/header-summary');
+    if (!me || Number(me.id) !== Number(userIdAtStart)) return;
+    setChatUnreadBadge(summary.unread_count);
+    setChatAttention(summary);
+  } catch (_) {
+    // Keep the last known header state when a transient request fails.
+  } finally {
+    _chatUnreadRequestInFlight = false;
+  }
+}
+
+function onChatUnreadForeground() {
+  if (!document.hidden) refreshChatHeaderSummary();
+}
+
+function onChatUnreadChanged(event) {
+  setChatUnreadBadge(event.detail?.count);
+  refreshChatHeaderSummary();
+}
+
+function startChatUnreadWatcher() {
+  if (!_chatUnreadWatchersBound) {
+    document.addEventListener('visibilitychange', onChatUnreadForeground);
+    window.addEventListener('focus', onChatUnreadForeground);
+    document.addEventListener('hr-chat-unread-changed', onChatUnreadChanged);
+    _chatUnreadWatchersBound = true;
+  }
+  refreshChatHeaderSummary();
+  if (!_chatUnreadTimer) _chatUnreadTimer = window.setInterval(refreshChatHeaderSummary, 10_000);
+}
+
+function stopChatUnreadWatcher() {
+  if (_chatUnreadTimer) window.clearInterval(_chatUnreadTimer);
+  _chatUnreadTimer = null;
+  if (_chatUnreadWatchersBound) {
+    document.removeEventListener('visibilitychange', onChatUnreadForeground);
+    window.removeEventListener('focus', onChatUnreadForeground);
+    document.removeEventListener('hr-chat-unread-changed', onChatUnreadChanged);
+    _chatUnreadWatchersBound = false;
+  }
+  _chatUnreadRequestInFlight = false;
+  setChatUnreadBadge(0);
+  clearChatAttention();
+  document.getElementById('header-chat-button')?.classList.add('hidden');
+}
+
 function initApp() {
   normalizeIcons(document);
   setAvatar(document.getElementById('sidebar-av'), me.full_name, me.avatar_color, me.avatar_initials, me.avatar_url);
@@ -162,6 +269,7 @@ function initApp() {
   const alertButton = document.getElementById('employee-alert-button');
   alertButton?.classList.remove('hidden');
   refreshEmployeeAlertBadge();
+  startChatUnreadWatcher();
 
   if (_appInitialized) {
     route();
@@ -184,6 +292,12 @@ function initApp() {
     setAvatar(document.getElementById('header-av'), me.full_name, me.avatar_color, me.avatar_initials, me.avatar_url);
   });
   document.getElementById('employee-alert-button')?.addEventListener('click', () => navigate('#/notifications'));
+  document.getElementById('header-chat-button')?.addEventListener('click', () => navigate('#/chat'));
+  document.getElementById('header-chat-attention')?.addEventListener('click', event => {
+    const chip = event.target.closest('.header-attention-chip:not(.hidden)');
+    if (!chip?.dataset.conversationId || !chip.dataset.messageId) return;
+    navigate(`#/chat/${chip.dataset.conversationId}/${chip.dataset.messageId}`);
+  });
 
   document.querySelectorAll('.nav-item[data-nav]').forEach(link => {
     link.addEventListener('click', closeSidebar);
@@ -191,6 +305,7 @@ function initApp() {
 
   document.getElementById('btn-logout').addEventListener('click', async () => {
     try { await api.logout(); } catch(_) {}
+    stopChatUnreadWatcher();
     await setToken(null);
     me = null;
     // Clear all caches on logout

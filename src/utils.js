@@ -13,6 +13,7 @@ export const DEPARTMENTS = [
   'Phòng Sản Xuất Phim',
   'Phòng Gameshow',
   'Phòng Kế Toán',
+  'Phòng IT',
 ];
 
 // Department code used in the auto-generated employee code: [LOẠI]-[PHÒNG]-[STT].
@@ -26,6 +27,7 @@ export const DEPT_CODE = {
   'Phòng Sản Xuất Phim': 'SXF',
   'Phòng Gameshow': 'GSH',
   'Phòng Kế Toán': 'KT',
+  'Phòng IT': 'IT',
 };
 
 // Legacy employee data may still contain "Nhân sự", "HR" or an unaccented

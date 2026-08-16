@@ -51,19 +51,22 @@ async function loadTask() {
   try {
     const { task, subtasks, followers } = await api.getTask(_currentTaskId);
     const { comments } = await api.getComments(_currentTaskId).catch(() => ({ comments: [] }));
-    renderPanel(task, subtasks || [], followers || [], comments || []);
+    const memberResponse = task.team_project_id ? await api.getTaskProjectMembers(task.team_project_id).catch(() => ({ members: [] })) : { members: [] };
+    renderPanel(task, subtasks || [], followers || [], comments || [], memberResponse.members || []);
   } catch (e) {
     document.getElementById('task-panel-body').innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">${esc(e.message)}</div></div>`;
   }
 }
 
-function renderPanel(task, subtasks, followers, comments) {
+function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
   document.getElementById('task-panel-title').textContent = task.title;
   const isManager = _me.role === 'admin' || _me.role === 'manager';
   const canEdit = isManager || task.assigned_to === _me.id || task.assigned_by === _me.id;
   const doneSubs = subtasks.filter(s => s.is_done).length;
   const pct = subtasks.length ? Math.round(doneSubs / subtasks.length * 100) : 0;
   const labelColor = task.label_color_real || task.label_color || '#6366F1';
+  const canManageFollowers = _me.role === 'admin' || _me.department === 'Phòng HCNS' || Number(task.assigned_by) === Number(_me.id);
+  const followingIds = new Set(followers.map(follower => Number(follower.user_id)));
 
   const body = document.getElementById('task-panel-body');
   body.innerHTML = `
@@ -74,19 +77,11 @@ function renderPanel(task, subtasks, followers, comments) {
       ${priorityBadge(task.priority)}
     </div>
 
+    <div class="task-panel-layout">
+    <main class="task-panel-main">
     <div class="card" style="margin-bottom:12px;">
       <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:8px;">${esc(task.title)}</div>
       ${task.description ? `<div class="rich-text-content" style="margin-bottom:12px;">${sanitizeRichText(task.description)}</div>` : ''}
-      <div class="detail-grid">
-        <div class="detail-item"><div class="detail-label">Giao cho</div><div class="detail-val">${esc(task.assignee_name || '—')}${task.assignee_code ? ` · ${esc(task.assignee_code)}` : ''}</div></div>
-        <div class="detail-item"><div class="detail-label">Người giao</div><div class="detail-val">${esc(task.assigner_name || '—')}</div></div>
-        <div class="detail-item"><div class="detail-label">Project</div><div class="detail-val">${task.project_name ? esc(task.project_name) : '—'}</div></div>
-        <div class="detail-item"><div class="detail-label">Nhóm công việc</div><div class="detail-val">${task.group_name ? esc(task.group_name) : 'Công việc chung'}</div></div>
-        <div class="detail-item"><div class="detail-label">Nhãn</div><div class="detail-val" style="display:flex;align-items:center;gap:6px;"><span style="width:12px;height:12px;border-radius:999px;background:${esc(labelColor)};display:inline-block;"></span>${task.label_name ? esc(task.label_name) : (quickLabelName(task.label_color_real || task.label_color) || 'Tự suy màu')}</div></div>
-        <div class="detail-item"><div class="detail-label">Ngày</div><div class="detail-val">${esc(task.date || '—')}</div></div>
-        <div class="detail-item"><div class="detail-label">Hạn chót</div><div class="detail-val">${esc(task.due_date || '—')}</div></div>
-        <div class="detail-item"><div class="detail-label">Phòng ban</div><div class="detail-val">${esc(task.department || task.assignee_department || '—')}</div></div>
-      </div>
     </div>
 
     <div class="card" style="margin-bottom:12px;">
@@ -112,29 +107,31 @@ function renderPanel(task, subtasks, followers, comments) {
     <div class="card" style="margin-bottom:12px;">
       <div class="card-header"><div class="card-title">💬 Bình luận (${comments.length})</div></div>
       <div id="tp-comments">
-        ${comments.map(c => `
-          <div class="comment">
-            <div class="avatar avatar-sm" style="background:${esc(c.avatar_color || '#4F46E5')};flex-shrink:0;">${esc(c.avatar_initials || c.full_name?.charAt(0) || '?')}</div>
-            <div class="comment-body">
-              <div class="comment-meta"><b>${esc(c.full_name)}</b> · ${esc(c.created_at?.slice(0,16) || '')}</div>
-              <div class="comment-text">${esc(c.content)}</div>
-            </div>
-          </div>
-        `).join('') || '<div style="font-size:13px;color:var(--text-2);text-align:center;padding:8px 0;">Chưa có bình luận</div>'}
+        ${comments.map(c => `<div class="comment"><div class="avatar avatar-sm" style="background:${esc(c.avatar_color || '#4F46E5')};flex-shrink:0;">${esc(c.avatar_initials || c.full_name?.charAt(0) || '?')}</div><div class="comment-body"><div class="comment-meta"><b>${esc(c.full_name)}</b> · ${esc(c.created_at?.slice(0,16) || '')}</div><div class="comment-text">${esc(c.content)}</div></div></div>`).join('') || '<div style="font-size:13px;color:var(--text-2);text-align:center;padding:8px 0;">Chưa có bình luận</div>'}
       </div>
-      <div style="display:flex;gap:8px;margin-top:10px;">
-        <input type="text" id="tp-cmt-input" placeholder="Viết bình luận..." style="flex:1;"/>
-        <button id="tp-cmt-send" class="btn-primary btn-sm">Gửi</button>
+      <div style="display:flex;gap:8px;margin-top:10px;"><input type="text" id="tp-cmt-input" placeholder="Viết bình luận..." style="flex:1;"/><button id="tp-cmt-send" class="btn-primary btn-sm">Gửi</button></div>
+    </div>
+    </main>
+    <aside class="task-panel-aside">
+    <div class="card" style="margin-bottom:12px;">
+      <div class="detail-grid">
+        <div class="detail-item"><div class="detail-label">Giao cho</div><div class="detail-val">${esc(task.assignee_name || '—')}${task.assignee_code ? ` · ${esc(task.assignee_code)}` : ''}</div></div>
+        <div class="detail-item"><div class="detail-label">Người giao</div><div class="detail-val">${esc(task.assigner_name || '—')}</div></div>
+        <div class="detail-item"><div class="detail-label">Project</div><div class="detail-val">${task.project_name ? esc(task.project_name) : '—'}</div></div>
+        <div class="detail-item"><div class="detail-label">Nhóm công việc</div><div class="detail-val">${task.group_name ? esc(task.group_name) : 'Công việc chung'}</div></div>
+        <div class="detail-item"><div class="detail-label">Nhãn</div><div class="detail-val" style="display:flex;align-items:center;gap:6px;"><span style="width:12px;height:12px;border-radius:999px;background:${esc(labelColor)};display:inline-block;"></span>${task.label_name ? esc(task.label_name) : (quickLabelName(task.label_color_real || task.label_color) || 'Tự suy màu')}</div></div>
+        <div class="detail-item"><div class="detail-label">Ngày</div><div class="detail-val">${esc(task.date || '—')}</div></div>
+        <div class="detail-item"><div class="detail-label">Hạn chót</div><div class="detail-val">${esc(task.due_date || '—')}</div></div>
+        <div class="detail-item"><div class="detail-label">Phòng ban</div><div class="detail-val">${esc(task.department || task.assignee_department || '—')}</div></div>
       </div>
     </div>
-
-    ${followers.length ? `
     <div class="card">
-      <div class="card-title" style="margin-bottom:8px;">👁 Người theo dõi</div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;">
-        ${followers.map(f => `<div style="display:flex;align-items:center;gap:4px;font-size:12px;"><div class="avatar avatar-sm" style="background:${esc(f.avatar_color || '#4F46E5')}">${esc(f.avatar_initials || '?')}</div>${esc(f.full_name)}</div>`).join('')}
-      </div>
-    </div>` : ''}
+      <div class="card-header"><div class="card-title">👁 Người theo dõi (${followers.length})</div>${canManageFollowers ? '<button type="button" class="btn-secondary btn-xs" id="tp-follow-add">+ Thêm</button>' : ''}</div>
+      <div class="task-follower-stack">${followers.map(f => `<span class="task-follower-chip"><span class="avatar avatar-sm" style="background:${esc(f.avatar_color || '#4F46E5')}">${esc(f.avatar_initials || '?')}</span><span>${esc(f.full_name)}</span>${(canManageFollowers || Number(f.user_id) === Number(_me.id)) ? `<button type="button" data-remove-follower="${f.user_id}" aria-label="Bỏ theo dõi ${esc(f.full_name)}">×</button>` : ''}</span>`).join('') || '<span class="task-follower-empty">Chưa có người theo dõi.</span>'}</div>
+      <div class="task-follower-actions">${!followingIds.has(Number(_me.id)) ? '<button type="button" class="btn-secondary btn-xs" id="tp-follow-self">Theo dõi</button>' : ''}${canManageFollowers && projectMembers.length ? '<button type="button" class="btn-secondary btn-xs" id="tp-follow-all">Thêm toàn bộ thành viên Project</button>' : ''}</div>
+    </div>
+    </aside>
+    </div>
   `;
 
   document.getElementById('tp-edit')?.addEventListener('click', async () => {
@@ -186,6 +183,40 @@ function renderPanel(task, subtasks, followers, comments) {
     } catch (e) { toast(e.message, 'error'); }
   });
   cmtInput.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('tp-cmt-send').click(); });
+
+  document.getElementById('tp-follow-self')?.addEventListener('click', async () => {
+    try { await api.addTaskFollower(task.id); toast('Đã theo dõi công việc', 'success'); loadTask(); }
+    catch (error) { toast(error.message, 'error'); }
+  });
+  document.getElementById('tp-follow-add')?.addEventListener('click', () => openFollowerPicker(task, followers, projectMembers));
+  document.getElementById('tp-follow-all')?.addEventListener('click', async () => {
+    const missing = projectMembers.filter(member => !followingIds.has(Number(member.user_id)));
+    if (!missing.length) return toast('Tất cả thành viên Project đã theo dõi', 'success');
+    try {
+      await Promise.all(missing.map(member => api.addTaskFollower(task.id, Number(member.user_id))));
+      toast(`Đã thêm ${missing.length} thành viên theo dõi`, 'success');
+      loadTask();
+    } catch (error) { toast(error.message, 'error'); }
+  });
+  body.querySelectorAll('[data-remove-follower]').forEach(button => button.addEventListener('click', async () => {
+    try { await api.removeTaskFollower(task.id, Number(button.dataset.removeFollower)); toast('Đã bỏ theo dõi', 'success'); loadTask(); }
+    catch (error) { toast(error.message, 'error'); }
+  }));
+}
+
+function openFollowerPicker(task, followers, projectMembers) {
+  const following = new Set(followers.map(follower => Number(follower.user_id)));
+  const candidates = projectMembers.filter(member => !following.has(Number(member.user_id)));
+  openModal('Thêm người theo dõi', `
+    <div class="task-follower-picker">
+      ${candidates.map(member => `<button type="button" class="task-follower-picker-row" data-follower-id="${member.user_id}"><span class="avatar avatar-sm" style="background:${esc(member.avatar_color || '#4F46E5')}">${esc(member.avatar_initials || '?')}</span><span><strong>${esc(member.full_name)}</strong><small>${esc(member.employee_code || '')}${member.department ? ` · ${esc(member.department)}` : ''}</small></span><span>+ Theo dõi</span></button>`).join('') || '<div class="task-follower-empty">Mọi thành viên Project đã theo dõi công việc này.</div>'}
+    </div>
+  `, '<button type="button" class="btn-secondary" id="tp-follower-picker-close">Đóng</button>');
+  document.getElementById('tp-follower-picker-close')?.addEventListener('click', closeModal);
+  document.querySelectorAll('[data-follower-id]').forEach(button => button.addEventListener('click', async () => {
+    try { await api.addTaskFollower(task.id, Number(button.dataset.followerId)); closeModal(); toast('Đã thêm người theo dõi', 'success'); loadTask(); }
+    catch (error) { toast(error.message, 'error'); }
+  }));
 }
 
 function openSubtaskForm(taskId, subtask = null) {

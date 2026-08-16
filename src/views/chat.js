@@ -28,8 +28,13 @@ let conversationRefreshTimer = null;
 const DEFAULT_REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '😡'];
 const FALLBACK_PICKER_EMOJIS = ['😀','😁','😂','🤣','😊','😍','😘','😎','🤔','😭','😡','👍','👎','❤️','🎉','✅','🔥','👏','🙏','👀'];
 
+function publishUnreadCount() {
+  const count = conversations.reduce((sum, conversation) => sum + (Number(conversation.unread_count) || 0), 0);
+  document.dispatchEvent(new CustomEvent('hr-chat-unread-changed', { detail: { count } }));
+}
+
 // ── Render entry ────────────────────────────────────────────────────
-export async function renderChat(el, user) {
+export async function renderChat(el, user, route = {}) {
   me = user;
   el.innerHTML = `
     <div class="chat-page">
@@ -44,11 +49,15 @@ export async function renderChat(el, user) {
 
   bindGlobalEvents(el);
   loadConversations();
+  const [, conversationId, messageId] = route.segments || [];
+  if (Number(conversationId)) openConversation(Number(conversationId), Number(messageId) || null);
   conversationRefreshTimer = setInterval(loadConversationsSilently, 10_000);
   el._cleanup = () => {
     disconnectWS();
     if (conversationRefreshTimer) clearInterval(conversationRefreshTimer);
     conversationRefreshTimer = null;
+    if (silentLoadTimer) clearTimeout(silentLoadTimer);
+    silentLoadTimer = null;
   };
 }
 
@@ -123,6 +132,7 @@ async function loadConversations() {
   try {
     const { conversations: convs } = await api.get('/api/conversations');
     conversations = convs;
+    publishUnreadCount();
     renderSidebarList();
   } catch (e) {
     list.innerHTML = `
@@ -219,7 +229,7 @@ function renderConvItem(c, name) {
 }
 
 // ── Open conversation ───────────────────────────────────────────────
-async function openConversation(convId) {
+async function openConversation(convId, targetMessageId = null) {
   activeConvId = convId;
   activeConversation = null;
   selectedMentions = [];
@@ -242,11 +252,12 @@ async function openConversation(convId) {
   try {
     const conv = await api.get(`/api/conversations/${convId}`);
     activeConversation = conv;
-    const { messages: msgs } = await api.get(`/api/conversations/${convId}/messages?limit=50`);
+    const targetQuery = targetMessageId ? `&around=${encodeURIComponent(targetMessageId)}` : '';
+    const { messages: msgs } = await api.get(`/api/conversations/${convId}/messages?limit=50${targetQuery}`);
     messages = msgs;
     renderConversation(conv);
     renderMessages();
-    scrollToBottom();
+    if (targetMessageId) scrollToMessage(targetMessageId); else scrollToBottom();
     connectWS(convId);
 
     // Mark all visible as read, then refresh sidebar
@@ -255,7 +266,7 @@ async function openConversation(convId) {
       const readOk = await markRead(lastMsg.id);
       if (readOk) {
         const conv = conversations.find(c => c.id === convId);
-        if (conv) { conv.unread_count = 0; renderSidebarList(); }
+        if (conv) { conv.unread_count = 0; publishUnreadCount(); renderSidebarList(); }
       }
       loadConversationsSilently();
     }
@@ -580,7 +591,7 @@ function renderPollCard(message, isOwner) {
 function renderEventCard(message, isOwner) {
   const event = message.event;
   const when = formatChatDateTime(event.start_at) + (event.end_at ? ` – ${formatTime(event.end_at)}` : '');
-  const responseLabels = { going: '✓ Tham gia', interested: 'Quan tâm', declined: 'Từ chối' };
+  const responseLabels = { going: '✓ Tham gia', declined: 'Từ chối' };
   return `<section class="chat-interaction-card chat-event-card${event.cancelled_at ? ' cancelled' : ''}" data-event-message-id="${message.id}">
     <div class="chat-card-kicker">◷ SỰ KIỆN ${event.cancelled_at ? '· ĐÃ HỦY' : ''}</div>
     <div class="chat-card-title">${esc(event.title)}</div>
@@ -654,6 +665,7 @@ function bindMessageActions(container) {
       const { event: eventData } = await api.put(`/api/messages/${messageId}/event-response`, { response: btn.dataset.eventResponse });
       const message = messages.find(item => Number(item.id) === messageId);
       if (message) { message.event = eventData; renderMessages(); }
+      publishUnreadCount();
     } catch (error) { toast(error.message, 'error'); }
   }));
   container.querySelectorAll('[data-edit-event]').forEach(btn => btn.addEventListener('click', event => {
@@ -668,6 +680,7 @@ function bindMessageActions(container) {
       const { event: eventData } = await api.delete(`/api/messages/${Number(btn.dataset.cancelEvent)}/event`);
       const message = messages.find(item => Number(item.id) === Number(btn.dataset.cancelEvent));
       if (message) { message.event = eventData; renderMessages(); }
+      publishUnreadCount();
     } catch (error) { toast(error.message, 'error'); }
   }));
 
@@ -882,14 +895,89 @@ function openPollComposer() {
   addOptionBtn?.addEventListener('click', addOption);
   document.getElementById('chat-poll-cancel')?.addEventListener('click', closeModal);
   document.getElementById('chat-poll-create')?.addEventListener('click', async event => {
+    const submitButton = event.currentTarget;
     const question = document.getElementById('chat-poll-question')?.value.trim() || '';
     const options = [...document.querySelectorAll('.chat-poll-input')].map(input => input.value.trim()).filter(Boolean);
-    event.currentTarget.disabled = true;
+    if (!question || options.length < 2) {
+      toast('Poll cần câu hỏi và ít nhất 2 lựa chọn', 'error');
+      (!question ? document.getElementById('chat-poll-question') : document.querySelector('.chat-poll-input'))?.focus();
+      return;
+    }
+    submitButton.disabled = true;
+    submitButton.textContent = 'Đang tạo...';
     try {
       const { message } = await api.post(`/api/conversations/${activeConvId}/messages`, { message_type: 'poll', poll: { question, options } });
       if (message && !messages.some(item => item.id === message.id)) { messages.push(message); renderMessages(); scrollToBottom(); }
       closeModal();
-    } catch (error) { toast(error.message, 'error'); event.currentTarget.disabled = false; }
+    } catch (error) { toast(error.message, 'error'); }
+    finally { if (submitButton?.isConnected) { submitButton.disabled = false; submitButton.textContent = 'Tạo bình chọn'; } }
+  });
+}
+
+function setEventFieldError(input, message) {
+  if (!input) return;
+  const field = input.closest('.field');
+  input.setAttribute('aria-invalid', 'true');
+  field?.classList.add('chat-event-field-invalid');
+  let help = field?.querySelector('.chat-event-field-error');
+  if (!help && field) { help = document.createElement('div'); help.className = 'chat-event-field-error'; field.append(help); }
+  if (help) help.textContent = message;
+}
+
+function clearEventFieldError(input) {
+  if (!input) return;
+  input.removeAttribute('aria-invalid');
+  const field = input.closest('.field');
+  field?.classList.remove('chat-event-field-invalid');
+  field?.querySelector('.chat-event-field-error')?.remove();
+}
+
+function eventFormPayload(prefix) {
+  const locationInput = document.getElementById(`${prefix}-location`);
+  const rawLocation = locationInput?.value.trim() || '';
+  const normalizedUrl = /^www\./i.test(rawLocation) ? `https://${rawLocation}` : rawLocation;
+  const isUrl = /^https?:\/\//i.test(normalizedUrl);
+  return { event: {
+    title: document.getElementById(`${prefix}-title`)?.value.trim() || '',
+    start_at: document.getElementById(`${prefix}-start`)?.value || '',
+    end_at: document.getElementById(`${prefix}-end`)?.value || '',
+    location: isUrl ? '' : rawLocation,
+    meeting_url: isUrl ? normalizedUrl : '',
+    description: document.getElementById(`${prefix}-description`)?.value.trim() || '',
+    attendee_ids: [...document.querySelectorAll('.chat-event-invitee input:checked')].map(input => Number(input.value)),
+  }};
+}
+
+function validateEventForm(prefix) {
+  const title = document.getElementById(`${prefix}-title`);
+  const start = document.getElementById(`${prefix}-start`);
+  const end = document.getElementById(`${prefix}-end`);
+  const location = document.getElementById(`${prefix}-location`);
+  const description = document.getElementById(`${prefix}-description`);
+  [title, start, end, location, description].forEach(clearEventFieldError);
+  const fail = (input, message) => { setEventFieldError(input, message); input?.focus(); return false; };
+  if (!title?.value.trim()) return fail(title, 'Vui lòng nhập tiêu đề');
+  if (title.value.trim().length > 200) return fail(title, 'Tiêu đề tối đa 200 ký tự');
+  const startTime = start?.value ? new Date(start.value) : null;
+  if (!startTime || Number.isNaN(startTime.getTime())) return fail(start, 'Vui lòng nhập thời gian bắt đầu hợp lệ');
+  if (end?.value) {
+    const endTime = new Date(end.value);
+    if (Number.isNaN(endTime.getTime()) || endTime < startTime) return fail(end, 'Thời gian kết thúc phải sau hoặc bằng thời gian bắt đầu');
+  }
+  const rawLocation = location?.value.trim() || '';
+  if (/^(https?:\/\/|www\.)/i.test(rawLocation)) {
+    try { const url = new URL(/^www\./i.test(rawLocation) ? `https://${rawLocation}` : rawLocation); if (!/^https?:$/.test(url.protocol)) throw new Error('protocol'); }
+    catch (_) { return fail(location, 'Link họp phải là URL http hoặc https hợp lệ'); }
+  }
+  if (rawLocation.length > 500) return fail(location, 'Địa điểm hoặc link họp tối đa 500 ký tự');
+  if ((description?.value || '').trim().length > 2000) return fail(description, 'Mô tả tối đa 2.000 ký tự');
+  return true;
+}
+
+function bindEventErrorClearing(prefix) {
+  ['title', 'start', 'end', 'location', 'description'].forEach(name => {
+    const input = document.getElementById(`${prefix}-${name}`);
+    input?.addEventListener(name === 'start' || name === 'end' ? 'change' : 'input', () => clearEventFieldError(input));
   });
 }
 
@@ -903,26 +991,20 @@ function openEventComposer() {
     <div class="field"><label>Mô tả</label><textarea id="chat-event-description" rows="3"></textarea></div>
     <div class="field"><label>Mời thành viên</label><div class="chat-event-invitees">${memberRows}</div></div>`, '<button class="btn-secondary" id="chat-event-cancel">Hủy</button><button class="btn-primary" id="chat-event-create">Tạo sự kiện</button>');
   document.getElementById('chat-event-cancel')?.addEventListener('click', closeModal);
+  bindEventErrorClearing('chat-event');
   document.getElementById('chat-event-create')?.addEventListener('click', async event => {
-    const location = document.getElementById('chat-event-location')?.value.trim() || '';
-    const payload = {
-      message_type: 'event',
-      event: {
-        title: document.getElementById('chat-event-title')?.value.trim() || '',
-        start_at: document.getElementById('chat-event-start')?.value || '',
-        end_at: document.getElementById('chat-event-end')?.value || '',
-        location: location.startsWith('http') ? '' : location,
-        meeting_url: location.startsWith('http') ? location : '',
-        description: document.getElementById('chat-event-description')?.value.trim() || '',
-        attendee_ids: [...document.querySelectorAll('.chat-event-invitee input:checked')].map(input => Number(input.value)),
-      },
-    };
-    event.currentTarget.disabled = true;
+    const submitButton = event.currentTarget;
+    if (!validateEventForm('chat-event')) return;
+    const payload = { message_type: 'event', ...eventFormPayload('chat-event') };
+    submitButton.disabled = true;
+    submitButton.textContent = 'Đang tạo...';
     try {
       const { message } = await api.post(`/api/conversations/${activeConvId}/messages`, payload);
       if (message && !messages.some(item => item.id === message.id)) { messages.push(message); renderMessages(); scrollToBottom(); }
+      publishUnreadCount();
       closeModal();
-    } catch (error) { toast(error.message, 'error'); event.currentTarget.disabled = false; }
+    } catch (error) { toast(error.message, 'error'); }
+    finally { if (submitButton?.isConnected) { submitButton.disabled = false; submitButton.textContent = 'Tạo sự kiện'; } }
   });
 }
 
@@ -934,23 +1016,22 @@ function editEvent(message) {
     <div class="field"><label>Địa điểm hoặc link họp</label><input id="chat-event-edit-location" value="${esc(existing.meeting_url || existing.location || '')}"/></div>
     <div class="field"><label>Mô tả</label><textarea id="chat-event-edit-description" rows="3">${esc(existing.description || '')}</textarea></div>`, '<button class="btn-secondary" id="chat-event-edit-cancel">Hủy</button><button class="btn-primary" id="chat-event-edit-save">Lưu thay đổi</button>');
   document.getElementById('chat-event-edit-cancel')?.addEventListener('click', closeModal);
+  bindEventErrorClearing('chat-event-edit');
   document.getElementById('chat-event-edit-save')?.addEventListener('click', async event => {
-    const location = document.getElementById('chat-event-edit-location')?.value.trim() || '';
-    const payload = { event: {
-      title: document.getElementById('chat-event-edit-title')?.value.trim() || '',
-      start_at: document.getElementById('chat-event-edit-start')?.value || '',
-      end_at: document.getElementById('chat-event-edit-end')?.value || '',
-      location: location.startsWith('http') ? '' : location,
-      meeting_url: location.startsWith('http') ? location : '',
-      description: document.getElementById('chat-event-edit-description')?.value.trim() || '',
-    }};
-    event.currentTarget.disabled = true;
+    const submitButton = event.currentTarget;
+    if (!validateEventForm('chat-event-edit')) return;
+    const payload = eventFormPayload('chat-event-edit');
+    delete payload.event.attendee_ids;
+    submitButton.disabled = true;
+    submitButton.textContent = 'Đang lưu...';
     try {
       const { event: eventData } = await api.put(`/api/messages/${message.id}/event`, payload);
       const current = messages.find(item => Number(item.id) === Number(message.id));
       if (current) { current.event = eventData; renderMessages(); }
+      publishUnreadCount();
       closeModal();
-    } catch (error) { toast(error.message, 'error'); event.currentTarget.disabled = false; }
+    } catch (error) { toast(error.message, 'error'); }
+    finally { if (submitButton?.isConnected) { submitButton.disabled = false; submitButton.textContent = 'Lưu thay đổi'; } }
   });
 }
 
@@ -1355,6 +1436,7 @@ function connectWS(convId) {
         refreshMessages();
       } else if (data.type === 'event:update') {
         refreshMessages();
+        publishUnreadCount();
       }
     };
     ws.onclose = () => {
@@ -1395,6 +1477,7 @@ function loadConversationsSilently() {
   silentLoadTimer = setTimeout(() => {
     api.get('/api/conversations').then(({ conversations: convs }) => {
       conversations = convs;
+      publishUnreadCount();
       renderSidebarList();
     }).catch(() => {});
   }, 800);
@@ -1406,6 +1489,16 @@ function scrollToBottom() {
     const container = document.getElementById('chat-messages');
     if (container) container.scrollTop = container.scrollHeight;
   }, 50);
+}
+
+function scrollToMessage(messageId) {
+  setTimeout(() => {
+    const target = document.querySelector(`.chat-msg[data-msg-id="${Number(messageId)}"]`);
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.classList.add('chat-msg-highlight');
+    setTimeout(() => target.classList.remove('chat-msg-highlight'), 1800);
+  }, 80);
 }
 
 async function onScrollLoadMore() {

@@ -13,8 +13,8 @@
   <meta name="mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <meta name="apple-mobile-web-app-title" content="NetViet HR"/>
-  <link rel="stylesheet" href="/styles/main.css?v=20260811-project-timeline-v1"/>
-  <link rel="stylesheet" href="/styles/chat.css?v=20260811-chat-dissolve-v1"/>
+  <link rel="stylesheet" href="/styles/main.css?v=20260814-project-collapse-v2"/>
+  <link rel="stylesheet" href="/styles/chat.css?v=20260814-chat-attention-v1"/>
 </head>
 <body>
 
@@ -76,9 +76,6 @@
       <a href="#/notifications" class="nav-item" data-nav="notifications">
         <span class="nav-icon" data-icon="bell"></span><span>Thông báo</span>
       </a>
-      <a href="#/chat" class="nav-item" data-nav="chat">
-        <span class="nav-icon">💬</span><span>Chat</span>
-      </a>
 
       <!-- HR Section -->
       <div class="nav-section-label">Nhân sự</div>
@@ -125,7 +122,7 @@
           <span class="nav-icon">📣</span><span>Chiến dịch MKT</span>
         </a>
         <a href="#/wifi" class="nav-item" data-nav="wifi">
-          <span class="nav-icon">📡</span><span>Mạng chấm công</span>
+          <span class="nav-icon">📍</span><span>Địa điểm chấm công</span>
         </a>
       </div>
 
@@ -158,8 +155,15 @@
         <div id="header-date" class="header-date"></div>
         <div id="header-clock" class="header-clock"></div>
       </div>
+      <div id="header-chat-attention" class="header-chat-attention hidden" aria-live="polite">
+        <button id="header-chat-mention" class="header-attention-chip hidden" type="button"></button>
+        <button id="header-chat-event" class="header-attention-chip hidden" type="button"></button>
+      </div>
+      <button id="header-chat-button" class="header-alert-button hidden" aria-label="Mở Chat" title="Chat">
+        <span id="header-chat-icon"></span><span id="header-chat-count" class="header-action-count hidden">0</span>
+      </button>
       <button id="employee-alert-button" class="header-alert-button hidden" aria-label="Mở trung tâm thông báo">
-        <span id="employee-alert-icon"></span><span id="employee-alert-count" class="hidden">0</span>
+        <span id="employee-alert-icon"></span><span id="employee-alert-count" class="header-action-count hidden">0</span>
       </button>
       <button id="header-av-btn" class="avatar-btn" aria-label="Tài khoản">
         <div id="header-av" class="avatar avatar-sm"></div>
@@ -198,7 +202,7 @@
 
 <link rel="stylesheet" href="/src/vendor/cropperjs/cropper.min.css?v=1.6.2">
 <script src="/src/vendor/cropperjs/cropper.min.js?v=1.6.2"></script>
-  <script type="module" src="/src/app.js?v=20260811-chat-dissolve-v1"></script>
+  <script type="module" src="/src/app.js?v=20260814-project-collapse-v2"></script>
 <script defer src="/src/pwa-register.js?v=pwa-v2"></script>
 </body>
 </html>

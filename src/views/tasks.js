@@ -144,13 +144,14 @@ export async function renderTasks(el, me) {
         <div class="page-sub">Project → Nhóm công việc → Task → Subtask</div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
-        ${canManage ? `<button id="btn-manage-labels" class="btn-secondary btn-sm">Nhãn màu</button>` : ''}
+        ${canManage ? `<button id="btn-import-myxteam" class="btn-secondary btn-sm">Nhập MyXteam</button>` : ''}
         ${canManage ? `<button id="btn-new-project" class="btn-secondary btn-sm">+ Project</button>` : ''}
         <button id="btn-new-task" class="btn-primary btn-sm">+ Tạo việc</button>
       </div>
     </div>
 
-    <div class="card" style="margin-bottom:12px;">
+    <div class="task-workspace-shell">
+      <aside class="card task-project-navigator" aria-label="Danh sách Project">
       <div class="card-header" style="align-items:center;gap:10px;flex-wrap:wrap;">
         <div>
           <div class="card-title">Workspace NetViet HR</div>
@@ -162,9 +163,10 @@ export async function renderTasks(el, me) {
         </div>
       </div>
       <div id="project-list">${loadingHTML()}</div>
-    </div>
+      </aside>
 
-    <div id="project-board"></div>
+    <section id="project-board" class="task-project-board" aria-live="polite"></section>
+    </div>
   `;
 
   let users = [];
@@ -173,8 +175,19 @@ export async function renderTasks(el, me) {
   let groups = [];
   let labels = [];
   let tasks = [];
+  let projectMembers = [];
   let selectedProjectId = '';
   let currentStatus = '';
+  const expandedDepartmentStorageKey = 'tasks-expanded-departments-v1';
+  let expandedDepartments = new Set();
+  try {
+    const savedDepartments = JSON.parse(localStorage.getItem(expandedDepartmentStorageKey) || '[]');
+    if (Array.isArray(savedDepartments)) expandedDepartments = new Set(savedDepartments.map(String));
+  } catch (_) {}
+
+  function saveExpandedDepartments() {
+    try { localStorage.setItem(expandedDepartmentStorageKey, JSON.stringify([...expandedDepartments])); } catch (_) {}
+  }
 
   try { users = (await api.getUsers()).users || []; } catch (_) {}
   try { departments = (await api.getDepartments()).departments || []; } catch (_) {}
@@ -203,6 +216,63 @@ export async function renderTasks(el, me) {
       renderEmptyBoard();
     }
     await loadProjects();
+  }
+
+  function openMyxteamImport() {
+    openModal('Nhập dữ liệu công việc từ MyXteam', `
+      <div class="field">
+        <label for="myxteam-import-json">Dữ liệu JSON đã xuất từ MyXteam</label>
+        <textarea id="myxteam-import-json" rows="12" spellcheck="false" placeholder='{"projects":[...]}' style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;resize:vertical;"></textarea>
+      </div>
+      <div class="notice notice-info" style="margin:10px 0;">
+        Import giữ nguyên dữ liệu hiện có và dùng ID nguồn để chống tạo trùng. Team → phòng ban, Project → Project, cột Kanban → nhóm công việc, card → Task.
+      </div>
+      <div id="myxteam-import-progress" role="status" aria-live="polite" style="font-size:13px;color:var(--text-2);"></div>
+    `, `
+      <button type="button" class="btn-secondary" id="myxteam-import-close">Đóng</button>
+      <button type="button" class="btn-primary" id="myxteam-import-run">Bắt đầu nhập</button>
+    `);
+    const closeButton = document.getElementById('myxteam-import-close');
+    const runButton = document.getElementById('myxteam-import-run');
+    const progress = document.getElementById('myxteam-import-progress');
+    closeButton?.addEventListener('click', closeModal);
+    runButton?.addEventListener('click', async () => {
+      let parsed;
+      try { parsed = JSON.parse(document.getElementById('myxteam-import-json')?.value || ''); }
+      catch (_) { toast('JSON MyXteam không hợp lệ', 'error'); return; }
+      const sourceProjects = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.projects) ? parsed.projects : parsed?.id ? [parsed] : [];
+      if (!sourceProjects.length) { toast('Không tìm thấy Project để nhập', 'error'); return; }
+      if (sourceProjects.length > 100) { toast('Tối đa 100 Project mỗi lượt nhập', 'error'); return; }
+      runButton.disabled = true;
+      closeButton.disabled = true;
+      const totals = { projects: 0, groups: 0, tasks: 0, skipped: 0, failed: 0 };
+      const failures = [];
+      for (let index = 0; index < sourceProjects.length; index += 1) {
+        const project = sourceProjects[index];
+        if (progress) progress.innerHTML = `<strong>Đang nhập ${index + 1}/${sourceProjects.length}</strong> · ${esc(project?.name || project?.id || 'Project')}`;
+        try {
+          const response = await api.importMyxteamProject(project);
+          const result = response.result || {};
+          totals.projects += Number(result.project_created || 0);
+          totals.groups += Number(result.groups_created || 0);
+          totals.tasks += Number(result.tasks_created || 0);
+          totals.skipped += Number(result.tasks_skipped || 0);
+        } catch (error) {
+          totals.failed += 1;
+          failures.push(`${project?.name || project?.id || `Project ${index + 1}`}: ${error.message}`);
+        }
+      }
+      if (progress) progress.innerHTML = `
+        <strong>Đã xử lý ${sourceProjects.length} Project.</strong><br>
+        Tạo mới: ${totals.projects} Project · ${totals.groups} nhóm · ${totals.tasks} task. Bỏ qua do đã có: ${totals.skipped} task.
+        ${totals.failed ? `<br><span style="color:var(--danger);">Lỗi ${totals.failed} Project: ${esc(failures.slice(0, 5).join(' | '))}</span>` : ''}
+      `;
+      closeButton.disabled = false;
+      runButton.disabled = false;
+      runButton.textContent = 'Nhập lại phần còn thiếu';
+      await loadProjects();
+      toast(totals.failed ? 'Import hoàn tất nhưng còn Project lỗi' : 'Đã nhập dữ liệu MyXteam', totals.failed ? 'error' : 'success');
+    });
   }
 
   function selectedProject() {
@@ -352,24 +422,52 @@ export async function renderTasks(el, me) {
       list.innerHTML = `<span style="font-size:13px;color:var(--text-2);padding:8px 0;display:block;">Chưa có Project</span>`;
       return;
     }
-    list.className = 'project-card-grid';
-    list.innerHTML = projects.map(p => `
-      <div class="project-tile ${String(selectedProjectId) === String(p.id) ? 'active' : ''}" data-project="${p.id}" title="${esc(p.description || '')}">
-        <button type="button" style="all:unset;display:block;cursor:pointer;width:100%;">
-          <div class="project-tile-title">${esc(projectLabel(p))}</div>
-          <div class="project-tile-meta">
-            <span>${Number(p.task_count || 0)} việc</span>
-            <span>${Number(p.member_count || 0)} thành viên</span>
-            <span>${esc(p.department || 'Chưa chọn phòng ban')}</span>
-            <span>${esc(projectStatusText(p.status))}</span>
-          </div>
+    list.className = 'task-project-nav-list';
+    const byDepartment = projects.reduce((result, project) => {
+      const department = project.department || 'Khác';
+      (result[department] ||= []).push(project);
+      return result;
+    }, {});
+    const hasSearch = !!el.querySelector('#project-search')?.value.trim();
+    list.innerHTML = Object.entries(byDepartment).map(([department, departmentProjects], departmentIndex) => {
+      const isExpanded = hasSearch || expandedDepartments.has(department);
+      const contentId = `task-project-department-${departmentIndex}`;
+      return `
+      <section class="task-project-nav-department ${isExpanded ? 'is-expanded' : 'is-collapsed'}">
+        <button type="button" class="task-project-nav-department-toggle" data-department-toggle="${esc(department)}" aria-expanded="${isExpanded}" aria-controls="${contentId}">
+          <span class="task-project-nav-department-arrow" aria-hidden="true">${isExpanded ? '▾' : '▸'}</span>
+          <span class="task-project-nav-department-title">${esc(department)}</span>
+          <span class="task-project-nav-department-count">${departmentProjects.length}</span>
         </button>
-        ${canManage ? `<div class="project-tile-actions"><button class="btn-secondary btn-xs project-edit" data-edit-project="${p.id}">Sửa</button></div>` : ''}
-      </div>
-    `).join('');
+        <div id="${contentId}" class="task-project-nav-department-content" ${isExpanded ? '' : 'hidden'}>
+        ${departmentProjects.map(p => `
+          <div class="task-project-nav-row">
+            <button type="button" class="task-project-nav-item ${String(selectedProjectId) === String(p.id) ? 'active' : ''}" data-project="${p.id}" title="${esc(p.description || '')}">
+              <span class="task-project-nav-item-title">${esc(projectLabel(p))}</span>
+              <span class="task-project-nav-item-meta">${Number(p.task_count || 0)} việc · ${esc(projectStatusText(p.status))}</span>
+            </button>
+            ${canManage ? `<button type="button" class="btn-secondary btn-xs project-edit" data-edit-project="${p.id}" aria-label="Sửa ${esc(projectLabel(p))}">Sửa</button>` : ''}
+          </div>
+        `).join('')}
+        </div>
+      </section>
+    `; }).join('');
 
-    list.querySelectorAll('[data-project]').forEach(tile => tile.addEventListener('click', () => {
-      selectedProjectId = tile.dataset.project || '';
+    list.querySelectorAll('[data-department-toggle]').forEach(toggle => toggle.addEventListener('click', () => {
+      const department = toggle.dataset.departmentToggle || '';
+      if (expandedDepartments.has(department)) expandedDepartments.delete(department);
+      else expandedDepartments.add(department);
+      saveExpandedDepartments();
+      renderProjects();
+    }));
+
+    list.querySelectorAll('[data-project]').forEach(item => item.addEventListener('click', () => {
+      selectedProjectId = item.dataset.project || '';
+      const project = projects.find(candidate => String(candidate.id) === String(selectedProjectId));
+      if (project) {
+        expandedDepartments.add(project.department || 'Khác');
+        saveExpandedDepartments();
+      }
       currentStatus = '';
       renderProjects();
       loadBoard();
@@ -394,15 +492,56 @@ export async function renderTasks(el, me) {
     if (!selectedProjectId) return renderEmptyBoard();
     const params = { project_id: selectedProjectId };
     if (currentStatus) params.status = currentStatus;
-    const [groupRes, labelRes, taskRes] = await Promise.all([
+    const [groupRes, labelRes, taskRes, memberRes] = await Promise.all([
       api.getTaskGroups({ project_id: selectedProjectId }),
       api.getTaskLabels({ project_id: selectedProjectId }),
       api.getTasks(params),
+      api.getTaskProjectMembers(selectedProjectId).catch(() => ({ members: [] })),
     ]);
     groups = groupRes.groups || [];
     labels = labelRes.labels || [];
     tasks = taskRes.tasks || [];
+    projectMembers = memberRes.members || [];
     renderBoard();
+  }
+
+  function memberAvatar(member) {
+    const initials = member.avatar_initials || String(member.full_name || '?').split(/\s+/).filter(Boolean).slice(-2).map(part => part[0]).join('').toUpperCase();
+    return `<span class="task-project-member-avatar" style="background:${esc(member.avatar_color || '#6366F1')}" title="${esc(member.full_name || '')}">${esc(initials || '?')}</span>`;
+  }
+
+  function openProjectMembers(project) {
+    const selected = new Set(projectMembers.map(member => Number(member.user_id)));
+    const render = () => {
+      const list = document.getElementById('project-member-modal-list');
+      const count = document.getElementById('project-member-modal-count');
+      if (count) count.textContent = `${selected.size} thành viên`;
+      if (!list) return;
+      const candidates = canManage ? users : projectMembers;
+      list.innerHTML = candidates.map(user => {
+        const id = Number(user.user_id || user.id);
+        return `<label class="task-project-member-row">
+          ${canManage ? `<input type="checkbox" data-project-member="${id}" ${selected.has(id) ? 'checked' : ''}/>` : ''}
+          ${memberAvatar(user)}
+          <span><strong>${esc(user.full_name || '')}</strong><small>${esc(user.employee_code || '')}${user.department ? ` · ${esc(user.department)}` : ''}</small></span>
+        </label>`;
+      }).join('') || '<div class="task-project-member-empty">Chưa có thành viên.</div>';
+      list.querySelectorAll('[data-project-member]').forEach(input => input.addEventListener('change', () => {
+        const id = Number(input.dataset.projectMember);
+        if (input.checked) selected.add(id); else selected.delete(id);
+        render();
+      }));
+    };
+    openModal(`Thành viên · ${projectLabel(project)}`, `
+      <div class="task-project-member-modal-head"><div id="project-member-modal-count"></div><span>${canManage ? 'Chọn người để thêm hoặc bỏ khỏi Project.' : 'Bạn có thể xem danh sách thành viên Project.'}</span></div>
+      <div id="project-member-modal-list" class="task-project-member-list"></div>
+    `, `<button type="button" class="btn-secondary" id="project-member-close">Đóng</button>${canManage ? '<button type="button" class="btn-primary" id="project-member-save">Lưu thành viên</button>' : ''}`);
+    render();
+    document.getElementById('project-member-close')?.addEventListener('click', closeModal);
+    document.getElementById('project-member-save')?.addEventListener('click', async () => {
+      try { await api.saveTaskProjectMembers(project.id, [...selected]); closeModal(); toast('Đã cập nhật thành viên Project', 'success'); await loadProjects(); }
+      catch (error) { toast(error.message, 'error'); }
+    });
   }
 
   function renderBoard() {
@@ -414,10 +553,15 @@ export async function renderTasks(el, me) {
     board.innerHTML = `
       <div class="card" style="margin-bottom:12px;">
         <div class="card-header" style="gap:10px;flex-wrap:wrap;align-items:center;">
-          <div>
+          <div class="task-project-board-title">
             <div class="card-title">${esc(projectLabel(project))}</div>
             <div style="font-size:12px;color:var(--text-2);margin-top:2px;">${esc(project.department || 'Chưa chọn phòng ban')} · ${Number(project.member_count || 0)} thành viên</div>
           </div>
+          <button type="button" id="btn-project-members" class="task-project-member-stack" aria-label="Xem thành viên Project">
+            ${projectMembers.slice(0, 5).map(memberAvatar).join('') || '<span class="task-project-member-avatar task-project-member-avatar--empty">?</span>'}
+            ${projectMembers.length > 5 ? `<span class="task-project-member-more">+${projectMembers.length - 5}</span>` : ''}
+            ${canManage ? '<span class="task-project-member-add" aria-hidden="true">+</span>' : ''}
+          </button>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
             ${canViewProjectTimeline(project) ? `<button id="btn-project-timeline" class="btn-secondary btn-sm">🕘 Timeline</button>` : ''}
             ${canManage ? `<button id="btn-new-group" class="btn-primary btn-task-group-create btn-sm">+ Nhóm công việc</button>` : ''}
@@ -438,6 +582,7 @@ export async function renderTasks(el, me) {
     `;
 
     board.querySelector('#btn-new-group')?.addEventListener('click', () => openGroupForm(null, selectedProjectId, groups.length, loadBoard));
+    board.querySelector('#btn-project-members')?.addEventListener('click', () => openProjectMembers(project));
     board.querySelector('#btn-project-timeline')?.addEventListener('click', () => openProjectTimeline(project));
     board.querySelectorAll('[data-edit-group]').forEach(btn => btn.addEventListener('click', () => {
       const group = groups.find(g => String(g.id) === btn.dataset.editGroup);
@@ -488,7 +633,7 @@ export async function renderTasks(el, me) {
             <div style="font-weight:800;color:var(--text);">${esc(taskGroupLabel(group.name))}</div>
             <div style="font-size:12px;color:var(--text-2);">${groupTasks.length} công việc</div>
           </div>
-          ${canManage ? `<div style="display:flex;gap:4px;"><button class="btn-secondary btn-xs" data-edit-group="${group.id}">Sửa</button><button class="btn-danger btn-xs" data-archive-group="${group.id}">Ẩn</button></div>` : ''}
+          ${canManage ? `<div style="display:flex;gap:4px;"><button class="btn-secondary btn-xs" data-edit-group="${group.id}">Sửa</button><button class="btn-outline-danger" data-archive-group="${group.id}">Ẩn</button></div>` : ''}
         </div>
         <div style="display:flex;flex-direction:column;gap:8px;">
           ${groupTasks.map(t => renderTaskCard(t)).join('') || `<div style="font-size:13px;color:var(--text-2);padding:12px;text-align:center;background:rgba(255,255,255,.55);border-radius:8px;">Chưa có task</div>`}
@@ -510,7 +655,7 @@ export async function renderTasks(el, me) {
             <div class="task-group-title">${esc(taskGroupLabel(group.name))}</div>
             <div class="task-group-count">${groupTasks.length} công việc</div>
           </div>
-          ${canManage ? `<div style="display:flex;gap:4px;"><button class="btn-secondary btn-xs" data-edit-group="${group.id}">Sửa</button><button class="btn-danger btn-xs" data-archive-group="${group.id}">Ẩn</button></div>` : ''}
+          ${canManage ? `<div style="display:flex;gap:4px;"><button class="btn-secondary btn-xs" data-edit-group="${group.id}">Sửa</button><button class="btn-outline-danger" data-archive-group="${group.id}">Ẩn</button></div>` : ''}
         </div>
         <div style="display:flex;flex-direction:column;gap:8px;">
           ${groupTasks.map(t => renderTaskCard(t)).join('') || `<div class="task-group-empty">Chưa có task</div>`}
@@ -533,6 +678,7 @@ export async function renderTasks(el, me) {
           ${t.assignee_name ? `<span class="task-card-assignee">👤 ${esc(t.assignee_name)}${t.assignee_code ? ` · ${esc(t.assignee_code)}` : ''}</span>` : ''}
           ${t.due_date ? `<span style="font-size:11px;color:var(--text-2)">Hạn: ${esc(t.due_date)}</span>` : ''}
           ${Number(t.subtask_total) > 0 ? `<span style="font-size:11px;color:var(--text-2)">Subtask: ${Number(t.subtask_done)||0}/${Number(t.subtask_total)||0}</span>` : ''}
+          ${Number(t.follower_count) > 0 ? `<span style="font-size:11px;color:var(--text-2)">👁 ${Number(t.follower_count)} theo dõi</span>` : ''}
         </div>
         <div class="task-status-actions" aria-label="Cập nhật trạng thái công việc">
           ${[
@@ -567,15 +713,13 @@ export async function renderTasks(el, me) {
     searchTimer = setTimeout(loadProjects, 250);
   });
   el.querySelector('#project-archived')?.addEventListener('change', loadProjects);
+  el.querySelector('#btn-import-myxteam')?.addEventListener('click', openMyxteamImport);
   el.querySelector('#btn-new-project')?.addEventListener('click', () => openProjectForm(null, users, departments, refreshProjectsAfterMutation));
   el.querySelector('#btn-new-task').addEventListener('click', () => {
     const project = selectedProject();
     if (!project) { toast('Vui lòng chọn Project trước khi tạo việc', 'error'); return; }
     openTaskForm(null, users, me, loadBoard, { project, groups, labels, selectedGroupId: groups[0]?.id || '', departments});
   });
-  el.querySelector('#btn-manage-labels')?.addEventListener('click', () => openLabelManager(labels, projects, async () => {
-    if (selectedProjectId) await loadBoard();
-  }));
 
   await loadProjects();
 }
@@ -606,7 +750,6 @@ export function openTaskForm(task, users, me, onDone, options = {}) {
           <div class="field"><label>Nhóm công việc</label><select id="tf-group">${groupOptions}</select></div>
         </div>
         <div class="field"><label>Giao cho</label><select id="tf-assignee"><option value="">-- Chưa giao --</option>${users.map(u => `<option value="${u.id}" ${task?.assigned_to==u.id?'selected':''}>${esc(u.full_name)}${u.employee_code ? ` · ${esc(u.employee_code)}` : ''}</option>`).join('')}</select></div>
-        <div class="field"><label>Nhãn màu</label>${labelPickerHTML(labels, selectedLabelId, selectedLabelColor)}</div>
         <div class="input-row">
           <div class="field"><label>Ngày</label><input type="date" id="tf-date" value="${esc(task?.date||today())}"/></div>
           <div class="field"><label>Hạn chót</label><input type="date" id="tf-due" value="${esc(task?.due_date||'')}"/></div>
@@ -626,12 +769,6 @@ export function openTaskForm(task, users, me, onDone, options = {}) {
   document.getElementById('modal')?.classList.add('modal--scroll-fixed', 'modal--task');
   bindRichEditor();
 
-  document.querySelectorAll('#tf-label-picker .label-picker-item').forEach(btn => btn.addEventListener('click', () => {
-    document.getElementById('tf-label').value = btn.dataset.labelId || '';
-    document.getElementById('tf-label-color').value = btn.dataset.labelColor || '';
-    document.querySelectorAll('#tf-label-picker .label-picker-item').forEach(item => item.classList.toggle('active', item === btn));
-  }));
-
   document.getElementById('tf-save').addEventListener('click', async () => {
     const title = document.getElementById('tf-title').value.trim();
     const projectId = parseInt(document.getElementById('tf-project').value) || null;
@@ -644,8 +781,6 @@ export function openTaskForm(task, users, me, onDone, options = {}) {
       description: sanitizeRichText(document.getElementById('tf-desc').innerHTML),
       team_project_id: projectId,
       group_id: groupId,
-      label_id: parseInt(document.getElementById('tf-label').value) || null,
-      label_color: document.getElementById('tf-label-color')?.value || null,
       date: document.getElementById('tf-date').value || null,
       due_date: document.getElementById('tf-due').value || null,
       priority: document.getElementById('tf-priority').value,
