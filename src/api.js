@@ -298,6 +298,10 @@ export const api = {
   reviewAttendanceLocation: (id, data) => req('POST', `/api/attendance/${id}/location-review`, data).then(r => { inv('/api/attendance'); return r; }),
   updateAttendance: (id, d) => req('PUT', `/api/attendance/${id}`, d).then(r => { inv('/api/attendance'); return r; }),
   deleteAttendance: (id) => req('DELETE', `/api/attendance/${id}`).then(r => { inv('/api/attendance'); return r; }),
+  // Add attendance for a date range; backend skips non-working days + existing rows.
+  // Pass dryRun=true to preview (no write). Sum of created/skipped/exists.
+  addAttendanceBatch: (d, dryRun = false) =>
+    req('POST', '/api/attendance/batch' + (dryRun ? '?dry_run=1' : ''), d).then(r => { inv('/api/attendance', '/api/attendance/employees', '/api/invoices'); return r; }),
   getOvertimeRequests: (params = {}) => { const q = new URLSearchParams(params).toString(); return req('GET', '/api/overtime-requests' + (q ? '?' + q : '')); },
   createOvertimeRequest: (d) => req('POST', '/api/overtime-requests', d).then(r => { inv('/api/attendance'); return r; }),
   decideOvertimeRequest: (id, action, d = {}) => req('POST', `/api/overtime-requests/${id}/${action}`, d).then(r => { inv('/api/attendance', '/api/invoices'); return r; }),

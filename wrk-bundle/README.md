@@ -1,0 +1,1 @@
+This folder contains the built output assets for the worker "nexrall-hr-manager-marketing" generated at 2026-08-17T09:38:12.628Z.

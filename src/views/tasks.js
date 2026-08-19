@@ -671,15 +671,13 @@ export async function renderTasks(el, me) {
     const color = t.label_color_real || t.label_color || '#6366F1';
     return `
       <div class="task-card" data-tid="${t.id}" style="border-left-color:${esc(color)};background:#fff;margin:0;">
-        <div class="task-card-title">${esc(t.title)}</div>
-        ${t.description ? `<div style="font-size:12px;color:var(--text-2);margin:4px 0 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(richTextToPlainText(t.description))}</div>` : ''}
+        <div class="task-card-title" title="${esc(t.title)}">${esc(t.title)}</div>
         <div class="task-card-meta">
           ${taskStatusBadge(t.status)}
           ${priorityBadge(t.priority)}
           ${t.label_name ? `<span class="badge badge-gray" style="display:inline-flex;gap:5px;align-items:center;">${labelDot(color)}${esc(t.label_name)}</span>` : ''}
           ${t.assignee_name ? `<span class="task-card-assignee">👤 ${esc(t.assignee_name)}${t.assignee_code ? ` · ${esc(t.assignee_code)}` : ''}</span>` : ''}
           ${t.due_date ? `<span style="font-size:11px;color:var(--text-2)">Hạn: ${esc(t.due_date)}</span>` : ''}
-          ${Number(t.subtask_total) > 0 ? `<span style="font-size:11px;color:var(--text-2)">Subtask: ${Number(t.subtask_done)||0}/${Number(t.subtask_total)||0}</span>` : ''}
           ${Number(t.follower_count) > 0 ? `<span style="font-size:11px;color:var(--text-2)">👁 ${Number(t.follower_count)} theo dõi</span>` : ''}
         </div>
         <div class="task-status-actions" aria-label="Cập nhật trạng thái công việc">
@@ -729,6 +727,8 @@ export async function renderTasks(el, me) {
     if (!project) { toast('Vui lòng chọn Project trước khi tạo việc', 'error'); return; }
     openTaskForm(null, users, me, loadBoard, { project, groups, labels, selectedGroupId: groups[0]?.id || '', departments});
   });
+
+  document.addEventListener('task-copied', () => { if (selectedProjectId) loadBoard(); }, { once: false });
 
   await loadProjects();
 }

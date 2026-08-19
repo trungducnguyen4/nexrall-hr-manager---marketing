@@ -212,18 +212,27 @@ export function renderGeoMap(container, options = {}) {
       dot.addEventListener('click', event => { event.stopPropagation(); showTooltip(marker, point); });
       svg.appendChild(dot);
 
-      const name = String(marker.label || marker.employee_name || `NV ${marker.employee_id ?? ''}`) + (isCurrent ? ' · Tôi' : '');
-      const label = document.createElementNS(svgNS, 'text');
-      label.setAttribute('x', point.x + (isCurrent ? 12 : 10));
-      label.setAttribute('y', point.y - (isCurrent ? 11 : 8));
-      label.setAttribute('font-size', isCurrent ? '11' : '10.5');
-      label.setAttribute('font-weight', '700');
-      label.setAttribute('fill', textColor);
-      label.setAttribute('paint-order', 'stroke');
-      label.setAttribute('stroke', haloColor);
-      label.setAttribute('stroke-width', '3');
-      label.textContent = name;
-      svg.appendChild(label);
+      // Chỉ hiện tên trực tiếp trên sơ đồ khi:
+      // - người đó ngoài phạm vi
+      // - hoặc là user hiện tại ("Tôi")
+      if (kind === 'outside' || isCurrent) {
+        const name =
+          String(marker.label || marker.employee_name || `NV ${marker.employee_id ?? ''}`)
+          + (isCurrent ? ' · Tôi' : '');
+
+        const label = document.createElementNS(svgNS, 'text');
+        label.setAttribute('x', point.x + (isCurrent ? 12 : 10));
+        label.setAttribute('y', point.y - (isCurrent ? 11 : 8));
+        label.setAttribute('font-size', isCurrent ? '11' : '10.5');
+        label.setAttribute('font-weight', '700');
+        label.setAttribute('fill', textColor);
+        label.setAttribute('paint-order', 'stroke');
+        label.setAttribute('stroke', haloColor);
+        label.setAttribute('stroke-width', '3');
+        label.textContent = name;
+
+        svg.appendChild(label);
+      }
 
       if (kind === 'outside') {
         const tag = document.createElementNS(svgNS, 'text');

@@ -131,7 +131,7 @@ async function getVietqrBanks() {
   return data;
 }
 
-async function migrate(env) {
+export async function migrate(env) {
   if (_migrated) return;
   // These additive tables are self-healed before the schema-version fast path.
   // A previous interrupted deployment can otherwise leave the version marker
@@ -144,6 +144,10 @@ async function migrate(env) {
   // Timeline columns are additive and must exist before the version fast path:
   // production databases may already carry an older matching schema marker.
   try { await ensureTaskActivityTimelineSchema(env); } catch (error) { console.error('Task timeline schema check failed', error); }
+  // Subtask description column must exist before the version fast path: a production
+  // database already on the current schema marker would otherwise skip the ALTER and
+  // break create-subtask. Keep this idempotent and additive.
+  try { await ensureSubtaskSchema(env); } catch (error) { console.error('Subtask schema check failed', error); }
   try { await ensureMyxteamTaskImportSchema(env); } catch (error) { console.error('MyXteam import schema check failed', error); }
   try { await ensureChatInteractionSchema(env); } catch (error) { console.error('Chat interaction schema check failed', error); }
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS dissolved_conversations (
@@ -250,6 +254,7 @@ async function migrate(env) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       task_id INTEGER NOT NULL,
       title TEXT NOT NULL,
+      description TEXT,
       is_done INTEGER DEFAULT 0,
       assigned_to INTEGER,
       due_date TEXT,
@@ -522,7 +527,7 @@ async function migrate(env) {
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkout_reviewed_by INTEGER'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkout_review_note TEXT'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN checkout_reviewed_at TEXT'); } catch (_) {}
-  try { await env.DB.exec('ALTER TABLE subtasks ADD COLUMN description TEXT'); } catch (_) {}
+  try { await env.DB.prepare('ALTER TABLE subtasks ADD COLUMN description TEXT').run(); } catch (_) {}
   // ── Chat module ─────────────────────────────────────────────────
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS conversations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1911,6 +1916,38 @@ async function ensureTaskActivityTimelineSchema(env) {
   } catch (_) {}
 }
 
+// Subtask descriptions were added to the schema after the initial deployment but
+// inside the version-gated block. A production D1 that already carries the current
+// schema_version marker would skip that ALTER, so the create-subtask API fails with
+// "table subtasks has no column named description". This self-healing helper runs
+// BEFORE the schema-version fast path so every database gets the column regardless
+// of its version marker. It is idempotent, never drops or recreates the table, and
+// is safe to run on every request/isolate without disturbing existing rows.
+export async function ensureSubtaskSchema(env) {
+  // NOTE: use prepared statements rather than DB.exec here. Some legacy D1
+  // bindings reject schema changes through exec even though they accept a
+  // normal D1 statement (see ensureAttendanceLocationSchema). Production
+  // silently skipped the earlier exec()-based ALTER, so description was never
+  // added. Keep this strictly additive + idempotent.
+  try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS subtasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      is_done INTEGER DEFAULT 0,
+      assigned_to INTEGER,
+      due_date TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    )`).run();
+  } catch (error) {
+    console.error('Subtask schema check failed (create)', error);
+  }
+  // Additive for legacy databases that already carry the table without the column.
+  // If the column already exists the ALTER throws and is safely swallowed.
+  try { await env.DB.prepare('ALTER TABLE subtasks ADD COLUMN description TEXT').run(); } catch (_) {}
+}
+
 // Chat interactions are independent tables so existing text messages remain
 // immutable and deploys can safely add cards without rewriting chat history.
 async function ensureChatInteractionSchema(env) {
@@ -2412,6 +2449,38 @@ function attCountBusinessDaysBetween(startDate, endDate) {
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
     const dow = d.getDay();
     if (dow !== 0 && dow !== 6) count++;
+  }
+  return count;
+}
+
+// Shared: is a date a working day for attendance purposes ("ngày công")?
+// Single source of truth used by batch add, bảng công, and tỉ lệ chuyên cần so
+// the notion of "ngày nghỉ" stays consistent everywhere. Currently treats
+// weekends + company_holidays (lễ, nghỉ công ty, nghỉ bù) as rest days.
+// Extend here for make-up days, weekend-work schedules, and branch/department
+// calendars — callers don't need to change.
+async function isAttendanceWorkingDay(env, dateStr, employee = null) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr || ''))) return false;
+  const d = new Date(`${dateStr}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return false;
+  // Company holiday (lễ, công ty nghỉ, nghỉ bù) — rest day.
+  const holiday = await env.DB.prepare('SELECT id FROM company_holidays WHERE holiday_date=? AND is_active=1').bind(dateStr).first();
+  if (holiday) return false;
+  // Weekend (Thứ 7, Chủ nhật) — rest day unless a future schedule overrides.
+  const dow = d.getDay();
+  if (dow === 0 || dow === 6) return false;
+  return true;
+}
+
+// Holiday-aware count of working days in [startDate, endDate] inclusive.
+async function attBusinessDaysBetweenAsync(env, startDate, endDate) {
+  const start = new Date(`${startDate}T00:00:00`);
+  const end = new Date(`${endDate}T00:00:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return 0;
+  let count = 0;
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const iso = attIsoDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
+    if (await isAttendanceWorkingDay(env, iso)) count++;
   }
   return count;
 }
@@ -5088,15 +5157,40 @@ export async function handle(request, env) {
     if (me.role === 'manager' && !isAdmin && !isAttendanceHcns) { q += ' AND u.department=?'; binds.push(me.department); }
     q += ' GROUP BY u.id ORDER BY u.full_name COLLATE NOCASE';
     const { results = [] } = await env.DB.prepare(q).bind(...binds).all();
-    const standardWorkDays = attCountBusinessDaysBetween(from, to);
+    const today = vnTodayStr();
+
+const attendanceRateTo =
+  from.slice(0, 7) === today.slice(0, 7)
+    ? (today < to ? today : to)
+    : to;
+
+    const standardWorkDays = await attBusinessDaysBetweenAsync(env, from, to);
+    const expectedWorkDaysToDate = await attBusinessDaysBetweenAsync(env, from, attendanceRateTo);
     const employees = results.map(row => {
       const missingDays = Number(row.missing_checkin_days || 0) + Number(row.missing_checkout_days || 0);
       const actualWorkDays = Number(row.actual_work_days || 0);
       return {
         ...row,
+
+        // Vẫn giữ tổng số ngày công chuẩn của tháng cho cột "Ngày công"
         standard_work_days: standardWorkDays,
-        attendance_rate: standardWorkDays ? Number(((actualWorkDays / standardWorkDays) * 100).toFixed(1)) : 0,
-        period_status: !Number(row.record_count) ? 'no_data' : missingDays ? 'incomplete' : Number(row.late_days) ? 'late' : 'complete',
+
+        // Số ngày lẽ ra phải làm tính tới hiện tại
+        expected_work_days_to_date: expectedWorkDaysToDate,
+
+        // Chuyên cần chỉ tính tới hiện tại
+        attendance_rate: expectedWorkDaysToDate
+          ? Number(((actualWorkDays / expectedWorkDaysToDate) * 100).toFixed(1))
+          : 0,
+
+        period_status:
+          !Number(row.record_count)
+            ? 'no_data'
+            : missingDays
+              ? 'incomplete'
+              : Number(row.late_days)
+                ? 'late'
+                : 'complete',
       };
     });
     return json({ period: { from, to }, employees });
@@ -5715,11 +5809,16 @@ export async function handle(request, env) {
     const lateDays = activeRecords.filter(r => Number(r.late_minutes || 0) > 0).length;
     const earlyDays = activeRecords.filter(r => Number(r.early_minutes || 0) > 0).length;
     const totalWorkHours = complete.reduce((sum, r) => sum + Number(r.work_hours || 0), 0);
-    const standardWorkDays = attCountBusinessDaysBetween(from, to);
+    const standardWorkDays = await attBusinessDaysBetweenAsync(env, from, to);
+    // Chuyên cần tính tới hiện tại (giống danh sách nhân viên): nếu kỳ đang xem
+    // là tháng hiện tại thì chỉ chia cho số ngày công kỳ vọng tới hôm nay.
+    const today = vnTodayStr();
+    const attendanceRateTo = from.slice(0, 7) === today.slice(0, 7) ? (today < to ? today : to) : to;
+    const expectedWorkDaysToDate = await attBusinessDaysBetweenAsync(env, from, attendanceRateTo);
     const actualWorkDays = fullDays + halfDays * .5;
     const overtime = await buildMonthlyOvertimeSummary(env, employeeId, Number(from.slice(5, 7)), Number(from.slice(0, 4)));
     return json({ employee, period: { from, to }, summary: {
-      standardWorkDays, actualWorkDays, fullDays, halfDays,
+      standardWorkDays, expectedWorkDaysToDate, actualWorkDays, fullDays, halfDays,
       officeDays: complete.filter(r => (r.work_type || 'office') === 'office').length,
       wfhDays: complete.filter(r => r.work_type === 'wfh').length,
       businessDays: complete.filter(r => r.work_type === 'business').length,
@@ -5728,8 +5827,78 @@ export async function handle(request, env) {
       lateMinutes: activeRecords.reduce((sum, r) => sum + Number(r.late_minutes || 0), 0), earlyDays,
       earlyMinutes: activeRecords.reduce((sum, r) => sum + Number(r.early_minutes || 0), 0), totalWorkHours,
       approvedOvertimeMinutes: overtime.approvedOvertimeMinutes, approvedOvertimeHours: overtime.approvedOvertimeHours,
-      attendanceRate: standardWorkDays ? Number(((actualWorkDays / standardWorkDays) * 100).toFixed(1)) : 0,
+      attendanceRate: expectedWorkDaysToDate ? Number(((actualWorkDays / expectedWorkDaysToDate) * 100).toFixed(1)) : 0,
     }, records });
+  }
+
+  // Batch add attendance over a date range (admin/HCNS). The backend resolves
+  // "ngày nghỉ" via the shared isAttendanceWorkingDay helper (weekends + company
+  // holidays) and never overwrites existing rows, so history is preserved.
+  // Use ?dry_run=1 to preview (counts created/skipped/exists without writing).
+  if (path === '/api/attendance/batch' && request.method === 'POST') {
+    if (!isAttendanceAdmin) return json({ error: 'Không có quyền' }, 403);
+    const b = await request.json().catch(() => ({}));
+    const employeeId = parseInt(b.user_id);
+    const fromDate = String(b.from_date || '');
+    const toDate = String(b.to_date || '');
+    const checkinTime = String(b.checkin_time || '').trim();
+    const checkoutTime = String(b.checkout_time || '').trim();
+    const status = ['present', 'late', 'absent', 'leave'].includes(b.status) ? b.status : 'present';
+    const skipNonWorkingDays = b.skip_non_working_days !== false;
+    const workType = ['office', 'wfh', 'business'].includes(b.work_type) ? b.work_type : 'office';
+    const shift = ['morning', 'afternoon', 'full'].includes(b.shift) ? b.shift : 'full';
+    const note = String(b.note || '').slice(0, 2000);
+    const dryRun = String(url.searchParams.get('dry_run') || '') === '1';
+
+    if (!employeeId || !/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(toDate) || fromDate > toDate)
+      return json({ error: 'Vui lòng chọn nhân viên và khoảng ngày hợp lệ' }, 400);
+    if (checkinTime && !attTimeIsValid(checkinTime)) return json({ error: 'Giờ check-in không hợp lệ' }, 400);
+    if (checkoutTime && !attTimeIsValid(checkoutTime)) return json({ error: 'Giờ check-out không hợp lệ' }, 400);
+
+    const employee = await env.DB.prepare('SELECT id,full_name,employee_code,department,is_active FROM users WHERE id=?').bind(employeeId).first();
+    if (!employee || !Number(employee.is_active)) return json({ error: 'Không tìm thấy nhân viên' }, 404);
+    if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && employee.department !== me.department)
+      return json({ error: 'Không có quyền thêm chấm công cho nhân sự ngoài phòng ban' }, 403);
+
+    // Absent/leave rows carry no clock times; present/late may use them.
+    let ci = checkinTime || null;
+    let co = checkoutTime || null;
+    if (status === 'absent' || status === 'leave') { ci = null; co = null; }
+    const timing = attManualTimingMetrics({ work_type: workType, shift, expected_start: null, expected_end: null }, ci, co);
+    const workHours = timing.workHours > 0 ? Number(timing.workHours.toFixed(2)) : null;
+
+    // Existing attendance in range — never overwrite.
+    const { results: existingRows = [] } = await env.DB.prepare('SELECT id,date FROM attendance WHERE user_id=? AND date BETWEEN ? AND ?').bind(employeeId, fromDate, toDate).all();
+    const existingDates = new Set(existingRows.map(r => r.date));
+
+    const createdDates = [];
+    const skippedDates = [];
+    const existsDates = [];
+    for (let d = new Date(`${fromDate}T00:00:00`); d <= new Date(`${toDate}T00:00:00`); d.setDate(d.getDate() + 1)) {
+      const iso = attIsoDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
+      if (existingDates.has(iso)) { existsDates.push(iso); continue; }
+      if (skipNonWorkingDays && !(await isAttendanceWorkingDay(env, iso, employee))) { skippedDates.push(iso); continue; }
+      createdDates.push(iso);
+    }
+
+    const summary = {
+      dry_run: dryRun,
+      created: createdDates.length,
+      created_dates: createdDates,
+      skipped: skippedDates.length,
+      skipped_dates: skippedDates,
+      exists: existsDates.length,
+      exists_dates: existsDates,
+      employee: { id: employee.id, full_name: employee.full_name, employee_code: employee.employee_code },
+    };
+    if (dryRun) return json({ ok: true, ...summary });
+
+    for (const iso of createdDates) {
+      await d1WriteWithRetry(() => env.DB.prepare(
+        'INSERT INTO attendance (user_id,date,checkin_time,checkout_time,status,work_hours,note,work_type,shift,registered,late_minutes,early_minutes) VALUES (?,?,?,?,?,?,?,?,?,1,?,?)'
+      ).bind(employeeId, iso, ci, co, status, workHours, note || null, workType, shift, timing.lateMinutes, timing.earlyMinutes).run());
+    }
+    return json({ ok: true, ...summary });
   }
 
   // ── ATTENDANCE LOCATIONS / GPS GEOFENCE ──────────────────────────
@@ -6215,9 +6384,15 @@ export async function handle(request, env) {
       assigneeId: assignee.id, assigneeName: assignee.name,
       detail: 'Tạo công việc: ' + b.title,
     });
-    // The owner and assignee are interested by default; project members stay
-    // opt-in so a large project does not create notification noise.
-    for (const followerId of [...new Set([Number(me.id), Number(b.assigned_to)].filter(Boolean))]) {
+    // Default followers: the owner (creator), the assignee, and all project
+    // members. New tasks notify everyone in the project by default.
+    const { results: projectMembers = [] } = projectId
+      ? await env.DB.prepare('SELECT user_id FROM task_project_members WHERE project_id=?').bind(projectId).all()
+      : { results: [] };
+    const defaultFollowerIds = [...new Set(
+      [Number(me.id), Number(b.assigned_to), ...projectMembers.map(m => Number(m.user_id))].filter(Boolean)
+    )];
+    for (const followerId of defaultFollowerIds) {
       const exists = await env.DB.prepare('SELECT id FROM task_followers WHERE task_id=? AND user_id=?').bind(taskId, followerId).first();
       if (!exists) await env.DB.prepare('INSERT INTO task_followers (task_id,user_id) VALUES (?,?)').bind(taskId, followerId).run();
     }
@@ -6263,7 +6438,10 @@ export async function handle(request, env) {
       const b = await request.json();
       const task = await env.DB.prepare('SELECT * FROM tasks WHERE id=?').bind(tid).first();
       if (!task) return json({ error: 'Không tìm thấy' }, 404);
-      if (!isManager && task.assigned_to !== me.id) return json({ error: 'Không có quyền' }, 403);
+      // Keep Task edit consistent with the UI editor rule (manager OR task assignee
+      // OR task creator/assigner) and with Task DELETE below. The project-level gate
+      // (canUseTaskProject) below still applies unmodified.
+      if (!isManager && task.assigned_to !== me.id && task.assigned_by !== me.id) return json({ error: 'Không có quyền' }, 403);
       const nextStatus = b.status || task.status;
       const nextPriority = b.priority || task.priority;
       const nextProjectId = (b.team_project_id !== undefined || b.project_id !== undefined) ? intOrNull(b.team_project_id || b.project_id) : (task.team_project_id || null);
@@ -6319,14 +6497,25 @@ export async function handle(request, env) {
   if (subMatch && request.method === 'POST') {
     const tid = parseInt(subMatch[1]);
     const b = await request.json();
-    const parent = await env.DB.prepare('SELECT id,title,assigned_to,team_project_id FROM tasks WHERE id=?').bind(tid).first();
+    const parent = await env.DB.prepare('SELECT id,title,assigned_to,assigned_by,team_project_id FROM tasks WHERE id=?').bind(tid).first();
     if (!parent) return json({ error: 'Không tìm thấy công việc' }, 404);
-    if (!isManager && Number(parent.assigned_to) !== Number(me.id)) return json({ error: 'Không có quyền' }, 403);
+    // Keep backend consistent with the Task editor rule exposed by the UI
+    // (canEdit: manager OR task assignee OR task creator/assigner). Do NOT widen
+    // this to project membership.
+    if (!isManager && Number(parent.assigned_to) !== Number(me.id) && Number(parent.assigned_by) !== Number(me.id)) return json({ error: 'Không có quyền' }, 403);
     const title = String(b.title || '').trim();
     if (!title) return json({ error: 'Thiếu tiêu đề công việc con' }, 400);
-    const r = await env.DB.prepare(
-      'INSERT INTO subtasks (task_id,title,description,assigned_to,due_date) VALUES (?,?,?,?,?)'
-    ).bind(tid, title, b.description||null, b.assigned_to||null, b.due_date||null).run();
+    let r;
+    try {
+      r = await env.DB.prepare(
+        'INSERT INTO subtasks (task_id,title,description,assigned_to,due_date) VALUES (?,?,?,?,?)'
+      ).bind(tid, title, b.description||null, b.assigned_to||null, b.due_date||null).run();
+    } catch (error) {
+      // Log enough context for debugging without exposing tokens/session/stack
+      // to the client. The outer wrapper still returns the generic reference error.
+      console.error('Create subtask failed', { taskId: tid, userId: me.id, message: String(error?.message || error) });
+      throw error;
+    }
     const subtaskId = r.meta.last_row_id;
     const assignee = await taskActivityAssignee(env, b.assigned_to);
     await recordTaskActivity(env, {
@@ -6344,11 +6533,11 @@ export async function handle(request, env) {
     if (request.method === 'PUT') {
       const b = await request.json();
       const subtask = await env.DB.prepare(
-        `SELECT s.*,t.assigned_to AS task_assigned_to,t.team_project_id
+        `SELECT s.*,t.assigned_to AS task_assigned_to,t.assigned_by AS task_assigned_by,t.team_project_id
            FROM subtasks s JOIN tasks t ON t.id=s.task_id WHERE s.id=?`
       ).bind(sid).first();
       if (!subtask) return json({ error: 'Không tìm thấy công việc con' }, 404);
-      if (!isManager && Number(subtask.task_assigned_to) !== Number(me.id)) return json({ error: 'Không có quyền' }, 403);
+      if (!isManager && Number(subtask.task_assigned_to) !== Number(me.id) && Number(subtask.task_assigned_by) !== Number(me.id)) return json({ error: 'Không có quyền' }, 403);
       const nextTitle = String(b.title ?? subtask.title).trim();
       if (!nextTitle) return json({ error: 'Thiếu tiêu đề công việc con' }, 400);
       const nextDone = b.is_done === undefined ? Number(subtask.is_done) : (b.is_done ? 1 : 0);
@@ -6370,6 +6559,14 @@ export async function handle(request, env) {
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
+      const owner = await env.DB.prepare(
+        `SELECT t.assigned_to AS task_assigned_to, t.assigned_by AS task_assigned_by
+           FROM subtasks s JOIN tasks t ON t.id=s.task_id WHERE s.id=?`
+      ).bind(sid).first();
+      if (!owner) return json({ error: 'Không tìm thấy công việc con' }, 404);
+      if (!isManager && Number(owner.task_assigned_to) !== Number(me.id) && Number(owner.task_assigned_by) !== Number(me.id)) {
+        return json({ error: 'Không có quyền' }, 403);
+      }
       await env.DB.prepare('DELETE FROM subtasks WHERE id=?').bind(sid).run();
       return json({ ok: true });
     }

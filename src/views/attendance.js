@@ -500,6 +500,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
   });
 
   let historyPage = 1;
+  let otFormPage = 1;
   let overtimeForms = [];
 
   const formStatus = status => ({
@@ -515,13 +516,16 @@ document.getElementById('btn-register').addEventListener('click', async () => {
     try {
       const { overtime_forms: forms = [] } = await api.getOvertimeForms({ month });
       overtimeForms = forms;
-      list.innerHTML = forms.length ? `<div class="table-wrap"><table><thead><tr><th>Nhân viên</th><th>Thời gian & lý do</th><th>Đề nghị / duyệt</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>${forms.map(form => {
+      const pageData = paginateRows(forms, otFormPage);
+      otFormPage = pageData.page;
+      list.innerHTML = pageData.rows.length ? `<div class="table-wrap"><table><thead><tr><th>Nhân viên</th><th>Thời gian & lý do</th><th>Đề nghị / duyệt</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>${pageData.rows.map(form => {
         const detail = form.items.map(item => `${esc(item.start_at.replace('T', ' '))} → ${esc(item.end_at.replace('T', ' '))}<br><small>${esc(item.reason)} · ${item.time_category === 'holiday' ? 'Ngày lễ' : item.time_category === 'rest_day' ? 'Ngày nghỉ' : 'Ngày thường'}</small>`).join('<hr style="border:0;border-top:1px solid var(--border);margin:7px 0">');
         const minutes = `${(Number(form.requested_minutes || 0) / 60).toFixed(2)}h${form.status !== 'draft' ? ` / ${(Number(form.approved_minutes || 0) / 60).toFixed(2)}h` : ''}`;
         const canDecide = canManageAttendance && form.status === 'pending';
         const canSubmit = Number(form.user_id) === Number(me.id) && form.status === 'draft';
         return `<tr><td><b>${esc(form.full_name)}</b><br><small>${esc(form.employee_code || '')}</small></td><td style="min-width:260px">${detail}</td><td>${minutes}</td><td>${formStatus(form.status)}${form.review_note ? `<br><small>${esc(form.review_note)}</small>` : ''}</td><td>${canDecide ? `<button class="btn-secondary btn-sm ot-form-decide" data-id="${form.id}">Duyệt</button>` : ''}${canSubmit ? `<button class="btn-primary btn-sm ot-form-submit" data-id="${form.id}">Gửi</button>` : ''}${form.reviewer_name ? `<small>${esc(form.reviewer_name)}</small>` : ''}</td></tr>`;
-      }).join('')}</tbody></table></div>` : emptyHTML('📝', 'Chưa có form làm thêm giờ trong kỳ này');
+      }).join('')}</tbody></table></div>${paginationHTML(pageData)}` : emptyHTML('📝', 'Chưa có form làm thêm giờ trong kỳ này');
+      bindPagination(list, page => { otFormPage = page; loadOvertimeForms(); });
       list.querySelectorAll('.ot-form-decide').forEach(button => button.addEventListener('click', () => openOvertimeFormDecision(Number(button.dataset.id))));
       list.querySelectorAll('.ot-form-submit').forEach(button => button.addEventListener('click', async () => {
         try { await api.submitOvertimeForm(button.dataset.id); toast('Đã gửi form OT chờ duyệt', 'success'); loadOvertimeForms(); }
@@ -657,7 +661,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
 
 
   // Month filter
-  document.getElementById('att-month-filter').addEventListener('change', () => { historyPage = 1; loadHistory(); loadOvertimeForms(); if (canManageAttendance) loadOvertimeRequests(); });
+  document.getElementById('att-month-filter').addEventListener('change', () => { historyPage = 1; otFormPage = 1; loadHistory(); loadOvertimeForms(); if (canManageAttendance) loadOvertimeRequests(); });
   document.getElementById('att-date-filter')?.addEventListener('change', () => { historyPage = 1; loadHistory(); });
   document.getElementById('att-search')?.addEventListener('input', () => { historyPage = 1; loadHistory(); });
   document.getElementById('att-dept-filter')?.addEventListener('change', () => { historyPage = 1; loadHistory(); });
@@ -674,7 +678,6 @@ document.getElementById('btn-register').addEventListener('click', async () => {
 
   function employeePeriodStatus(employee) {
     if (employee.period_status === 'no_data') return '<span class="badge badge-gray">Chưa chấm công</span>';
-    if (employee.period_status === 'incomplete') return '<span class="badge badge-warning">Thiếu check-in/out</span>';
     if (employee.period_status === 'late') return '<span class="badge badge-warning">Có đi muộn</span>';
     return '<span class="badge badge-success">Đủ dữ liệu</span>';
   }
@@ -715,7 +718,6 @@ document.getElementById('btn-register').addEventListener('click', async () => {
         <td>${esc(item.time_category === 'holiday' ? 'Ngày lễ' : item.time_category === 'weekend' ? 'Ngày nghỉ' : 'Ngày thường')}</td>
         <td>${index === 0 ? statusBadge(form.status) : ''}</td></tr>`));
       content.innerHTML = `
-        <div class="att-board-note">Ký hiệu: <strong>1</strong> đủ ngày · <strong>0.5</strong> nửa ngày · <strong>•</strong> thiếu check-in/out · <strong>—</strong> chưa có công, nghỉ hoặc vắng.</div>
         <div class="table-wrap att-monthly-board-table"><table><thead><tr><th>Nhân viên</th><th>Mã NV</th>${Array.from({ length: daysInMonth }, (_, index) => `<th>${index + 1}</th>`).join('')}<th>Tổng công</th></tr></thead><tbody>
           ${employees.map(employee => `<tr><td><strong>${esc(employee.full_name)}</strong></td><td>${esc(employee.employee_code || '—')}</td>${Array.from({ length: daysInMonth }, (_, index) => {
             const date = `${monthValue}-${String(index + 1).padStart(2, '0')}`;
@@ -758,15 +760,21 @@ document.getElementById('btn-register').addEventListener('click', async () => {
         listEl.innerHTML = `
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Nhân viên</th><th>Phòng ban</th><th>Chức danh</th><th>Địa điểm</th><th>Ngày công<br><span class="att-column-hint">Thực tế / chuẩn</span></th><th>Đi muộn</th><th>Thiếu check-in/out</th><th>Tỉ lệ chuyên cần</th></tr></thead>
+              <thead><tr><th>Nhân viên</th><th>Phòng ban</th><th>Chức danh</th><th>Địa điểm</th><th>Ngày công<br><span class="att-column-hint">Thực tế / chuẩn</span></th><th>Đi muộn</th><th>Tỉ lệ chuyên cần</th></tr></thead>
               <tbody>
                 ${pageData.rows.map(employee => `<tr class="att-employee-row" data-user-id="${employee.user_id}" role="button" tabindex="0" title="Xem tổng kết chấm công">
                   <td><span style="font-weight:600">${esc(employee.full_name)}</span><br><span style="font-size:11px;color:var(--text-2)">${esc(employee.employee_code || '—')}</span></td>
                   <td>${esc(employee.department || '—')}</td><td>${esc(employee.position || '—')}</td>
                   <td>${esc(employee.work_location || '—')}</td>
                   <td><div class="att-workday-pair"><strong>${Number(employee.actual_work_days || 0)}</strong><span>/</span><span>${Number(employee.standard_work_days || 0)}</span></div></td>
-                  <td>${employee.late_days ? `<strong>${employee.late_minutes}p</strong><br><span style="font-size:11px;color:var(--text-2)">${employee.late_days} ngày</span>` : '—'}</td>
-                  <td>${Number(employee.missing_checkin_days || 0)} / ${Number(employee.missing_checkout_days || 0)}</td><td>${attendanceRateBadge(employee.attendance_rate)}</td>
+                  <td>${
+                    Number(employee.late_days || 0)
+                      ? `<span style="font-size:12px;${Number(employee.late_days || 0) > 2 ? 'color:#dc2626;font-weight:700' : 'color:var(--text-2)'}">
+                          ${Number(employee.late_days || 0)} lần
+                        </span>`
+                      : '—'
+                  }</td>
+                  <td>${attendanceRateBadge(employee.attendance_rate)}</td>
                 </tr>`).join('')}
               </tbody>
             </table>
@@ -873,7 +881,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
           ${metric('Nghỉ phép / Vắng không phép', `${s.paidLeaveDays} / ${s.absentDays}`, s.absentDays ? 'metric-danger' : '')}${metric('Đi muộn / Về sớm', `${s.lateDays || 0} / ${s.earlyDays || 0} lần`, (s.lateDays || s.earlyDays) ? 'metric-warning' : '')}
           ${metric('OT đã duyệt', `${Number(s.approvedOvertimeHours || 0).toFixed(2)} giờ`, 'metric-primary')}${metric('Tỷ lệ chuyên cần', `${s.attendanceRate}%`, 'metric-success')}
         </div>
-        <div class="att-summary-detail-head"><h4>Chi tiết theo ngày</h4><div class="att-summary-filters"><select id="att-detail-status"><option value="">Mọi trạng thái</option><option value="late">Đi muộn</option><option value="absent">Vắng</option><option value="leave">Nghỉ phép</option></select><select id="att-detail-work"><option value="">Mọi hình thức</option><option value="office">Văn phòng</option><option value="wfh">WFH</option><option value="business">Công tác</option></select><select id="att-detail-exception"><option value="">Mọi ngoại lệ</option><option value="late">Đi muộn</option><option value="early">Về sớm</option><option value="missing">Thiếu check-in/out</option></select></div></div>
+        <div class="att-summary-detail-head"><h4>Chi tiết theo ngày</h4><div class="att-summary-filters"><select id="att-detail-status"><option value="">Mọi trạng thái</option><option value="late">Đi muộn</option><option value="absent">Vắng</option><option value="leave">Nghỉ phép</option></select><select id="att-detail-work"><option value="">Mọi hình thức</option><option value="office">Văn phòng</option><option value="wfh">WFH</option><option value="business">Công tác</option></select><select id="att-detail-exception"><option value="">Mọi ngoại lệ</option><option value="late">Đi muộn</option><option value="early">Về sớm</option></select></div></div>
         <div class="table-wrap"><table><thead><tr><th>Ngày</th><th>Thứ</th><th>Hình thức</th><th>Ca</th><th>Vào</th><th>Ra</th><th>Tổng giờ</th><th>Đi muộn</th><th>Về sớm</th><th>Trạng thái</th><th>Ghi chú</th>${isManager ? '<th>Thao tác</th>' : ''}</tr></thead><tbody id="att-detail-rows"></tbody></table></div>`;
       const renderRows = () => {
         const status = document.getElementById('att-detail-status').value;
@@ -1036,23 +1044,103 @@ document.getElementById('btn-register').addEventListener('click', async () => {
     });
   }
 
-  // Add attendance (admin)
+  // Add attendance in bulk (admin/HCNS) over a date range. The backend skips
+  // non-working days (weekends + company holidays) and already-recorded days.
+  // The "Dự kiến" preview is computed server-side via dry_run so it always uses
+  // the same working-day source as bảng công & tỉ lệ chuyên cần.
   document.getElementById('btn-add-att')?.addEventListener('click', () => {
-    openModal('Thêm chấm công', `
-      <div class="field"><label>Nhân viên ID</label><input type="number" id="new-att-uid" placeholder="User ID"/></div>
-      <div class="field"><label>Ngày</label><input type="date" id="new-att-date" value="${today()}"/></div>
-      <div class="field"><label>Check in</label><input type="time" id="new-att-ci" value="08:30"/></div>
-      <div class="field"><label>Check out</label><input type="time" id="new-att-co" value="17:30"/></div>
-      <div class="field"><label>Trạng thái</label>
-        <select id="new-att-status"><option value="present">Đúng giờ</option><option value="late">Đi muộn</option></select>
+    openModal('Thêm chấm công hàng loạt', `
+      <div class="field"><label>Nhân viên *</label><select id="batch-att-user"><option value="">Đang tải danh sách...</option></select></div>
+      <div class="input-row">
+        <div class="field"><label>Từ ngày *</label><input type="date" id="batch-att-from" value="${closingMonth}-01"/></div>
+        <div class="field"><label>Đến ngày *</label><input type="date" id="batch-att-to" value="${today()}"/></div>
       </div>
+      <div class="input-row">
+        <div class="field"><label>Check in</label><input type="time" id="batch-att-ci" value="08:30"/></div>
+        <div class="field"><label>Check out</label><input type="time" id="batch-att-co" value="17:30"/></div>
+      </div>
+      <div class="field"><label>Trạng thái</label>
+        <select id="batch-att-status"><option value="present">Đúng giờ</option><option value="late">Đi muộn</option><option value="absent">Vắng</option><option value="leave">Nghỉ phép</option></select>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin:6px 0 10px;">
+        <input type="checkbox" id="batch-att-skip" checked/> Tự động bỏ qua ngày nghỉ
+      </label>
+      <div id="batch-att-preview" style="font-size:13px;margin-bottom:4px;">Chọn nhân viên và khoảng ngày để xem dự kiến.</div>
     `, `
-      <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Hủy</button>
-      <button class="btn-primary" id="save-new-att">Lưu</button>
+      <button class="btn-secondary" id="batch-att-cancel">Hủy</button>
+      <button class="btn-primary" id="batch-att-save" disabled>Thêm chấm công</button>
     `);
-    document.getElementById('save-new-att').addEventListener('click', async () => {
-      toast('Tính năng thêm thủ công đang phát triển', 'info');
-      closeModal();
+
+    api.getUsers().then(({ users = [] }) => {
+      const active = users.filter(u => Number(u.is_active) !== 0);
+      const select = document.getElementById('batch-att-user');
+      select.innerHTML = active.length
+        ? `<option value="">Chọn nhân viên...</option>` + active.map(u => `<option value="${u.id}">${esc(u.full_name)}${u.employee_code ? ' (' + esc(u.employee_code) + ')' : ''} · ${esc(u.department || '—')}</option>`).join('')
+        : `<option value="">Không có nhân viên</option>`;
+      refreshBatchPreview();
+    }).catch(() => {
+      document.getElementById('batch-att-user').innerHTML = `<option value="">Không tải được danh sách</option>`;
+    });
+
+    function currentBatchPayload() {
+      return {
+        user_id: Number(document.getElementById('batch-att-user').value || 0),
+        from_date: document.getElementById('batch-att-from').value,
+        to_date: document.getElementById('batch-att-to').value,
+        checkin_time: document.getElementById('batch-att-ci').value,
+        checkout_time: document.getElementById('batch-att-co').value,
+        status: document.getElementById('batch-att-status').value,
+        skip_non_working_days: document.getElementById('batch-att-skip').checked,
+      };
+    }
+
+    let previewTimer = null;
+    function refreshBatchPreview() {
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(async () => {
+        const p = currentBatchPayload();
+        const preview = document.getElementById('batch-att-preview');
+        const saveBtn = document.getElementById('batch-att-save');
+        if (!saveBtn) return;
+        if (!p.user_id || !p.from_date || !p.to_date || p.from_date > p.to_date) {
+          preview.textContent = 'Vui lòng chọn nhân viên và khoảng ngày hợp lệ.';
+          saveBtn.disabled = true;
+          return;
+        }
+        try {
+          const r = await api.addAttendanceBatch(p, true);
+          if (!r.created) preview.textContent = 'Không có ngày nào để thêm.';
+          else preview.innerHTML = `Dự kiến: <b>${r.created}</b> ngày được thêm · <b>${r.skipped}</b> ngày nghỉ bỏ qua · <b>${r.exists}</b> ngày đã có dữ liệu.`;
+          saveBtn.disabled = !r.created;
+        } catch (e) {
+          preview.innerHTML = `<span style="color:var(--danger)">${esc(e.message || 'Lỗi')}</span>`;
+          saveBtn.disabled = true;
+        }
+      }, 350);
+    }
+
+    ['batch-att-user', 'batch-att-from', 'batch-att-to', 'batch-att-ci', 'batch-att-co', 'batch-att-status', 'batch-att-skip'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) { el.addEventListener('change', refreshBatchPreview); el.addEventListener('input', refreshBatchPreview); }
+    });
+
+    document.getElementById('batch-att-cancel').addEventListener('click', closeModal);
+
+    document.getElementById('batch-att-save').addEventListener('click', async () => {
+      const saveBtn = document.getElementById('batch-att-save');
+      const original = saveBtn.textContent;
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Đang thêm...';
+      try {
+        const r = await api.addAttendanceBatch(currentBatchPayload(), false);
+        closeModal();
+        toast(`Đã thêm ${r.created} ngày chấm công.` + (r.skipped ? ` Bỏ qua ${r.skipped} ngày nghỉ.` : '') + (r.exists ? ` ${r.exists} ngày đã có dữ liệu, giữ nguyên.` : ''), 'success', 5000);
+        loadHistory();
+      } catch (e) {
+        toast(e.message || 'Không thể thêm chấm công', 'error');
+        saveBtn.disabled = false;
+        saveBtn.textContent = original;
+      }
     });
   });
 

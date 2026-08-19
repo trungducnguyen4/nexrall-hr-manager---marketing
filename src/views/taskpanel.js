@@ -31,7 +31,8 @@ export async function openPanel(taskId, me) {
   const panel = document.getElementById('task-panel');
   overlay.classList.remove('hidden');
   panel.classList.remove('hidden');
-  document.getElementById('task-panel-title').textContent = 'Đang tải...';
+  const panelTitleEl = document.getElementById('task-panel-title');
+  if (panelTitleEl) panelTitleEl.textContent = 'Đang tải...';
   document.getElementById('task-panel-body').innerHTML = loadingHTML();
 
   overlay.onclick = closePanel;
@@ -59,7 +60,8 @@ async function loadTask() {
 }
 
 function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
-  document.getElementById('task-panel-title').textContent = task.title;
+  const panelTitle = document.getElementById('task-panel-title');
+  if (panelTitle) panelTitle.textContent = task.title;
   const isManager = _me.role === 'admin' || _me.role === 'manager';
   const canEdit = isManager || task.assigned_to === _me.id || task.assigned_by === _me.id;
   const doneSubs = subtasks.filter(s => s.is_done).length;
@@ -69,13 +71,20 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
   const followingIds = new Set(followers.map(follower => Number(follower.user_id)));
 
   const body = document.getElementById('task-panel-body');
+  const FOLLOW_STACK_MAX = 4;
+  const followerStack = followers.length ? followers.slice(0, FOLLOW_STACK_MAX).map(f => `<span class="avatar avatar-sm task-follower-avatar" style="background:${esc(f.avatar_color || '#4F46E5')}" title="${esc(f.full_name)}">${esc(f.avatar_initials || f.full_name?.charAt(0) || '?')}</span>`).join('') : '';
+  const followerCount = `<span class="task-follower-count">${followers.length}</span>`;
   body.innerHTML = `
     <div class="tp-header">
       <div class="tp-header-main">
         <div class="tp-title">${esc(task.title)}</div>
         <div class="tp-badges">${taskStatusBadge(task.status)}${priorityBadge(task.priority)}</div>
       </div>
-      ${canEdit ? `<button id="tp-edit" class="btn-primary btn-sm">✏️ Sửa</button>` : ''}
+      <div class="tp-header-actions">
+        <span class="task-follower-stack task-follower-stack-header" title="Người theo dõi (${followers.length})">${followerStack}${followerCount}</span>
+        ${canEdit ? `<button id="tp-edit" class="btn-primary btn-sm">✏️ Sửa</button>` : ''}
+        ${canEdit ? `<button id="tp-copy" class="btn-secondary btn-sm">⧉ Sao chép</button>` : ''}
+      </div>
     </div>
 
     <div class="task-panel-layout">
@@ -139,24 +148,6 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
         </div>
       </div>
 
-      <div class="card tp-section">
-        <div class="tp-section-title">
-          <span class="tp-section-label">👁 Người theo dõi</span>
-          <span class="tp-sub-count">${followers.length}</span>
-          ${canManageFollowers ? `<button type="button" class="btn-secondary btn-xs" id="tp-follow-add">+ Thêm</button>` : ''}
-        </div>
-        <div class="task-follower-stack">${followers.map(f => `<span class="task-follower-chip"><span class="avatar avatar-sm" style="background:${esc(f.avatar_color || '#4F46E5')}">${esc(f.avatar_initials || '?')}</span><span>${esc(f.full_name)}</span>${(canManageFollowers || Number(f.user_id) === Number(_me.id)) ? `<button type="button" data-remove-follower="${f.user_id}" aria-label="Bỏ theo dõi ${esc(f.full_name)}">×</button>` : ''}</span>`).join('') || '<span class="task-follower-empty">Chưa có người theo dõi.</span>'}</div>
-        <div class="task-follower-actions">${!followingIds.has(Number(_me.id)) ? '<button type="button" class="btn-secondary btn-xs" id="tp-follow-self">Theo dõi</button>' : ''}${canManageFollowers && projectMembers.length ? '<button type="button" class="btn-secondary btn-xs" id="tp-follow-all">Thêm toàn bộ thành viên</button>' : ''}</div>
-      </div>
-
-      ${canEdit ? `<div class="card tp-section">
-        <div class="tp-section-title"><span class="tp-section-label">Thao tác nhanh</span></div>
-        <div class="tp-actions">
-          <button id="tp-act-sub" class="tp-action">＋ Công việc con</button>
-          <button id="tp-act-follow" class="tp-action">＋ Người theo dõi</button>
-        </div>
-      </div>` : ''}
-
     </aside>
     </div>
   `;
@@ -169,6 +160,8 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
     const deptRes = await api.getDepartments().catch(() => ({ departments: [] }));
     openTaskForm(task, _users, _me, () => { loadTask(); }, { project, projects, groups, labels, departments: deptRes.departments });
 });
+
+  document.getElementById('tp-copy')?.addEventListener('click', () => openCopyModal(task));
 
   document.getElementById('tp-add-sub')?.addEventListener('click', () => openSubtaskForm(task.id));
   body.querySelectorAll('.sub-edit').forEach(btn => {
@@ -218,17 +211,6 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
     catch (error) { toast(error.message, 'error'); }
   });
   document.getElementById('tp-follow-add')?.addEventListener('click', () => openFollowerPicker(task, followers, projectMembers));
-  document.getElementById('tp-follow-all')?.addEventListener('click', async () => {
-    const missing = projectMembers.filter(member => !followingIds.has(Number(member.user_id)));
-    if (!missing.length) return toast('Tất cả thành viên Project đã theo dõi', 'success');
-    try {
-      await Promise.all(missing.map(member => api.addTaskFollower(task.id, Number(member.user_id))));
-      toast(`Đã thêm ${missing.length} thành viên theo dõi`, 'success');
-      loadTask();
-    } catch (error) { toast(error.message, 'error'); }
-  });
-  document.getElementById('tp-act-sub')?.addEventListener('click', () => openSubtaskForm(task.id));
-  document.getElementById('tp-act-follow')?.addEventListener('click', () => openFollowerPicker(task, followers, projectMembers));
   body.querySelectorAll('[data-remove-follower]').forEach(button => button.addEventListener('click', async () => {
     try { await api.removeTaskFollower(task.id, Number(button.dataset.removeFollower)); toast('Đã bỏ theo dõi', 'success'); loadTask(); }
     catch (error) { toast(error.message, 'error'); }
@@ -279,5 +261,54 @@ function openSubtaskForm(taskId, subtask = null) {
       toast(subtask ? 'Đã cập nhật công việc con' : 'Đã thêm công việc con', 'success');
       loadTask();
     } catch (e) { toast(e.message, 'error'); }
+  });
+}
+
+function openCopyModal(task) {
+  const defaultTitle = (task.title || '') + ' Bản sao';
+  openModal('Sao chép công việc', `
+    <div class="field"><label>Tiêu đề *</label><input type="text" id="cp-title" value="${esc(defaultTitle)}" placeholder="Tên công việc"/></div>
+    <div style="margin-top:12px;padding:10px 12px;background:var(--bg);border-radius:6px;font-size:12px;line-height:1.6;">
+      <div style="margin-bottom:6px;"><span style="color:var(--text-2);">Project</span><br><strong>${esc(task.project_name || '—')}</strong></div>
+      <div><span style="color:var(--text-2);">Nhóm công việc</span><br><strong>${esc(task.group_name || 'Công việc chung')}</strong></div>
+    </div>
+  `, `
+    <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Hủy</button>
+    <button class="btn-primary" id="cp-save">Sao chép</button>
+  `);
+  const input = document.getElementById('cp-title');
+  if (input) {
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('cp-save')?.click(); });
+  }
+  document.getElementById('cp-save')?.addEventListener('click', async () => {
+    const title = document.getElementById('cp-title').value.trim();
+    if (!title) { toast('Vui lòng nhập tiêu đề', 'error'); return; }
+    const btn = document.getElementById('cp-save');
+    if (btn) { btn.disabled = true; btn.textContent = 'Đang sao chép...'; }
+    try {
+      await api.createTask({
+        title,
+        description: task.description || '',
+        assigned_to: task.assigned_to || null,
+        department: task.department || '',
+        date: task.date || null,
+        due_date: task.due_date || null,
+        status: task.status || 'todo',
+        priority: task.priority || 'normal',
+        label_id: task.label_id || null,
+        label_color: task.label_color || null,
+        team_project_id: task.team_project_id,
+        group_id: task.group_id,
+      });
+      closeModal();
+      closePanel();
+      toast('Đã sao chép công việc', 'success');
+      document.dispatchEvent(new CustomEvent('task-copied'));
+    } catch (e) {
+      toast(e.message, 'error');
+      if (btn) { btn.disabled = false; btn.textContent = 'Sao chép'; }
+    }
   });
 }
