@@ -1288,6 +1288,13 @@ tr:hover td { background: var(--surface-2); }
 .tp-comment-input textarea { width: 100%; resize: vertical; min-height: 58px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; font: inherit; font-size: 13px; background: var(--surface); color: var(--text); }
 .tp-comment-input textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
 .tp-comment-input-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+.tp-mention-btn { width: 30px; height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-2); font-size: 15px; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: all .15s; }
+.tp-mention-btn:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-light); }
+.tp-mention-dropdown { position: absolute; bottom: 100%; left: 0; right: 0; margin-bottom: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 4px 16px rgba(0,0,0,.12); max-height: 180px; overflow-y: auto; z-index: 10; }
+.tp-mention-dropdown.hidden { display: none; }
+.tp-mention-item { display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 12px; border: none; background: none; font: inherit; font-size: 13px; color: var(--text); cursor: pointer; text-align: left; }
+.tp-mention-item:hover { background: var(--primary-light); }
+.tp-mention-item .avatar { width: 22px; height: 22px; font-size: 9px; flex-shrink: 0; }
 .tp-comment-hint { font-size: 11px; color: var(--text-3); }
 .comment:last-child { margin-bottom: 0; }
 .comment-meta b { color: var(--text); font-weight: 700; }

@@ -1,4 +1,4 @@
-import { api } from '../api.js';
+﻿import { api } from '../api.js';
 import { esc, taskStatusBadge, priorityBadge, toast, loadingHTML, openModal, closeModal } from '../utils.js';
 import { openTaskForm, sanitizeRichText } from './tasks.js';
 
@@ -121,13 +121,29 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
       </div>
 
       <div class="card tp-section">
+        <div class="tp-section-title"><span class="tp-section-label">📎 Đính kèm tập tin</span></div>
+        <div id="tp-attachments">
+          <div style="font-size:12px;color:var(--text-2);margin-bottom:8px;">Chưa có tập tin đính kèm.</div>
+        </div>
+        <div>
+          <button type="button" class="btn-secondary btn-sm" id="tp-attach-btn">Thêm tập tin đính kèm</button>
+          <input type="file" id="tp-attach-input" multiple style="display:none"/>
+        </div>
+      </div>
+
+      <div class="card tp-section">
         <div class="tp-section-title"><span class="tp-section-label">💬 Bình luận</span><span class="tp-sub-count">${comments.length}</span></div>
         <div id="tp-comments" class="tp-comments">
           ${comments.map(c => `<div class="comment"><div class="avatar avatar-sm" style="background:${esc(c.avatar_color || '#4F46E5')};flex-shrink:0;">${esc(c.avatar_initials || c.full_name?.charAt(0) || '?')}</div><div class="comment-body"><div class="comment-meta"><b>${esc(c.full_name)}</b><span>${esc(c.created_at?.slice(0,16) || '')}</span></div><div class="comment-text">${esc(c.content)}</div></div></div>`).join('') || '<div class="tp-empty">Chưa có bình luận.</div>'}
         </div>
-        <div class="tp-comment-input">
+        <div class="tp-comment-input" style="position:relative;">
+          <div id="tp-mention-dropdown" class="tp-mention-dropdown hidden"></div>
           <textarea id="tp-cmt-input" rows="2" placeholder="Viết bình luận…"></textarea>
-          <div class="tp-comment-input-foot"><span class="tp-comment-hint">Shift + Enter để xuống dòng</span><button id="tp-cmt-send" class="btn-primary btn-sm">Gửi</button></div>
+          <div class="tp-comment-input-foot">
+            <span class="tp-comment-hint">Shift + Enter để xuống dòng</span>
+            <button type="button" class="tp-mention-btn" id="tp-mention-btn" title="Mention người dùng">@</button>
+            <button id="tp-cmt-send" class="btn-primary btn-sm">Gửi</button>
+          </div>
         </div>
       </div>
 
@@ -191,7 +207,125 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
     });
   });
 
+  // ── Attachment ────────────────────────────────
+  const attachInput = document.getElementById('tp-attach-input');
+  document.getElementById('tp-attach-btn')?.addEventListener('click', () => attachInput?.click());
+  attachInput?.addEventListener('change', (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    const container = document.getElementById('tp-attachments');
+    if (container) {
+      container.innerHTML = files.map((f, i) => `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px;">
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📎 ${esc(f.name)}</span>
+        <button type="button" class="btn-icon" data-remove-attach="${i}" style="font-size:14px;" title="Xóa">×</button>
+      </div>`).join('');
+      container.querySelectorAll('[data-remove-attach]').forEach(btn => btn.addEventListener('click', () => {
+        btn.closest('div')?.remove();
+        if (!container.querySelector('[data-remove-attach]')) {
+          container.innerHTML = '<div style="font-size:12px;color:var(--text-2);margin-bottom:8px;">Chưa có tập tin đính kèm.</div>';
+        }
+      }));
+    }
+    e.target.value = '';
+  });
+
+  // ── Comment ───────────────────────────────────
   const cmtInput = document.getElementById('tp-cmt-input');
+  const mentionBtn = document.getElementById('tp-mention-btn');
+  const mentionDropdown = document.getElementById('tp-mention-dropdown');
+
+  // Build mention candidates: followers + assignee + project members
+  function getMentionCandidates() {
+    const names = [];
+    const seen = new Set();
+    followers.forEach(f => { if (!seen.has(f.user_id)) { seen.add(f.user_id); names.push({ id: f.user_id, name: f.full_name, avatar: f.avatar_color, initials: f.avatar_initials }); } });
+    if (task.assigned_to && !seen.has(task.assigned_to)) {
+      seen.add(task.assigned_to);
+      names.push({ id: task.assigned_to, name: task.assignee_name || 'Người được giao', avatar: '', initials: '' });
+    }
+    projectMembers.forEach(m => { if (!seen.has(m.user_id)) { seen.add(m.user_id); names.push({ id: m.user_id, name: m.full_name, avatar: m.avatar_color, initials: m.avatar_initials }); } });
+    return names;
+  }
+
+  let mentionCandidates = [];
+  let mentionFilter = '';
+  let mentionActive = false;
+
+  function showMentionDropdown(filter) {
+    mentionFilter = filter;
+    const matches = mentionCandidates.filter(c => c.name.toLowerCase().includes(filter.toLowerCase()));
+    if (!matches.length) { mentionDropdown?.classList.add('hidden'); return; }
+    if (mentionDropdown) {
+      mentionDropdown.innerHTML = matches.map(c => `<button type="button" class="tp-mention-item" data-mention-id="${c.id}" data-mention-name="${esc(c.name)}">${c.initials ? `<span class="avatar avatar-sm" style="background:${esc(c.avatar || '#4F46E5')};margin-right:6px;">${esc(c.initials)}</span>` : ''}<span>${esc(c.name)}</span></button>`).join('');
+      mentionDropdown.classList.remove('hidden');
+      mentionDropdown.querySelectorAll('.tp-mention-item').forEach(item => item.addEventListener('click', () => {
+        const name = item.dataset.mentionName;
+        insertMention(name);
+      }));
+    }
+    mentionActive = true;
+  }
+
+  function insertMention(name) {
+    if (!cmtInput) return;
+    const cursor = cmtInput.selectionStart || 0;
+    const text = cmtInput.value;
+    const before = text.lastIndexOf('@', cursor - 1);
+    if (before >= 0) {
+      cmtInput.value = text.slice(0, before) + '@' + name + ' ' + text.slice(cursor);
+      const pos = before + name.length + 2;
+      cmtInput.setSelectionRange(pos, pos);
+    } else {
+      const pos = cursor + name.length + 2;
+      cmtInput.value = text.slice(0, cursor) + '@' + name + ' ' + text.slice(cursor);
+      cmtInput.setSelectionRange(pos, pos);
+    }
+    cmtInput.focus();
+    mentionDropdown?.classList.add('hidden');
+    mentionActive = false;
+  }
+
+  mentionCandidates = getMentionCandidates();
+
+  mentionBtn?.addEventListener('click', () => {
+    if (!cmtInput) return;
+    cmtInput.focus();
+    const cursor = cmtInput.selectionStart || 0;
+    cmtInput.value = cmtInput.value.slice(0, cursor) + '@' + cmtInput.value.slice(cursor);
+    cmtInput.setSelectionRange(cursor + 1, cursor + 1);
+    showMentionDropdown('');
+  });
+
+  cmtInput?.addEventListener('input', () => {
+    const cursor = cmtInput.selectionStart || 0;
+    const text = cmtInput.value;
+    const before = text.lastIndexOf('@', cursor - 1);
+    if (before >= 0) {
+      const after = text.slice(before + 1, cursor);
+      if (!after.includes(' ')) {
+        showMentionDropdown(after);
+        return;
+      }
+    }
+    mentionDropdown?.classList.add('hidden');
+    mentionActive = false;
+  });
+
+  cmtInput?.addEventListener('keydown', (e) => {
+    if (mentionActive && e.key === 'Enter') {
+      const active = mentionDropdown?.querySelector('.tp-mention-item');
+      if (active) { e.preventDefault(); active.click(); return; }
+    }
+    if (mentionActive && e.key === 'Escape') {
+      mentionDropdown?.classList.add('hidden');
+      mentionActive = false;
+    }
+  });
+
+  cmtInput?.addEventListener('blur', () => {
+    setTimeout(() => { mentionDropdown?.classList.add('hidden'); mentionActive = false; }, 200);
+  });
+
   document.getElementById('tp-cmt-send').addEventListener('click', async () => {
     const content = cmtInput.value.trim();
     if (!content) return;
