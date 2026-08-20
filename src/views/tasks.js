@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { esc, taskStatusBadge, priorityBadge, toast, openModal, closeModal, loadingHTML, emptyHTML, today } from '../utils.js';
+import { esc, taskStatusBadge, priorityBadge, toast, openModal, closeModal, loadingHTML, emptyHTML, today, normalizeVietnameseSearch } from '../utils.js';
 import { openTaskPanel } from '../app.js';
 
 const LABEL_COLORS = ['#6366F1', '#3B82F6', '#8B5CF6', '#10B981', '#F59E0B', '#F97316', '#EF4444', '#64748B'];
@@ -16,6 +16,40 @@ const GROUP_COLORS = ['#EEF2FF', '#DBEAFE', '#F3E8FF', '#DCFCE7', '#FEF3C7', '#F
 
 function canManageTasks(me) {
   return !!me && (me.role === 'admin' || me.department === 'Phòng HCNS');
+}
+
+
+function sortGroupTasks(groupTasks, mentionedTaskIds) {
+  const mentioned = [];
+  const normal = [];
+  for (const t of groupTasks) {
+    if (mentionedTaskIds.has(Number(t.id))) {
+      mentioned.push(t);
+    } else {
+      normal.push(t);
+    }
+  }
+
+  mentioned.sort((a, b) => {
+    const isDoneA = (a.status === 'done' || a.status === 'cancelled') ? 1 : 0;
+    const isDoneB = (b.status === 'done' || b.status === 'cancelled') ? 1 : 0;
+    if (isDoneA !== isDoneB) return isDoneA - isDoneB;
+
+    if (a.due_date && b.due_date) {
+      const cmp = a.due_date.localeCompare(b.due_date);
+      if (cmp !== 0) return cmp;
+    } else if (a.due_date && !b.due_date) {
+      return -1;
+    } else if (!a.due_date && b.due_date) {
+      return 1;
+    }
+
+    const timeA = new Date(a.created_at || 0).getTime();
+    const timeB = new Date(b.created_at || 0).getTime();
+    return timeB - timeA;
+  });
+
+  return [...mentioned, ...normal];
 }
 
 function labelDot(color) {
@@ -191,6 +225,20 @@ export async function renderTasks(el, me) {
     try { localStorage.setItem(expandedDepartmentStorageKey, JSON.stringify([...expandedDepartments])); } catch (_) {}
   }
 
+  let unreadMentionCount = 0;
+  let unreadMentionsByProject = {};
+
+  async function refreshUnreadMentionCount() {
+    try {
+      const res = await api.getUnreadMentionCount();
+      unreadMentionCount = Number(res?.count || 0);
+      unreadMentionsByProject = res?.by_project || {};
+    } catch (_) {
+      unreadMentionCount = 0;
+      unreadMentionsByProject = {};
+    }
+  }
+
   try { users = (await api.getUsers()).users || []; } catch (_) {}
   try { departments = (await api.getDepartments()).departments || []; } catch (_) {}
 
@@ -199,7 +247,10 @@ export async function renderTasks(el, me) {
     const search = el.querySelector('#project-search')?.value.trim();
     if (search) params.search = search;
     if (canManage && el.querySelector('#project-archived')?.checked) params.include_archived = 1;
-    const res = await api.getTaskProjects(params);
+    const [res] = await Promise.all([
+      api.getTaskProjects(params),
+      refreshUnreadMentionCount(),
+    ]);
     projects = res.projects || [];
     if (selectedProjectId && !projects.some(p => String(p.id) === String(selectedProjectId))) selectedProjectId = '';
     renderProjects();
@@ -390,32 +441,6 @@ export async function renderTasks(el, me) {
     load(false);
   }
 
-  function renderProjectsOld() {
-    const list = el.querySelector('#project-list');
-    if (!list) return;
-    list.innerHTML = projects.map(p => `
-      <span style="display:inline-flex;gap:4px;align-items:center;">
-        <button class="filter-chip ${String(selectedProjectId) === String(p.id) ? 'active' : ''}" data-project="${p.id}" title="${esc(p.description || '')}">
-          ${esc(projectLabel(p))}
-          <span style="font-size:11px;color:var(--text-2);margin-left:4px;">${Number(p.task_count || 0)} việc</span>
-        </button>
-        ${canManage ? `<button class="btn-secondary btn-xs project-edit" data-edit-project="${p.id}">Sửa</button>` : ''}
-      </span>
-    `).join('') || `<span style="font-size:13px;color:var(--text-2);padding:8px 0;">Chưa có Project</span>`;
-
-    list.querySelectorAll('[data-project]').forEach(btn => btn.addEventListener('click', () => {
-      selectedProjectId = btn.dataset.project || '';
-      currentStatus = '';
-      renderProjects();
-      loadBoard();
-    }));
-    list.querySelectorAll('[data-edit-project]').forEach(btn => btn.addEventListener('click', e => {
-      e.stopPropagation();
-      const project = projects.find(p => String(p.id) === btn.dataset.editProject);
-      openProjectForm(project, users, departments, projects, project?.department || '', refreshProjectsAfterMutation);
-    }));
-  }
-
   function renderProjects() {
     const list = el.querySelector('#project-list');
     if (!list) return;
@@ -468,10 +493,16 @@ export async function renderTasks(el, me) {
           ` : ''}
         </div>
         <div id="${contentId}" class="task-project-nav-department-content" ${isExpanded ? '' : 'hidden'}>
-        ${departmentProjects.map(p => `
+        ${departmentProjects.map(p => {
+          const badgeCount = Number(unreadMentionsByProject[String(p.id)] || 0);
+          const showBadge = badgeCount > 0;
+          return `
           <div class="task-project-nav-row" data-project-row="${p.id}">
             <button type="button" class="task-project-nav-item ${String(selectedProjectId) === String(p.id) ? 'active' : ''}" data-project="${p.id}" title="${esc(p.description || '')}">
-              <span class="task-project-nav-item-title">${esc(projectLabel(p))}</span>
+              <span class="task-project-nav-item-head">
+                <span class="task-project-nav-item-title">${esc(projectLabel(p))}</span>
+                ${showBadge ? `<span class="task-project-nav-badge" title="Công việc cần chú ý / được nhắc">${badgeCount > 99 ? '99+' : badgeCount}</span>` : ''}
+              </span>
               <span class="task-project-nav-item-meta">${Number(p.task_count || 0)} việc · ${esc(projectStatusText(p.status))}</span>
             </button>
             ${canManage ? `
@@ -495,7 +526,8 @@ export async function renderTasks(el, me) {
               </div>
             ` : ''}
           </div>
-        `).join('')}
+          `;
+        }).join('')}
         </div>
       </section>
     `; }).join('');
@@ -1134,10 +1166,11 @@ export async function renderTasks(el, me) {
   }
 
   function renderGroupColumn(group, index, defaultGroup) {
-    const groupTasks = tasks.filter(t => {
+    const rawTasks = tasks.filter(t => {
       if (t.group_id) return String(t.group_id) === String(group.id);
       return String(group.id) === String(defaultGroup.id);
     });
+    const groupTasks = sortGroupTasks(rawTasks, mentionedTaskIds);
     return `
       <section class="task-group-column" data-group-id="${group.id || ''}">
         <div class="task-group-head">
@@ -1170,21 +1203,30 @@ export async function renderTasks(el, me) {
     const color = t.label_color_real || t.label_color || '#6366F1';
     const isMentioned = mentionedTaskIds.has(Number(t.id));
     return `
-      <div class="task-card ${isMentioned ? 'task-mentioned' : ''}" data-tid="${t.id}" data-group-id="${t.group_id || ''}" draggable="true" style="border-left-color:${esc(color)};background:#fff;margin:0;">
-        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px;margin-bottom:6px;">
+      <div class="task-card ${isMentioned ? 'task-card--mentioned' : ''}" data-tid="${t.id}" data-group-id="${t.group_id || ''}" draggable="true" style="border-left-color:${esc(color)};">
+        ${isMentioned ? `
+          <div class="task-card-mention-banner">
+            <span class="task-mention-icon" aria-hidden="true">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+            </span>
+            <span>Bạn được nhắc</span>
+          </div>
+        ` : ''}
+        <div class="task-card-header">
           <div class="task-card-title" title="${esc(t.title)}">${esc(t.title)}</div>
           <span class="task-card-drag-handle" title="Nắm kéo để đổi vị trí" aria-label="Nắm kéo vị trí">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.8"/><circle cx="15" cy="6" r="1.8"/><circle cx="9" cy="12" r="1.8"/><circle cx="15" cy="12" r="1.8"/><circle cx="9" cy="18" r="1.8"/><circle cx="15" cy="18" r="1.8"/></svg>
           </span>
         </div>
-        ${isMentioned ? '<div class="task-mentioned-badge">🔴 Bạn được nhắc</div>' : ''}
+        ${t.description ? `<div class="task-card-desc">${esc(t.description)}</div>` : ''}
         <div class="task-card-meta">
           ${taskStatusBadge(t.status)}
           ${priorityBadge(t.priority)}
           ${t.label_name ? `<span class="badge badge-gray" style="display:inline-flex;gap:5px;align-items:center;">${labelDot(color)}${esc(t.label_name)}</span>` : ''}
-          ${t.assignee_name ? `<span class="task-card-assignee">👤 ${esc(t.assignee_name)}${t.assignee_code ? ` · ${esc(t.assignee_code)}` : ''}</span>` : ''}
-          ${t.due_date ? `<span style="font-size:11px;color:var(--text-2)">Hạn: ${esc(t.due_date)}</span>` : ''}
-          ${Number(t.follower_count) > 0 ? `<span style="font-size:11px;color:var(--text-2)">👁 ${Number(t.follower_count)} theo dõi</span>` : ''}
+          ${t.assignee_name ? `<span class="task-card-assignee" title="Người được giao"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg> ${esc(t.assignee_name)}${t.assignee_code ? ` · ${esc(t.assignee_code)}` : ''}</span>` : ''}
+          ${t.due_date ? `<span class="task-card-due" title="Hạn hoàn thành"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> ${esc(t.due_date)}</span>` : ''}
+          ${(Number(t.subtask_total) > 0) ? `<span class="task-card-subtasks" title="Checklist"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> ${Number(t.subtask_done || 0)}/${Number(t.subtask_total)}</span>` : ''}
+          ${Number(t.follower_count) > 0 ? `<span class="task-card-followers" title="Người theo dõi"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> ${Number(t.follower_count)}</span>` : ''}
         </div>
         <div class="task-status-actions" aria-label="Cập nhật trạng thái công việc">
           ${[
@@ -1235,7 +1277,11 @@ export async function renderTasks(el, me) {
   });
 
   document.addEventListener('task-copied', () => { if (selectedProjectId) loadBoard(); }, { once: false });
-  document.addEventListener('task-mentions-read', () => { if (selectedProjectId) loadBoard(); }, { once: false });
+  document.addEventListener('task-mentions-read', async () => {
+    await refreshUnreadMentionCount();
+    renderProjects();
+    if (selectedProjectId) await loadBoard();
+  }, { once: false });
 
   await loadProjects();
 }

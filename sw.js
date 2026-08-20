@@ -1,5 +1,5 @@
 /* NetViet HR – Marketing – Service Worker (PWA) */
-const CACHE = 'netviet-hr-v13';
+const CACHE = 'netviet-hr-v16';
 const CORE = ['/', '/index.html'];
 
 self.addEventListener('install', (event) => {

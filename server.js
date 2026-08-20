@@ -4108,13 +4108,30 @@ export async function handle(request, env) {
   }
 
   if (path === '/api/notifications/task-mentions/unread-count' && request.method === 'GET') {
-    const row = await env.DB.prepare('SELECT COUNT(*) AS cnt FROM task_mention_notifications WHERE user_id=? AND is_read=0').bind(me.id).first();
-    return json({ count: Number(row?.cnt || 0) });
+    const totalRow = await env.DB.prepare('SELECT COUNT(*) AS cnt FROM task_mention_notifications WHERE user_id=? AND is_read=0').bind(me.id).first();
+    const { results: projectRows = [] } = await env.DB.prepare(
+      `SELECT t.team_project_id AS project_id, COUNT(*) AS cnt
+       FROM task_mention_notifications tmn
+       JOIN tasks t ON t.id = tmn.task_id
+       WHERE tmn.user_id = ? AND tmn.is_read = 0
+       GROUP BY t.team_project_id`
+    ).bind(me.id).all();
+    const by_project = {};
+    for (const r of projectRows) {
+      if (r.project_id) by_project[String(r.project_id)] = Number(r.cnt || 0);
+    }
+    return json({
+      count: Number(totalRow?.cnt || 0),
+      by_project,
+    });
   }
 
   if (path === '/api/notifications/task-mentions' && request.method === 'GET') {
     const { results = [] } = await env.DB.prepare(
-      'SELECT * FROM task_mention_notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 50'
+      `SELECT tmn.*, t.team_project_id AS project_id, t.title AS task_title
+       FROM task_mention_notifications tmn
+       LEFT JOIN tasks t ON t.id = tmn.task_id
+       WHERE tmn.user_id=? ORDER BY tmn.created_at DESC LIMIT 100`
     ).bind(me.id).all();
     return json({ notifications: results });
   }
