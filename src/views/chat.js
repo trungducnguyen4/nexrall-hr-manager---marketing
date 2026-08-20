@@ -1521,8 +1521,9 @@ async function onScrollLoadMore() {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
-function autoGrow(el) {
-  if (!el) return;
+function autoGrow(target) {
+  const el = target instanceof Element ? target : (target?.target instanceof Element ? target.target : (this instanceof Element ? this : null));
+  if (!el || !el.style) return;
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, 140) + 'px';
 }
