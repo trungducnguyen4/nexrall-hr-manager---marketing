@@ -23,34 +23,221 @@ const daysBetween = (start, end, session = 'full') => {
   return session === 'full' ? days : (start === end ? 0.5 : 0);
 };
 
+const isHcnsDepartment = (department) => ['hcns', 'phong hcns', 'nhan su', 'phong nhan su', 'hanh chinh nhan su', 'hr'].includes(String(department || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim());
+const isBodDepartment = (department) => ['ban giam doc', 'bgd', 'giam doc'].includes(String(department || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim());
+
 export async function renderLeave(el, me) {
-  const canConfigure = me.role === 'admin' || me.department === 'Phòng HCNS';
-  const canReview = canConfigure || me.role === 'manager' || me.department === 'Ban Giám Đốc';
-  let types = FALLBACK_TYPES, currentPage = 1;
-  try { const data = await api.getLeaveTypes(false); if (data.leaveTypes?.length) types = data.leaveTypes; } catch (_) {}
-  el.innerHTML = `<div class="page-header"><div class="page-header-left"><div class="page-title">🏖️ Nghỉ phép</div><div class="page-sub">Xin nghỉ, kiểm tra chính sách và theo dõi phê duyệt</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;">${canConfigure ? '<button id="leave-balance" class="btn-secondary btn-sm">⚖️ Điều chỉnh số dư</button><button id="leave-policy" class="btn-secondary btn-sm">⚙️ Cấu hình loại nghỉ</button>' : ''}<button id="btn-new-leave" class="btn-primary btn-sm">+ Xin nghỉ</button></div></div><div class="filter-bar" id="leave-filters"><span class="filter-chip active" data-status="">Tất cả</span><span class="filter-chip" data-status="pending">⏳ Chờ duyệt</span><span class="filter-chip" data-status="approved">✅ Đã duyệt</span><span class="filter-chip" data-status="rejected">❌ Từ chối</span></div>${canReview ? '<input id="leave-search" placeholder="Tìm theo tên, mã nhân viên..." style="width:100%;max-width:420px;margin-bottom:12px;"/>' : ''}<div id="leave-list">${loadingHTML()}</div>`;
+  const isManager = me.role === 'admin' || me.role === 'manager';
+  const canConfigure = me.role === 'admin' || isHcnsDepartment(me.department);
+  const canReview = canConfigure || isManager || isBodDepartment(me.department);
+
+  let types = FALLBACK_TYPES;
+  let currentTab = 'mine'; // 'mine' | 'review'
+  let currentStatus = '';
+  let currentPage = 1;
+
+  try {
+    const data = await api.getLeaveTypes(false);
+    if (data.leaveTypes?.length) types = data.leaveTypes;
+  } catch (_) {}
+
+  el.innerHTML = `
+    <div class="page-header">
+      <div class="page-header-left">
+        <div class="page-title">🏖️ Nghỉ phép</div>
+        <div class="page-sub">Xin nghỉ, kiểm tra chính sách và theo dõi phê duyệt</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        ${canConfigure ? '<button id="leave-balance" class="btn-secondary btn-sm">⚖️ Điều chỉnh số dư</button><button id="leave-policy" class="btn-secondary btn-sm">⚙️ Cấu hình loại nghỉ</button>' : ''}
+        <button id="btn-new-leave" class="btn-primary btn-sm">+ Xin nghỉ</button>
+      </div>
+    </div>
+
+    ${canReview ? `
+      <div class="filter-bar" id="leave-scope-tabs" style="margin-bottom:12px;">
+        <button type="button" class="filter-chip ${currentTab === 'mine' ? 'active' : ''}" data-tab="mine">📌 Đơn của tôi</button>
+        <button type="button" class="filter-chip ${currentTab === 'review' ? 'active' : ''}" data-tab="review">
+          📋 Duyệt đơn nhân viên
+          <span id="leave-pending-badge" class="badge badge-danger hidden" style="margin-left:6px;font-size:10px;padding:2px 6px;border-radius:10px;">0</span>
+        </button>
+      </div>
+    ` : ''}
+
+    <div class="filter-bar" id="leave-status-filters">
+      <span class="filter-chip ${currentStatus === '' ? 'active' : ''}" data-status="">Tất cả</span>
+      <span class="filter-chip ${currentStatus === 'pending' ? 'active' : ''}" data-status="pending">⏳ Chờ duyệt</span>
+      <span class="filter-chip ${currentStatus === 'approved' ? 'active' : ''}" data-status="approved">✅ Đã duyệt</span>
+      <span class="filter-chip ${currentStatus === 'rejected' ? 'active' : ''}" data-status="rejected">❌ Từ chối</span>
+    </div>
+
+    ${canReview ? `
+      <div id="leave-search-wrap" style="margin-bottom:12px;${currentTab === 'review' ? '' : 'display:none;'}">
+        <input id="leave-search" placeholder="Tìm theo tên, mã nhân viên, phòng ban, lý do..." style="width:100%;max-width:420px;"/>
+      </div>
+    ` : ''}
+
+    <div id="leave-list">${loadingHTML()}</div>
+  `;
+
   el.querySelector('#btn-new-leave').addEventListener('click', () => openLeaveForm(me, types, loadLeave));
-  el.querySelector('#leave-policy')?.addEventListener('click', () => openPolicyConfig(types, async () => { const data = await api.getLeaveTypes(false); types = data.leaveTypes; }));
+  el.querySelector('#leave-policy')?.addEventListener('click', () => openPolicyConfig(types, async () => {
+    const data = await api.getLeaveTypes(false);
+    if (data.leaveTypes?.length) types = data.leaveTypes;
+  }));
   el.querySelector('#leave-balance')?.addEventListener('click', () => openBalanceAdjustment());
-  el.querySelector('#leave-filters').addEventListener('click', event => { const chip = event.target.closest('.filter-chip'); if (!chip) return; el.querySelectorAll('#leave-filters .filter-chip').forEach(x => x.classList.toggle('active', x === chip)); currentPage = 1; loadLeave(); });
-  el.querySelector('#leave-search')?.addEventListener('input', () => { currentPage = 1; loadLeave(); });
+
+  el.querySelector('#leave-scope-tabs')?.addEventListener('click', event => {
+    const btn = event.target.closest('[data-tab]');
+    if (!btn) return;
+    currentTab = btn.dataset.tab;
+    el.querySelectorAll('#leave-scope-tabs [data-tab]').forEach(x => x.classList.toggle('active', x === btn));
+    const searchWrap = el.querySelector('#leave-search-wrap');
+    if (searchWrap) searchWrap.style.display = currentTab === 'review' ? '' : 'none';
+    currentPage = 1;
+    loadLeave();
+  });
+
+  el.querySelector('#leave-status-filters').addEventListener('click', event => {
+    const chip = event.target.closest('.filter-chip');
+    if (!chip) return;
+    currentStatus = chip.dataset.status || '';
+    el.querySelectorAll('#leave-status-filters .filter-chip').forEach(x => x.classList.toggle('active', x === chip));
+    currentPage = 1;
+    loadLeave();
+  });
+
+  el.querySelector('#leave-search')?.addEventListener('input', () => {
+    currentPage = 1;
+    loadLeave();
+  });
+
+  async function updatePendingBadge() {
+    if (!canReview) return;
+    const badge = el.querySelector('#leave-pending-badge');
+    if (!badge) return;
+    try {
+      const { leave = [] } = await api.getLeave({ scope: 'team', status: 'pending' });
+      const pendingCount = leave.length;
+      badge.textContent = pendingCount > 99 ? '99+' : String(pendingCount);
+      badge.classList.toggle('hidden', pendingCount < 1);
+    } catch (_) {
+      badge.classList.add('hidden');
+    }
+  }
 
   async function loadLeave() {
-    const list = el.querySelector('#leave-list'); list.innerHTML = loadingHTML();
+    const list = el.querySelector('#leave-list');
+    list.innerHTML = loadingHTML();
     try {
-      const status = el.querySelector('#leave-filters .active')?.dataset.status || '';
-      const { leave = [] } = await api.getLeave(status ? { status } : {});
+      const params = {};
+      if (currentStatus) params.status = currentStatus;
+      if (currentTab === 'review' && canReview) {
+        params.scope = 'team';
+      } else {
+        params.self = 1;
+      }
+
+      const { leave = [] } = await api.getLeave(params);
       const search = (el.querySelector('#leave-search')?.value || '').toLocaleLowerCase('vi');
-      const filtered = leave.filter(row => !search || `${row.employee_name || ''} ${row.employee_code || ''}`.toLocaleLowerCase('vi').includes(search));
-      const page = paginateRows(filtered, currentPage); currentPage = page.page;
-      if (!filtered.length) { list.innerHTML = emptyHTML('🏖️', 'Không có đơn nghỉ phép nào', 'Nhấn “+ Xin nghỉ” để tạo đơn mới'); return; }
-      list.innerHTML = page.rows.map(row => { const [cls,label] = statusData(row.status); const type = types.find(x => x.code === row.type) || row; return `<div class="leave-item"><div class="leave-type-icon" style="background:var(--primary-light);">🏖️</div><div style="flex:1;min-width:0;"><div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap;"><strong>${esc(row.type_name || type.name || row.type)}</strong><span class="badge ${paidClass(row)}">${esc(row.paid_label || paidLabel(row))}</span><span class="badge ${cls}">${label}</span></div>${canReview && row.employee_name ? `<div style="font-size:12px;color:var(--text-2);margin-top:3px;">👤 ${esc(row.employee_name)} · ${esc(row.department || '')}</div>` : ''}<div style="font-size:12px;color:var(--text-2);margin-top:4px;">📅 ${esc(row.start_date)} → ${esc(row.end_date)} · ${sessionLabel(row.leave_session)} · <strong>${row.total_days ?? daysBetween(row.start_date,row.end_date,row.leave_session)} ngày</strong></div><div style="font-size:12px;color:var(--text-3);margin-top:4px;">${esc(row.reason || '')}${row.handover_user_name ? ` · Bàn giao: ${esc(row.handover_user_name)}` : ''}${row.document_count ? ` · 📎 ${row.document_count} tệp` : ''}</div>${row.current_approver ? `<div style="font-size:12px;color:var(--primary);margin-top:3px;">Đang chờ: ${esc(row.current_approver)}</div>` : ''}</div><div style="display:flex;gap:6px;align-items:center;">${row.can_action ? '<button class="btn-xs btn-primary leave-approve" data-id="'+row.id+'">Duyệt</button><button class="btn-xs btn-danger leave-reject" data-id="'+row.id+'">Từ chối</button>' : ''}${Number(row.employee_id) === Number(me.id) && row.status === 'pending' ? '<button class="btn-xs btn-secondary leave-delete" data-id="'+row.id+'">Xóa</button>' : ''}</div></div>`; }).join('') + paginationHTML(page);
-      list.querySelectorAll('.leave-approve').forEach(button => button.addEventListener('click', async () => { try { await api.updateLeave(button.dataset.id, { status:'approved' }); toast('Đã chuyển đơn sang bước tiếp theo', 'success'); loadLeave(); } catch (error) { toast(error.message, 'error'); } }));
-      list.querySelectorAll('.leave-reject').forEach(button => button.addEventListener('click', async () => { const note = prompt('Ghi chú từ chối (không bắt buộc):') || ''; try { await api.updateLeave(button.dataset.id, { status:'rejected', note }); toast('Đã từ chối đơn', 'info'); loadLeave(); } catch (error) { toast(error.message, 'error'); } }));
-      list.querySelectorAll('.leave-delete').forEach(button => button.addEventListener('click', async () => { if (!confirm('Xóa đơn nghỉ này? Số dư đã giữ chỗ sẽ được hoàn lại.')) return; try { await api.deleteLeave(button.dataset.id); toast('Đã xóa đơn nghỉ', 'success'); loadLeave(); } catch (error) { toast(error.message, 'error'); } }));
-      bindPagination(list, next => { currentPage = next; loadLeave(); });
-    } catch (error) { list.innerHTML = emptyHTML('⚠️', error.message); }
+      const filtered = leave.filter(row => {
+        if (!search) return true;
+        const haystack = `${row.employee_name || ''} ${row.employee_code || ''} ${row.department || ''} ${row.reason || ''}`.toLocaleLowerCase('vi');
+        return haystack.includes(search);
+      });
+
+      const page = paginateRows(filtered, currentPage);
+      currentPage = page.page;
+
+      updatePendingBadge();
+
+      if (!filtered.length) {
+        const emptyMsg = currentTab === 'review' ? 'Không có đơn nghỉ phép nào của nhân viên' : 'Bạn chưa có đơn nghỉ phép nào';
+        list.innerHTML = emptyHTML('🏖️', emptyMsg, currentTab === 'mine' ? 'Nhấn “+ Xin nghỉ” để tạo đơn mới' : '');
+        return;
+      }
+
+      list.innerHTML = page.rows.map(row => {
+        const [cls, label] = statusData(row.status);
+        const type = types.find(x => x.code === row.type) || row;
+        const isApplicant = Number(row.employee_id) === Number(me.id) || String(row.user_id) === String(me.id);
+        const showApplicantHeader = currentTab === 'review' || (!isApplicant && row.employee_name);
+
+        return `
+          <div class="leave-item">
+            <div class="leave-type-icon" style="background:var(--primary-light);">🏖️</div>
+            <div style="flex:1;min-width:0;">
+              ${showApplicantHeader ? `
+                <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:4px;">
+                  👤 ${esc(row.employee_name || 'Nhân viên')}${row.employee_code ? ` · <span style="color:var(--text-2);font-weight:600;">${esc(row.employee_code)}</span>` : ''}${row.department ? ` · <span style="color:var(--primary);font-weight:600;">${esc(row.department)}</span>` : ''}
+                </div>
+              ` : ''}
+              <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap;">
+                <strong>${esc(row.type_name || type.name || row.type)}</strong>
+                <span class="badge ${paidClass(row)}">${esc(row.paid_label || paidLabel(row))}</span>
+                <span class="badge ${cls}">${label}</span>
+              </div>
+              <div style="font-size:12px;color:var(--text-2);margin-top:4px;">
+                📅 ${esc(row.start_date)} → ${esc(row.end_date)} · ${sessionLabel(row.leave_session)} · <strong>${row.total_days ?? daysBetween(row.start_date, row.end_date, row.leave_session)} ngày</strong>
+              </div>
+              <div style="font-size:12px;color:var(--text-3);margin-top:4px;">
+                ${esc(row.reason || '')}${row.handover_user_name ? ` · Bàn giao: ${esc(row.handover_user_name)}` : ''}${row.document_count ? ` · 📎 ${row.document_count} tệp` : ''}
+              </div>
+              ${row.current_approver ? `<div style="font-size:12px;color:var(--primary);margin-top:3px;">Đang chờ: ${esc(row.current_approver)}</div>` : ''}
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
+              ${row.can_action ? `
+                <button class="btn-xs btn-primary leave-approve" data-id="${row.id}">Duyệt</button>
+                <button class="btn-xs btn-danger leave-reject" data-id="${row.id}">Từ chối</button>
+              ` : ''}
+              ${isApplicant && row.status === 'pending' ? `
+                <button class="btn-xs btn-secondary leave-delete" data-id="${row.id}">Hủy đơn</button>
+              ` : ''}
+            </div>
+          </div>
+        `;
+      }).join('') + paginationHTML(page);
+
+      list.querySelectorAll('.leave-approve').forEach(button => button.addEventListener('click', async () => {
+        try {
+          await api.updateLeave(button.dataset.id, { status: 'approved' });
+          toast('Đã chuyển đơn sang bước tiếp theo', 'success');
+          loadLeave();
+        } catch (error) {
+          toast(error.message, 'error');
+        }
+      }));
+
+      list.querySelectorAll('.leave-reject').forEach(button => button.addEventListener('click', async () => {
+        const note = prompt('Ghi chú từ chối (không bắt buộc):') || '';
+        try {
+          await api.updateLeave(button.dataset.id, { status: 'rejected', note });
+          toast('Đã từ chối đơn', 'info');
+          loadLeave();
+        } catch (error) {
+          toast(error.message, 'error');
+        }
+      }));
+
+      list.querySelectorAll('.leave-delete').forEach(button => button.addEventListener('click', async () => {
+        if (!confirm('Hủy / xóa đơn nghỉ phép này? Số dư đã giữ chỗ (nếu có) sẽ được hoàn lại.')) return;
+        try {
+          await api.deleteLeave(button.dataset.id);
+          toast('Đã xóa đơn nghỉ phép', 'success');
+          loadLeave();
+        } catch (error) {
+          toast(error.message, 'error');
+        }
+      }));
+
+      bindPagination(list, next => {
+        currentPage = next;
+        loadLeave();
+      });
+    } catch (error) {
+      list.innerHTML = emptyHTML('⚠️', error.message);
+    }
   }
+
   loadLeave();
 }
 

@@ -50,6 +50,7 @@ const appEl        = document.getElementById('app');
 const contentEl    = document.getElementById('content');
 const sidebarEl    = document.getElementById('sidebar');
 const sidebarOverlay = document.getElementById('sidebar-overlay');
+const isDesktop = () => window.innerWidth >= 768;
 
 // ════════════════════════════════════════════════
 //  LOGIN
@@ -288,6 +289,11 @@ function initApp() {
   _mentionBadgeTimer = setInterval(refreshTaskMentionBadge, 30000);
   startChatUnreadWatcher();
 
+  // Restore sidebar preference on desktop
+  if (isDesktop() && localStorage.getItem('sidebar_collapsed') === '1') {
+    appEl.classList.add('sidebar-collapsed');
+  }
+
   if (_appInitialized) {
     route();
     return;
@@ -296,11 +302,17 @@ function initApp() {
 
   startClock();
 
-  document.getElementById('btn-menu').addEventListener('click', openSidebar);
-  document.getElementById('sidebar-close').addEventListener('click', closeSidebar);
-  sidebarOverlay.addEventListener('click', closeSidebar);
+  document.addEventListener('click', (e) => {
+    const toggleBtn = e.target.closest('#sidebar-edge-toggle, #btn-menu');
+    if (toggleBtn) {
+      e.preventDefault();
+      toggleSidebar();
+    }
+  });
+  document.getElementById('sidebar-close')?.addEventListener('click', closeMobileSidebar);
+  sidebarOverlay?.addEventListener('click', closeMobileSidebar);
   document.getElementById('header-av-btn').addEventListener('click', () => navigate(`#/users/${me.id}`));
-  document.getElementById('sidebar-profile-link').addEventListener('click', closeSidebar);
+  document.getElementById('sidebar-profile-link').addEventListener('click', closeMobileSidebar);
   document.addEventListener('hr-avatar-updated', event => {
     const { userId, url } = event.detail || {};
     if (Number(userId) !== Number(me?.id)) return;
@@ -318,7 +330,18 @@ function initApp() {
   });
 
   document.querySelectorAll('.nav-item[data-nav]').forEach(link => {
-    link.addEventListener('click', closeSidebar);
+    link.addEventListener('click', closeMobileSidebar);
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'b' || e.key === 'B')) {
+      const target = e.target;
+      const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+      if (!isInput) {
+        e.preventDefault();
+        toggleSidebar();
+      }
+    }
   });
 
   document.getElementById('btn-logout').addEventListener('click', async () => {
@@ -336,7 +359,7 @@ function initApp() {
   });
 
   document.getElementById('btn-change-pw').addEventListener('click', () => {
-    closeSidebar();
+    closeMobileSidebar();
     navigate('#/settings');
   });
 
@@ -598,14 +621,34 @@ export async function openTaskPanel(taskId) {
 // ════════════════════════════════════════════════
 //  SIDEBAR
 // ════════════════════════════════════════════════
-function openSidebar() {
-  sidebarEl.classList.add('open');
-  sidebarOverlay.classList.add('active');
+export function toggleSidebar() {
+  const app = document.getElementById('app');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebar-overlay');
+  if (isDesktop()) {
+    const isCollapsed = app ? app.classList.toggle('sidebar-collapsed') : false;
+    try { localStorage.setItem('sidebar_collapsed', isCollapsed ? '1' : '0'); } catch(_) {}
+  } else {
+    if (sidebar?.classList.contains('open')) {
+      sidebar.classList.remove('open');
+      overlay?.classList.remove('active');
+    } else {
+      sidebar?.classList.add('open');
+      overlay?.classList.add('active');
+    }
+  }
 }
-function closeSidebar() {
-  sidebarEl.classList.remove('open');
-  sidebarOverlay.classList.remove('active');
+function closeMobileSidebar() {
+  if (!isDesktop()) {
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('sidebar-overlay');
+    sidebar?.classList.remove('open');
+    overlay?.classList.remove('active');
+  }
 }
+
+window.toggleSidebar = toggleSidebar;
+window.closeMobileSidebar = closeMobileSidebar;
 
 // ════════════════════════════════════════════════
 //  CLOCK

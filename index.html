@@ -56,7 +56,7 @@
         <img class="brand-logo-img" src="https://pub-84c3902526ad4c82b488275b43b39e3a.r2.dev/agent-assets/c2523c17-d234-4f27-8357-3fa41ad984f6/b3e0a752-24e6-4465-a2e3-f6f6286c520e.jpg" alt="NetViet HR"/>
         <div class="brand-sub">Marketing Pro</div>
       </div>
-      <button class="sidebar-close" id="sidebar-close">✕</button>
+      <button class="sidebar-close" id="sidebar-close" title="Đóng menu">✕</button>
     </div>
 
     <a id="sidebar-profile-link" class="sidebar-profile" href="#/users" aria-label="Mở hồ sơ cá nhân">
@@ -145,12 +145,22 @@
     </div>
   </aside>
 
+  <!-- Sidebar edge toggle button (placed vertically at the center of the sidebar border) -->
+  <button id="sidebar-edge-toggle" class="sidebar-edge-toggle" type="button" onclick="toggleSidebar()" aria-label="Ẩn / Hiện thanh menu" title="Ẩn / Hiện menu (Ctrl + B)">
+    <svg class="sidebar-edge-icon-left" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="15 18 9 12 15 6"></polyline>
+    </svg>
+    <svg class="sidebar-edge-icon-right" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="9 18 15 12 9 6"></polyline>
+    </svg>
+  </button>
+
   <!-- Main -->
   <div class="main-wrap">
 
     <!-- Header -->
     <header id="header">
-      <button id="btn-menu" class="btn-icon" aria-label="Menu">☰</button>
+      <button id="btn-menu" class="btn-icon" onclick="toggleSidebar()" aria-label="Ẩn / Hiện menu" title="Ẩn / Hiện menu (Ctrl + B)">☰</button>
       <div class="header-title">
         <div id="header-date" class="header-date"></div>
         <div id="header-clock" class="header-clock"></div>

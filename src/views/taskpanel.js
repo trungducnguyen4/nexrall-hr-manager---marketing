@@ -59,6 +59,16 @@ async function loadTask() {
   }
 }
 
+function renderTaskDescription(desc) {
+  if (!desc) return '<div class="tp-empty" style="padding:6px 0;text-align:left;">Chưa có mô tả.</div>';
+  const clean = sanitizeRichText(desc);
+  if (!clean) return '<div class="tp-empty" style="padding:6px 0;text-align:left;">Chưa có mô tả.</div>';
+  if (!/<(p|div|br|ul|ol|li|h[1-6]|blockquote)\b/i.test(clean)) {
+    return clean.replace(/\n/g, '<br>');
+  }
+  return clean;
+}
+
 function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
   const panelTitle = document.getElementById('task-panel-title');
   if (panelTitle) panelTitle.textContent = task.title;
@@ -90,6 +100,10 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
     <div class="task-panel-layout">
     <main class="task-panel-main">
 
+      <div class="card tp-section">
+        <div class="tp-section-title"><span class="tp-section-label">📝 Mô tả</span></div>
+        <div class="tp-desc">${renderTaskDescription(task.description)}</div>
+      </div>
 
       <div class="card tp-section">
         <div class="tp-section-title">

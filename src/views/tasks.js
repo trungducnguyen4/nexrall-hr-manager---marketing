@@ -178,6 +178,7 @@ export async function renderTasks(el, me) {
         <div class="page-sub">Project → Nhóm công việc → Task → Subtask</div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+        <button id="btn-toggle-project-nav" class="btn-secondary btn-sm" title="Ẩn / Hiện danh sách Dự án để mở rộng tối đa bảng Kanban">📁 Danh sách dự án</button>
         ${canManage ? `<button id="btn-import-myxteam" class="btn-secondary btn-sm">Nhập MyXteam</button>` : ''}
         ${canManage ? `<button id="btn-new-project" class="btn-secondary btn-sm">+ Project</button>` : ''}
         <button id="btn-new-task" class="btn-primary btn-sm">+ Tạo việc</button>
@@ -187,12 +188,15 @@ export async function renderTasks(el, me) {
     <div class="task-workspace-shell">
       <aside class="card task-project-navigator" aria-label="Danh sách Project">
       <div class="card-header" style="align-items:center;gap:10px;flex-wrap:wrap;">
-        <div>
-          <div class="card-title">Workspace NetViet HR</div>
-          <div style="font-size:12px;color:var(--text-2);margin-top:2px;">Chọn Project để mở board nhóm công việc.</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;width:100%;">
+          <div>
+            <div class="card-title">Workspace NetViet HR</div>
+            <div style="font-size:12px;color:var(--text-2);margin-top:2px;">Chọn Project để mở board nhóm công việc.</div>
+          </div>
+          <button type="button" id="btn-collapse-side-nav" class="btn-icon btn-xs" title="Thu gọn danh sách dự án" aria-label="Thu gọn danh sách dự án">◀</button>
         </div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-          <input type="text" id="project-search" placeholder="Tìm Project..." style="min-width:220px;"/>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;width:100%;">
+          <input type="text" id="project-search" placeholder="Tìm Project..." style="min-width:0;flex:1;"/>
           ${canManage ? `<button id="btn-new-project-side" class="btn-primary btn-sm" title="Tạo Project mới">+ Project</button>` : ''}
           ${canManage ? `<button id="btn-new-project-group" class="btn-secondary btn-sm" title="Tạo Nhóm dự án (Project Group/Category)">+ Nhóm dự án</button>` : ''}
           ${canManage ? `<label style="font-size:12px;color:var(--text-2);display:flex;gap:6px;align-items:center;"><input type="checkbox" id="project-archived"/> Hiện lưu trữ</label>` : ''}
@@ -1288,6 +1292,12 @@ export async function renderTasks(el, me) {
   el.querySelector('#project-search').addEventListener('input', () => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(loadProjects, 250);
+  });
+  el.querySelector('#btn-toggle-project-nav')?.addEventListener('click', () => {
+    el.querySelector('.task-workspace-shell')?.classList.toggle('project-nav-collapsed');
+  });
+  el.querySelector('#btn-collapse-side-nav')?.addEventListener('click', () => {
+    el.querySelector('.task-workspace-shell')?.classList.toggle('project-nav-collapsed');
   });
   el.querySelector('#project-archived')?.addEventListener('change', loadProjects);
   el.querySelector('#btn-import-myxteam')?.addEventListener('click', openMyxteamImport);

@@ -49,7 +49,6 @@ const CACHE_TTL = {
   '/api/task-groups':       30_000,
   '/api/task-labels':       30_000,
   '/api/attendance':       20_000,
-  '/api/leave':            30_000,
   '/api/leave-types':      60_000,
   '/api/candidates':       30_000,
   '/api/payroll':          30_000,
@@ -444,7 +443,7 @@ export const api = {
   // Leave requests
   getLeave: (params = {}) => {
     const q = new URLSearchParams(params).toString();
-    return cachedGet('/api/leave' + (q ? '?' + q : ''));
+    return req('GET', '/api/leave' + (q ? '?' + q : ''));
   },
   createLeave: (d) => req('POST', '/api/leave', d).then(r => { inv('/api/leave'); return r; }),
   updateLeave: (id, d) => req('PUT', `/api/leave/${id}`, d).then(r => { inv('/api/leave'); return r; }),

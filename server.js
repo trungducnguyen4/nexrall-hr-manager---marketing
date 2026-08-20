@@ -7168,25 +7168,34 @@ const attendanceRateTo =
 
   if (path === '/api/leave' && request.method === 'GET') {
     const statusFilter = url.searchParams.get('status') || '';
-    const selfOnly     = url.searchParams.get('self') === '1';
-    const isAdminUser  = isHrOrBod(me) || me.role === 'manager';
+    const scope        = url.searchParams.get('scope') || ''; // 'mine' | 'team'
+    const selfOnly     = url.searchParams.get('self') === '1' || scope === 'mine';
+    const canReview    = me.role === 'admin' || isHrOrBod(me) || me.role === 'manager';
     let query, params;
-    if (!isAdminUser || selfOnly) {
-      query  = 'SELECT lr.*, u.full_name as employee_name, u.department, lt.name AS type_name, lt.paid_policy, lt.deducts_annual_leave, lt.requires_evidence, lt.requires_bod_approval, lt.max_days, lt.short_description AS type_short_description, lt.policy_description AS type_policy_description, lt.notice_hours AS type_notice_hours, lt.required_documents AS type_required_documents, lt.requires_handover AS type_requires_handover FROM leave_requests lr LEFT JOIN users u ON lr.user_id=u.employee_code OR CAST(lr.user_id AS TEXT)=CAST(u.id AS TEXT) LEFT JOIN leave_types lt ON lr.type=lt.code WHERE lr.user_id=?';
-      params = [String(me.id)];
+    if (!canReview || selfOnly) {
+      query  = `SELECT lr.*, u.full_name as employee_name, u.employee_code, u.department, lt.name AS type_name, lt.paid_policy, lt.deducts_annual_leave, lt.requires_evidence, lt.requires_bod_approval, lt.max_days, lt.short_description AS type_short_description, lt.policy_description AS type_policy_description, lt.notice_hours AS type_notice_hours, lt.required_documents AS type_required_documents, lt.requires_handover AS type_requires_handover FROM leave_requests lr
+                LEFT JOIN users u ON lr.user_id=u.employee_code OR CAST(lr.user_id AS TEXT)=CAST(u.id AS TEXT) OR lr.employee_id=u.id
+                LEFT JOIN leave_types lt ON lr.type=lt.code
+                WHERE (CAST(lr.user_id AS TEXT)=CAST(? AS TEXT) OR CAST(lr.employee_id AS TEXT)=CAST(? AS TEXT) OR lr.user_id=?)`;
+      params = [String(me.id), String(me.id), String(me.employee_code || '')];
     } else {
-      query  = `SELECT lr.*, u.full_name as employee_name, u.department, lt.name AS type_name, lt.paid_policy, lt.deducts_annual_leave, lt.requires_evidence, lt.requires_bod_approval, lt.max_days, lt.short_description AS type_short_description, lt.policy_description AS type_policy_description, lt.notice_hours AS type_notice_hours, lt.required_documents AS type_required_documents, lt.requires_handover AS type_requires_handover FROM leave_requests lr
-                LEFT JOIN users u ON CAST(lr.user_id AS TEXT)=CAST(u.id AS TEXT) OR lr.user_id=u.employee_code
+      query  = `SELECT lr.*, u.full_name as employee_name, u.employee_code, u.department, lt.name AS type_name, lt.paid_policy, lt.deducts_annual_leave, lt.requires_evidence, lt.requires_bod_approval, lt.max_days, lt.short_description AS type_short_description, lt.policy_description AS type_policy_description, lt.notice_hours AS type_notice_hours, lt.required_documents AS type_required_documents, lt.requires_handover AS type_requires_handover FROM leave_requests lr
+                LEFT JOIN users u ON CAST(lr.user_id AS TEXT)=CAST(u.id AS TEXT) OR lr.user_id=u.employee_code OR lr.employee_id=u.id
                 LEFT JOIN leave_types lt ON lr.type=lt.code
                 WHERE 1=1`;
       params = [];
-      if (!isHrOrBod(me)) { query += ' AND u.department=?'; params.push(me.department); }
+      if (!isHrOrBod(me)) {
+        query += ' AND u.department=?';
+        params.push(me.department);
+      }
     }
     if (statusFilter) { query += ' AND lr.status=?'; params.push(statusFilter); }
     query += ' ORDER BY lr.id DESC';
     const { results } = await env.DB.prepare(query).bind(...params).all();
     const leave = await Promise.all(results.map(async row => ({
-      ...row, type_name: row.type_name || row.type, paid_label: leavePaidLabel(row.paid_policy),
+      ...row,
+      type_name: row.type_name || row.type,
+      paid_label: leavePaidLabel(row.paid_policy),
       can_action: row.status === 'pending' && canAdvanceLeaveApproval(me, row),
       document_count: Number((await env.DB.prepare('SELECT COUNT(*) AS cnt FROM leave_request_documents WHERE leave_request_id=?').bind(row.id).first())?.cnt || 0),
     })));
@@ -7225,7 +7234,7 @@ const attendanceRateTo =
     const flow = leavePolicyFor(leaveType), needsBod = flow === 'manager_hr_bgd' || isHcnsApplicant;
     const currentApprover = isHcnsApplicant ? 'Trưởng phòng HCNS' : 'Quản lý trực tiếp';
     const r = await env.DB.prepare(
-      'INSERT INTO leave_requests (user_id,employee_id,type,start_date,end_date,reason,status,current_approver,approval_level,submitted_at,leave_session,total_days,handover_user_id,handover_user_name,approval_flow,balance_reserved_days) VALUES (?,?,?,?,?,?,?,?,?,datetime(\'now\',\'localtime\'),?,?,?,?,?,?,?)'
+      'INSERT INTO leave_requests (user_id,employee_id,type,start_date,end_date,reason,status,current_approver,approval_level,submitted_at,leave_session,total_days,handover_user_id,handover_user_name,approval_flow,balance_reserved_days) VALUES (?,?,?,?,?,?,?,?,?,datetime(\'now\',\'localtime\'),?,?,?,?,?,?)'
     ).bind(String(me.id), me.id, typeCode, b.start_date, b.end_date, reason, 'pending', currentApprover, 1, session, leaveDays, handoverUser?.id || null, handoverUser?.full_name || null, flow, balanceType ? leaveDays : 0).run();
     if (balanceType) await env.DB.batch([
       env.DB.prepare("UPDATE leave_balances SET available_days=available_days-?,updated_at=datetime('now','localtime') WHERE user_id=? AND leave_type_code=? AND balance_year=?").bind(leaveDays, me.id, balanceType, balanceYear),
@@ -7236,7 +7245,7 @@ const attendanceRateTo =
     return json({ ok: true, id: r.meta.last_row_id });
     } catch (e) {
       console.error('Leave create failed', e);
-      return json({ error: 'Không thể tạo yêu cầu nghỉ phép, vui lòng thử lại sau' }, 500);
+      return json({ error: e.message || 'Không thể tạo yêu cầu nghỉ phép, vui lòng thử lại sau' }, 500);
     }
   }
   const leaveDocumentMatch = path.match(/^\/api\/leave\/(\d+)\/documents\/([0-9a-fA-F-]{36})$/);
