@@ -2547,3 +2547,194 @@ html.native-private body::after { content: 'NetViet HR'; position: fixed; inset:
 .att-loc-review--rejected { background:rgba(239,68,68,.10); border:1px solid rgba(239,68,68,.35); color:var(--danger); }
 .att-loc-review--rejected span { font-weight:700; }
 .att-geo-dot.geo-dot-current { background:#3B82F6; box-shadow:0 0 0 2px #fff, 0 0 0 3.5px #3B82F6; }
+
+/* ═══════════════════════════════════════════════════════════ */
+/*  MOBILE & TABLET UI/UX AND TOUCH OPTIMIZATIONS             */
+/* ═══════════════════════════════════════════════════════════ */
+
+/* ── Prevent iOS Safari auto-zoom on small inputs ── */
+@media (max-width: 768px) {
+  input[type="text"],
+  input[type="password"],
+  input[type="email"],
+  input[type="number"],
+  input[type="tel"],
+  input[type="date"],
+  input[type="datetime-local"],
+  input[type="time"],
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* ── Tablet Viewport (768px - 1024px) ── */
+@media (min-width: 768px) and (max-width: 1024px) {
+  :root {
+    --gutter: 16px;
+    --sidebar-w: 220px;
+  }
+  .task-workspace-shell {
+    grid-template-columns: 220px minmax(0, 1fr);
+    gap: 12px;
+  }
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 12px !important;
+  }
+  .quick-actions {
+    grid-template-columns: repeat(3, 1fr) !important;
+    gap: 10px !important;
+  }
+  .reference-stats {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 12px !important;
+  }
+  .reference-actions {
+    grid-template-columns: repeat(3, 1fr) !important;
+    gap: 10px !important;
+  }
+  .dash-bottom-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .dash-reference {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* ── Mobile Viewport (< 768px) ── */
+@media (max-width: 767px) {
+  :root {
+    --gutter: 14px;
+    --header-h: 56px;
+  }
+
+  /* Header mobile touch optimizations */
+  #header {
+    height: 56px;
+    padding: 0 max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left));
+    gap: 8px;
+  }
+  .header-title { min-width: 0; }
+  .header-date { font-size: 11px; line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .header-clock { font-size: 14px; font-weight: 700; line-height: 16px; }
+  .header-alert-button {
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+    border-radius: 10px;
+  }
+  .header-chat-attention { display: none !important; }
+
+  /* Mobile Drawer sidebar */
+  #sidebar {
+    width: min(290px, 82vw);
+    border-radius: 0 16px 16px 0;
+    box-shadow: 8px 0 32px rgba(0, 0, 0, .45);
+  }
+  .sidebar-overlay {
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+  }
+  .sidebar-nav .nav-item {
+    min-height: 44px;
+    font-size: 14px;
+    padding: 10px 14px;
+  }
+  .sidebar-footer {
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+  }
+
+  /* Filter bars with smooth swipe */
+  .filter-bar {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    padding: 4px 0 8px;
+  }
+  .filter-bar::-webkit-scrollbar { display: none; }
+  .filter-chip {
+    min-height: 38px;
+    padding: 0 14px;
+    display: inline-flex;
+    align-items: center;
+    font-size: 13px;
+    border-radius: 999px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* Tasks & Kanban board mobile layout */
+  .task-workspace-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .task-project-navigator {
+    position: static;
+    max-height: none;
+    width: 100%;
+  }
+  .task-board-wrap {
+    scroll-snap-type: x mandatory;
+    padding-bottom: 24px;
+    -webkit-overflow-scrolling: touch;
+    gap: 12px;
+  }
+  .task-group-column {
+    scroll-snap-align: start;
+    min-width: 82vw;
+    max-width: 88vw;
+    flex: 0 0 85vw;
+    padding: 12px;
+  }
+
+  /* Modals as bottom sheets with safe keyboard clearance */
+  .modal-overlay {
+    align-items: flex-end !important;
+    padding: 0 !important;
+  }
+  .modal {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: min(92dvh, calc(100% - 20px)) !important;
+    border-radius: 20px 20px 0 0 !important;
+    margin: 0 !important;
+    padding: 18px 16px !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overscroll-behavior: contain !important;
+  }
+  .modal-header {
+    padding-bottom: 12px !important;
+    border-bottom: 1px solid var(--divider) !important;
+    flex-shrink: 0 !important;
+  }
+  .modal-body {
+    flex: 1 !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    padding: 14px 0 !important;
+  }
+  .modal-footer {
+    padding-top: 12px !important;
+    border-top: 1px solid var(--divider) !important;
+    flex-shrink: 0 !important;
+    padding-bottom: max(14px, env(safe-area-inset-bottom)) !important;
+  }
+
+  /* Attendance mobile clock buttons */
+  .att-clock-card {
+    padding: 18px 16px;
+  }
+  .att-clock-time {
+    font-size: 38px;
+  }
+  .att-btn-in, .att-btn-out {
+    height: 50px;
+    font-size: 14px;
+    border-radius: 12px;
+  }
+}
