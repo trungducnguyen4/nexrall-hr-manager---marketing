@@ -148,6 +148,18 @@ async function refreshEmployeeAlertBadge() {
   }
 }
 
+async function refreshTaskMentionBadge() {
+  const badge = document.getElementById('task-mention-badge');
+  if (!badge) return;
+  try {
+    const { count = 0 } = await api.getUnreadMentionCount();
+    badge.textContent = count > 99 ? '99+' : String(count);
+    badge.classList.toggle('hidden', count < 1);
+  } catch (_) {}
+}
+
+let _mentionBadgeTimer = null;
+
 function setChatUnreadBadge(value) {
   const count = Math.max(0, Number(value) || 0);
   const button = document.getElementById('header-chat-button');
@@ -240,6 +252,8 @@ function startChatUnreadWatcher() {
 function stopChatUnreadWatcher() {
   if (_chatUnreadTimer) window.clearInterval(_chatUnreadTimer);
   _chatUnreadTimer = null;
+  if (_mentionBadgeTimer) window.clearInterval(_mentionBadgeTimer);
+  _mentionBadgeTimer = null;
   if (_chatUnreadWatchersBound) {
     document.removeEventListener('visibilitychange', onChatUnreadForeground);
     window.removeEventListener('focus', onChatUnreadForeground);
@@ -269,6 +283,9 @@ function initApp() {
   const alertButton = document.getElementById('employee-alert-button');
   alertButton?.classList.remove('hidden');
   refreshEmployeeAlertBadge();
+  refreshTaskMentionBadge();
+  if (_mentionBadgeTimer) clearInterval(_mentionBadgeTimer);
+  _mentionBadgeTimer = setInterval(refreshTaskMentionBadge, 30000);
   startChatUnreadWatcher();
 
   if (_appInitialized) {
@@ -291,6 +308,7 @@ function initApp() {
     setAvatar(document.getElementById('sidebar-av'), me.full_name, me.avatar_color, me.avatar_initials, me.avatar_url);
     setAvatar(document.getElementById('header-av'), me.full_name, me.avatar_color, me.avatar_initials, me.avatar_url);
   });
+  document.addEventListener('task-mentions-read', refreshTaskMentionBadge);
   document.getElementById('employee-alert-button')?.addEventListener('click', () => navigate('#/notifications'));
   document.getElementById('header-chat-button')?.addEventListener('click', () => navigate('#/chat'));
   document.getElementById('header-chat-attention')?.addEventListener('click', event => {

@@ -135,7 +135,7 @@ function projectStatusText(status) {
 }
 
 export async function renderTasks(el, me) {
-  const canManage = canManageTasks(me);
+  let canManage = canManageTasks(me);
 
   el.innerHTML = `
     <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
@@ -436,19 +436,64 @@ export async function renderTasks(el, me) {
       const contentId = `task-project-department-${departmentIndex}`;
       return `
       <section class="task-project-nav-department ${isExpanded ? 'is-expanded' : 'is-collapsed'}">
-        <button type="button" class="task-project-nav-department-toggle" data-department-toggle="${esc(department)}" aria-expanded="${isExpanded}" aria-controls="${contentId}">
-          <span class="task-project-nav-department-arrow" aria-hidden="true">${isExpanded ? '▾' : '▸'}</span>
-          <span class="task-project-nav-department-title">${esc(department)}</span>
-          <span class="task-project-nav-department-count">${departmentProjects.length}</span>
-        </button>
+        <div class="task-project-nav-department-head">
+          <button type="button" class="task-project-nav-department-toggle" data-department-toggle="${esc(department)}" aria-expanded="${isExpanded}" aria-controls="${contentId}">
+            <span class="task-project-nav-department-arrow" aria-hidden="true">${isExpanded ? '▾' : '▸'}</span>
+            <span class="task-project-nav-department-title">${esc(department)}</span>
+            <span class="task-project-nav-department-count">${departmentProjects.length}</span>
+          </button>
+          ${canManage ? `
+            <div class="project-nav-menu-wrap">
+              <button type="button" class="project-nav-gear-btn department-gear-btn" data-department-gear="${departmentIndex}" title="Tùy chọn nhóm dự án" aria-label="Tùy chọn nhóm dự án">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="3"/>
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                </svg>
+              </button>
+              <div class="project-nav-dropdown" id="department-menu-${departmentIndex}" hidden>
+                <button type="button" class="project-nav-dropdown-item" data-action-rename-dept="${esc(department)}">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  <span>Đổi tên nhóm</span>
+                </button>
+                <button type="button" class="project-nav-dropdown-item" data-action-add-project-dept="${esc(department)}">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  <span>Thêm dự án vào nhóm</span>
+                </button>
+                <button type="button" class="project-nav-dropdown-item project-nav-dropdown-item--danger" data-action-delete-dept="${esc(department)}">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                  <span>Xóa nhóm dự án</span>
+                </button>
+              </div>
+            </div>
+          ` : ''}
+        </div>
         <div id="${contentId}" class="task-project-nav-department-content" ${isExpanded ? '' : 'hidden'}>
         ${departmentProjects.map(p => `
-          <div class="task-project-nav-row">
+          <div class="task-project-nav-row" data-project-row="${p.id}">
             <button type="button" class="task-project-nav-item ${String(selectedProjectId) === String(p.id) ? 'active' : ''}" data-project="${p.id}" title="${esc(p.description || '')}">
               <span class="task-project-nav-item-title">${esc(projectLabel(p))}</span>
               <span class="task-project-nav-item-meta">${Number(p.task_count || 0)} việc · ${esc(projectStatusText(p.status))}</span>
             </button>
-            ${canManage ? `<button type="button" class="btn-secondary btn-xs project-edit" data-edit-project="${p.id}" aria-label="Sửa ${esc(projectLabel(p))}">Sửa</button>` : ''}
+            ${canManage ? `
+              <div class="project-nav-menu-wrap">
+                <button type="button" class="project-nav-gear-btn" data-project-gear="${p.id}" title="Tùy chọn dự án" aria-label="Tùy chọn dự án">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="3"/>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                  </svg>
+                </button>
+                <div class="project-nav-dropdown" id="project-nav-menu-${p.id}" hidden>
+                  <button type="button" class="project-nav-dropdown-item" data-action-edit-project="${p.id}">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    <span>Sửa tên dự án</span>
+                  </button>
+                  <button type="button" class="project-nav-dropdown-item project-nav-dropdown-item--danger" data-action-delete-project="${p.id}">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                    <span>Xóa dự án</span>
+                  </button>
+                </div>
+              </div>
+            ` : ''}
           </div>
         `).join('')}
         </div>
@@ -463,6 +508,38 @@ export async function renderTasks(el, me) {
       renderProjects();
     }));
 
+    list.querySelectorAll('[data-department-gear]').forEach(btn => btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const idx = btn.dataset.departmentGear;
+      const menu = document.getElementById(`department-menu-${idx}`);
+      const isCurrentlyOpen = menu && !menu.hidden;
+      document.querySelectorAll('.project-nav-dropdown').forEach(m => m.hidden = true);
+      if (!isCurrentlyOpen && menu) {
+        menu.hidden = false;
+      }
+    }));
+
+    list.querySelectorAll('[data-action-rename-dept]').forEach(btn => btn.addEventListener('click', e => {
+      e.stopPropagation();
+      document.querySelectorAll('.project-nav-dropdown').forEach(m => m.hidden = true);
+      const department = btn.dataset.actionRenameDept;
+      renameDepartment(department, refreshProjectsAfterMutation);
+    }));
+
+    list.querySelectorAll('[data-action-add-project-dept]').forEach(btn => btn.addEventListener('click', e => {
+      e.stopPropagation();
+      document.querySelectorAll('.project-nav-dropdown').forEach(m => m.hidden = true);
+      const department = btn.dataset.actionAddProjectDept;
+      openProjectForm(null, users, departments, projects, department, refreshProjectsAfterMutation);
+    }));
+
+    list.querySelectorAll('[data-action-delete-dept]').forEach(btn => btn.addEventListener('click', e => {
+      e.stopPropagation();
+      document.querySelectorAll('.project-nav-dropdown').forEach(m => m.hidden = true);
+      const department = btn.dataset.actionDeleteDept;
+      confirmDeleteDepartment(department, byDepartment[department] || [], refreshProjectsAfterMutation);
+    }));
+
     list.querySelectorAll('[data-project]').forEach(item => item.addEventListener('click', () => {
       selectedProjectId = item.dataset.project || '';
       const project = projects.find(candidate => String(candidate.id) === String(selectedProjectId));
@@ -474,11 +551,171 @@ export async function renderTasks(el, me) {
       renderProjects();
       loadBoard();
     }));
-    list.querySelectorAll('[data-edit-project]').forEach(btn => btn.addEventListener('click', e => {
+
+    list.querySelectorAll('[data-project-gear]').forEach(btn => btn.addEventListener('click', e => {
       e.stopPropagation();
-      const project = projects.find(p => String(p.id) === btn.dataset.editProject);
+      const pid = btn.dataset.projectGear;
+      const menu = document.getElementById(`project-nav-menu-${pid}`);
+      const isCurrentlyOpen = menu && !menu.hidden;
+      document.querySelectorAll('.project-nav-dropdown').forEach(m => m.hidden = true);
+      if (!isCurrentlyOpen && menu) {
+        menu.hidden = false;
+      }
+    }));
+
+    list.querySelectorAll('[data-action-edit-project]').forEach(btn => btn.addEventListener('click', e => {
+      e.stopPropagation();
+      document.querySelectorAll('.project-nav-dropdown').forEach(m => m.hidden = true);
+      const project = projects.find(p => String(p.id) === btn.dataset.actionEditProject);
       openProjectForm(project, users, departments, projects, project?.department || '', refreshProjectsAfterMutation);
     }));
+
+    list.querySelectorAll('[data-action-delete-project]').forEach(btn => btn.addEventListener('click', e => {
+      e.stopPropagation();
+      document.querySelectorAll('.project-nav-dropdown').forEach(m => m.hidden = true);
+      const project = projects.find(p => String(p.id) === btn.dataset.actionDeleteProject);
+      if (project) confirmDeleteProject(project, refreshProjectsAfterMutation);
+    }));
+
+    document.addEventListener('click', () => {
+      document.querySelectorAll('.project-nav-dropdown').forEach(m => m.hidden = true);
+    });
+  }
+
+  function renameDepartment(oldDepartmentName, onDone) {
+    openModal('Đổi tên nhóm dự án', `
+      <div class="field"><label>Tên nhóm dự án mới *</label><input id="ren-dept-name" value="${esc(oldDepartmentName)}" placeholder="VD: PHÒNG MARKETING, VP TP.HCM..."/></div>
+      <p style="font-size:12px;color:var(--text-2);margin-top:8px;">Hệ thống sẽ cập nhật tên nhóm này cho toàn bộ các dự án thuộc nhóm.</p>
+    `, `
+      <button type="button" class="btn-secondary" id="ren-dept-cancel">Hủy</button>
+      <button type="button" class="btn-primary" id="ren-dept-save">Lưu đổi tên</button>
+    `);
+    document.getElementById('ren-dept-cancel')?.addEventListener('click', closeModal);
+    document.getElementById('ren-dept-save')?.addEventListener('click', async () => {
+      const newName = document.getElementById('ren-dept-name')?.value.trim();
+      if (!newName) { toast('Vui lòng nhập tên nhóm', 'error'); return; }
+      if (newName === oldDepartmentName) { closeModal(); return; }
+      const saveBtn = document.getElementById('ren-dept-save');
+      if (saveBtn) saveBtn.disabled = true;
+      try {
+        const deptProjects = projects.filter(p => (p.department || 'Khác') === oldDepartmentName);
+        for (const p of deptProjects) {
+          await api.updateTaskProject(p.id, {
+            name: p.name,
+            code: p.code,
+            type: p.type || 'project',
+            description: p.description,
+            department: newName,
+            manager_id: p.manager_id,
+            status: p.status,
+            start_date: p.start_date,
+            end_date: p.end_date,
+          });
+        }
+        if (expandedDepartments.has(oldDepartmentName)) {
+          expandedDepartments.delete(oldDepartmentName);
+          expandedDepartments.add(newName);
+          saveExpandedDepartments();
+        }
+        closeModal();
+        toast(`Đã đổi tên nhóm thành "${newName}"`, 'success');
+        onDone?.();
+      } catch (err) {
+        toast(err.message || 'Không thể đổi tên nhóm', 'error');
+        if (saveBtn) saveBtn.disabled = false;
+      }
+    });
+  }
+
+  function confirmDeleteDepartment(departmentName, deptProjects, onDone) {
+    const targets = (deptProjects && deptProjects.length) ? deptProjects : projects.filter(p => (p.department || 'Khác') === departmentName);
+    const totalTasks = targets.reduce((sum, p) => sum + Number(p.task_count || 0), 0);
+    openModal('Xác nhận xóa nhóm dự án', `
+      <div style="padding:6px 0;">
+        <div style="font-size:15px;color:var(--text);margin-bottom:12px;line-height:1.5;">
+          Bạn có chắc chắn muốn xóa toàn bộ nhóm dự án <strong>${esc(departmentName)}</strong>?
+        </div>
+        <div class="notice notice-danger" style="font-size:13px;line-height:1.5;">
+          ⚠️ <strong>Cảnh báo:</strong> Toàn bộ <strong>${targets.length} dự án</strong> và <strong>${totalTasks} công việc</strong> trong nhóm này sẽ bị xóa hoàn toàn khỏi hệ thống.
+        </div>
+      </div>
+    `, `
+      <button type="button" class="btn-secondary" id="btn-cancel-del-dept">Hủy bỏ</button>
+      <button type="button" class="btn-danger" id="btn-confirm-del-dept">Xác nhận xóa nhóm</button>
+    `);
+    document.getElementById('btn-cancel-del-dept')?.addEventListener('click', closeModal);
+    document.getElementById('btn-confirm-del-dept')?.addEventListener('click', async () => {
+      const btn = document.getElementById('btn-confirm-del-dept');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Đang xóa...';
+      }
+      try {
+        const toDelete = (deptProjects && deptProjects.length) ? deptProjects : projects.filter(p => (p.department || 'Khác') === departmentName);
+        for (const p of toDelete) {
+          await api.deleteTaskProjectPermanent(p.id);
+        }
+        expandedDepartments.delete(departmentName);
+        saveExpandedDepartments();
+        closeModal();
+        toast(`Đã xóa nhóm dự án "${departmentName}"`, 'success');
+        if (toDelete.some(p => String(p.id) === String(selectedProjectId))) {
+          selectedProjectId = '';
+        }
+        await loadProjects();
+        if (selectedProjectId) await loadBoard();
+        else renderEmptyBoard();
+        onDone?.();
+      } catch (err) {
+        toast(err.message || 'Không thể xóa nhóm', 'error');
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = 'Xác nhận xóa nhóm';
+        }
+      }
+    });
+  }
+
+  function confirmDeleteProject(project, onDone) {
+    openModal('Xác nhận xóa dự án', `
+      <div style="padding:6px 0;">
+        <div style="font-size:15px;color:var(--text);margin-bottom:12px;line-height:1.5;">
+          Bạn có chắc chắn muốn xóa vĩnh viễn dự án <strong>${esc(project.name)}</strong>?
+        </div>
+        <div class="notice notice-danger" style="font-size:13px;line-height:1.5;">
+          ⚠️ <strong>Cảnh báo:</strong> Toàn bộ <strong>${Number(project.task_count || 0)} công việc</strong> và các nhóm công việc bên trong dự án này sẽ bị xóa hoàn toàn khỏi hệ thống.
+        </div>
+      </div>
+    `, `
+      <button type="button" class="btn-secondary" id="btn-cancel-del-proj">Hủy bỏ</button>
+      <button type="button" class="btn-danger" id="btn-confirm-del-proj">Xác nhận xóa dự án</button>
+    `);
+    document.getElementById('btn-cancel-del-proj')?.addEventListener('click', closeModal);
+    document.getElementById('btn-confirm-del-proj')?.addEventListener('click', async () => {
+      const btn = document.getElementById('btn-confirm-del-proj');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Đang xóa...';
+      }
+      try {
+        await api.deleteTaskProjectPermanent(project.id);
+        closeModal();
+        toast(`Đã xóa dự án "${project.name}"`, 'success');
+        if (String(selectedProjectId) === String(project.id)) {
+          selectedProjectId = '';
+        }
+        await loadProjects();
+        if (selectedProjectId) await loadBoard();
+        else renderEmptyBoard();
+        onDone?.({ archivedProjectId: project.id });
+      } catch (err) {
+        toast(err.message || 'Không thể xóa dự án', 'error');
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = 'Xác nhận xóa dự án';
+        }
+      }
+    });
   }
 
   function renderEmptyBoard() {
@@ -490,21 +727,38 @@ export async function renderTasks(el, me) {
     `;
   }
 
+  let mentionedTaskIds = new Set();
+
   async function loadBoard() {
     if (!selectedProjectId) return renderEmptyBoard();
+    const board = el.querySelector('#project-board');
+    if (board && !board.querySelector('.task-board-wrap')) {
+      board.innerHTML = `<div class="card" style="padding:32px 20px;text-align:center;">${loadingHTML()}</div>`;
+    }
     const params = { project_id: selectedProjectId };
     if (currentStatus) params.status = currentStatus;
-    const [groupRes, labelRes, taskRes, memberRes] = await Promise.all([
-      api.getTaskGroups({ project_id: selectedProjectId }),
-      api.getTaskLabels({ project_id: selectedProjectId }),
-      api.getTasks(params),
-      api.getTaskProjectMembers(selectedProjectId).catch(() => ({ members: [] })),
-    ]);
-    groups = groupRes.groups || [];
-    labels = labelRes.labels || [];
-    tasks = taskRes.tasks || [];
-    projectMembers = memberRes.members || [];
-    renderBoard();
+    try {
+      const [groupRes, labelRes, taskRes, memberRes, mentionRes] = await Promise.all([
+        api.getTaskGroups({ project_id: selectedProjectId }),
+        api.getTaskLabels({ project_id: selectedProjectId }),
+        api.getTasks(params),
+        api.getTaskProjectMembers(selectedProjectId).catch(() => ({ members: [] })),
+        api.getTaskMentions().catch(() => ({ notifications: [] })),
+      ]);
+      groups = groupRes?.groups || [];
+      labels = labelRes?.labels || [];
+      tasks = taskRes?.tasks || [];
+      projectMembers = memberRes?.members || [];
+      canManage = !!groupRes?.canManage;
+      mentionedTaskIds = new Set((mentionRes?.notifications || []).filter(n => !n.is_read).map(n => Number(n.task_id)));
+      renderBoard();
+    } catch (err) {
+      console.error('loadBoard error:', err);
+      if (board) {
+        board.innerHTML = `<div class="card" style="padding:24px 18px;"><div class="notice notice-danger" style="margin:0;">⚠️ <strong>Không thể tải công việc:</strong> ${esc(err.message || 'Lỗi kết nối máy chủ')}</div></div>`;
+      }
+      toast(err.message || 'Lỗi tải danh sách công việc', 'error');
+    }
   }
 
   function memberAvatar(member) {
@@ -565,6 +819,15 @@ export async function renderTasks(el, me) {
             ${canManage ? '<span class="task-project-member-add" aria-hidden="true">+</span>' : ''}
           </button>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <div class="task-board-nav-pill" title="Điều hướng cuộn cột Kanban">
+              <button type="button" id="btn-scroll-board-left" class="board-pill-btn" title="Cuộn sang trái (hoặc Shift + cuộn chuột)" aria-label="Cuộn sang trái">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+              <span class="board-pill-divider"></span>
+              <button type="button" id="btn-scroll-board-right" class="board-pill-btn" title="Cuộn sang phải (hoặc Shift + cuộn chuột)" aria-label="Cuộn sang phải">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+              </button>
+            </div>
             ${canViewProjectTimeline(project) ? `<button id="btn-project-timeline" class="btn-secondary btn-sm">🕘 Timeline</button>` : ''}
             ${canManage ? `<button id="btn-new-group" class="btn-primary btn-task-group-create btn-sm">+ Nhóm công việc</button>` : ''}
           </div>
@@ -578,10 +841,24 @@ export async function renderTasks(el, me) {
           <span class="filter-chip ${currentStatus === 'cancelled' ? 'active' : ''}" data-status="cancelled">Hủy</span>
         </div>
       </div>
-      <div class="task-board-wrap">
+      <div class="task-board-wrap" id="task-board-wrap-el" tabindex="0" aria-label="Bảng Kanban công việc">
         ${groups.map((group, index) => renderGroupColumn(group, index, defaultGroup)).join('')}
       </div>
     `;
+
+    const boardWrap = board.querySelector('#task-board-wrap-el');
+    board.querySelector('#btn-scroll-board-left')?.addEventListener('click', () => {
+      boardWrap?.scrollBy({ left: -420, behavior: 'smooth' });
+    });
+    board.querySelector('#btn-scroll-board-right')?.addEventListener('click', () => {
+      boardWrap?.scrollBy({ left: 420, behavior: 'smooth' });
+    });
+    boardWrap?.addEventListener('wheel', e => {
+      if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && (e.shiftKey || e.altKey)) {
+        e.preventDefault();
+        boardWrap.scrollLeft += e.deltaY;
+      }
+    }, { passive: false });
 
     board.querySelector('#btn-new-group')?.addEventListener('click', () => openGroupForm(null, selectedProjectId, groups.length, loadBoard));
     board.querySelector('#btn-project-members')?.addEventListener('click', () => openProjectMembers(project));
@@ -613,7 +890,8 @@ export async function renderTasks(el, me) {
     }));
     board.querySelectorAll('.task-card').forEach(card => {
       card.addEventListener('click', e => {
-        if (e.target.closest('select,button')) return;
+        if (card.classList.contains('is-dragging')) return;
+        if (e.target.closest('select,button,.task-card-drag-handle,.task-status-action')) return;
         openTaskPanel(parseInt(card.dataset.tid));
       });
     });
@@ -621,28 +899,238 @@ export async function renderTasks(el, me) {
       currentStatus = chip.dataset.status;
       loadBoard();
     }));
+
+    bindTaskDragAndDrop(board);
   }
 
-  function renderGroupColumnOld(group, index, defaultGroup) {
-    const groupTasks = tasks.filter(t => {
-      if (t.group_id) return String(t.group_id) === String(group.id);
-      return String(group.id) === String(defaultGroup.id);
+  function bindTaskDragAndDrop(boardEl) {
+    let draggedCard = null;
+    let draggedTaskId = null;
+    let sourceGroupId = null;
+    let placeholder = null;
+    let isDragging = false;
+    let touchClone = null;
+    let touchOffsetX = 0;
+    let touchOffsetY = 0;
+
+    function createPlaceholder() {
+      if (!placeholder) {
+        placeholder = document.createElement('div');
+        placeholder.className = 'task-drop-placeholder';
+      }
+      return placeholder;
+    }
+
+    function cleanUp() {
+      if (draggedCard) {
+        draggedCard.classList.remove('is-dragging');
+      }
+      if (placeholder && placeholder.parentNode) {
+        placeholder.parentNode.removeChild(placeholder);
+      }
+      boardEl.querySelectorAll('.task-group-column.is-drag-over').forEach(col => col.classList.remove('is-drag-over'));
+      if (touchClone && touchClone.parentNode) {
+        touchClone.parentNode.removeChild(touchClone);
+        touchClone = null;
+      }
+      setTimeout(() => {
+        isDragging = false;
+        draggedCard = null;
+        draggedTaskId = null;
+        sourceGroupId = null;
+      }, 80);
+    }
+
+    async function applyDrop(targetList) {
+      if (!draggedCard || !placeholder || !targetList) return;
+      const targetCol = targetList.closest('.task-group-column');
+      const targetGroupId = targetList.dataset.groupId || '';
+
+      const emptyEl = targetList.querySelector('.task-group-empty');
+      if (emptyEl) emptyEl.remove();
+
+      targetList.insertBefore(draggedCard, placeholder);
+      placeholder.remove();
+
+      draggedCard.dataset.groupId = targetGroupId;
+      draggedCard.classList.remove('is-dragging');
+
+      const sourceList = sourceGroupId !== targetGroupId ? boardEl.querySelector(`.task-card-list[data-group-id="${sourceGroupId}"]`) : null;
+      if (sourceList && !sourceList.querySelector('.task-card')) {
+        sourceList.innerHTML = `<div class="task-group-empty">Chưa có task</div>`;
+      }
+
+      const targetTaskIds = Array.from(targetList.querySelectorAll('.task-card')).map(c => parseInt(c.dataset.tid)).filter(Boolean);
+      const moves = [];
+      targetTaskIds.forEach((id, idx) => {
+        moves.push({ id, group_id: targetGroupId ? parseInt(targetGroupId) : null, position: idx * 10 });
+      });
+
+      if (sourceList) {
+        const sourceTaskIds = Array.from(sourceList.querySelectorAll('.task-card')).map(c => parseInt(c.dataset.tid)).filter(Boolean);
+        sourceTaskIds.forEach((id, idx) => {
+          moves.push({ id, group_id: sourceGroupId ? parseInt(sourceGroupId) : null, position: idx * 10 });
+        });
+      }
+
+      const targetCountEl = targetCol?.querySelector('.task-group-count');
+      if (targetCountEl) targetCountEl.textContent = `${targetTaskIds.length} công việc`;
+      if (sourceList) {
+        const sourceCol = sourceList.closest('.task-group-column');
+        const sourceCountEl = sourceCol?.querySelector('.task-group-count');
+        if (sourceCountEl) sourceCountEl.textContent = `${sourceList.querySelectorAll('.task-card').length} công việc`;
+      }
+
+      const draggedTaskObj = tasks.find(t => String(t.id) === String(draggedTaskId));
+      if (draggedTaskObj) {
+        draggedTaskObj.group_id = targetGroupId ? parseInt(targetGroupId) : null;
+      }
+
+      try {
+        await api.reorderTasks({ project_id: selectedProjectId, moves });
+      } catch (err) {
+        toast('Không thể lưu thứ tự công việc: ' + (err.message || 'Lỗi mạng'), 'error');
+        await loadBoard();
+      }
+    }
+
+    function getDragAfterElement(container, y) {
+      const cards = [...container.querySelectorAll('.task-card:not(.is-dragging)')];
+      return cards.reduce((closest, child) => {
+        const box = child.getBoundingClientRect();
+        const offset = y - box.top - box.height / 2;
+        if (offset < 0 && offset > closest.offset) {
+          return { offset, element: child };
+        } else {
+          return closest;
+        }
+      }, { offset: Number.NEGATIVE_INFINITY }).element;
+    }
+
+    boardEl.querySelectorAll('.task-card').forEach(card => {
+      card.setAttribute('draggable', 'true');
+
+      card.addEventListener('dragstart', e => {
+        if (e.target.closest('button, select, input, a, .task-status-actions')) {
+          e.preventDefault();
+          return;
+        }
+        isDragging = true;
+        draggedCard = card;
+        draggedTaskId = card.dataset.tid;
+        sourceGroupId = card.dataset.groupId || '';
+        card.classList.add('is-dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', draggedTaskId);
+      });
+
+      card.addEventListener('dragend', () => {
+        cleanUp();
+      });
     });
-    return `
-      <section style="min-width:310px;max-width:360px;flex:0 0 330px;background:${esc(groupColor(group, index))};border:1px solid var(--border);border-radius:8px;padding:10px;">
-        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:8px;">
-          <div>
-            <div style="font-weight:800;color:var(--text);">${esc(taskGroupLabel(group.name))}</div>
-            <div style="font-size:12px;color:var(--text-2);">${groupTasks.length} công việc</div>
-          </div>
-          ${canManage ? `<div style="display:flex;gap:4px;"><button class="btn-secondary btn-xs" data-edit-group="${group.id}">Sửa</button><button class="btn-outline-danger" data-archive-group="${group.id}">Ẩn</button></div>` : ''}
-        </div>
-        <div style="display:flex;flex-direction:column;gap:8px;">
-          ${groupTasks.map(t => renderTaskCard(t)).join('') || `<div style="font-size:13px;color:var(--text-2);padding:12px;text-align:center;background:rgba(255,255,255,.55);border-radius:8px;">Chưa có task</div>`}
-        </div>
-        <button class="btn-secondary btn-sm" data-add-task-group="${group.id}" style="width:100%;margin-top:10px;">+ Thêm công việc</button>
-      </section>
-    `;
+
+    boardEl.querySelectorAll('.task-card-list').forEach(list => {
+      list.addEventListener('dragover', e => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        if (!draggedCard) return;
+
+        const col = list.closest('.task-group-column');
+        if (col) col.classList.add('is-drag-over');
+
+        const afterElement = getDragAfterElement(list, e.clientY);
+        const ph = createPlaceholder();
+        if (afterElement == null) {
+          list.appendChild(ph);
+        } else {
+          list.insertBefore(ph, afterElement);
+        }
+      });
+
+      list.addEventListener('dragleave', e => {
+        const col = list.closest('.task-group-column');
+        if (col && !col.contains(e.relatedTarget)) {
+          col.classList.remove('is-drag-over');
+        }
+      });
+
+      list.addEventListener('drop', async e => {
+        e.preventDefault();
+        if (!draggedCard) return;
+        await applyDrop(list);
+        cleanUp();
+      });
+    });
+
+    boardEl.querySelectorAll('.task-card-drag-handle').forEach(handle => {
+      const card = handle.closest('.task-card');
+      if (!card) return;
+
+      handle.addEventListener('touchstart', e => {
+        if (e.touches.length !== 1) return;
+        const touch = e.touches[0];
+        const rect = card.getBoundingClientRect();
+        touchOffsetX = touch.clientX - rect.left;
+        touchOffsetY = touch.clientY - rect.top;
+
+        isDragging = true;
+        draggedCard = card;
+        draggedTaskId = card.dataset.tid;
+        sourceGroupId = card.dataset.groupId || '';
+
+        touchClone = card.cloneNode(true);
+        touchClone.style.position = 'fixed';
+        touchClone.style.zIndex = '9999';
+        touchClone.style.width = `${rect.width}px`;
+        touchClone.style.left = `${touch.clientX - touchOffsetX}px`;
+        touchClone.style.top = `${touch.clientY - touchOffsetY}px`;
+        touchClone.style.opacity = '0.9';
+        touchClone.style.pointerEvents = 'none';
+        touchClone.style.boxShadow = '0 12px 30px rgba(0,0,0,0.2)';
+        touchClone.style.transform = 'scale(1.02)';
+        document.body.appendChild(touchClone);
+
+        draggedCard.classList.add('is-dragging');
+      }, { passive: false });
+
+      handle.addEventListener('touchmove', e => {
+        if (!isDragging || !touchClone || e.touches.length !== 1) return;
+        e.preventDefault();
+        const touch = e.touches[0];
+        touchClone.style.left = `${touch.clientX - touchOffsetX}px`;
+        touchClone.style.top = `${touch.clientY - touchOffsetY}px`;
+
+        const elemBelow = document.elementFromPoint(touch.clientX, touch.clientY);
+        const list = elemBelow?.closest('.task-card-list') || elemBelow?.closest('.task-group-column')?.querySelector('.task-card-list');
+        if (list) {
+          boardEl.querySelectorAll('.task-group-column.is-drag-over').forEach(col => col.classList.remove('is-drag-over'));
+          list.closest('.task-group-column')?.classList.add('is-drag-over');
+
+          const afterElement = getDragAfterElement(list, touch.clientY);
+          const ph = createPlaceholder();
+          if (afterElement == null) {
+            list.appendChild(ph);
+          } else {
+            list.insertBefore(ph, afterElement);
+          }
+        }
+      }, { passive: false });
+
+      handle.addEventListener('touchend', async () => {
+        if (!isDragging || !draggedCard) return;
+        if (placeholder && placeholder.parentNode) {
+          const targetList = placeholder.closest('.task-card-list');
+          if (targetList) {
+            await applyDrop(targetList);
+          }
+        }
+        cleanUp();
+      });
+
+      handle.addEventListener('touchcancel', () => {
+        cleanUp();
+      });
+    });
   }
 
   function renderGroupColumn(group, index, defaultGroup) {
@@ -651,15 +1139,26 @@ export async function renderTasks(el, me) {
       return String(group.id) === String(defaultGroup.id);
     });
     return `
-      <section class="task-group-column">
+      <section class="task-group-column" data-group-id="${group.id || ''}">
         <div class="task-group-head">
           <div>
             <div class="task-group-title">${esc(taskGroupLabel(group.name))}</div>
             <div class="task-group-count">${groupTasks.length} công việc</div>
           </div>
-          ${canManage ? `<div style="display:flex;gap:4px;"><button class="btn-secondary btn-xs" data-edit-group="${group.id}">Sửa</button><button class="btn-outline-danger" data-archive-group="${group.id}">Ẩn</button></div>` : ''}
+          ${canManage ? `
+            <div class="task-group-head-actions">
+              <button type="button" class="task-group-head-btn" data-edit-group="${group.id}" title="Đổi tên / sửa nhóm" aria-label="Sửa nhóm">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                <span>Sửa</span>
+              </button>
+              <button type="button" class="task-group-head-btn task-group-head-btn--archive" data-archive-group="${group.id}" title="Ẩn / Lưu trữ nhóm" aria-label="Ẩn nhóm">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                <span>Ẩn</span>
+              </button>
+            </div>
+          ` : ''}
         </div>
-        <div style="display:flex;flex-direction:column;gap:8px;">
+        <div class="task-card-list" data-group-id="${group.id || ''}" style="display:flex;flex-direction:column;gap:8px;min-height:48px;">
           ${groupTasks.map(t => renderTaskCard(t)).join('') || `<div class="task-group-empty">Chưa có task</div>`}
         </div>
         <button class="btn-secondary btn-sm" data-add-task-group="${group.id}" style="width:100%;margin-top:10px;">+ Thêm công việc</button>
@@ -669,9 +1168,16 @@ export async function renderTasks(el, me) {
 
   function renderTaskCard(t) {
     const color = t.label_color_real || t.label_color || '#6366F1';
+    const isMentioned = mentionedTaskIds.has(Number(t.id));
     return `
-      <div class="task-card" data-tid="${t.id}" style="border-left-color:${esc(color)};background:#fff;margin:0;">
-        <div class="task-card-title" title="${esc(t.title)}">${esc(t.title)}</div>
+      <div class="task-card ${isMentioned ? 'task-mentioned' : ''}" data-tid="${t.id}" data-group-id="${t.group_id || ''}" draggable="true" style="border-left-color:${esc(color)};background:#fff;margin:0;">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px;margin-bottom:6px;">
+          <div class="task-card-title" title="${esc(t.title)}">${esc(t.title)}</div>
+          <span class="task-card-drag-handle" title="Nắm kéo để đổi vị trí" aria-label="Nắm kéo vị trí">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.8"/><circle cx="15" cy="6" r="1.8"/><circle cx="9" cy="12" r="1.8"/><circle cx="15" cy="12" r="1.8"/><circle cx="9" cy="18" r="1.8"/><circle cx="15" cy="18" r="1.8"/></svg>
+          </span>
+        </div>
+        ${isMentioned ? '<div class="task-mentioned-badge">🔴 Bạn được nhắc</div>' : ''}
         <div class="task-card-meta">
           ${taskStatusBadge(t.status)}
           ${priorityBadge(t.priority)}
@@ -729,6 +1235,7 @@ export async function renderTasks(el, me) {
   });
 
   document.addEventListener('task-copied', () => { if (selectedProjectId) loadBoard(); }, { once: false });
+  document.addEventListener('task-mentions-read', () => { if (selectedProjectId) loadBoard(); }, { once: false });
 
   await loadProjects();
 }

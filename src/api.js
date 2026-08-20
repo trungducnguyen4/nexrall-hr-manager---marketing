@@ -354,6 +354,7 @@ export const api = {
   createTaskProject: (d) => req('POST', '/api/task-projects', d).then(r => { inv('/api/task-projects', '/api/tasks'); return r; }),
   updateTaskProject: (id, d) => req('PUT', `/api/task-projects/${id}`, d).then(r => { inv('/api/task-projects', '/api/tasks'); return r; }),
   archiveTaskProject: (id) => req('DELETE', `/api/task-projects/${id}`).then(r => { inv('/api/task-projects', '/api/tasks'); return r; }),
+  deleteTaskProjectPermanent: (id) => req('DELETE', `/api/task-projects/${id}?permanent=1`).then(r => { inv('/api/task-projects', '/api/tasks'); return r; }),
   saveTaskProjectMembers: (id, members) => req('PUT', `/api/task-projects/${id}/members`, { members }).then(r => { inv('/api/task-projects', '/api/tasks'); return r; }),
   getTaskProjectMembers: (id) => req('GET', `/api/task-projects/${id}/members`),
   importMyxteamProject: (project) => req('POST', '/api/task-imports/myxteam/project', { project }).then(r => {
@@ -378,15 +379,35 @@ export const api = {
   createTask: (d) => req('POST', '/api/tasks', d).then(r => { inv('/api/tasks'); return r; }),
   updateTask: (id, d) => req('PUT', `/api/tasks/${id}`, d).then(r => { inv('/api/tasks'); return r; }),
   deleteTask: (id) => req('DELETE', `/api/tasks/${id}`).then(r => { inv('/api/tasks'); return r; }),
+  reorderTasks: (d) => req('POST', '/api/tasks/reorder', d).then(r => { inv('/api/tasks'); return r; }),
   // Subtask/comment writes change task data that is included in the task list response,
   // so invalidate /api/tasks to prevent the list from serving stale subtask counts.
   createSubtask: (taskId, d) => req('POST', `/api/tasks/${taskId}/subtasks`, d).then(r => { inv('/api/tasks'); return r; }),
   updateSubtask: (id, d) => req('PUT', `/api/subtasks/${id}`, d).then(r => { inv('/api/tasks'); return r; }),
   deleteSubtask: (id) => req('DELETE', `/api/subtasks/${id}`).then(r => { inv('/api/tasks'); return r; }),
   getComments: (taskId) => req('GET', `/api/tasks/${taskId}/comments`), // always fresh (no cache)
-  addComment:  (taskId, content) => req('POST', `/api/tasks/${taskId}/comments`, { content }).then(r => { inv('/api/tasks'); return r; }),
+  addComment:  (taskId, content, mentions) => req('POST', `/api/tasks/${taskId}/comments`, { content, mentions: mentions || [] }).then(r => { inv('/api/tasks'); return r; }),
   addTaskFollower: (taskId, userId) => req('POST', `/api/tasks/${taskId}/followers`, userId ? { user_id: userId } : {}).then(r => { inv('/api/tasks'); return r; }),
   removeTaskFollower: (taskId, userId) => req('DELETE', `/api/tasks/${taskId}/followers/${userId}`).then(r => { inv('/api/tasks'); return r; }),
+  getUnreadMentionCount: () => req('GET', '/api/notifications/task-mentions/unread-count'),
+  getTaskMentions: () => req('GET', '/api/notifications/task-mentions'),
+  markMentionRead: (id) => req('PATCH', `/api/notifications/task-mentions/${id}/read`),
+
+  // Task attachments
+  getTaskAttachments: (taskId) => req('GET', `/api/tasks/${taskId}/attachments`),
+  uploadTaskAttachment: async (taskId, file) => {
+    const form = new FormData();
+    form.append('file', file);
+    const opts = { method: 'POST', headers: {} };
+    if (_token) opts.headers['X-Auth-Token'] = _token;
+    opts.body = form;
+    const r = await fetch(apiUrl(`/api/tasks/${taskId}/attachments`), opts);
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Upload thất bại');
+    inv('/api/tasks');
+    return data;
+  },
+  deleteTaskAttachment: (taskId, attachmentId) => req('DELETE', `/api/tasks/${taskId}/attachments/${attachmentId}`).then(r => { inv('/api/tasks'); return r; }),
 
   // Invoices
   getInvoices: (params = {}) => {

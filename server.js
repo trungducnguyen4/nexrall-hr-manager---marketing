@@ -1,4 +1,4 @@
-﻿// ===================== HR MANAGER — NEXRALL MARKETING =====================
+// ===================== HR MANAGER — NEXRALL MARKETING =====================
 // Auth strategy:
 //   1) POST /api/auth/login  → returns {token} stored in sessions table
 //   2) All /api/* routes accept token via X-Auth-Token header, Authorization: Bearer, Cookie, or ?token=
@@ -178,6 +178,31 @@ export async function migrate(env) {
   try { await ensurePayrollAdjustmentDismissalSchema(env); } catch (error) { console.error('Payroll adjustment dismissal schema check failed', error); }
   // Repair the old unaccented default label without touching custom group names.
   try { await normalizeDefaultTaskGroupNames(env); } catch (error) { console.error('Task group label repair failed', error); }
+  try { await env.DB.exec(`ALTER TABLE task_comments ADD COLUMN mentions TEXT`); } catch (_) {}
+  try { await env.DB.prepare(`CREATE TABLE IF NOT EXISTS task_mention_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    task_id INTEGER NOT NULL,
+    comment_id INTEGER NOT NULL,
+    mentioned_by INTEGER NOT NULL,
+    mentioned_by_name TEXT,
+    task_title TEXT,
+    comment_snippet TEXT,
+    is_read INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run(); } catch (error) { console.error('Task mention notification schema check failed', error); }
+  try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_task_mention_notif_user_read ON task_mention_notifications(user_id,is_read,created_at DESC)').run(); } catch (_) {}
+  try { await env.DB.prepare(`CREATE TABLE IF NOT EXISTS task_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    original_filename TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+    storage_key TEXT NOT NULL UNIQUE,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run(); } catch (error) { console.error('Task attachment schema check failed', error); }
+  try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_task_attachments_task ON task_attachments(task_id,created_at)').run(); } catch (_) {}
   try {
     const row = await env.DB.prepare("SELECT setting_value FROM settings WHERE setting_key='schema_version'").first();
     if (row?.setting_value === SCHEMA_VERSION) {
@@ -966,6 +991,7 @@ export async function migrate(env) {
   try { await env.DB.exec('ALTER TABLE tasks ADD COLUMN external_id TEXT'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE tasks ADD COLUMN external_metadata TEXT'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE tasks ADD COLUMN import_position INTEGER'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE tasks ADD COLUMN position REAL'); } catch (_) {}
   try { await env.DB.exec("INSERT INTO task_workspaces (id,name,description) SELECT 1,'Workspace NetViet HR','Default task workspace' WHERE NOT EXISTS (SELECT 1 FROM task_workspaces WHERE id=1)"); } catch (_) {}
   try { await env.DB.exec("INSERT INTO task_labels (workspace_id,name,code,color,description,is_active) SELECT 1,'Mac dinh','default','#6366F1','Nhan mac dinh' ,1 WHERE NOT EXISTS (SELECT 1 FROM task_labels WHERE workspace_id=1 AND code='default' AND project_id IS NULL)"); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id,date)'); } catch (_) {}
@@ -974,6 +1000,7 @@ export async function migrate(env) {
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(team_project_id)'); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_tasks_group ON tasks(group_id)'); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_tasks_label ON tasks(label_id)'); } catch (_) {}
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_tasks_project_group_pos ON tasks(team_project_id,group_id,position)'); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_task_project_members_project_user ON task_project_members(project_id,user_id)'); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_task_groups_project_archived ON task_groups(project_id,is_archived,position)'); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_task_labels_project_active ON task_labels(project_id,is_active)'); } catch (_) {}
@@ -3068,14 +3095,13 @@ async function ensureMyxteamTaskImportSchema(env) {
     'ALTER TABLE tasks ADD COLUMN external_id TEXT',
     'ALTER TABLE tasks ADD COLUMN external_metadata TEXT',
     'ALTER TABLE tasks ADD COLUMN import_position INTEGER',
+    'ALTER TABLE tasks ADD COLUMN position REAL',
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_projects_external ON task_projects(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_groups_external ON task_groups(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_external ON tasks(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL",
   ];
   for (const sql of statements) {
-    try { await env.DB.exec(sql); } catch (error) {
-      if (!/duplicate column name/i.test(String(error?.message || error))) throw error;
-    }
+    try { await env.DB.exec(sql); } catch (_) {}
   }
 }
 
@@ -4079,6 +4105,25 @@ export async function handle(request, env) {
       }, {}),
       window_days: windowDays,
     });
+  }
+
+  if (path === '/api/notifications/task-mentions/unread-count' && request.method === 'GET') {
+    const row = await env.DB.prepare('SELECT COUNT(*) AS cnt FROM task_mention_notifications WHERE user_id=? AND is_read=0').bind(me.id).first();
+    return json({ count: Number(row?.cnt || 0) });
+  }
+
+  if (path === '/api/notifications/task-mentions' && request.method === 'GET') {
+    const { results = [] } = await env.DB.prepare(
+      'SELECT * FROM task_mention_notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 50'
+    ).bind(me.id).all();
+    return json({ notifications: results });
+  }
+
+  const mentionReadMatch = path.match(/^\/api\/notifications\/task-mentions\/(\d+)\/read$/);
+  if (mentionReadMatch && request.method === 'PATCH') {
+    await env.DB.prepare('UPDATE task_mention_notifications SET is_read=1 WHERE id=? AND user_id=?')
+      .bind(parseInt(mentionReadMatch[1]), me.id).run();
+    return json({ ok: true });
   }
 
   if (path === '/api/notifications' && request.method === 'GET') {
@@ -6126,7 +6171,28 @@ const attendanceRateTo =
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
-      await env.DB.prepare("UPDATE task_projects SET status='archived',updated_at=datetime('now','localtime') WHERE id=?").bind(projectId).run();
+      const permanent = url.searchParams.get('permanent') === '1';
+      if (permanent) {
+        try {
+          const { results: projectTasks = [] } = await env.DB.prepare('SELECT id FROM tasks WHERE team_project_id=?').bind(projectId).all();
+          for (const t of projectTasks) {
+            try { await env.DB.prepare('DELETE FROM subtasks WHERE task_id=?').bind(t.id).run(); } catch (_) {}
+            try { await env.DB.prepare('DELETE FROM task_followers WHERE task_id=?').bind(t.id).run(); } catch (_) {}
+            try { await env.DB.prepare('DELETE FROM task_comments WHERE task_id=?').bind(t.id).run(); } catch (_) {}
+            try { await env.DB.prepare('DELETE FROM task_activity WHERE task_id=?').bind(t.id).run(); } catch (_) {}
+            try { await env.DB.prepare('DELETE FROM task_attachments WHERE task_id=?').bind(t.id).run(); } catch (_) {}
+            try { await env.DB.prepare('DELETE FROM task_mention_notifications WHERE task_id=?').bind(t.id).run(); } catch (_) {}
+          }
+          try { await env.DB.prepare('DELETE FROM tasks WHERE team_project_id=?').bind(projectId).run(); } catch (_) {}
+          try { await env.DB.prepare('DELETE FROM task_groups WHERE project_id=?').bind(projectId).run(); } catch (_) {}
+          try { await env.DB.prepare('DELETE FROM task_project_members WHERE project_id=?').bind(projectId).run(); } catch (_) {}
+          try { await env.DB.prepare('DELETE FROM task_projects WHERE id=?').bind(projectId).run(); } catch (_) {}
+        } catch (delErr) {
+          return json({ error: delErr.message || 'Không thể xóa dự án' }, 500);
+        }
+      } else {
+        await env.DB.prepare("UPDATE task_projects SET status='archived',updated_at=datetime('now','localtime') WHERE id=?").bind(projectId).run();
+      }
       return json({ ok: true });
     }
   }
@@ -6348,15 +6414,52 @@ const attendanceRateTo =
     }
     const sortMap = { due_date: 't.due_date', created_at: 't.created_at', priority: "CASE t.priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 WHEN 'low' THEN 1 ELSE 0 END", updated_at: 't.updated_at' };
     if (projectId && !requestedSort) {
-      // MyXteam cards keep their source order. Locally-created tasks (without
-      // import_position) retain the existing newest-first behavior afterwards.
-      q += ' ORDER BY CASE WHEN t.import_position IS NULL THEN 1 ELSE 0 END ASC, t.import_position ASC, t.created_at DESC';
+      // Prioritize explicit drag-and-drop position if set, then fallback to MyXteam import_position, then created_at DESC
+      q += ' ORDER BY CASE WHEN t.position IS NOT NULL THEN 0 WHEN t.import_position IS NOT NULL THEN 1 ELSE 2 END ASC, t.position ASC, t.import_position ASC, t.created_at DESC';
     } else {
       q += ` ORDER BY ${sortMap[sort] || sortMap.created_at} ${order}`;
     }
     const stmt = env.DB.prepare(q);
     const { results } = await (binds.length ? stmt.bind(...binds) : stmt).all();
     return json({ tasks: results });
+  }
+
+  if (path === '/api/tasks/reorder' && request.method === 'POST') {
+    const b = await request.json();
+    const projectId = intOrNull(b.project_id);
+    if (projectId && !(await canUseTaskProject(env, projectId, me))) {
+      return json({ error: 'Không có quyền với Team/Project này' }, 403);
+    }
+    const statements = [];
+    if (Array.isArray(b.moves) && b.moves.length > 0) {
+      for (const move of b.moves) {
+        const taskId = intOrNull(move.id || move.task_id);
+        if (!taskId) continue;
+        const groupId = move.group_id !== undefined ? intOrNull(move.group_id) : undefined;
+        const pos = Number.isFinite(Number(move.position)) ? Number(move.position) : 0;
+        if (groupId !== undefined) {
+          statements.push(env.DB.prepare("UPDATE tasks SET group_id=?, position=?, updated_at=datetime('now') WHERE id=?").bind(groupId, pos, taskId));
+        } else {
+          statements.push(env.DB.prepare("UPDATE tasks SET position=?, updated_at=datetime('now') WHERE id=?").bind(pos, taskId));
+        }
+      }
+    } else if (Array.isArray(b.task_ids) && b.task_ids.length > 0) {
+      const groupId = b.group_id !== undefined ? intOrNull(b.group_id) : undefined;
+      b.task_ids.forEach((taskIdRaw, index) => {
+        const taskId = intOrNull(taskIdRaw);
+        if (!taskId) return;
+        const pos = index * 10;
+        if (groupId !== undefined) {
+          statements.push(env.DB.prepare("UPDATE tasks SET group_id=?, position=?, updated_at=datetime('now') WHERE id=?").bind(groupId, pos, taskId));
+        } else {
+          statements.push(env.DB.prepare("UPDATE tasks SET position=?, updated_at=datetime('now') WHERE id=?").bind(pos, taskId));
+        }
+      });
+    }
+    if (statements.length > 0) {
+      await env.DB.batch(statements);
+    }
+    return json({ ok: true, updated: statements.length });
   }
 
   if (path === '/api/tasks' && request.method === 'POST') {
@@ -6454,9 +6557,10 @@ const attendanceRateTo =
       const nextColor = label ? label.color : taskLabelColor(nextStatus, nextPriority, b.label_color || task.label_color);
       const nextTitle = b.title || task.title;
       const nextAssigneeId = b.assigned_to ?? task.assigned_to;
+      const nextPosition = b.position !== undefined ? (b.position === null ? null : Number(b.position)) : task.position;
       await env.DB.prepare(
-        "UPDATE tasks SET title=?,description=?,assigned_to=?,department=?,date=?,due_date=?,status=?,priority=?,label_color=?,checkin_time=?,checkout_time=?,team_project_id=?,group_id=?,label_id=?,updated_at=datetime('now') WHERE id=?"
-      ).bind(nextTitle,b.description??task.description,nextAssigneeId,b.department??task.department,b.date??task.date,b.due_date??task.due_date,nextStatus,nextPriority,nextColor,b.checkin_time??task.checkin_time,b.checkout_time??task.checkout_time,nextProjectId,nextGroupId,nextLabelId,tid).run();
+        "UPDATE tasks SET title=?,description=?,assigned_to=?,department=?,date=?,due_date=?,status=?,priority=?,label_color=?,checkin_time=?,checkout_time=?,team_project_id=?,group_id=?,label_id=?,position=?,updated_at=datetime('now') WHERE id=?"
+      ).bind(nextTitle,b.description??task.description,nextAssigneeId,b.department??task.department,b.date??task.date,b.due_date??task.due_date,nextStatus,nextPriority,nextColor,b.checkin_time??task.checkin_time,b.checkout_time??task.checkout_time,nextProjectId,nextGroupId,nextLabelId,nextPosition,tid).run();
       for (const followerId of [...new Set([Number(task.assigned_by), Number(nextAssigneeId)].filter(Boolean))]) {
         const exists = await env.DB.prepare('SELECT id FROM task_followers WHERE task_id=? AND user_id=?').bind(tid, followerId).first();
         if (!exists) await env.DB.prepare('INSERT INTO task_followers (task_id,user_id) VALUES (?,?)').bind(tid, followerId).run();
@@ -6584,9 +6688,68 @@ const attendanceRateTo =
     if (request.method === 'POST') {
       const b = await request.json();
       if (!b.content) return json({ error: 'Nội dung không được trống' }, 400);
-      const r = await env.DB.prepare('INSERT INTO task_comments (task_id,user_id,content) VALUES (?,?,?)')
-        .bind(tid, me.id, b.content).run();
-      return json({ ok: true, id: r.meta.last_row_id });
+      const mentions = Array.isArray(b.mentions) ? b.mentions : [];
+      const r = await env.DB.prepare('INSERT INTO task_comments (task_id,user_id,content,mentions) VALUES (?,?,?,?)')
+        .bind(tid, me.id, b.content, mentions.length ? JSON.stringify(mentions) : null).run();
+      const commentId = r.meta.last_row_id;
+      // Create notifications for each mentioned user (skip self-mention)
+      if (mentions.length) {
+        const task = await env.DB.prepare('SELECT title FROM tasks WHERE id=?').bind(tid).first();
+        const taskTitle = task?.title || '';
+        for (const m of mentions) {
+          if (Number(m.user_id) === Number(me.id)) continue;
+          await env.DB.prepare(
+            'INSERT INTO task_mention_notifications (user_id,task_id,comment_id,mentioned_by,mentioned_by_name,task_title,comment_snippet) VALUES (?,?,?,?,?,?,?)'
+          ).bind(m.user_id, tid, commentId, me.id, me.full_name || '', taskTitle, b.content.slice(0, 120)).run();
+        }
+      }
+      return json({ ok: true, id: commentId });
+    }
+  }
+
+  // ── Task attachments ──────────────────────────────────────────────
+  const attachMatch = path.match(/^\/api\/tasks\/(\d+)\/attachments(?:\/(\d+))?$/);
+  if (attachMatch) {
+    const tid = parseInt(attachMatch[1]);
+    const attachmentId = attachMatch[2] ? parseInt(attachMatch[2]) : null;
+    const task = await env.DB.prepare('SELECT id,team_project_id FROM tasks WHERE id=?').bind(tid).first();
+    if (!task || !(await canUseTaskProject(env, task.team_project_id, me))) return json({ error: 'Không có quyền với công việc này' }, 403);
+
+    if (request.method === 'GET') {
+      const { results } = await env.DB.prepare(
+        'SELECT * FROM task_attachments WHERE task_id=? ORDER BY created_at'
+      ).bind(tid).all();
+      return json({ attachments: results });
+    }
+
+    if (request.method === 'POST') {
+      if (!env.HR_DOCUMENTS) return json({ error: 'Lưu trữ tài liệu chưa được cấu hình' }, 503);
+      const form = await request.formData().catch(() => null);
+      const file = form?.get('file');
+      if (!file || typeof file.stream !== 'function') return json({ error: 'Vui lòng chọn tệp đính kèm' }, 400);
+      const MAX_BYTES = 10 * 1024 * 1024;
+      if (!Number.isFinite(file.size) || file.size < 1 || file.size > MAX_BYTES) return json({ error: 'Tệp vượt quá 10 MB' }, 400);
+      const bytes = await file.arrayBuffer();
+      const contentType = String(file.type || 'application/octet-stream');
+      const timestamp = Date.now();
+      const safeName = safeDownloadName(file.name);
+      const storageKey = `task/${tid}/${timestamp}_${safeName}`;
+      await env.HR_DOCUMENTS.put(storageKey, bytes, {
+        httpMetadata: { contentType, cacheControl: 'private, no-store' },
+        customMetadata: { task_id: String(tid), user_id: String(me.id) },
+      });
+      await env.DB.prepare(
+        'INSERT INTO task_attachments (task_id,user_id,original_filename,content_type,byte_size,storage_key) VALUES (?,?,?,?,?,?)'
+      ).bind(tid, me.id, safeName, contentType, file.size, storageKey).run();
+      return json({ ok: true });
+    }
+
+    if (request.method === 'DELETE' && attachmentId) {
+      const doc = await env.DB.prepare('SELECT * FROM task_attachments WHERE id=? AND task_id=?').bind(attachmentId, tid).first();
+      if (!doc) return json({ error: 'Tập tin không tồn tại' }, 404);
+      await env.HR_DOCUMENTS.delete(doc.storage_key).catch(() => {});
+      await env.DB.prepare('DELETE FROM task_attachments WHERE id=?').bind(attachmentId).run();
+      return json({ ok: true });
     }
   }
 
@@ -8916,6 +9079,25 @@ const attendanceRateTo =
   // ═══════════════════════════════════════════════════════════════
   // END CHAT MODULE
   // ═══════════════════════════════════════════════════════════════
+
+  // ── Serve stored documents (task attachments, etc.) ──────────────
+  const docServeMatch = path.match(/^\/api\/documents\/(.+)$/);
+  if (docServeMatch && request.method === 'GET') {
+    const storageKey = decodeURIComponent(docServeMatch[1]);
+    if (!env.HR_DOCUMENTS) return json({ error: 'Lưu trữ tài liệu chưa được cấu hình' }, 503);
+    const object = await env.HR_DOCUMENTS.get(storageKey);
+    if (!object) return json({ error: 'Tệp không tồn tại' }, 404);
+    const disposition = url.searchParams.get('disposition') === 'attachment' ? 'attachment' : 'inline';
+    const filename = storageKey.split('/').pop() || 'document';
+    return new Response(object.body, {
+      headers: {
+        'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream',
+        'Content-Disposition': `${disposition}; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+        'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff',
+      },
+    });
+  }
 
   return json({ error: 'Not found' }, 404);
 }

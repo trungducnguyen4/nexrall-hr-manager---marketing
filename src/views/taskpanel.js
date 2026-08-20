@@ -134,7 +134,7 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
       <div class="card tp-section">
         <div class="tp-section-title"><span class="tp-section-label">💬 Bình luận</span><span class="tp-sub-count">${comments.length}</span></div>
         <div id="tp-comments" class="tp-comments">
-          ${comments.map(c => `<div class="comment"><div class="avatar avatar-sm" style="background:${esc(c.avatar_color || '#4F46E5')};flex-shrink:0;">${esc(c.avatar_initials || c.full_name?.charAt(0) || '?')}</div><div class="comment-body"><div class="comment-meta"><b>${esc(c.full_name)}</b><span>${esc(c.created_at?.slice(0,16) || '')}</span></div><div class="comment-text">${esc(c.content)}</div></div></div>`).join('') || '<div class="tp-empty">Chưa có bình luận.</div>'}
+          ${comments.map(c => `<div class="comment"><div class="avatar avatar-sm" style="background:${esc(c.avatar_color || '#4F46E5')};flex-shrink:0;">${esc(c.avatar_initials || c.full_name?.charAt(0) || '?')}</div><div class="comment-body"><div class="comment-meta"><b>${esc(c.full_name)}</b><span>${esc(c.created_at?.slice(0,16) || '')}</span></div><div class="comment-text">${renderCommentContent(c)}</div></div></div>`).join('') || '<div class="tp-empty">Chưa có bình luận.</div>'}
         </div>
         <div class="tp-comment-input" style="position:relative;">
           <div id="tp-mention-dropdown" class="tp-mention-dropdown hidden"></div>
@@ -208,26 +208,54 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
   });
 
   // ── Attachment ────────────────────────────────
+  async function loadAttachments() {
+    try {
+      const { attachments = [] } = await api.getTaskAttachments(task.id);
+      renderAttachments(attachments);
+    } catch (_) {}
+  }
+
+  function renderAttachments(attachments) {
+    const container = document.getElementById('tp-attachments');
+    if (!container) return;
+    if (!attachments.length) {
+      container.innerHTML = '<div style="font-size:12px;color:var(--text-2);margin-bottom:8px;">Chưa có tập tin đính kèm.</div>';
+      return;
+    }
+    container.innerHTML = attachments.map(a => `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px;">
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📎 <a href="/api/documents/${esc(a.storage_key)}" target="_blank" rel="noopener noreferrer">${esc(a.original_filename)}</a></span>
+      <span style="color:var(--text-2);font-size:11px;">${a.byte_size ? Math.round(a.byte_size/1024) + ' KB' : ''}</span>
+      <button type="button" class="btn-icon" data-del-attach="${a.id}" style="font-size:14px;" title="Xóa">×</button>
+    </div>`).join('');
+    container.querySelectorAll('[data-del-attach]').forEach(btn => btn.addEventListener('click', async () => {
+      if (!confirm('Xóa tập tin đính kèm?')) return;
+      try {
+        await api.deleteTaskAttachment(task.id, btn.dataset.delAttach);
+        toast('Đã xóa', 'success');
+        loadAttachments();
+      } catch (e) { toast(e.message, 'error'); }
+    }));
+  }
+
   const attachInput = document.getElementById('tp-attach-input');
   document.getElementById('tp-attach-btn')?.addEventListener('click', () => attachInput?.click());
-  attachInput?.addEventListener('change', (e) => {
+  attachInput?.addEventListener('change', async (e) => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
-    const container = document.getElementById('tp-attachments');
-    if (container) {
-      container.innerHTML = files.map((f, i) => `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px;">
-        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📎 ${esc(f.name)}</span>
-        <button type="button" class="btn-icon" data-remove-attach="${i}" style="font-size:14px;" title="Xóa">×</button>
-      </div>`).join('');
-      container.querySelectorAll('[data-remove-attach]').forEach(btn => btn.addEventListener('click', () => {
-        btn.closest('div')?.remove();
-        if (!container.querySelector('[data-remove-attach]')) {
-          container.innerHTML = '<div style="font-size:12px;color:var(--text-2);margin-bottom:8px;">Chưa có tập tin đính kèm.</div>';
-        }
-      }));
+    const MAX_BYTES = 10 * 1024 * 1024;
+    for (const f of files) {
+      if (f.size > MAX_BYTES) { toast('Tập tin ' + f.name + ' vượt quá 10 MB', 'error'); continue; }
+      if (f.size < 1) continue;
+      try {
+        await api.uploadTaskAttachment(task.id, f);
+        toast('Đã tải lên: ' + f.name, 'success');
+      } catch (err) { toast(err.message, 'error'); }
     }
     e.target.value = '';
+    loadAttachments();
   });
+
+  loadAttachments();
 
   // ── Comment ───────────────────────────────────
   const cmtInput = document.getElementById('tp-cmt-input');
@@ -314,11 +342,15 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
   cmtInput?.addEventListener('keydown', (e) => {
     if (mentionActive && e.key === 'Enter') {
       const active = mentionDropdown?.querySelector('.tp-mention-item');
-      if (active) { e.preventDefault(); active.click(); return; }
+      if (active) { e.preventDefault(); e.stopImmediatePropagation(); active.click(); return; }
     }
     if (mentionActive && e.key === 'Escape') {
       mentionDropdown?.classList.add('hidden');
       mentionActive = false;
+    }
+    if (!mentionActive && e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      document.getElementById('tp-cmt-send').click();
     }
   });
 
@@ -326,19 +358,42 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
     setTimeout(() => { mentionDropdown?.classList.add('hidden'); mentionActive = false; }, 200);
   });
 
+  // Extract mentions from text: @UserName patterns
+  function extractMentions(text) {
+    const result = [];
+    const seen = new Set();
+    mentionCandidates.forEach(c => {
+      const pattern = new RegExp('@' + c.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      if (pattern.test(text)) {
+        if (!seen.has(c.id)) { seen.add(c.id); result.push({ user_id: c.id, name: c.name }); }
+      }
+    });
+    return result;
+  }
+
   document.getElementById('tp-cmt-send').addEventListener('click', async () => {
     const content = cmtInput.value.trim();
     if (!content) return;
+    const mentions = extractMentions(content);
     try {
-      await api.addComment(task.id, content);
+      await api.addComment(task.id, content, mentions);
       cmtInput.value = '';
       toast('Đã gửi', 'success');
       loadTask();
     } catch (e) { toast(e.message, 'error'); }
   });
-  cmtInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); document.getElementById('tp-cmt-send').click(); }
-  });
+
+  // Mark task mention notifications as read when viewing the task
+  (async () => {
+    try {
+      const { notifications = [] } = await api.getTaskMentions();
+      const unread = notifications.filter(n => Number(n.task_id) === Number(task.id) && !n.is_read);
+      for (const n of unread) {
+        await api.markMentionRead(n.id);
+      }
+      if (unread.length) document.dispatchEvent(new CustomEvent('task-mentions-read'));
+    } catch (_) {}
+  })();
 
   document.getElementById('tp-follow-self')?.addEventListener('click', async () => {
     try { await api.addTaskFollower(task.id); toast('Đã theo dõi công việc', 'success'); loadTask(); }
@@ -349,6 +404,21 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
     try { await api.removeTaskFollower(task.id, Number(button.dataset.removeFollower)); toast('Đã bỏ theo dõi', 'success'); loadTask(); }
     catch (error) { toast(error.message, 'error'); }
   }));
+}
+
+// Render comment content with @mention highlighting
+function renderCommentContent(c) {
+  const text = esc(c.content);
+  let mentions = [];
+  try { mentions = typeof c.mentions === 'string' ? JSON.parse(c.mentions) : (Array.isArray(c.mentions) ? c.mentions : []); } catch (_) {}
+  if (!mentions.length) return text;
+  let html = text;
+  mentions.forEach(m => {
+    const name = esc(m.name || '');
+    const pattern = '@' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    html = html.replace(new RegExp(pattern, 'gi'), '<span class="tp-mention-highlight">@$&</span>');
+  });
+  return html;
 }
 
 function openFollowerPicker(task, followers, projectMembers) {
