@@ -1,5 +1,5 @@
 /* NetViet HR – Marketing – Service Worker (PWA) */
-const CACHE = 'netviet-hr-v16';
+const CACHE = 'netviet-hr-v18';
 const CORE = ['/', '/index.html'];
 
 self.addEventListener('install', (event) => {
@@ -41,7 +41,23 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Asset tinh (js/css/img): stale-while-revalidate
+  // JS/CSS: network-first de luon cap nhat code moi nhat
+  if (url.pathname.endsWith('.js') || url.pathname.endsWith('.css')) {
+    event.respondWith(
+      fetch(req)
+        .then((res) => {
+          if (res && res.status === 200) {
+            const copy = res.clone();
+            caches.open(CACHE).then((cache) => cache.put(req, copy));
+          }
+          return res;
+        })
+        .catch(() => caches.match(req))
+    );
+    return;
+  }
+
+  // Asset tinh khac (img/font): stale-while-revalidate
   event.respondWith(
     caches.match(req).then((cached) => {
       const network = fetch(req)

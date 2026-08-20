@@ -1,4 +1,4 @@
-﻿import { api } from '../api.js';
+import { api } from '../api.js';
 import { esc, taskStatusBadge, priorityBadge, toast, loadingHTML, openModal, closeModal } from '../utils.js';
 import { openTaskForm, sanitizeRichText } from './tasks.js';
 
@@ -90,10 +90,6 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
     <div class="task-panel-layout">
     <main class="task-panel-main">
 
-      <div class="card tp-section">
-        <div class="tp-section-title"><span class="tp-section-label">Mô tả</span></div>
-        ${task.description ? `<div class="rich-text-content">${sanitizeRichText(task.description)}</div>` : '<div class="tp-empty">Chưa có mô tả cho công việc này.</div>'}
-      </div>
 
       <div class="card tp-section">
         <div class="tp-section-title">

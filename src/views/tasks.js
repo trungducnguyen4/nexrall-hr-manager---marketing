@@ -225,17 +225,44 @@ export async function renderTasks(el, me) {
     try { localStorage.setItem(expandedDepartmentStorageKey, JSON.stringify([...expandedDepartments])); } catch (_) {}
   }
 
-  let unreadMentionCount = 0;
-  let unreadMentionsByProject = {};
+  let mentionedTaskIds = new Set();
+  let unreadMentionCountByProject = new Map();
 
   async function refreshUnreadMentionCount() {
     try {
-      const res = await api.getUnreadMentionCount();
-      unreadMentionCount = Number(res?.count || 0);
-      unreadMentionsByProject = res?.by_project || {};
+      // Call both APIs in parallel: one for notifications (to get task_id-level data),
+      // one for the pre-aggregated by_project count from the backend JOIN
+      const [countRes, mentionRes] = await Promise.all([
+        api.getUnreadMentionCount().catch(() => ({ count: 0, by_project: {} })),
+        api.getTaskMentions().catch(() => ({ notifications: [] })),
+      ]);
+
+      // Build map from notification-level data (most accurate – task → project)
+      const unreadMentions = (mentionRes?.notifications || []).filter(n => !n.is_read);
+      mentionedTaskIds = new Set(unreadMentions.map(n => Number(n.task_id)));
+      const mapFromNotifications = new Map();
+      for (const notification of unreadMentions) {
+        const projectId = Number(notification.project_id ?? notification.team_project_id);
+        if (!projectId) continue;
+        mapFromNotifications.set(
+          projectId,
+          (mapFromNotifications.get(projectId) || 0) + 1
+        );
+      }
+
+      if (mapFromNotifications.size > 0) {
+        // Notifications have project_id – use them directly
+        unreadMentionCountByProject = mapFromNotifications;
+      } else {
+        // Fallback: use server-side aggregated by_project (from backend JOIN)
+        const byProject = countRes?.by_project || {};
+        unreadMentionCountByProject = new Map(
+          Object.entries(byProject).map(([id, cnt]) => [Number(id), Number(cnt)])
+        );
+      }
     } catch (_) {
-      unreadMentionCount = 0;
-      unreadMentionsByProject = {};
+      unreadMentionCountByProject = new Map();
+      mentionedTaskIds = new Set();
     }
   }
 
@@ -459,12 +486,14 @@ export async function renderTasks(el, me) {
     list.innerHTML = Object.entries(byDepartment).map(([department, departmentProjects], departmentIndex) => {
       const isExpanded = hasSearch || expandedDepartments.has(department);
       const contentId = `task-project-department-${departmentIndex}`;
+      const deptMentionCount = departmentProjects.reduce((sum, p) => sum + (unreadMentionCountByProject.get(Number(p.id)) || 0), 0);
       return `
       <section class="task-project-nav-department ${isExpanded ? 'is-expanded' : 'is-collapsed'}">
         <div class="task-project-nav-department-head">
           <button type="button" class="task-project-nav-department-toggle" data-department-toggle="${esc(department)}" aria-expanded="${isExpanded}" aria-controls="${contentId}">
             <span class="task-project-nav-department-arrow" aria-hidden="true">${isExpanded ? '▾' : '▸'}</span>
             <span class="task-project-nav-department-title">${esc(department)}</span>
+            ${deptMentionCount > 0 && !isExpanded ? `<span class="task-project-mention-badge" title="${deptMentionCount} việc cần chú ý / được nhắc">${deptMentionCount > 99 ? '99+' : deptMentionCount}</span>` : ''}
             <span class="task-project-nav-department-count">${departmentProjects.length}</span>
           </button>
           ${canManage ? `
@@ -494,14 +523,13 @@ export async function renderTasks(el, me) {
         </div>
         <div id="${contentId}" class="task-project-nav-department-content" ${isExpanded ? '' : 'hidden'}>
         ${departmentProjects.map(p => {
-          const badgeCount = Number(unreadMentionsByProject[String(p.id)] || 0);
-          const showBadge = badgeCount > 0;
+          const mentionCount = unreadMentionCountByProject.get(Number(p.id)) || 0;
           return `
           <div class="task-project-nav-row" data-project-row="${p.id}">
             <button type="button" class="task-project-nav-item ${String(selectedProjectId) === String(p.id) ? 'active' : ''}" data-project="${p.id}" title="${esc(p.description || '')}">
               <span class="task-project-nav-item-head">
                 <span class="task-project-nav-item-title">${esc(projectLabel(p))}</span>
-                ${showBadge ? `<span class="task-project-nav-badge" title="Công việc cần chú ý / được nhắc">${badgeCount > 99 ? '99+' : badgeCount}</span>` : ''}
+                ${mentionCount > 0 ? `<span class="task-project-mention-badge" title="Công việc cần chú ý / được nhắc">${mentionCount > 99 ? '99+' : mentionCount}</span>` : ''}
               </span>
               <span class="task-project-nav-item-meta">${Number(p.task_count || 0)} việc · ${esc(projectStatusText(p.status))}</span>
             </button>
@@ -759,8 +787,6 @@ export async function renderTasks(el, me) {
     `;
   }
 
-  let mentionedTaskIds = new Set();
-
   async function loadBoard() {
     if (!selectedProjectId) return renderEmptyBoard();
     const board = el.querySelector('#project-board');
@@ -770,19 +796,19 @@ export async function renderTasks(el, me) {
     const params = { project_id: selectedProjectId };
     if (currentStatus) params.status = currentStatus;
     try {
-      const [groupRes, labelRes, taskRes, memberRes, mentionRes] = await Promise.all([
+      const [groupRes, labelRes, taskRes, memberRes] = await Promise.all([
         api.getTaskGroups({ project_id: selectedProjectId }),
         api.getTaskLabels({ project_id: selectedProjectId }),
         api.getTasks(params),
         api.getTaskProjectMembers(selectedProjectId).catch(() => ({ members: [] })),
-        api.getTaskMentions().catch(() => ({ notifications: [] })),
+        refreshUnreadMentionCount(),
       ]);
       groups = groupRes?.groups || [];
       labels = labelRes?.labels || [];
       tasks = taskRes?.tasks || [];
       projectMembers = memberRes?.members || [];
       canManage = !!groupRes?.canManage;
-      mentionedTaskIds = new Set((mentionRes?.notifications || []).filter(n => !n.is_read).map(n => Number(n.task_id)));
+      renderProjects();
       renderBoard();
     } catch (err) {
       console.error('loadBoard error:', err);
@@ -837,12 +863,16 @@ export async function renderTasks(el, me) {
     const project = selectedProject();
     if (!project) return renderEmptyBoard();
     const defaultGroup = groups[0] || { id: '', name: 'Công việc chung', position: 0, color: '#EEF2FF' };
+    const projectMentionCount = unreadMentionCountByProject.get(Number(project.id)) || 0;
 
     board.innerHTML = `
       <div class="card" style="margin-bottom:12px;">
         <div class="card-header" style="gap:10px;flex-wrap:wrap;align-items:center;">
           <div class="task-project-board-title">
-            <div class="card-title">${esc(projectLabel(project))}</div>
+            <div class="card-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span>${esc(projectLabel(project))}</span>
+              ${projectMentionCount > 0 ? `<span class="task-project-mention-badge" title="Công việc cần chú ý / được nhắc">${projectMentionCount > 99 ? '99+' : projectMentionCount}</span>` : ''}
+            </div>
             <div style="font-size:12px;color:var(--text-2);margin-top:2px;">${esc(project.department || 'Chưa chọn phòng ban')} · ${Number(project.member_count || 0)} thành viên</div>
           </div>
           <button type="button" id="btn-project-members" class="task-project-member-stack" aria-label="Xem thành viên Project">
@@ -1218,7 +1248,6 @@ export async function renderTasks(el, me) {
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.8"/><circle cx="15" cy="6" r="1.8"/><circle cx="9" cy="12" r="1.8"/><circle cx="15" cy="12" r="1.8"/><circle cx="9" cy="18" r="1.8"/><circle cx="15" cy="18" r="1.8"/></svg>
           </span>
         </div>
-        ${t.description ? `<div class="task-card-desc">${esc(t.description)}</div>` : ''}
         <div class="task-card-meta">
           ${taskStatusBadge(t.status)}
           ${priorityBadge(t.priority)}
