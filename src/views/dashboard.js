@@ -89,100 +89,73 @@ async function renderEmployeeDashboard(el, me) {
         </div>
       </header>
 
-      <!-- 2. Quick Action Shortcuts Bar -->
-      <div class="emp-quick-actions">
-        <a href="#/tasks" class="emp-quick-btn" id="btn-quick-new-task">
-          <span class="emp-quick-icon bg-indigo">➕</span>
-          <span>Tạo việc mới</span>
-        </a>
-        <a href="#/leave" class="emp-quick-btn">
-          <span class="emp-quick-icon bg-emerald">🏖️</span>
-          <span>Xin nghỉ phép</span>
-        </a>
-        <a href="#/attendance" class="emp-quick-btn">
-          <span class="emp-quick-icon bg-amber">⏰</span>
-          <span>Đăng ký OT / Ca</span>
-        </a>
-        <a href="#/invoices" class="emp-quick-btn">
-          <span class="emp-quick-icon bg-rose">💰</span>
-          <span>Phiếu lương</span>
-        </a>
-        <a href="#/evaluations" class="emp-quick-btn">
-          <span class="emp-quick-icon bg-teal">⭐</span>
-          <span>Đánh giá hiệu suất</span>
-        </a>
-      </div>
+      <!-- 2. Main 2x2 Balanced Grid Layout -->
+      <div class="emp-dashboard-grid">
+        <!-- 1. Top-Left: Task 5-Status Bar Chart -->
+        <article class="emp-panel emp-tasks-panel">
+          <header class="emp-panel-head">
+            <div>
+              <h2>📊 Tiến độ & Khối lượng công việc</h2>
+              <p>Tổng hợp công việc theo 5 trạng thái</p>
+            </div>
+            <a href="#/tasks" class="emp-link-subtle">Xem bảng việc →</a>
+          </header>
+          <div id="emp-task-barchart" class="emp-panel-body">
+            <div style="text-align:center;padding:16px;color:var(--text-3);">Đang tải biểu đồ công việc...</div>
+          </div>
+        </article>
 
-      <!-- 3. Main Two-Column Layout -->
-      <div class="emp-main-layout">
-        <!-- Left Column: Task Progress Bar Chart & My Tasks -->
-        <div class="emp-left-column">
-          <!-- 1. Task 5-Status Bar Chart -->
-          <article class="emp-panel emp-tasks-panel">
-            <header class="emp-panel-head">
-              <div>
-                <h2>📊 Tiến độ & Khối lượng công việc</h2>
-                <p>Tổng hợp công việc theo 5 trạng thái</p>
+        <!-- 2. Top-Right: Attendance Monthly Summary Widget: 2 Circular Progress Rings -->
+        <article class="emp-panel emp-att-panel">
+          <header class="emp-panel-head">
+            <div>
+              <h2>🗓️ Tổng quan kỳ công T${currentMonth}/${currentYear}</h2>
+              <p>Chuyên cần & ngày công thực tế</p>
+            </div>
+            <a href="#/attendance" class="emp-link-subtle">Lịch sử →</a>
+          </header>
+          <div id="emp-att-summary-content" class="emp-panel-body">
+            <div style="text-align:center;padding:16px;color:var(--text-3);">Đang tải dữ liệu kỳ công...</div>
+          </div>
+        </article>
+
+        <!-- 3. Bottom-Left: Actionable Tasks List -->
+        <article class="emp-panel emp-tasks-panel">
+          <header class="emp-panel-head">
+            <div>
+              <h2>📋 Công việc của tôi</h2>
+              <p>Nhiệm vụ được giao & bạn đang theo dõi</p>
+            </div>
+            <div class="emp-panel-actions">
+              <div class="emp-tab-pills" id="emp-task-tabs">
+                <button type="button" class="emp-tab-pill active" data-tab="active">Cần làm</button>
+                <button type="button" class="emp-tab-pill" data-tab="today">Hôm nay / Gấp</button>
+                <button type="button" class="emp-tab-pill" data-tab="done">Đã xong</button>
               </div>
               <a href="#/tasks" class="emp-link-subtle">Xem bảng việc →</a>
-            </header>
-            <div id="emp-task-barchart">
-              <div style="text-align:center;padding:16px;color:var(--text-3);">Đang tải biểu đồ công việc...</div>
             </div>
-          </article>
+          </header>
+          <div id="emp-tasks-list" class="emp-tasks-list emp-panel-body">
+            <div style="text-align:center;padding:24px;color:var(--text-3);">Đang tải công việc...</div>
+          </div>
+        </article>
 
-          <!-- 2. Actionable Tasks List -->
-          <article class="emp-panel emp-tasks-panel">
-            <header class="emp-panel-head">
-              <div>
-                <h2>📋 Công việc của tôi</h2>
-                <p>Nhiệm vụ được giao & bạn đang theo dõi</p>
-              </div>
-              <div class="emp-panel-actions">
-                <div class="emp-tab-pills" id="emp-task-tabs">
-                  <button type="button" class="emp-tab-pill active" data-tab="active">Cần làm</button>
-                  <button type="button" class="emp-tab-pill" data-tab="today">Hôm nay / Gấp</button>
-                  <button type="button" class="emp-tab-pill" data-tab="done">Đã xong</button>
-                </div>
-                <a href="#/tasks" class="emp-link-subtle">Xem bảng việc →</a>
-              </div>
-            </header>
-            <div id="emp-tasks-list" class="emp-tasks-list">
-              <div style="text-align:center;padding:24px;color:var(--text-3);">Đang tải công việc...</div>
+        <!-- 4. Bottom-Right: Leave & OT Requests Monthly Widget -->
+        <article class="emp-panel emp-requests-panel">
+          <header class="emp-panel-head">
+            <div>
+              <h2>🏖️ Đơn nghỉ phép & Tăng ca (OT)</h2>
+              <p>Tiến độ duyệt đơn trong tháng ${currentMonth}/${currentYear}</p>
             </div>
-          </article>
-        </div>
-
-        <!-- Right Column: Attendance Circular Progress & Leave/OT Monthly Widget -->
-        <div class="emp-right-column">
-          <!-- 1. Attendance Monthly Summary Widget: 2 Circular Progress Rings -->
-          <article class="emp-panel emp-att-panel">
-            <header class="emp-panel-head">
-              <h2>🗓️ Tổng quan kỳ công T${currentMonth}/${currentYear}</h2>
-              <a href="#/attendance" class="emp-link-subtle">Lịch sử →</a>
-            </header>
-            <div id="emp-att-summary-content">
-              <div style="text-align:center;padding:16px;color:var(--text-3);">Đang tải dữ liệu kỳ công...</div>
+            <div style="display:flex;gap:6px;">
+              <a href="#/leave" class="btn-secondary btn-xs" style="text-decoration:none;">+ Nghỉ phép</a>
+              <a href="#/attendance" class="btn-secondary btn-xs" style="text-decoration:none;">+ Đăng ký OT</a>
             </div>
-          </article>
-
-          <!-- 2. Leave & OT Requests Monthly Widget -->
-          <article class="emp-panel emp-requests-panel">
-            <header class="emp-panel-head">
-              <div>
-                <h2>🏖️ Đơn nghỉ phép & Tăng ca (OT)</h2>
-                <p>Tiến độ duyệt đơn trong tháng ${currentMonth}/${currentYear}</p>
-              </div>
-              <div style="display:flex;gap:6px;">
-                <a href="#/leave" class="btn-secondary btn-xs" style="text-decoration:none;">+ Nghỉ phép</a>
-                <a href="#/attendance" class="btn-secondary btn-xs" style="text-decoration:none;">+ Đăng ký OT</a>
-              </div>
-            </header>
-            <div id="emp-requests-content">
-              <div style="text-align:center;padding:16px;color:var(--text-3);">Đang tải đơn từ & tăng ca...</div>
-            </div>
-          </article>
-        </div>
+          </header>
+          <div id="emp-requests-content" class="emp-panel-body">
+            <div style="text-align:center;padding:16px;color:var(--text-3);">Đang tải đơn từ & tăng ca...</div>
+          </div>
+        </article>
       </div>
     </section>
   `;
@@ -255,7 +228,6 @@ async function renderEmployeeDashboard(el, me) {
             <span class="emp-barchart-total">Tổng: <strong>${total}</strong> công việc</span>
             <span class="emp-barchart-rate">Tỷ lệ hoàn thành: <strong>${doneRate}%</strong></span>
           </div>
-          <a href="#/tasks" style="font-size:12px;color:var(--primary);font-weight:600;text-decoration:none;">Xem bảng Kanban →</a>
         </div>
 
         <div class="emp-barchart-bars">
@@ -305,6 +277,16 @@ async function renderEmployeeDashboard(el, me) {
           </a>
         </div>
       </div>
+
+      <div class="emp-att-details-pills">
+        <span class="emp-att-detail-pill"><b style="color:#3b82f6;">●</b> Chờ làm: <b>${todoCount}</b></span>
+        <span class="emp-att-detail-pill"><b style="color:#f59e0b;">●</b> Đang làm: <b>${inProgressCount}</b></span>
+        <span class="emp-att-detail-pill"><b style="color:#8b5cf6;">●</b> Review: <b>${reviewCount}</b></span>
+        <span class="emp-att-detail-pill"><b style="color:#10b981;">●</b> Hoàn thành: <b>${doneCount}</b></span>
+        <span class="emp-att-detail-pill"><b style="color:#ef4444;">●</b> Hủy: <b>${cancelledCount}</b></span>
+      </div>
+
+      <a href="#/tasks" class="btn-secondary btn-sm" style="display:flex;align-items:center;justify-content:center;gap:6px;margin-top:10px;text-decoration:none;">Xem bảng công việc Kanban →</a>
     `;
   }
 
@@ -642,49 +624,197 @@ const dashLink = (href, icon, value, title, detail, tone = 'neutral') => `<a cla
 const progress = (value, tone = '') => `<div class="admin-dash-progress ${tone}" role="progressbar" aria-valuenow="${Math.round(value)}" aria-valuemin="0" aria-valuemax="100"><i style="width:${Math.max(0, Math.min(100, value))}%"></i></div>`;
 
 async function renderAdminDashboard(el, me) {
-  el.innerHTML = `<section class="admin-dashboard admin-dashboard-loading"><div class="admin-dash-hero"><div><p>TỔNG QUAN VẬN HÀNH</p><h1>Đang tải dữ liệu vận hành…</h1><small>Dashboard điều hành sử dụng dữ liệu trực tiếp từ hệ thống.</small></div></div><div class="admin-dash-stat-grid">${Array.from({length:5},()=>'<div class="admin-dash-skeleton"></div>').join('')}</div></section>`;
+  el.innerHTML = `<section class="admin-dashboard admin-dashboard-loading"><div class="admin-dash-hero"><div><p>TỔNG QUAN VẬN HÀNH</p><h1>Đang tải dữ liệu vận hành…</h1><small>Dashboard điều hành sử dụng dữ liệu trực tiếp từ hệ thống.</small></div></div><div class="admin-dash-stat-grid">${Array.from({length:4},()=>'<div class="admin-dash-skeleton"></div>').join('')}</div></section>`;
   let data;
   try { data = await api.getAdminDashboard(); } catch (error) { el.innerHTML = `<div class="reference-empty">Không thể tải Dashboard điều hành. ${esc(error.message || 'Vui lòng thử lại.')}</div>`; return; }
-  const a=data.attendance,t=data.tasks,k=data.kpi,p=data.people,ap=data.approvals,al=data.employee_alerts;
+  const a=data.attendance || {}, p=data.people || {}, ap=data.approvals || {}, al=data.employee_alerts || {};
   const date = new Date().toLocaleDateString('vi-VN',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
   const actions = data.action_items.length ? data.action_items.map(item=>`<article class="admin-action ${esc(item.severity)}"><span aria-hidden="true"></span><div><strong>${esc(item.title)}</strong><small>${esc(item.detail)}</small></div><a href="${esc(item.action_url)}" class="btn-secondary btn-sm">${esc(item.action_label || 'Xem')}</a></article>`).join('') : '<p class="reference-empty">Không có hạng mục cần xử lý ngay.</p>';
   const insights = data.insights.map(item=>`<li class="${esc(item.severity)}">${esc(item.text)}</li>`).join('');
-  const missing = (a.missing_people||[]).slice(0,4).map(x=>`<li>${esc(x.full_name)} · ${esc(x.department||'Chưa phân phòng')}</li>`).join('') || '<li>Chưa có danh sách chi tiết cần chú ý.</li>';
-  const deptBars=(t.overdue_by_department||[]).map(row=>`<div class="admin-row-bar"><span>${esc(row.department)}</span><b>${number(row.count)}</b>${progress(t.overdue?Number(row.count)/t.overdue*100:0,'danger')}</div>`).join('') || '<p class="reference-empty">Chưa có việc quá hạn.</p>';
   const campaigns=(data.campaigns.items||[]).map(c=>`<div class="admin-campaign"><strong>${esc(c.name)}</strong><span>${c.budget?percent(c.spent/c.budget*100):'Chưa có ngân sách'}</span>${progress(c.budget?c.spent/c.budget*100:0,c.spent>c.budget?'danger':'')}<small>${number(c.spent)} / ${number(c.budget)} đ</small></div>`).join('') || '<p class="reference-empty">Chưa có chiến dịch đang chạy.</p>';
-  el.innerHTML = `<section class="admin-dashboard"><header class="admin-dash-hero"><div><p>TỔNG QUAN VẬN HÀNH</p><h1>Chào ${esc(me.full_name || 'Admin')}</h1><small>${esc(date)} · Cập nhật ${esc(data.generated_at || '')}</small></div><div class="admin-dash-health"><b>Hệ thống đang hoạt động</b><span>${data.action_items.length ? `${data.action_items.length} vấn đề cần chú ý` : 'Không có vấn đề quan trọng cần xử lý'}</span></div></header><div class="admin-dash-stat-grid">${dashLink('#/users','users',number(p.active),'Nhân sự hoạt động',`${number(p.new_hires_month)} mới · ${number(p.probation)} thử việc · ${number(p.interns)} TTS`)}${dashLink('#/attendance','clock3',`${number(a.checked_in)} / ${number(a.eligible)}`,'Đã check-in',`${percent(a.checkin_rate)} · ${number(a.late)} đi muộn · ${number(a.approved_leave)} nghỉ phép`,a.checkin_rate>=80?'success':'warning')}${dashLink('#/tasks','clipboardList',number(t.overdue),'Việc quá hạn',t.overdue?'Cần theo dõi tiến độ':'Công việc đúng tiến độ',t.overdue?'danger':'success')}${dashLink(ap.leave>=ap.kpi?'#/leave':'#/kpis','circleAlert',number(ap.total),'Chờ xử lý',`${number(ap.leave)} nghỉ phép · ${number(ap.kpi)} KPI · ${number(ap.overtime)} tăng ca`,ap.total?'warning':'success')}${dashLink('#/notifications','bell',number(al.total),'Cảnh báo nhân sự',`${number(al.critical)} khẩn · ${number(al.warning)} cần chú ý`,al.critical?'danger':al.total?'warning':'success')}</div><div class="admin-dash-primary"><article class="admin-dash-panel"><header><h2>Cần xử lý ngay</h2><a href="#/notifications">Xem tất cả</a></header>${actions}</article><article class="admin-dash-panel"><header><h2>Insight hôm nay</h2></header><ul class="admin-insights">${insights}</ul></article></div><div class="admin-dash-grid"><article class="admin-dash-panel"><header><h2>Tình hình chấm công hôm nay</h2><a href="#/attendance">Xem chấm công →</a></header>${progress(a.checkin_rate,'success')}<div class="admin-metric-list"><span>Đã check-in <b>${number(a.checked_in)} · ${percent(a.checkin_rate)}</b></span><span>Đi muộn <b>${number(a.late)}</b></span><span>Nghỉ phép <b>${number(a.approved_leave)}</b></span><span>Chưa check-in <b>${number(a.not_checked_in)}</b></span></div><h3>Chưa check-in</h3><ul class="admin-people">${missing}</ul></article><article class="admin-dash-panel"><header><h2>Tiến độ công việc</h2><a href="#/tasks">Xem công việc →</a></header><div class="admin-metric-list"><span>Đang mở <b>${number(t.open)}</b></span><span>Đang làm <b>${number(t.in_progress)}</b></span><span>Review <b>${number(t.review)}</b></span><span>Hoàn thành 7 ngày <b>${number(t.done_last_7_days)}</b></span></div><h3>Việc quá hạn theo phòng ban</h3>${deptBars}</article><article class="admin-dash-panel"><header><h2>KPI tháng ${k.month}/${k.year}</h2><a href="#/kpis">Xem KPI nhân viên →</a></header><strong class="admin-kpi-coverage">${number(k.with_plan)} / ${number(k.eligible_employees)}</strong><span>Đã có kế hoạch KPI · ${percent(k.coverage_percent)} coverage</span>${progress(k.coverage_percent,'primary')}<div class="admin-metric-list"><span>Chưa thiết lập <b>${number(k.without_plan)}</b></span><span>Đang thực hiện <b>${number(k.draft)}</b></span><span>Chờ review <b>${number(k.submitted)}</b></span><span>Đã duyệt <b>${number(k.approved)}</b></span></div></article><article class="admin-dash-panel"><header><h2>Tuyển dụng</h2><a href="#/recruitment">Xem tuyển dụng →</a></header><div class="admin-metric-list"><span>Đang xử lý <b>${number(data.recruitment.active)}</b></span><span>Phỏng vấn <b>${number(data.recruitment.interview)}</b></span><span>Đang offer <b>${number(data.recruitment.offer)}</b></span><span>Đã tuyển tháng này <b>${number(data.recruitment.hired_this_month)}</b></span></div></article></div><article class="admin-dash-panel admin-campaign-panel"><header><h2>Chiến dịch Marketing</h2><a href="#/campaigns">Xem chiến dịch →</a></header><div class="admin-campaign-summary"><b>${number(data.campaigns.active)} đang chạy</b><span>${number(data.campaigns.spent)} / ${number(data.campaigns.budget)} đ${data.campaigns.spent_percent===null?'':' · '+percent(data.campaigns.spent_percent)}</span></div><div class="admin-campaigns">${campaigns}</div></article></section>`;
+
+  const checkedIn = Number(a.checked_in || 0);
+  const eligible = Number(a.eligible || 0);
+  const checkinRate = a.checkin_rate != null ? Math.round(Number(a.checkin_rate)) : (eligible > 0 ? Math.min(100, Math.round((checkedIn / eligible) * 100)) : 0);
+  const circumference = 251.33;
+  const checkinOffset = (circumference * (1 - Math.min(100, Math.max(0, checkinRate)) / 100)).toFixed(1);
+
+  const missingPeople = a.missing_people || [];
+  const missingChips = missingPeople.length
+    ? missingPeople.slice(0, 6).map(x => `<span class="admin-att-missing-chip">👤 ${esc(x.full_name)} <small>(${esc(x.department || 'Chưa phân phòng')})</small></span>`).join('')
+    : '';
+
+  el.innerHTML = `
+    <section class="admin-dashboard">
+      <header class="admin-dash-hero">
+        <div>
+          <p>TỔNG QUAN VẬN HÀNH</p>
+          <h1>Chào ${esc(me.full_name || 'Admin')}</h1>
+          <small>${esc(date)} · Cập nhật ${esc(data.generated_at || '')}</small>
+        </div>
+        <div class="admin-dash-health">
+          <b>Hệ thống đang hoạt động</b>
+          <span>${data.action_items.length ? `${data.action_items.length} vấn đề cần chú ý` : 'Không có vấn đề quan trọng cần xử lý'}</span>
+        </div>
+      </header>
+
+      <!-- ── DASHBOARD TOP SPLIT: TỶ LỆ CHECK-IN (50% TRÁI) + TỔNG QUAN NHÂN SỰ (50% PHẢI) ── -->
+      <div class="admin-dash-top-split">
+        <!-- Attendance Circular Donut Ring & Stats Overview (50% TRÁI) -->
+        <div class="admin-att-summary-row">
+          <div class="admin-att-ring-card">
+            <div class="emp-ring-box" style="width:105px;height:105px;">
+              <svg viewBox="0 0 100 100" class="emp-ring-svg">
+                <circle cx="50" cy="50" r="40" class="emp-ring-bg" style="stroke:rgba(0,0,0,0.06);stroke-width:9;" />
+                <circle cx="50" cy="50" r="40" class="emp-ring-fill emerald" style="stroke:#10b981;stroke-width:9;stroke-dasharray:251.33;stroke-dashoffset:${checkinOffset};" />
+              </svg>
+              <div class="emp-ring-inner">
+                <strong style="font-size:20px;color:#10b981;">${checkinRate}%</strong>
+                <small style="font-size:10px;color:var(--text-2);font-weight:600;">${number(checkedIn)}/${number(eligible)}</small>
+              </div>
+            </div>
+            <div class="admin-att-ring-label">
+              <strong>Tỷ lệ Check-in</strong>
+              <span class="admin-att-status-badge ${checkinRate >= 80 ? 'good' : 'warn'}">${checkinRate >= 80 ? '🟢 Tốt' : '🟡 Cần lưu ý'}</span>
+            </div>
+          </div>
+
+          <div class="admin-att-stats-col">
+            <div class="admin-att-stats-grid">
+              <div class="admin-att-stat-item is-checkin">
+                <span class="admin-att-stat-icon">🏢</span>
+                <div class="admin-att-stat-body">
+                  <strong class="admin-att-stat-val">${number(checkedIn)}</strong>
+                  <span class="admin-att-stat-lbl">Đã check-in (${percent(checkinRate)})</span>
+                </div>
+              </div>
+
+              <div class="admin-att-stat-item ${a.late > 0 ? 'is-late' : ''}">
+                <span class="admin-att-stat-icon">⏰</span>
+                <div class="admin-att-stat-body">
+                  <strong class="admin-att-stat-val">${number(a.late)}</strong>
+                  <span class="admin-att-stat-lbl">Đi muộn</span>
+                </div>
+              </div>
+
+              <div class="admin-att-stat-item is-leave">
+                <span class="admin-att-stat-icon">🏖️</span>
+                <div class="admin-att-stat-body">
+                  <strong class="admin-att-stat-val">${number(a.approved_leave)}</strong>
+                  <span class="admin-att-stat-lbl">Nghỉ phép</span>
+                </div>
+              </div>
+
+              <div class="admin-att-stat-item ${a.not_checked_in > 0 ? 'is-missing' : ''}">
+                <span class="admin-att-stat-icon">❌</span>
+                <div class="admin-att-stat-body">
+                  <strong class="admin-att-stat-val">${number(a.not_checked_in)}</strong>
+                  <span class="admin-att-stat-lbl">Chưa check-in</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Missing List -->
+            <div class="admin-att-missing-section">
+              <span class="admin-att-missing-title">Chưa check-in:</span>
+              <div class="admin-att-missing-chips">
+                ${missingChips ? missingChips : '<span class="admin-att-missing-empty">✅ Tất cả nhân sự đã check-in hoặc có đơn nghỉ phép</span>'}
+                ${missingPeople.length > 6 ? `<span class="admin-att-missing-more">+${missingPeople.length - 6} người khác</span>` : ''}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4 KPI Summary Cards (50% PHẢI) -->
+        <div class="admin-dash-stat-grid admin-dash-stat-grid--split">
+          ${dashLink('#/users','users',number(p.active),'Nhân sự hoạt động',`${number(p.new_hires_month)} mới · ${number(p.probation)} thử việc · ${number(p.interns)} TTS`)}
+          ${dashLink('#/attendance','clock3',`${number(checkedIn)} / ${number(eligible)}`,'Đã check-in',`${percent(checkinRate)} · ${number(a.late)} đi muộn · ${number(a.approved_leave)} nghỉ phép`,checkinRate>=80?'success':'warning')}
+          ${dashLink(ap.leave>=ap.kpi?'#/leave':'#/kpis','circleAlert',number(ap.total),'Chờ xử lý',`${number(ap.leave)} nghỉ phép · ${number(ap.kpi)} KPI · ${number(ap.overtime)} tăng ca`,ap.total?'warning':'success')}
+          ${dashLink('#/notifications','bell',number(al.total),'Cảnh báo nhân sự',`${number(al.critical)} khẩn · ${number(al.warning)} cần chú ý`,al.critical?'danger':al.total?'warning':'success')}
+        </div>
+      </div>
+
+      <!-- ── GEOFENCE RADAR PANEL (BẢN ĐỒ GPS) ── -->
+      <article class="admin-dash-panel admin-att-unified-panel">
+        <header class="admin-att-unified-head">
+          <div class="admin-att-unified-title">
+            <h2>📍 Vị trí & Bản đồ radar check-in GPS hôm nay</h2>
+            <p>Bản đồ check-in GPS đa địa điểm (TP.HCM, Hà Nội, Phim trường Q9...)</p>
+          </div>
+          <div class="admin-att-unified-controls">
+            <button type="button" id="dash-geo-refresh" class="admin-geo-btn-refresh">🔄 Làm mới</button>
+            <select id="dash-geo-office" class="admin-geo-select-office"><option value="all">Tất cả địa điểm</option></select>
+            <a href="#/attendance" class="admin-att-link">Xem bảng công →</a>
+          </div>
+        </header>
+
+        <!-- Geo Maps Section -->
+        <div class="admin-att-geo-section">
+          <div class="admin-att-geo-subhead">
+            <div id="dash-geo-meta" class="admin-att-geo-meta">Đang tải danh sách địa điểm...</div>
+            <div class="att-clock-geo-legend">
+              <span class="att-geo-legend-item"><i class="att-geo-dot" style="background:#3B82F6"></i>Trong phạm vi</span>
+              <span class="att-geo-legend-item"><i class="att-geo-dot" style="background:#EF4444"></i>Ngoài phạm vi</span>
+              <span class="att-geo-legend-item"><i class="att-geo-dot geo-dot-current"></i>Tôi</span>
+            </div>
+          </div>
+          <div id="dash-geo-container" class="admin-dash-geo-grid"></div>
+          <div class="admin-att-geo-footer">
+            <span>Điểm đánh dấu là vị trí check-in gần nhất của ngày hôm nay — không phải theo dõi liên tục.</span>
+          </div>
+        </div>
+      </article>
+
+      <!-- ── PRIMARY ACTION & INSIGHTS ── -->
+      <div class="admin-dash-primary">
+        <article class="admin-dash-panel">
+          <header>
+            <h2>Cần xử lý ngay</h2>
+            <a href="#/notifications">Xem tất cả</a>
+          </header>
+          ${actions}
+        </article>
+        <article class="admin-dash-panel">
+          <header>
+            <h2>Insight hôm nay</h2>
+          </header>
+          <ul class="admin-insights">${insights}</ul>
+        </article>
+      </div>
+
+      <!-- ── MARKETING CAMPAIGNS ── -->
+      <article class="admin-dash-panel admin-campaign-panel">
+        <header>
+          <h2>Chiến dịch Marketing</h2>
+          <a href="#/campaigns">Xem chiến dịch →</a>
+        </header>
+        <div class="admin-campaign-summary">
+          <b>${number(data.campaigns.active)} đang chạy</b>
+          <span>${number(data.campaigns.spent)} / ${number(data.campaigns.budget)} đ${data.campaigns.spent_percent===null?'':' · '+percent(data.campaigns.spent_percent)}</span>
+        </div>
+        <div class="admin-campaigns">${campaigns}</div>
+      </article>
+    </section>
+  `;
 }
 
 // ── Admin dashboard: today's attendance location map (geofence viz) ──
-// ── Admin dashboard: today's attendance location map (geofence viz) ──
 // Renders responsive multi-office grid (HCM, HN, Phim trường Q9, etc.)
-// allowing simultaneous side-by-side monitoring across all offices.
+// directly inside the unified attendance & geo panel.
 async function renderAdminGeoPanel(el, me) {
-  const host = el.querySelector('.admin-dashboard') || el;
-  host.insertAdjacentHTML('beforeend', `
-    <article class="admin-dash-panel admin-dash-geo">
-      <header>
-        <h2>📍 Vị trí chấm công hôm nay</h2>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-          <select id="dash-geo-office" class="btn-secondary btn-sm"><option value="all">Tất cả địa điểm</option></select>
-          <button type="button" id="dash-geo-refresh" class="btn-secondary btn-sm">🔄 Làm mới</button>
-        </div>
-      </header>
-      <div id="dash-geo-meta" style="font-size:12px;color:var(--text-2);margin-bottom:6px;">Đang tải danh sách địa điểm...</div>
-      <div id="dash-geo-container" class="admin-dash-geo-grid"></div>
-      <div class="att-clock-geo-legend" style="margin-top:14px;">
-        <span class="att-geo-legend-item"><i class="att-geo-dot" style="background:#3B82F6"></i>Trong phạm vi</span>
-        <span class="att-geo-legend-item"><i class="att-geo-dot" style="background:#EF4444"></i>Ngoài phạm vi</span>
-        <span class="att-geo-legend-item"><i class="att-geo-dot geo-dot-current"></i>Tôi</span>
-      </div>
-      <div style="font-size:10.5px;color:var(--text-3);margin-top:8px;">Điểm đánh dấu là vị trí check-in gần nhất của ngày hôm nay — không phải theo dõi liên tục.</div>
-    </article>`);
-
   const container = document.getElementById('dash-geo-container');
   const metaEl = document.getElementById('dash-geo-meta');
   const officeSelect = document.getElementById('dash-geo-office');
+  const refreshBtn = document.getElementById('dash-geo-refresh');
   const todayStr = today();
   let allLocations = [];
+
+  if (refreshBtn) {
+    refreshBtn.onclick = () => loadPanel();
+  }
+  if (officeSelect) {
+    officeSelect.onchange = () => loadPanel();
+  }
 
   async function loadOffices() {
     try {
@@ -786,8 +916,6 @@ async function renderAdminGeoPanel(el, me) {
   }
 
   await loadPanel();
-  officeSelect?.addEventListener('change', () => loadPanel());
-  document.getElementById('dash-geo-refresh')?.addEventListener('click', () => loadPanel());
 }
 
 export async function renderDashboard(el, me) {

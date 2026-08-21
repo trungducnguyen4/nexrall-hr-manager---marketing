@@ -44,38 +44,74 @@ export async function renderNotifications(el) {
   };
   let requestId = 0;
   let searchTimer = null;
+  let isDrawerOpen = false;
 
   el.innerHTML = `
     <section class="notification-center">
       <header class="notification-page-head">
         <div>
           <p class="employee-page-kicker">Trung tâm xử lý</p>
-          <h1>Thông báo</h1>
-          <p>Theo dõi cảnh báo hồ sơ và bất thường chấm công theo đúng phạm vi quyền.</p>
+          <h1>🔔 Thông báo & Cảnh báo</h1>
+          <p>Theo dõi các vấn đề cần xử lý, cảnh báo hồ sơ nhân sự và bất thường chấm công.</p>
         </div>
-        <button class="btn-secondary" id="notification-refresh">${icon('refreshCw', 'sm')} Làm mới</button>
+        <div class="notification-head-actions">
+          <button class="btn-secondary btn-sm" id="notification-refresh">${icon('refreshCw', 'sm')} <span>Làm mới</span></button>
+        </div>
       </header>
+
+      <!-- Interactive Click-to-Filter Stat Cards -->
       <div id="notification-summary" class="notification-summary" aria-live="polite"></div>
-      <div class="notification-toolbar" aria-label="Tìm kiếm và lọc thông báo">
-        <label class="notification-search">
-          <span class="sr-only">Tìm thông báo</span>${icon('search', 'sm')}
-          <input id="notification-search" type="search" placeholder="Tìm theo nhân viên, mã, phòng ban hoặc nội dung" autocomplete="off"/>
-        </label>
-        <select id="notification-module" aria-label="Lọc theo nghiệp vụ"><option value="">Tất cả nghiệp vụ</option></select>
-        <select id="notification-type" aria-label="Lọc theo loại thông báo"><option value="">Tất cả loại</option></select>
-        <select id="notification-severity" aria-label="Lọc theo mức độ">
-          <option value="">Tất cả mức độ</option>
-          <option value="danger">Khẩn cấp</option>
-          <option value="warning">Cần xử lý</option>
-          <option value="info">Thông tin</option>
-        </select>
-        <select id="notification-window" aria-label="Khoảng thời gian">
-          <option value="7">7 ngày</option>
-          <option value="30" selected>30 ngày</option>
-          <option value="90">90 ngày</option>
-        </select>
-        <button class="btn-secondary btn-sm" id="notification-reset">${icon('refreshCw', 'sm')} Xóa lọc</button>
+
+      <!-- Modern Toolbar Card -->
+      <div class="notification-toolbar-card" aria-label="Tìm kiếm và lọc thông báo">
+        <div class="notification-search-row">
+          <div class="notification-search-box">
+            <span class="search-icon">${icon('search', 'sm')}</span>
+            <input id="notification-search" type="search" placeholder="Tìm theo tên nhân viên, mã số, phòng ban, nội dung..." autocomplete="off"/>
+          </div>
+
+          <div class="notification-quick-actions">
+            <div class="notification-window-select">
+              <select id="notification-window" aria-label="Khoảng thời gian">
+                <option value="7">7 ngày</option>
+                <option value="30" selected>30 ngày</option>
+                <option value="90">90 ngày</option>
+              </select>
+            </div>
+            <button type="button" class="btn-secondary btn-sm" id="notification-filter-toggle">
+              <span>⚙️ Bộ lọc</span>
+              <span id="notification-active-filter-badge" class="filter-count-badge" style="display:none;">0</span>
+            </button>
+            <button type="button" class="btn-secondary btn-sm" id="notification-reset" title="Xóa toàn bộ bộ lọc">
+              ${icon('refreshCw', 'sm')} <span>Xóa lọc</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Quick Severity Tabs -->
+        <div class="notification-tabs-row" id="notification-severity-tabs">
+          <button type="button" class="notif-tab-pill active" data-severity="">Tất cả</button>
+          <button type="button" class="notif-tab-pill danger" data-severity="danger">🚨 Khẩn cấp</button>
+          <button type="button" class="notif-tab-pill warning" data-severity="warning">⏳ Cần xử lý</button>
+          <button type="button" class="notif-tab-pill info" data-severity="info">ℹ️ Thông tin</button>
+        </div>
+
+        <!-- Collapsible Advanced Filter Drawer -->
+        <div class="notification-drawer" id="notification-filter-drawer" style="display:none;">
+          <div class="notification-drawer-grid">
+            <div class="field">
+              <label>Phân loại nghiệp vụ</label>
+              <select id="notification-module"><option value="">Tất cả nghiệp vụ</option></select>
+            </div>
+            <div class="field">
+              <label>Loại thông báo</label>
+              <select id="notification-type"><option value="">Tất cả loại thông báo</option></select>
+            </div>
+          </div>
+        </div>
       </div>
+
+      <!-- Results Container -->
       <div id="notification-result">${notificationSkeleton()}</div>
     </section>`;
 
@@ -89,15 +125,96 @@ export async function renderNotifications(el) {
     }).join('')}`;
   };
 
+  function updateActiveFilterBadge() {
+    const badge = document.getElementById('notification-active-filter-badge');
+    let count = 0;
+    if (state.module) count++;
+    if (state.type) count++;
+    if (state.search) count++;
+    if (state.window !== 30) count++;
+    if (badge) {
+      if (count > 0) {
+        badge.textContent = count;
+        badge.style.display = 'inline-flex';
+      } else {
+        badge.style.display = 'none';
+      }
+    }
+  }
+
   function renderSummary(data) {
     const summary = data.summary || {};
     const host = document.getElementById('notification-summary');
     if (!host) return;
+
+    const total = Number(data.active_total || 0);
+    const danger = Number(summary.danger || 0);
+    const warning = Number(summary.warning || 0);
+    const att = Number(summary.attendance || 0);
+
     host.innerHTML = `
-      <article><span class="notification-summary-icon">${icon('bell', 'md')}</span><div><strong>${Number(data.active_total || 0)}</strong><span>Tổng thông báo</span></div></article>
-      <article class="danger"><span class="notification-summary-icon">${icon('triangleAlert', 'md')}</span><div><strong>${Number(summary.danger || 0)}</strong><span>Khẩn cấp</span></div></article>
-      <article class="warning"><span class="notification-summary-icon">${icon('clock3', 'md')}</span><div><strong>${Number(summary.warning || 0)}</strong><span>Cần xử lý</span></div></article>
-      <article><span class="notification-summary-icon">${icon('activity', 'md')}</span><div><strong>${Number(summary.attendance || 0)}</strong><span>Bất thường chấm công</span></div></article>`;
+      <button type="button" class="notification-summary-card ${!state.severity && !state.module ? 'is-active' : ''}" data-filter-type="all">
+        <span class="notification-summary-icon all">${icon('bell', 'md')}</span>
+        <div class="summary-text">
+          <strong>${total}</strong>
+          <span>Tổng thông báo</span>
+        </div>
+      </button>
+      <button type="button" class="notification-summary-card danger ${state.severity === 'danger' ? 'is-active' : ''}" data-filter-type="danger">
+        <span class="notification-summary-icon danger">${icon('triangleAlert', 'md')}</span>
+        <div class="summary-text">
+          <strong>${danger}</strong>
+          <span>Khẩn cấp</span>
+        </div>
+      </button>
+      <button type="button" class="notification-summary-card warning ${state.severity === 'warning' ? 'is-active' : ''}" data-filter-type="warning">
+        <span class="notification-summary-icon warning">${icon('clock3', 'md')}</span>
+        <div class="summary-text">
+          <strong>${warning}</strong>
+          <span>Cần xử lý</span>
+        </div>
+      </button>
+      <button type="button" class="notification-summary-card att ${state.module === 'attendance' ? 'is-active' : ''}" data-filter-type="attendance">
+        <span class="notification-summary-icon att">${icon('activity', 'md')}</span>
+        <div class="summary-text">
+          <strong>${att}</strong>
+          <span>Bất thường công</span>
+        </div>
+      </button>`;
+
+    // Click handler for summary stat cards
+    host.querySelectorAll('.notification-summary-card').forEach(card => {
+      card.addEventListener('click', () => {
+        const type = card.dataset.filterType;
+        if (type === 'all') {
+          state.severity = '';
+          state.module = '';
+        } else if (type === 'danger') {
+          state.severity = 'danger';
+          state.module = '';
+        } else if (type === 'warning') {
+          state.severity = 'warning';
+          state.module = '';
+        } else if (type === 'attendance') {
+          state.module = 'attendance';
+          state.severity = '';
+        }
+        state.page = 1;
+        syncTabButtons();
+        load();
+      });
+    });
+  }
+
+  function syncTabButtons() {
+    document.querySelectorAll('#notification-severity-tabs .notif-tab-pill').forEach(btn => {
+      if (btn.dataset.severity === (state.severity || '')) {
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+      }
+    });
+    updateActiveFilterBadge();
   }
 
   function renderNotifications(data) {
@@ -105,42 +222,56 @@ export async function renderNotifications(el) {
     if (!host) return;
     const items = data.notifications || [];
     if (!items.length) {
-      host.innerHTML = emptyHTML('', 'Không có thông báo phù hợp', 'Hãy thay đổi bộ lọc hoặc khoảng thời gian.');
+      host.innerHTML = emptyHTML('', 'Không có thông báo nào phù hợp', 'Hãy thử thay đổi từ khóa hoặc bộ lọc thời gian.');
       return;
     }
     const pagination = data.pagination || {};
     host.innerHTML = `
       <div class="notification-list">
-        ${items.map(item => `
-          <article class="notification-item notification-item--${esc(item.severity || 'info')}">
-            <span class="notification-item-icon">${icon(SEVERITY_ICONS[item.severity] || 'circleInfo', 'md')}</span>
-            <div class="notification-item-body">
-              <div class="notification-item-meta">
-                <span>${esc(item.module_label || '')}</span>
-                <span>${esc(SEVERITY_LABELS[item.severity] || 'Thông tin')}</span>
-                ${item.occurred_on || item.due_date ? `<time datetime="${esc(item.occurred_on || item.due_date)}">${esc(fmtDate(item.occurred_on || item.due_date))}</time>` : ''}
+        ${items.map(item => {
+          const sev = item.severity || 'info';
+          const sevLabel = SEVERITY_LABELS[sev] || 'Thông tin';
+          const sevIconName = SEVERITY_ICONS[sev] || 'circleInfo';
+          const initial = (item.employee_name || '?').trim().charAt(0).toUpperCase();
+
+          return `
+            <article class="notification-item notification-item--${esc(sev)}">
+              <div class="notification-item-icon-box">
+                <span class="notification-item-icon">${icon(sevIconName, 'md')}</span>
               </div>
-              <h2>${esc(item.title || TYPE_LABELS[item.type] || 'Thông báo')}</h2>
-              <p>${esc(item.message || '')}</p>
-              <div class="notification-person">
-                <strong>${esc(item.employee_name || '')}</strong>
-                <span>${esc([item.employee_code, item.department].filter(Boolean).join(' · '))}</span>
+              <div class="notification-item-body">
+                <div class="notification-item-meta">
+                  ${item.module_label ? `<span class="notif-module-badge">${esc(item.module_label)}</span>` : ''}
+                  <span class="notif-severity-badge ${esc(sev)}">${esc(sevLabel)}</span>
+                  ${item.occurred_on || item.due_date ? `<span class="notif-time-badge">📅 ${esc(fmtDate(item.occurred_on || item.due_date))}</span>` : ''}
+                </div>
+                <h2 class="notification-item-title">${esc(item.title || TYPE_LABELS[item.type] || 'Thông báo')}</h2>
+                <p class="notification-item-desc">${esc(item.message || '')}</p>
+                ${(item.employee_name || item.department) ? `
+                  <div class="notification-person-pill">
+                    <span class="notif-avatar-sm">${esc(initial)}</span>
+                    <strong>${esc(item.employee_name || '')}</strong>
+                    <span class="notif-person-sub">${esc([item.employee_code, item.department].filter(Boolean).join(' · '))}</span>
+                  </div>
+                ` : ''}
               </div>
-            </div>
-            <div class="notification-item-action">
-              <button class="btn-secondary btn-sm" data-notification-url="${esc(item.action_url || '')}">
-                ${esc(item.action_label || 'Mở chức năng')} ${icon('arrowRight', 'sm')}
-              </button>
-            </div>
-          </article>`).join('')}
+              <div class="notification-item-action">
+                <button class="btn-primary btn-sm notif-action-btn" data-notification-url="${esc(item.action_url || '')}">
+                  <span>${esc(item.action_label || 'Xử lý ngay')}</span> ${icon('arrowRight', 'sm')}
+                </button>
+              </div>
+            </article>
+          `;
+        }).join('')}
       </div>
       <footer class="employee-pagination">
-        <span>${Number(pagination.total || 0)} thông báo, trang ${Number(pagination.page || 1)}/${Number(pagination.pages || 1)}</span>
-        <div>
-          <button class="btn-secondary btn-sm" id="notification-prev" ${Number(pagination.page || 1) <= 1 ? 'disabled' : ''}>Trước</button>
-          <button class="btn-secondary btn-sm" id="notification-next" ${Number(pagination.page || 1) >= Number(pagination.pages || 1) ? 'disabled' : ''}>Sau</button>
+        <span>${Number(pagination.total || 0)} thông báo · Trang ${Number(pagination.page || 1)} / ${Number(pagination.pages || 1)}</span>
+        <div style="display:flex;gap:6px;">
+          <button class="btn-secondary btn-sm" id="notification-prev" ${Number(pagination.page || 1) <= 1 ? 'disabled' : ''}>← Trước</button>
+          <button class="btn-secondary btn-sm" id="notification-next" ${Number(pagination.page || 1) >= Number(pagination.pages || 1) ? 'disabled' : ''}>Sau →</button>
         </div>
       </footer>`;
+
     host.querySelectorAll('[data-notification-url]').forEach(button => {
       button.addEventListener('click', () => {
         if (button.dataset.notificationUrl) navigate(button.dataset.notificationUrl);
@@ -167,8 +298,9 @@ export async function renderNotifications(el) {
       if (currentRequest !== requestId || !host.isConnected) return;
       renderSummary(data);
       setOptions('notification-module', data.filter_options?.modules || [], state.module, 'Tất cả nghiệp vụ');
-      setOptions('notification-type', data.filter_options?.types || [], state.type, 'Tất cả loại');
+      setOptions('notification-type', data.filter_options?.types || [], state.type, 'Tất cả loại thông báo');
       renderNotifications(data);
+      syncTabButtons();
     } catch (error) {
       if (currentRequest === requestId) host.innerHTML = `<div class="employee-inline-error">${esc(error.message)}</div>`;
     } finally {
@@ -176,32 +308,64 @@ export async function renderNotifications(el) {
     }
   }
 
+  // Event Listeners
   document.getElementById('notification-search')?.addEventListener('input', event => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
       state.search = event.target.value.trim();
       state.page = 1;
+      updateActiveFilterBadge();
       load();
     }, 280);
   });
+
+  // Severity Tabs
+  document.getElementById('notification-severity-tabs')?.addEventListener('click', e => {
+    const btn = e.target.closest('.notif-tab-pill');
+    if (!btn) return;
+    state.severity = btn.dataset.severity || '';
+    state.page = 1;
+    syncTabButtons();
+    load();
+  });
+
+  // Filter Drawer Toggle
+  document.getElementById('notification-filter-toggle')?.addEventListener('click', () => {
+    const drawer = document.getElementById('notification-filter-drawer');
+    if (!drawer) return;
+    isDrawerOpen = !isDrawerOpen;
+    drawer.style.display = isDrawerOpen ? 'block' : 'none';
+  });
+
+  // Select filters
   [
     ['notification-module', 'module'],
     ['notification-type', 'type'],
-    ['notification-severity', 'severity'],
     ['notification-window', 'window'],
   ].forEach(([id, key]) => document.getElementById(id)?.addEventListener('change', event => {
     state[key] = key === 'window' ? Number(event.target.value) : event.target.value;
     state.page = 1;
+    updateActiveFilterBadge();
     load();
   }));
+
+  // Reset filter
   document.getElementById('notification-reset')?.addEventListener('click', () => {
     Object.assign(state, { search: '', module: '', type: '', severity: '', window: 30, page: 1 });
-    document.getElementById('notification-search').value = '';
-    document.getElementById('notification-severity').value = '';
-    document.getElementById('notification-window').value = '30';
+    const searchInput = document.getElementById('notification-search');
+    if (searchInput) searchInput.value = '';
+    const winSelect = document.getElementById('notification-window');
+    if (winSelect) winSelect.value = '30';
+    const modSelect = document.getElementById('notification-module');
+    if (modSelect) modSelect.value = '';
+    const typeSelect = document.getElementById('notification-type');
+    if (typeSelect) typeSelect.value = '';
+    syncTabButtons();
     load();
   });
+
   document.getElementById('notification-refresh')?.addEventListener('click', load);
 
   await load();
 }
+

@@ -622,24 +622,27 @@ export async function openTaskPanel(taskId) {
 //  SIDEBAR
 // ════════════════════════════════════════════════
 export function toggleSidebar() {
-  const app = document.getElementById('app');
+  const app = document.getElementById('app') || document.body;
   const sidebar = document.getElementById('sidebar');
   const overlay = document.getElementById('sidebar-overlay');
-  if (isDesktop()) {
-    const isCollapsed = app ? app.classList.toggle('sidebar-collapsed') : false;
+  
+  if (window.innerWidth >= 768) {
+    const isCollapsed = app.classList.toggle('sidebar-collapsed');
     try { localStorage.setItem('sidebar_collapsed', isCollapsed ? '1' : '0'); } catch(_) {}
+    sidebar?.classList.remove('open');
+    overlay?.classList.remove('active');
   } else {
-    if (sidebar?.classList.contains('open')) {
-      sidebar.classList.remove('open');
-      overlay?.classList.remove('active');
-    } else {
-      sidebar?.classList.add('open');
+    const isOpen = sidebar ? sidebar.classList.toggle('open') : false;
+    if (isOpen) {
       overlay?.classList.add('active');
+    } else {
+      overlay?.classList.remove('active');
     }
   }
 }
-function closeMobileSidebar() {
-  if (!isDesktop()) {
+
+export function closeMobileSidebar() {
+  if (window.innerWidth < 768) {
     const sidebar = document.getElementById('sidebar');
     const overlay = document.getElementById('sidebar-overlay');
     sidebar?.classList.remove('open');
