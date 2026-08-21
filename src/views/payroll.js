@@ -90,6 +90,7 @@ export async function renderPayroll(el, me) {
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;">
       <label style="font-size:13px;font-weight:600;color:var(--text-2);">Tháng:</label>
       <input type="month" id="payroll-month" value="${curMonth}" style="max-width:160px;font-weight:600;"/>
+      ${canEditPayroll ? `<button id="btn-sync-payroll" class="btn-secondary" style="font-size:14px;font-weight:700;padding:11px 18px;min-height:44px;">🔄 Đồng bộ / Tạo bảng lương</button>` : ''}
       <button id="btn-export-payslips" class="btn-primary" style="font-size:14px;font-weight:800;padding:11px 18px;min-height:44px;">Xuất phiếu lương tháng ${formatMonth(curMonth)}</button>
     </div>
     <div id="payroll-load-status" style="min-height:18px;font-size:12px;color:var(--text-2);margin:-8px 0 12px;"></div>
@@ -112,6 +113,7 @@ export async function renderPayroll(el, me) {
 
   const monthInput = document.getElementById('payroll-month');
   document.getElementById('btn-export-payslips').addEventListener('click', openExportPayslipsConfirm);
+  document.getElementById('btn-sync-payroll')?.addEventListener('click', openCreatePayrollBatchConfirm);
   monthInput.addEventListener('change', () => {
     currentPage = 1;
     updateExportButtonLabel();
@@ -484,9 +486,24 @@ export async function renderPayroll(el, me) {
         `;
       }
 
+      if (!payrolls.length) {
+        if (statusEl && !options.keepStatus) statusEl.textContent = `Chưa có dữ liệu bảng lương tháng ${formatMonth(month)}.`;
+        tableEl.innerHTML = `
+          <div style="padding:48px 24px;text-align:center;">
+            <div style="font-size:42px;margin-bottom:12px;">📊</div>
+            <h3 style="font-size:16px;font-weight:800;margin:0 0 8px;color:var(--text);">Chưa khởi tạo bảng lương tháng ${formatMonth(month)}</h3>
+            <p style="font-size:13.5px;color:var(--text-2);max-width:520px;margin:0 auto 18px;line-height:1.5;">
+              Tháng này chưa có danh sách bảng lương. Bạn hãy nhấn nút bên dưới để hệ thống tự động tổng hợp danh sách <strong>toàn bộ nhân sự đang hoạt động</strong> và mức lương cấu hình.
+            </p>
+            ${canEditPayroll ? `<button id="btn-empty-sync-payroll" class="btn-primary" style="padding:11px 22px;font-weight:700;font-size:14px;border-radius:10px;">🔄 Khởi tạo bảng lương tháng ${formatMonth(month)} ngay</button>` : ''}
+          </div>
+        `;
+        document.getElementById('btn-empty-sync-payroll')?.addEventListener('click', openCreatePayrollBatchConfirm);
+        return;
+      }
       if (!filtered.length) {
-        if (statusEl && !options.keepStatus) statusEl.textContent = `Không có dữ liệu bảng lương tháng ${month}.`;
-        tableEl.innerHTML = `<div style="padding:16px;">${emptyHTML('💰', `Không có dòng lương phù hợp`, 'Thử đổi từ khóa hoặc phòng ban')}</div>`;
+        if (statusEl && !options.keepStatus) statusEl.textContent = `Không tìm thấy dòng lương phù hợp với bộ lọc.`;
+        tableEl.innerHTML = `<div style="padding:16px;">${emptyHTML('🔍', `Không có dòng lương phù hợp`, 'Thử đổi từ khóa tìm kiếm hoặc phòng ban')}</div>`;
         return;
       }
       if (statusEl && !options.keepStatus) statusEl.textContent = `Đã tải ${payrolls.length} dòng bảng lương tháng ${month}. Đang hiển thị ${filtered.length} dòng phù hợp.`;
