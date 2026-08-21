@@ -26,15 +26,14 @@ export async function renderAttendance(el, me, route = {}) {
 
     <!-- Clock-in card -->
     <div class="att-clock-card" id="att-clock-card">
-      <div class="att-clock-time" id="att-live-time">--:--:--</div>
-      <div class="att-clock-date" id="att-live-date"></div>
-      <div class="att-clock-status" id="att-status-line">
-        <span style="font-size:13px;opacity:.8">Đang tải...</span>
-      </div>
-      <div id="att-compliance" aria-live="polite" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px;"></div>
-
       <div class="att-clock-grid">
         <div class="att-clock-main">
+          <div class="att-clock-time" id="att-live-time">--:--:--</div>
+          <div class="att-clock-date" id="att-live-date"></div>
+          <div class="att-clock-status" id="att-status-line">
+            <span style="font-size:13px;opacity:.8">Đang tải...</span>
+          </div>
+          <div id="att-compliance" aria-live="polite" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px;"></div>
 
         <!-- Registration form (shown when not yet registered today) -->
         <div id="att-register-wrap" style="display:none;margin-top:14px;">
