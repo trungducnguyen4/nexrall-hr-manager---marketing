@@ -220,19 +220,23 @@ export async function renderTasks(el, me) {
 
     <div class="task-workspace-shell">
       <aside class="card task-project-navigator" aria-label="Danh sách Project">
-      <div class="card-header" style="align-items:center;gap:10px;flex-wrap:wrap;">
+      <div class="card-header" style="display:flex;flex-direction:column;align-items:stretch;gap:10px;padding:0 0 12px;margin-bottom:0;border-bottom:1px solid var(--divider);">
         <div style="display:flex;align-items:center;justify-content:space-between;width:100%;">
           <div>
-            <div class="card-title">Workspace NetViet HR</div>
-            <div style="font-size:12px;color:var(--text-2);margin-top:2px;">Chọn Project để mở board nhóm công việc.</div>
+            <div class="card-title" style="font-size:14.5px;">Workspace NetViet HR</div>
+            <div style="font-size:11.5px;color:var(--text-2);margin-top:2px;">Chọn Project để mở board nhóm việc.</div>
           </div>
           <button type="button" id="btn-collapse-side-nav" class="btn-icon btn-xs" title="Thu gọn danh sách dự án" aria-label="Thu gọn danh sách dự án">◀</button>
         </div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;width:100%;">
-          <input type="text" id="project-search" placeholder="Tìm Project..." style="min-width:0;flex:1;"/>
-          ${canManage ? `<button id="btn-new-project-side" class="btn-primary btn-sm" title="Tạo Project mới">+ Project</button>` : ''}
-          ${canManage ? `<button id="btn-new-project-group" class="btn-secondary btn-sm" title="Tạo Nhóm dự án (Project Group/Category)">+ Nhóm dự án</button>` : ''}
-          ${canManage ? `<label style="font-size:12px;color:var(--text-2);display:flex;gap:6px;align-items:center;"><input type="checkbox" id="project-archived"/> Hiện lưu trữ</label>` : ''}
+        <div style="width:100%;">
+          <input type="text" id="project-search" placeholder="🔍 Tìm Project..." style="width:100%;height:36px;font-size:12.5px;box-sizing:border-box;"/>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:space-between;width:100%;">
+          <div style="display:flex;gap:6px;align-items:center;">
+            ${canManage ? `<button id="btn-new-project-side" class="btn-primary btn-xs" title="Tạo Project mới" style="height:28px;padding:0 10px;font-size:11.5px;">+ Project</button>` : ''}
+            ${canManage ? `<button id="btn-new-project-group" class="btn-secondary btn-xs" title="Tạo Nhóm dự án (Project Group/Category)" style="height:28px;padding:0 10px;font-size:11.5px;">+ Nhóm dự án</button>` : ''}
+          </div>
+          ${canManage ? `<label style="font-size:11.5px;color:var(--text-2);display:flex;gap:4px;align-items:center;cursor:pointer;user-select:none;"><input type="checkbox" id="project-archived" style="width:14px;height:14px;"/> Lưu trữ</label>` : ''}
         </div>
       </div>
       <div id="project-list">${loadingHTML()}</div>
@@ -1392,11 +1396,22 @@ export async function renderTasks(el, me) {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(loadProjects, 250);
   });
+  const updateToggleBtnState = () => {
+    const shell = el.querySelector('.task-workspace-shell');
+    const isCollapsed = shell?.classList.contains('project-nav-collapsed');
+    const btn = el.querySelector('#btn-toggle-project-nav');
+    if (btn) {
+      btn.innerHTML = isCollapsed ? '📁 Hiện danh sách dự án' : '📁 Ẩn danh sách dự án';
+      btn.className = isCollapsed ? 'btn-primary btn-sm' : 'btn-secondary btn-sm';
+    }
+  };
   el.querySelector('#btn-toggle-project-nav')?.addEventListener('click', () => {
     el.querySelector('.task-workspace-shell')?.classList.toggle('project-nav-collapsed');
+    updateToggleBtnState();
   });
   el.querySelector('#btn-collapse-side-nav')?.addEventListener('click', () => {
     el.querySelector('.task-workspace-shell')?.classList.toggle('project-nav-collapsed');
+    updateToggleBtnState();
   });
   el.querySelector('#project-archived')?.addEventListener('change', loadProjects);
   el.querySelector('#btn-import-myxteam')?.addEventListener('click', openMyxteamImport);

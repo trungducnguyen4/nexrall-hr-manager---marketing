@@ -445,18 +445,18 @@
 .chat-read-receipts { display: flex; align-items: center; justify-content: flex-end; min-height: 20px; margin: 3px 2px 0; direction: ltr; }
 .chat-read-avatar-wrap { width: 18px; height: 18px; margin-left: -4px; border: 1.5px solid var(--surface); border-radius: 50%; overflow: hidden; background: var(--surface); }
 .chat-read-avatar-wrap:first-child { margin-left: 0; }
-.chat-read-avatar { width: 18px !important; height: 18px !important; border-radius: 50%; display: grid; place-items: center; background: var(--primary-light); color: var(--primary-text); font-size: 7px; font-weight: 800; overflow: hidden; }
+.chat-read-avatar { width: 18px !important; height: 18px !important; border-radius: 50%; display: grid; place-items: center; background: var(--primary-light); color: var(--primary-text); font-size: 7px; font-weight: 700; overflow: hidden; }
 .chat-read-more { display: grid; place-items: center; min-width: 18px; height: 18px; margin-left: 3px; padding: 0 3px; border-radius: 9px; background: var(--surface-2); color: var(--text-2); font-size: 9px; font-weight: 700; }
 .chat-mention {
   padding: 1px 3px;
   border-radius: 4px;
   background: #FDE9E3;
   color: var(--primary-text);
-  font-weight: 700;
+  font-weight: 600;
 }
 .chat-msg-highlight .chat-msg-bubble,.chat-msg-highlight .chat-interaction-card { box-shadow:0 0 0 3px rgba(82,100,217,.24),var(--shadow-sm); transition:box-shadow .2s; }
 .chat-mention-all { background: #DCFCE7; color: #15803D; }
-.chat-mention-avatar.chat-mention-all { width:30px; height:30px; display:grid; place-items:center; background:#16A34A; color:#fff; font-weight:800; }
+.chat-mention-avatar.chat-mention-all { width:30px; height:30px; display:grid; place-items:center; background:#16A34A; color:#fff; font-weight:700; }
 
 /* ── Hover actions ──────────────────────────────────────────────── */
 .chat-msg-actions {
@@ -555,8 +555,8 @@
   padding: 3px 8px;
   border-radius: 6px;
   font-size: 10.5px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
+  font-weight: 650;
+  letter-spacing: 0.02em;
   text-transform: uppercase;
 }
 .chat-badge--poll {
@@ -578,8 +578,8 @@
   font-weight: 500;
 }
 .chat-card-title {
-  font-size: 15px;
-  font-weight: 800;
+  font-size: 14px;
+  font-weight: 700;
   color: var(--text);
   line-height: 1.35;
   margin: 0 0 6px 0;
@@ -908,7 +908,7 @@
   max-width: 300px;
 }
 .chat-task-card:hover { border-color: var(--primary); }
-.chat-task-code { font-size: 10.5px; font-weight: 800; color: var(--primary-text); letter-spacing: .04em; }
+.chat-task-code { font-size: 10.5px; font-weight: 700; color: var(--primary-text); letter-spacing: .02em; }
 .chat-task-title { font-size: 13px; font-weight: 600; color: var(--text); margin: 4px 0; }
 .chat-attachment {
   display: flex;
