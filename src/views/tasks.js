@@ -18,6 +18,39 @@ function canManageTasks(me) {
   return !!me && (me.role === 'admin' || me.department === 'Phòng HCNS');
 }
 
+function memberAvatar(member) {
+  const initials = member.avatar_initials || String(member.full_name || '?').split(/\s+/).filter(Boolean).slice(-2).map(part => part[0]).join('').toUpperCase();
+  return `<span class="task-project-member-avatar" style="background:${esc(member.avatar_color || '#6366F1')}" title="${esc(member.full_name || '')}">${esc(initials || '?')}</span>`;
+}
+
+function getDepartmentMemberIds(deptName, allProjects = [], allUsers = []) {
+  const normDept = (deptName || '').trim();
+  if (!normDept) return [];
+  try {
+    const saved = localStorage.getItem('dept_members_' + normDept);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.length) return parsed.map(Number).filter(Boolean);
+    }
+  } catch (_) {}
+  const deptProjects = (allProjects || []).filter(p => (p.department || 'Khác').trim().toLowerCase() === normDept.toLowerCase());
+  const memberSet = new Set();
+  for (const p of deptProjects) {
+    String(p.member_ids || '').split(',').map(x => Number(x)).filter(Boolean).forEach(id => memberSet.add(id));
+  }
+  if (memberSet.size > 0) return Array.from(memberSet);
+  const deptUsers = (allUsers || []).filter(u => (u.department || '').trim().toLowerCase() === normDept.toLowerCase());
+  return deptUsers.map(u => Number(u.id)).filter(Boolean);
+}
+
+function saveDepartmentMemberIds(deptName, memberIds) {
+  const normDept = (deptName || '').trim();
+  if (!normDept) return;
+  try {
+    localStorage.setItem('dept_members_' + normDept, JSON.stringify(memberIds));
+  } catch (_) {}
+}
+
 
 function sortGroupTasks(groupTasks, mentionedTaskIds) {
   const mentioned = [];
@@ -513,9 +546,9 @@ export async function renderTasks(el, me) {
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                   <span>Đổi tên nhóm</span>
                 </button>
-                <button type="button" class="project-nav-dropdown-item" data-action-add-project-dept="${esc(department)}">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                  <span>Thêm dự án vào nhóm</span>
+                <button type="button" class="project-nav-dropdown-item" data-action-members-dept="${esc(department)}">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+                  <span>Thêm thành viên vào nhóm</span>
                 </button>
                 <button type="button" class="project-nav-dropdown-item project-nav-dropdown-item--danger" data-action-delete-dept="${esc(department)}">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
@@ -590,11 +623,11 @@ export async function renderTasks(el, me) {
       renameDepartment(department, refreshProjectsAfterMutation);
     }));
 
-    list.querySelectorAll('[data-action-add-project-dept]').forEach(btn => btn.addEventListener('click', e => {
+    list.querySelectorAll('[data-action-members-dept]').forEach(btn => btn.addEventListener('click', e => {
       e.stopPropagation();
       document.querySelectorAll('.project-nav-dropdown').forEach(m => m.hidden = true);
-      const department = btn.dataset.actionAddProjectDept;
-      openProjectForm(null, users, departments, projects, department, refreshProjectsAfterMutation);
+      const department = btn.dataset.actionMembersDept;
+      openDepartmentMembers(department, byDepartment[department] || [], refreshProjectsAfterMutation);
     }));
 
     list.querySelectorAll('[data-action-delete-dept]').forEach(btn => btn.addEventListener('click', e => {
@@ -859,6 +892,72 @@ export async function renderTasks(el, me) {
     document.getElementById('project-member-save')?.addEventListener('click', async () => {
       try { await api.saveTaskProjectMembers(project.id, [...selected]); closeModal(); toast('Đã cập nhật thành viên Project', 'success'); await loadProjects(); }
       catch (error) { toast(error.message, 'error'); }
+    });
+  }
+
+  function openDepartmentMembers(departmentName, deptProjects, onDone) {
+    const normDept = (departmentName || '').trim();
+    const initialIds = getDepartmentMemberIds(normDept, projects, users);
+    const selected = new Set(initialIds);
+
+    const render = () => {
+      const list = document.getElementById('dept-member-modal-list');
+      const count = document.getElementById('dept-member-modal-count');
+      const search = (document.getElementById('dept-member-search')?.value || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      if (count) count.textContent = `${selected.size} thành viên`;
+      if (!list) return;
+
+      const filtered = users.filter(u => {
+        if (!search) return true;
+        const haystack = `${u.full_name || ''} ${u.employee_code || ''} ${u.email || ''} ${u.department || ''}`.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        return haystack.includes(search);
+      });
+
+      list.innerHTML = filtered.map(user => {
+        const id = Number(user.id);
+        return `<label class="task-project-member-row">
+          <input type="checkbox" data-dept-member="${id}" ${selected.has(id) ? 'checked' : ''}/>
+          ${memberAvatar(user)}
+          <span><strong>${esc(user.full_name || '')}</strong><small>${esc(user.employee_code || '')}${user.department ? ` · ${esc(user.department)}` : ''}</small></span>
+        </label>`;
+      }).join('') || '<div class="task-project-member-empty">Không tìm thấy thành viên phù hợp.</div>';
+
+      list.querySelectorAll('[data-dept-member]').forEach(input => input.addEventListener('change', () => {
+        const id = Number(input.dataset.deptMember);
+        if (input.checked) selected.add(id); else selected.delete(id);
+        const count = document.getElementById('dept-member-modal-count');
+        if (count) count.textContent = `${selected.size} thành viên`;
+      }));
+    };
+
+    openModal(`Thành viên · ${departmentName}`, `
+      <div class="task-project-member-modal-head">
+        <div id="dept-member-modal-count">${selected.size} thành viên</div>
+        <span>${canManage ? 'Chọn người để thêm hoặc bỏ khỏi nhóm dự án.' : 'Danh sách thành viên nhóm dự án.'}</span>
+      </div>
+      <div style="margin-bottom:10px;">
+        <input type="text" id="dept-member-search" placeholder="Tìm tên, mã NV, email, phòng ban..." style="width:100%;height:38px;padding:0 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;outline:none;box-sizing:border-box;"/>
+      </div>
+      <div id="dept-member-modal-list" class="task-project-member-list"></div>
+    `, `<button type="button" class="btn-secondary" id="dept-member-close">Đóng</button>${canManage ? '<button type="button" class="btn-primary" id="dept-member-save">Lưu thành viên</button>' : ''}`);
+
+    render();
+    document.getElementById('dept-member-search')?.addEventListener('input', render);
+    document.getElementById('dept-member-close')?.addEventListener('click', closeModal);
+    document.getElementById('dept-member-save')?.addEventListener('click', async () => {
+      const saveBtn = document.getElementById('dept-member-save');
+      if (saveBtn) saveBtn.disabled = true;
+      const memberList = Array.from(selected).map(Number).filter(Boolean);
+      try {
+        saveDepartmentMemberIds(normDept, memberList);
+        await api.saveTaskProjectGroupMembers(normDept, memberList);
+        closeModal();
+        toast(`Đã cập nhật thành viên cho nhóm "${normDept}"`, 'success');
+        onDone?.();
+      } catch (error) {
+        toast(error.message || 'Lỗi khi lưu thành viên nhóm', 'error');
+        if (saveBtn) saveBtn.disabled = false;
+      }
     });
   }
 
@@ -1502,9 +1601,9 @@ function openProjectGroupForm(onDone) {
 
 function openProjectForm(project, users, departments, projects, prefillGroup, onDone) {
   const isEdit = !!project;
-  const selectedMembers = new Set(String(project?.member_ids || '').split(',').map(x => Number(x)).filter(Boolean));
-  const departmentOptions = departments.map(d => `<option value="${esc(d.name)}">${esc(d.name)}</option>`).join('');
   const groupSet = new Set((projects || []).map(p => (p.department || '').trim()).filter(Boolean));
+  if (prefillGroup) groupSet.add(prefillGroup.trim());
+  if (project?.department) groupSet.add(project.department.trim());
   const groupOptions = [...groupSet].sort((a, b) => String(a).localeCompare(String(b), 'vi', { sensitivity: 'base' }));
 
   openModal(isEdit ? 'Sửa Project' : 'Tạo Project', `
@@ -1527,21 +1626,17 @@ function openProjectForm(project, users, departments, projects, prefillGroup, on
       </div>
 
       <div class="project-form-panel project-form-panel-muted">
-        <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:10px;">
-          <div>
-            <div style="font-size:14px;font-weight:800;color:var(--text);">Thành viên Project</div>
-            <div id="pf-member-count" style="font-size:12px;color:var(--text-2);margin-top:2px;"></div>
-          </div>
-          <div style="display:flex;gap:6px;">
-            <button type="button" class="btn-secondary btn-xs" id="pf-select-visible">Chọn trang</button>
-            <button type="button" class="btn-secondary btn-xs" id="pf-clear-visible">Bỏ chọn</button>
-          </div>
+        <div style="margin-bottom:10px;">
+          <div style="font-size:14px;font-weight:800;color:var(--text);">Thành viên Project</div>
+          <div id="pf-member-count" style="font-size:12px;color:var(--text-2);margin-top:2px;"></div>
         </div>
-        <div class="member-picker-tools">
-          <input type="text" id="pf-member-search" placeholder="Tìm tên, mã NV, email..."/>
-          <select id="pf-member-dept"><option value="">Tất cả phòng ban</option>${departmentOptions}</select>
+        <div style="margin-bottom:8px;">
+          <input type="text" id="pf-member-search" placeholder="Tìm thành viên trong nhóm..." style="width:100%;height:36px;padding:0 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;outline:none;background:var(--surface);box-sizing:border-box;"/>
         </div>
         <div id="pf-member-list" class="member-picker-list"></div>
+        <div style="margin-top:10px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:11.5px;color:var(--text-2);line-height:1.4;">
+          ℹ️ Thành viên được đồng bộ tự động từ Nhóm dự án. Để chỉnh sửa danh sách thành viên, hãy chọn <strong>"Thêm thành viên vào nhóm"</strong> ở menu nhóm dự án (bánh răng ⚙️).
+        </div>
       </div>
     </div>
   `, `
@@ -1553,64 +1648,71 @@ function openProjectForm(project, users, departments, projects, prefillGroup, on
   document.getElementById('modal')?.classList.add('modal--scroll-fixed', 'modal--project');
 
   const normalized = value => String(value || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  function filteredUsers() {
+  function renderGroupMembers() {
+    const chosenDept = (document.getElementById('pf-dept')?.value || prefillGroup || '').trim();
+    const groupMemberIds = getDepartmentMemberIds(chosenDept, projects, users);
     const q = normalized(document.getElementById('pf-member-search')?.value);
-    const dept = document.getElementById('pf-member-dept')?.value || '';
-    return users.filter(u => {
+    const memberUsers = users.filter(u => groupMemberIds.includes(Number(u.id)));
+    const visibleUsers = memberUsers.filter(u => {
+      if (!q) return true;
       const haystack = normalized(`${u.full_name || ''} ${u.employee_code || ''} ${u.email || ''} ${u.department || ''}`);
-      const matchesSearch = !q || haystack.includes(q);
-      const matchesDept = !dept || u.department === dept;
-      return matchesSearch && matchesDept;
+      return haystack.includes(q);
     });
-  }
-  function renderMemberPicker() {
-    const visible = filteredUsers();
-    const list = document.getElementById('pf-member-list');
-    const count = document.getElementById('pf-member-count');
-    if (count) count.textContent = `${selectedMembers.size} đã chọn · ${visible.length} đang hiển thị`;
-    if (!list) return;
-    list.innerHTML = visible.map(u => `
-      <label class="member-picker-row">
-        <input type="checkbox" class="pf-member-check" value="${u.id}" ${selectedMembers.has(Number(u.id)) ? 'checked' : ''}/>
-        <span>
-          <span class="member-picker-name">${esc(u.full_name || '')}</span>
-          <span class="member-picker-meta">${esc(u.employee_code || 'Chưa có mã')} · ${esc(u.department || 'Chưa có phòng ban')}</span>
-          <span class="member-picker-meta">${esc(u.email || '')}</span>
+
+    const countEl = document.getElementById('pf-member-count');
+    if (countEl) {
+      countEl.textContent = chosenDept
+        ? `${memberUsers.length} thành viên từ nhóm "${chosenDept}"`
+        : `Chưa chọn nhóm dự án`;
+    }
+
+    const listEl = document.getElementById('pf-member-list');
+    if (!listEl) return;
+    if (!chosenDept) {
+      listEl.innerHTML = `<div class="task-group-empty" style="padding:28px 12px;text-align:center;color:var(--text-3);">Vui lòng chọn hoặc nhập "Nhóm / Danh mục" để hiển thị danh sách thành viên.</div>`;
+      return;
+    }
+    if (!memberUsers.length) {
+      listEl.innerHTML = `<div class="task-group-empty" style="padding:24px 12px;text-align:center;color:var(--text-3);line-height:1.5;">Nhóm "<strong>${esc(chosenDept)}</strong>" chưa có thành viên.<br><span style="font-size:11px;">Bạn có thể thêm thành viên vào nhóm qua menu ⚙️ của nhóm.</span></div>`;
+      return;
+    }
+    if (!visibleUsers.length) {
+      listEl.innerHTML = `<div class="task-group-empty" style="padding:20px 12px;text-align:center;color:var(--text-3);">Không tìm thấy thành viên phù hợp trong nhóm.</div>`;
+      return;
+    }
+    listEl.innerHTML = visibleUsers.map(u => `
+      <div class="task-project-member-row" style="cursor:default;grid-template-columns:32px minmax(0,1fr);padding:8px 10px;background:var(--surface);">
+        ${memberAvatar(u)}
+        <span style="overflow:hidden;">
+          <strong style="font-size:13px;color:var(--text);">${esc(u.full_name || '')}</strong>
+          <small style="display:block;margin-top:2px;color:var(--text-2);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(u.employee_code || '')}${u.department ? ` · ${esc(u.department)}` : ''}${u.email ? ` · ${esc(u.email)}` : ''}</small>
         </span>
-      </label>
-    `).join('') || `<div class="task-group-empty">Không tìm thấy thành viên phù hợp</div>`;
-    list.querySelectorAll('.pf-member-check').forEach(cb => cb.addEventListener('change', () => {
-      const id = Number(cb.value);
-      if (cb.checked) selectedMembers.add(id);
-      else selectedMembers.delete(id);
-      renderMemberPicker();
-    }));
+      </div>
+    `).join('');
   }
 
-  document.getElementById('pf-member-search')?.addEventListener('input', renderMemberPicker);
-  document.getElementById('pf-member-dept')?.addEventListener('change', renderMemberPicker);
-  document.getElementById('pf-select-visible')?.addEventListener('click', () => {
-    filteredUsers().forEach(u => selectedMembers.add(Number(u.id)));
-    renderMemberPicker();
-  });
-  document.getElementById('pf-clear-visible')?.addEventListener('click', () => {
-    filteredUsers().forEach(u => selectedMembers.delete(Number(u.id)));
-    renderMemberPicker();
-  });
+  document.getElementById('pf-member-search')?.addEventListener('input', renderGroupMembers);
+  document.getElementById('pf-dept')?.addEventListener('input', renderGroupMembers);
+  document.getElementById('pf-dept')?.addEventListener('change', renderGroupMembers);
   document.getElementById('pf-cancel')?.addEventListener('click', closeModal);
-  renderMemberPicker();
+  renderGroupMembers();
 
-  document.getElementById('pf-save').addEventListener('click', async () => {
+  document.getElementById('pf-save')?.addEventListener('click', async () => {
     const name = document.getElementById('pf-name').value.trim();
     if (!name) { toast('Vui lòng nhập tên Project', 'error'); return; }
-    const members = Array.from(selectedMembers).filter(Boolean);
+    const chosenDept = document.getElementById('pf-dept').value.trim();
+    const groupMemberIds = getDepartmentMemberIds(chosenDept, projects, users);
+    const managerId = parseInt(document.getElementById('pf-manager').value) || null;
+    const members = [...groupMemberIds];
+    if (managerId && !members.includes(managerId)) members.push(managerId);
+
     const data = {
       name,
       code: document.getElementById('pf-code').value,
       type: 'project',
       status: document.getElementById('pf-status').value,
-      department: document.getElementById('pf-dept').value,
-      manager_id: parseInt(document.getElementById('pf-manager').value) || null,
+      department: chosenDept,
+      manager_id: managerId,
       start_date: document.getElementById('pf-start').value || null,
       end_date: document.getElementById('pf-end').value || null,
       description: document.getElementById('pf-desc').value,

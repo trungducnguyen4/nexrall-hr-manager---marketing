@@ -355,6 +355,7 @@ export const api = {
   archiveTaskProject: (id) => req('DELETE', `/api/task-projects/${id}`).then(r => { inv('/api/task-projects', '/api/tasks'); return r; }),
   deleteTaskProjectPermanent: (id) => req('DELETE', `/api/task-projects/${id}?permanent=1`).then(r => { inv('/api/task-projects', '/api/tasks'); return r; }),
   saveTaskProjectMembers: (id, members) => req('PUT', `/api/task-projects/${id}/members`, { members }).then(r => { inv('/api/task-projects', '/api/tasks'); return r; }),
+  saveTaskProjectGroupMembers: (department, members) => req('PUT', '/api/task-project-groups/members', { department, members }).then(r => { inv('/api/task-projects', '/api/tasks'); return r; }),
   getTaskProjectMembers: (id) => req('GET', `/api/task-projects/${id}/members`),
   importMyxteamProject: (project) => req('POST', '/api/task-imports/myxteam/project', { project }).then(r => {
     inv('/api/task-projects', '/api/task-groups', '/api/tasks');
@@ -455,6 +456,7 @@ export const api = {
   getLeaveBalances: (params = {}) => { const q = new URLSearchParams(params).toString(); return req('GET', '/api/leave/balances' + (q ? '?' + q : '')); },
   adjustLeaveBalance: (d) => req('POST', '/api/leave/balances', d).then(r => { inv('/api/leave'); return r; }),
   uploadLeaveDocument: (file, label = '') => uploadForm('/api/leave/uploads', { label }, file),
+  getLeaveDocuments: (leaveId) => req('GET', `/api/leave/${leaveId}/documents`),
   getLeaveDocumentBlob: (leaveId, documentId, disposition = 'inline') => fetchBlob(`/api/leave/${leaveId}/documents/${documentId}?disposition=${encodeURIComponent(disposition)}`),
 
   // Candidates / Recruitment

@@ -569,42 +569,159 @@ function runComposerAction(action) {
   if (action === 'event') return openEventComposer();
 }
 
+function isPossibleUrl(str) {
+  if (!str) return false;
+  return /^(https?:\/\/|[a-zA-Z0-9-]+\.[a-zA-Z]{2,})(\S*)$/i.test(str.trim());
+}
+
+function formatUrlHref(str) {
+  if (!str) return '#';
+  const trimmed = str.trim();
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return 'https://' + trimmed;
+}
+
 function renderPollCard(message, isOwner) {
   const poll = message.poll;
   const selected = new Set((poll.voted_option_ids || []).map(Number));
   const total = (poll.options || []).reduce((sum, option) => sum + Number(option.vote_count || 0), 0);
-  return `<section class="chat-interaction-card chat-poll-card" data-poll-message-id="${message.id}">
-    <div class="chat-card-kicker">▥ BÌNH CHỌN ${poll.is_closed ? '· ĐÃ ĐÓNG' : ''}</div>
-    <div class="chat-card-title">${esc(poll.question)}</div>
-    <div class="chat-card-sub">Chọn nhiều phương án · ${total} lượt chọn</div>
-    <div class="chat-poll-options">${(poll.options || []).map(option => {
-      const checked = selected.has(Number(option.id));
-      return `<label class="chat-poll-option${checked ? ' selected' : ''}">
-        <input type="checkbox" data-poll-option="${option.id}" ${checked ? 'checked' : ''} ${poll.is_closed ? 'disabled' : ''}/>
-        <span>${esc(option.option_text)}</span><b>${Number(option.vote_count || 0)}</b>
-      </label>`;
-    }).join('')}</div>
-    ${!poll.is_closed ? `<div class="chat-card-actions"><button class="btn-secondary btn-xs" data-save-poll="${message.id}">Lưu lựa chọn</button>${isOwner ? `<button class="btn-secondary btn-xs" data-close-poll="${message.id}">Đóng poll</button>` : ''}</div>` : ''}
-  </section>`;
+  return `<article class="chat-interaction-card chat-poll-card ${poll.is_closed ? 'is-closed' : ''}" data-poll-message-id="${message.id}" role="region" aria-label="Bình chọn: ${esc(poll.question || '')}">
+    <header class="chat-card-header">
+      <div class="chat-card-badge chat-badge--poll">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+        <span>BÌNH CHỌN ${poll.is_closed ? '· ĐÃ ĐÓNG' : ''}</span>
+      </div>
+      <div class="chat-card-meta-tag">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span>${total} lượt chọn</span>
+      </div>
+    </header>
+
+    <h3 class="chat-card-title">${esc(poll.question)}</h3>
+    <div class="chat-card-sub">
+      <span class="chat-pill-soft">Chọn nhiều phương án</span>
+    </div>
+
+    <div class="chat-poll-options" role="group" aria-label="Các lựa chọn bình chọn">
+      ${(poll.options || []).map(option => {
+        const count = Number(option.vote_count || 0);
+        const percent = total > 0 ? Math.round((count / total) * 100) : 0;
+        const checked = selected.has(Number(option.id));
+        return `
+        <label class="chat-poll-option ${checked ? 'selected' : ''} ${poll.is_closed ? 'disabled' : ''}" style="--poll-percent: ${percent}%;">
+          <div class="chat-poll-progress-bg" style="width: ${percent}%;" aria-hidden="true"></div>
+          <div class="chat-poll-option-content">
+            <span class="chat-poll-checkbox-wrap">
+              <input type="checkbox" data-poll-option="${option.id}" ${checked ? 'checked' : ''} ${poll.is_closed ? 'disabled' : ''}/>
+              <span class="chat-poll-custom-checkbox">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              </span>
+            </span>
+            <span class="chat-poll-option-text">${esc(option.option_text)}</span>
+            <span class="chat-poll-option-stats">
+              <span class="chat-poll-count">${count}</span>
+              <span class="chat-poll-percent">(${percent}%)</span>
+            </span>
+          </div>
+        </label>`;
+      }).join('')}
+    </div>
+
+    ${!poll.is_closed ? `
+    <footer class="chat-card-actions">
+      <button class="chat-card-btn chat-card-btn--primary" data-save-poll="${message.id}">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        <span>Lưu lựa chọn</span>
+      </button>
+      ${isOwner ? `
+      <button class="chat-card-btn chat-card-btn--outline" data-close-poll="${message.id}">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+        <span>Đóng poll</span>
+      </button>` : ''}
+    </footer>` : ''}
+  </article>`;
 }
 
 function renderEventCard(message, isOwner) {
   const event = message.event;
   const when = formatChatDateTime(event.start_at) + (event.end_at ? ` – ${formatTime(event.end_at)}` : '');
-  const responseLabels = { going: '✓ Tham gia', declined: 'Từ chối' };
-  return `<section class="chat-interaction-card chat-event-card${event.cancelled_at ? ' cancelled' : ''}" data-event-message-id="${message.id}">
-    <div class="chat-card-kicker">◷ SỰ KIỆN ${event.cancelled_at ? '· ĐÃ HỦY' : ''}</div>
-    <div class="chat-card-title">${esc(event.title)}</div>
-    <div class="chat-event-when">${esc(when)}</div>
-    ${event.location ? `<div class="chat-event-detail">📍 ${esc(event.location)}</div>` : ''}
-    ${event.meeting_url ? `<a class="chat-event-link" href="${esc(event.meeting_url)}" target="_blank" rel="noopener noreferrer">Mở link họp</a>` : ''}
-    ${event.description ? `<div class="chat-event-detail">${esc(event.description)}</div>` : ''}
-    <div class="chat-card-sub">${Number(event.going_count || 0)} tham gia · ${Number(event.attendee_count || 0)} người được mời</div>
-    ${!event.cancelled_at ? `<div class="chat-card-actions">
-      ${Object.entries(responseLabels).map(([value, label]) => `<button class="btn-secondary btn-xs ${event.my_response === value ? 'active' : ''}" data-event-response="${value}" data-event-message="${message.id}">${label}</button>`).join('')}
-      ${isOwner ? `<button class="btn-secondary btn-xs" data-edit-event="${message.id}">Sửa</button><button class="btn-secondary btn-xs" data-cancel-event="${message.id}">Hủy sự kiện</button>` : ''}
-    </div>` : ''}
-  </section>`;
+  const isLocUrl = isPossibleUrl(event.location);
+  const locHref = isLocUrl ? formatUrlHref(event.location) : '';
+  const isMeetUrl = isPossibleUrl(event.meeting_url);
+  const meetHref = isMeetUrl ? formatUrlHref(event.meeting_url) : '';
+
+  return `<article class="chat-interaction-card chat-event-card ${event.cancelled_at ? 'is-cancelled' : ''}" data-event-message-id="${message.id}" role="region" aria-label="Sự kiện: ${esc(event.title || '')}">
+    <header class="chat-card-header">
+      <div class="chat-card-badge chat-badge--event">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        <span>SỰ KIỆN ${event.cancelled_at ? '· ĐÃ HỦY' : ''}</span>
+      </div>
+      <div class="chat-card-meta-tag">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span>${Number(event.going_count || 0)} tham gia / ${Number(event.attendee_count || 0)} mời</span>
+      </div>
+    </header>
+
+    <h3 class="chat-card-title">${esc(event.title)}</h3>
+
+    <div class="chat-event-time-banner">
+      <div class="chat-event-date-chip">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        <time datetime="${esc(event.start_at || '')}">${esc(when)}</time>
+      </div>
+    </div>
+
+    <div class="chat-event-details-box">
+      ${event.location ? `
+      <div class="chat-event-info-row">
+        <span class="chat-event-icon-pin">📍</span>
+        ${isLocUrl ? `
+        <a href="${esc(locHref)}" target="_blank" rel="noopener noreferrer" class="chat-event-location-link">
+          <span>${esc(event.location)}</span>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+        </a>` : `<span class="chat-event-info-text">${esc(event.location)}</span>`}
+      </div>` : ''}
+
+      ${event.meeting_url ? `
+      <div class="chat-event-info-row">
+        <a class="chat-event-meeting-btn" href="${esc(meetHref)}" target="_blank" rel="noopener noreferrer">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+          <span>Tham gia link họp online</span>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+        </a>
+      </div>` : ''}
+
+      ${event.description ? `
+      <div class="chat-event-description">
+        <div class="chat-event-desc-text">${esc(event.description)}</div>
+      </div>` : ''}
+    </div>
+
+    ${!event.cancelled_at ? `
+    <footer class="chat-card-actions chat-event-actions">
+      <div class="chat-event-rsvp-group">
+        <button class="chat-card-btn ${event.my_response === 'going' ? 'chat-card-btn--success active' : 'chat-card-btn--outline'}" data-event-response="going" data-event-message="${message.id}">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          <span>Tham gia</span>
+        </button>
+        <button class="chat-card-btn ${event.my_response === 'declined' ? 'chat-card-btn--danger active' : 'chat-card-btn--outline'}" data-event-response="declined" data-event-message="${message.id}">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          <span>Từ chối</span>
+        </button>
+      </div>
+      ${isOwner ? `
+      <div class="chat-event-manage-group">
+        <button class="chat-card-btn chat-card-btn--ghost chat-card-btn--icon" data-edit-event="${message.id}" title="Chỉnh sửa sự kiện">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          <span>Sửa</span>
+        </button>
+        <button class="chat-card-btn chat-card-btn--ghost chat-card-btn--danger-ghost" data-cancel-event="${message.id}" title="Hủy sự kiện">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          <span>Hủy</span>
+        </button>
+      </div>` : ''}
+    </footer>` : ''}
+  </article>`;
 }
 
 function bindMessageActions(container) {
@@ -636,6 +753,16 @@ function bindMessageActions(container) {
         }
         await refreshMessages();
       } catch (e) { toast(e.message, 'error'); }
+    });
+  });
+
+  container.querySelectorAll('[data-poll-option]').forEach(input => {
+    input.addEventListener('change', () => {
+      const row = input.closest('.chat-poll-option');
+      if (row) {
+        if (input.checked) row.classList.add('selected');
+        else row.classList.remove('selected');
+      }
     });
   });
 

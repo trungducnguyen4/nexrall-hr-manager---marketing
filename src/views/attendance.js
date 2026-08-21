@@ -182,7 +182,7 @@ export async function renderAttendance(el, me, route = {}) {
       const select = document.getElementById('att-geo-office');
       if (!select) return;
       select.innerHTML = `<option value="">Tự động</option>` + geoOffices.map(location => `<option value="${location.id}">${esc(location.name)}</option>`).join('');
-      // Auto-select the office matching the employee's work location (HN/HCM),
+      // Auto-select the office matching the employee's work location (HN/HCM/Q9),
       // so e.g. a Hà Nội-based employee sees the Hà Nội geofence, not a default.
       if (!geoAutoSelected && geoOfficeId === '' && me?.work_location) {
         const wl = String(me.work_location).trim().toLowerCase();
@@ -192,6 +192,7 @@ export async function renderAttendance(el, me, route = {}) {
           if (code && code.includes(wl)) return true;
           if (wl === 'hcm' && (code.includes('hcm') || name.includes('hồ chí minh') || name.includes('ho chi minh'))) return true;
           if (wl === 'hn' && (code.includes('hn') || name.includes('hà nội') || name.includes('ha noi'))) return true;
+          if ((wl.includes('q9') || wl.includes('quận 9') || wl.includes('quan 9') || wl.includes('phim trường') || wl.includes('studio')) && (code.includes('q9') || name.includes('q9') || name.includes('phim trường'))) return true;
           return false;
         });
         if (match) { geoOfficeId = String(match.id); geoAutoSelected = true; }

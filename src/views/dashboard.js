@@ -1,110 +1,639 @@
 import { esc, lifecycleBadge, today } from '../utils.js';
 import { api } from '../api.js';
 import { renderGeoMap, classifyMarker } from '../geo-map.js?v=20260817-dash-geo-v1';
+import { openTaskPanel } from '../app.js';
 
-const stats = [
-  ['clipboardList', '0', 'Việc hôm nay', 'indigo'],
-  ['circleCheck', '0', 'Đã hoàn thành', 'emerald'],
-  ['refreshCw', '0', 'Đang thực hiện', 'amber'],
-  ['users', '0', 'Đã check-in', 'blue'],
-];
+const EVAL_STATUS_META = {
+  DRAFT:                       { label: 'Nháp',                       cls: 'badge-gray' },
+  MENTOR_REVIEW:               { label: 'Đang đánh giá',              cls: 'badge-info' },
+  EMPLOYEE_REVISION_REQUESTED: { label: 'TTS yêu cầu điều chỉnh',     cls: 'badge-warning' },
+  CEO_REVISION_REQUESTED:      { label: 'BGĐ yêu cầu đánh giá lại',   cls: 'badge-warning' },
+  EMPLOYEE_CONFIRMATION:       { label: 'Chờ TTS xác nhận',           cls: 'badge-info' },
+  PENDING_CEO_APPROVAL:        { label: 'Chờ TGĐ phê duyệt',          cls: 'badge-warning' },
+  CEO_APPROVED:                { label: 'Đã phê duyệt',               cls: 'badge-success' },
+  HR_RECEIVED:                 { label: 'HCNS đã tiếp nhận',          cls: 'badge-success' },
+  LOCKED:                      { label: 'Đã khóa',                    cls: 'badge-gray' },
+};
 
-const KPI_MAX_SCORES = { HS01: 15, HS02: 10, HS03: 10, HS04: 10, HS05: 10, HS06: 5 };
-
-function dashboardKpiCard(item, index) {
-  const isText = String(item.unit || '').toLowerCase() === 'text';
-  const maxScore = KPI_MAX_SCORES[item.criterion_code] || 0;
-  const actual = isText ? Number(item.manual_score) : Number(item.actual_value);
-  const target = isText ? maxScore : Number(item.target_value);
-  const hasActual = Number.isFinite(actual) && actual >= 0;
-  const percent = hasActual && target > 0 ? Math.max(0, Math.min(100, Math.round((actual / target) * 100))) : 0;
-  const tone = ['emerald', 'blue', 'amber'][index % 3];
-  const actualLabel = hasActual ? (isText ? `${actual}/${maxScore}` : `${actual} ${item.unit || ''}`.trim()) : 'Chưa cập nhật';
-  const targetLabel = isText ? `Mục tiêu: ${maxScore} điểm` : `Mục tiêu: ${item.target_value} ${item.unit || ''}`.trim();
-  const state = !hasActual ? 'Chưa cập nhật' : percent >= 100 ? 'Đạt mục tiêu' : 'Đang thực hiện';
-  return `<article class="reference-kpi ${tone}"><p>${esc(item.title || item.criterion_code || 'KPI')}</p><div class="kpi-value">${esc(actualLabel)}</div><div class="reference-progress"><i style="width:${percent}%"></i></div><div class="kpi-foot"><span>${esc(targetLabel)}</span><b>● ${esc(state)}</b></div></article>`;
+function evalStatusLabel(ev) {
+  if (!ev) return 'Chưa mở';
+  const reviewish = ['MENTOR_REVIEW', 'EMPLOYEE_REVISION_REQUESTED', 'CEO_REVISION_REQUESTED'];
+  if (reviewish.includes(ev.status)) {
+    if (ev.status === 'EMPLOYEE_REVISION_REQUESTED' && !ev.mentor_submitted_at && !ev.department_submitted_at) return 'TTS yêu cầu điều chỉnh';
+    if (ev.status === 'CEO_REVISION_REQUESTED' && !ev.mentor_submitted_at && !ev.department_submitted_at) return 'Chờ đánh giá lại (BGĐ trả về)';
+    if (ev.mentor_submitted_at && !ev.department_submitted_at) return 'Mentor đã đánh giá';
+    if (!ev.mentor_submitted_at && ev.department_submitted_at) return 'Trưởng phòng đã đánh giá';
+    return 'Đang chờ đánh giá';
+  }
+  return (EVAL_STATUS_META[ev.status] || {}).label || ev.status;
 }
 
 function getTimeGreeting() {
   const h = new Date().getHours();
-  if (h < 12) return { text: 'Chào buổi sáng', icon: 'sun' };
-  if (h < 18) return { text: 'Chào buổi chiều', icon: 'sun' };
-  return { text: 'Chào buổi tối', icon: 'moon' };
+  if (h < 12) return { text: 'Chào buổi sáng', icon: '☀️' };
+  if (h < 18) return { text: 'Chào buổi chiều', icon: '🌤️' };
+  return { text: 'Chào buổi tối', icon: '🌙' };
+}
+
+function getInitials(name) {
+  if (!name) return 'NV';
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
 async function renderEmployeeDashboard(el, me) {
-  const displayName = me.full_name || 'Nguyễn Văn Hậu';
-  const department = me.department || 'Ban Giám Đốc';
-  const position = me.position || 'Giám đốc';
-  const today = new Date().toLocaleDateString('vi-VN', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
-  const isTts = String(me.employee_type || '').toUpperCase() === 'TTS';
+  const displayName = me.full_name || 'Nhân viên';
+  const department = me.department || 'Chưa phân phòng';
+  const position = me.position || 'Nhân viên';
+  const todayStr = today();
+  const todayFormatted = new Date().toLocaleDateString('vi-VN', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
+  const initials = getInitials(displayName);
+  const now = new Date();
+  const currentMonth = now.getMonth() + 1;
+  const currentYear = now.getFullYear();
 
   el.innerHTML = `
-    <section class="dash-reference">
-      <div class="dash-main-column">
-        <div class="dash-welcome">
-          <div class="welcome-orb welcome-orb-one"></div><div class="welcome-orb welcome-orb-two"></div>
-          <div class="welcome-eyebrow"><span data-icon="${getTimeGreeting().icon}"></span> ${getTimeGreeting().text},</div>
-          <h1>${esc(displayName)} <span data-icon="userRound"></span></h1>
-          <p>${today}</p>
-          <div class="welcome-tags"><span>${esc(department)}</span><span>${esc(position)}</span></div>
-          <div class="welcome-status">${lifecycleBadge(me.lifecycle_status || 'Chính thức')}</div>
+    <section class="emp-dashboard">
+      <!-- 1. Hero Banner with Quick Attendance Widget (Single clock in header) -->
+      <header class="emp-hero">
+        <div class="emp-hero-info">
+          <div class="emp-hero-greeting">
+            <span class="emp-greeting-pill">${getTimeGreeting().icon} ${getTimeGreeting().text}</span>
+            <span class="emp-date-pill">${todayFormatted}</span>
+          </div>
+          <div class="emp-user-card">
+            <div class="emp-avatar-circle" style="background:${esc(me.avatar_color || '#4f46e5')}">${esc(initials)}</div>
+            <div>
+              <h1>${esc(displayName)}</h1>
+              <div class="emp-meta-pills">
+                <span class="emp-meta-pill dept-pill">🏢 ${esc(department)}</span>
+                <span class="emp-meta-pill pos-pill">💼 ${esc(position)}</span>
+                <span class="emp-meta-pill">${lifecycleBadge(me.lifecycle_status || 'Chính thức')}</span>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <div class="reference-stats">
-          ${stats.map(([icon, value, label, tone]) => `<article class="reference-stat ${tone}"><i data-icon="${icon}"></i><div><strong>${value}</strong><span>${label}</span></div></article>`).join('')}
+        <div class="emp-clock-widget">
+          <div class="emp-clock-head">
+            <span>⏱️</span>
+            <span>Chấm công hôm nay</span>
+          </div>
+          <div class="emp-clock-status" id="emp-clock-status">
+            <span class="dot amber"></span> Đang kết nối GPS...
+          </div>
+          <div class="emp-clock-action" id="emp-clock-action">
+            <a href="#/attendance" class="emp-clock-btn emp-clock-btn--checkin">⚡ Chấm công ngay</a>
+          </div>
         </div>
+      </header>
 
-        <div class="dash-bottom-grid">
-          <article class="reference-panel schedule-panel"><div class="reference-panel-head"><h2><span data-icon="calendarDays"></span> Lịch làm việc</h2><span class="date-range">Tuần hiện tại</span><a href="#/tasks">Xem tất cả <span data-icon="arrowRight"></span></a></div><div class="schedule-empty"><span data-icon="calendarDays"></span><strong>Tuần này chưa có lịch làm việc</strong><p>Hiện tại chưa có lịch làm việc nào được lên kế hoạch.</p><a href="#/tasks" class="btn-secondary btn-sm">Xem chi tiết lịch</a></div></article>
-          <article class="reference-panel"><div class="reference-panel-head"><h2><span data-icon="bell"></span> Thông báo</h2><a href="#/notifications">Xem tất cả <span data-icon="arrowRight"></span></a></div><div id="dashboard-notifications" class="reference-empty">Đang tải thông báo...</div></article>
-        </div>
+      <!-- 2. Quick Action Shortcuts Bar -->
+      <div class="emp-quick-actions">
+        <a href="#/tasks" class="emp-quick-btn" id="btn-quick-new-task">
+          <span class="emp-quick-icon bg-indigo">➕</span>
+          <span>Tạo việc mới</span>
+        </a>
+        <a href="#/leave" class="emp-quick-btn">
+          <span class="emp-quick-icon bg-emerald">🏖️</span>
+          <span>Xin nghỉ phép</span>
+        </a>
+        <a href="#/attendance" class="emp-quick-btn">
+          <span class="emp-quick-icon bg-amber">⏰</span>
+          <span>Đăng ký OT / Ca</span>
+        </a>
+        <a href="#/invoices" class="emp-quick-btn">
+          <span class="emp-quick-icon bg-rose">💰</span>
+          <span>Phiếu lương</span>
+        </a>
+        <a href="#/evaluations" class="emp-quick-btn">
+          <span class="emp-quick-icon bg-teal">⭐</span>
+          <span>Đánh giá hiệu suất</span>
+        </a>
       </div>
 
-      <aside class="reference-kpis"><div class="kpi-heading"><span data-icon="target"></span><h2>KPI của bạn</h2><a href="#/kpis">Xem chi tiết <span data-icon="arrowRight"></span></a></div>
-        <div id="dashboard-kpis" class="reference-empty">Đang tải KPI...</div>
-      </aside>
-    </section>`;
+      <!-- 3. Main Two-Column Layout -->
+      <div class="emp-main-layout">
+        <!-- Left Column: Task Progress Bar Chart & My Tasks -->
+        <div class="emp-left-column">
+          <!-- 1. Task 5-Status Bar Chart -->
+          <article class="emp-panel emp-tasks-panel">
+            <header class="emp-panel-head">
+              <div>
+                <h2>📊 Tiến độ & Khối lượng công việc</h2>
+                <p>Tổng hợp công việc theo 5 trạng thái</p>
+              </div>
+              <a href="#/tasks" class="emp-link-subtle">Xem bảng việc →</a>
+            </header>
+            <div id="emp-task-barchart">
+              <div style="text-align:center;padding:16px;color:var(--text-3);">Đang tải biểu đồ công việc...</div>
+            </div>
+          </article>
 
-  const notificationHost = document.getElementById('dashboard-notifications');
-  try {
-    const data = await api.getNotifications({ window: 30, page: 1, page_size: 10 });
-    const items = (data.notifications || []).slice(0, 3);
-    if (!notificationHost) return;
-    notificationHost.className = items.length ? 'reference-notification-list' : 'reference-empty';
-    notificationHost.innerHTML = items.length ? items.map(item => `
-      <a href="${esc(item.action_url || '#/notifications')}" class="reference-notification-item">
-        <span class="${esc(item.severity || 'info')}"></span>
-        <div><strong>${esc(item.title || 'Thông báo')}</strong><small>${esc(item.employee_name || item.message || '')}</small></div>
-      </a>`).join('') : 'Không có thông báo cần xử lý';
-  } catch (_) {
-    if (notificationHost) notificationHost.textContent = 'Không thể tải thông báo';
-  }
+          <!-- 2. Actionable Tasks List -->
+          <article class="emp-panel emp-tasks-panel">
+            <header class="emp-panel-head">
+              <div>
+                <h2>📋 Công việc của tôi</h2>
+                <p>Nhiệm vụ được giao & bạn đang theo dõi</p>
+              </div>
+              <div class="emp-panel-actions">
+                <div class="emp-tab-pills" id="emp-task-tabs">
+                  <button type="button" class="emp-tab-pill active" data-tab="active">Cần làm</button>
+                  <button type="button" class="emp-tab-pill" data-tab="today">Hôm nay / Gấp</button>
+                  <button type="button" class="emp-tab-pill" data-tab="done">Đã xong</button>
+                </div>
+                <a href="#/tasks" class="emp-link-subtle">Xem bảng việc →</a>
+              </div>
+            </header>
+            <div id="emp-tasks-list" class="emp-tasks-list">
+              <div style="text-align:center;padding:24px;color:var(--text-3);">Đang tải công việc...</div>
+            </div>
+          </article>
+        </div>
 
-  const kpiHost = document.getElementById('dashboard-kpis');
-  try {
-    const now = new Date();
-    const { plan, items = [] } = await api.getKpis({ month: now.getMonth() + 1, year: now.getFullYear() });
-    if (!kpiHost) return;
-    if (!plan || !items.length) {
-      kpiHost.className = 'reference-empty';
-      kpiHost.textContent = `Chưa có KPI được giao cho tháng ${now.getMonth() + 1}/${now.getFullYear()}.`;
-    } else {
-      kpiHost.className = '';
-      kpiHost.innerHTML = `${items.slice(0, 3).map(dashboardKpiCard).join('')}<footer>Cập nhật: ${esc(plan.reviewed_at || plan.updated_at || plan.created_at || '—')}</footer>`;
-    }
-  } catch (_) {
-    if (kpiHost) { kpiHost.className = 'reference-empty'; kpiHost.textContent = 'Không thể tải KPI.'; }
-  }
+        <!-- Right Column: Attendance Circular Progress & Leave/OT Monthly Widget -->
+        <div class="emp-right-column">
+          <!-- 1. Attendance Monthly Summary Widget: 2 Circular Progress Rings -->
+          <article class="emp-panel emp-att-panel">
+            <header class="emp-panel-head">
+              <h2>🗓️ Tổng quan kỳ công T${currentMonth}/${currentYear}</h2>
+              <a href="#/attendance" class="emp-link-subtle">Lịch sử →</a>
+            </header>
+            <div id="emp-att-summary-content">
+              <div style="text-align:center;padding:16px;color:var(--text-3);">Đang tải dữ liệu kỳ công...</div>
+            </div>
+          </article>
 
-  if (isTts) {
+          <!-- 2. Leave & OT Requests Monthly Widget -->
+          <article class="emp-panel emp-requests-panel">
+            <header class="emp-panel-head">
+              <div>
+                <h2>🏖️ Đơn nghỉ phép & Tăng ca (OT)</h2>
+                <p>Tiến độ duyệt đơn trong tháng ${currentMonth}/${currentYear}</p>
+              </div>
+              <div style="display:flex;gap:6px;">
+                <a href="#/leave" class="btn-secondary btn-xs" style="text-decoration:none;">+ Nghỉ phép</a>
+                <a href="#/attendance" class="btn-secondary btn-xs" style="text-decoration:none;">+ Đăng ký OT</a>
+              </div>
+            </header>
+            <div id="emp-requests-content">
+              <div style="text-align:center;padding:16px;color:var(--text-3);">Đang tải đơn từ & tăng ca...</div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+  `;
+
+  // Parallel load of data
+  let userTasks = [];
+  let currentTab = 'active';
+
+  // 1. Load Attendance Today Status
+  async function loadTodayAttendance() {
+    const statusEl = document.getElementById('emp-clock-status');
+    const actionEl = document.getElementById('emp-clock-action');
+    if (!statusEl) return;
     try {
-      const assets = (await api.getAssets()).assets || [];
-      const pending = assets.filter(a => a.user_id === me.id && a.status === 'pending_review').length;
-      const host = document.getElementById('asset-pending-count');
-      if (host && pending) host.textContent = `(${pending} chờ xác nhận)`;
-    } catch (_) {}
+      const { attendance = [] } = await api.getAttendanceToday();
+      const myRow = attendance.find(a => Number(a.user_id) === Number(me.id)) || attendance[0];
+      if (myRow && myRow.checkin_time) {
+        if (myRow.checkout_time) {
+          statusEl.innerHTML = `<span class="dot green"></span> Đã hoàn thành ca: <b>${esc(myRow.checkin_time)} - ${esc(myRow.checkout_time)}</b>`;
+          actionEl.innerHTML = `<a href="#/attendance" class="emp-clock-btn emp-clock-btn--done">✓ Đã chấm công về (${esc(myRow.checkout_time)})</a>`;
+        } else {
+          statusEl.innerHTML = `<span class="dot green"></span> Đang làm việc · Vào lúc <b>${esc(myRow.checkin_time)}</b>`;
+          actionEl.innerHTML = `<a href="#/attendance" class="emp-clock-btn emp-clock-btn--checkout">Chấm công về (Check-out)</a>`;
+        }
+      } else {
+        statusEl.innerHTML = `<span class="dot amber"></span> Chưa chấm công hôm nay`;
+        actionEl.innerHTML = `<a href="#/attendance" class="emp-clock-btn emp-clock-btn--checkin">⚡ Chấm công ngay (GPS)</a>`;
+      }
+    } catch (_) {
+      statusEl.innerHTML = `<span class="dot gray"></span> Chưa có dữ liệu chấm công`;
+      actionEl.innerHTML = `<a href="#/attendance" class="emp-clock-btn emp-clock-btn--checkin">Vào Chấm công</a>`;
+    }
   }
+
+  // 2. Render 5-Status Task Bar Chart
+  function renderTaskBarChart() {
+    const chartHost = document.getElementById('emp-task-barchart');
+    if (!chartHost) return;
+
+    let todoCount = 0;
+    let inProgressCount = 0;
+    let reviewCount = 0;
+    let doneCount = 0;
+    let cancelledCount = 0;
+
+    for (const t of userTasks) {
+      const st = t.status || 'todo';
+      if (st === 'todo' || st === 'open') todoCount++;
+      else if (st === 'in_progress' || st === 'in-progress') inProgressCount++;
+      else if (st === 'review') reviewCount++;
+      else if (st === 'done') doneCount++;
+      else if (st === 'cancelled') cancelledCount++;
+      else todoCount++;
+    }
+
+    const total = userTasks.length;
+    const maxCount = Math.max(1, todoCount, inProgressCount, reviewCount, doneCount, cancelledCount);
+    const doneRate = total > 0 ? Math.round((doneCount / total) * 100) : 0;
+
+    const todoH = Math.max(8, Math.round((todoCount / maxCount) * 100));
+    const inProgH = Math.max(8, Math.round((inProgressCount / maxCount) * 100));
+    const reviewH = Math.max(8, Math.round((reviewCount / maxCount) * 100));
+    const doneH = Math.max(8, Math.round((doneCount / maxCount) * 100));
+    const cancH = Math.max(8, Math.round((cancelledCount / maxCount) * 100));
+
+    chartHost.innerHTML = `
+      <div class="emp-barchart-container">
+        <div class="emp-barchart-header">
+          <div class="emp-barchart-metric">
+            <span class="emp-barchart-total">Tổng: <strong>${total}</strong> công việc</span>
+            <span class="emp-barchart-rate">Tỷ lệ hoàn thành: <strong>${doneRate}%</strong></span>
+          </div>
+          <a href="#/tasks" style="font-size:12px;color:var(--primary);font-weight:600;text-decoration:none;">Xem bảng Kanban →</a>
+        </div>
+
+        <div class="emp-barchart-bars">
+          <!-- 1. Chờ làm -->
+          <a href="#/tasks" class="emp-bar-col" title="Chờ làm: ${todoCount} việc">
+            <span class="emp-bar-val" style="color:#3b82f6;">${todoCount}</span>
+            <div class="emp-bar-track">
+              <div class="emp-bar-fill blue" style="height:${todoCount > 0 ? todoH : 4}%;"></div>
+            </div>
+            <span class="emp-bar-label">Chờ làm</span>
+          </a>
+
+          <!-- 2. Đang làm -->
+          <a href="#/tasks" class="emp-bar-col" title="Đang làm: ${inProgressCount} việc">
+            <span class="emp-bar-val" style="color:#f59e0b;">${inProgressCount}</span>
+            <div class="emp-bar-track">
+              <div class="emp-bar-fill amber" style="height:${inProgressCount > 0 ? inProgH : 4}%;"></div>
+            </div>
+            <span class="emp-bar-label">Đang làm</span>
+          </a>
+
+          <!-- 3. Review -->
+          <a href="#/tasks" class="emp-bar-col" title="Review: ${reviewCount} việc">
+            <span class="emp-bar-val" style="color:#8b5cf6;">${reviewCount}</span>
+            <div class="emp-bar-track">
+              <div class="emp-bar-fill purple" style="height:${reviewCount > 0 ? reviewH : 4}%;"></div>
+            </div>
+            <span class="emp-bar-label">Review</span>
+          </a>
+
+          <!-- 4. Hoàn thành -->
+          <a href="#/tasks" class="emp-bar-col" title="Hoàn thành: ${doneCount} việc">
+            <span class="emp-bar-val" style="color:#10b981;">${doneCount}</span>
+            <div class="emp-bar-track">
+              <div class="emp-bar-fill emerald" style="height:${doneCount > 0 ? doneH : 4}%;"></div>
+            </div>
+            <span class="emp-bar-label">Hoàn thành</span>
+          </a>
+
+          <!-- 5. Hủy -->
+          <a href="#/tasks" class="emp-bar-col" title="Hủy: ${cancelledCount} việc">
+            <span class="emp-bar-val" style="color:#ef4444;">${cancelledCount}</span>
+            <div class="emp-bar-track">
+              <div class="emp-bar-fill rose" style="height:${cancelledCount > 0 ? cancH : 4}%;"></div>
+            </div>
+            <span class="emp-bar-label">Hủy</span>
+          </a>
+        </div>
+      </div>
+    `;
+  }
+
+  // 3. Load Tasks
+  function renderTaskList() {
+    const listEl = document.getElementById('emp-tasks-list');
+    if (!listEl) return;
+
+    let filtered = [];
+    if (currentTab === 'active') {
+      filtered = userTasks.filter(t => t.status !== 'done' && t.status !== 'cancelled');
+    } else if (currentTab === 'today') {
+      filtered = userTasks.filter(t => t.status !== 'done' && (t.priority === 'urgent' || t.priority === 'high' || (t.due_date && t.due_date <= todayStr)));
+    } else if (currentTab === 'done') {
+      filtered = userTasks.filter(t => t.status === 'done');
+    }
+
+    if (!filtered.length) {
+      listEl.innerHTML = `
+        <div style="text-align:center;padding:32px 16px;color:var(--text-3);">
+          <div style="font-size:28px;margin-bottom:8px;">✨</div>
+          <strong style="color:var(--text);display:block;margin-bottom:4px;">
+            ${currentTab === 'done' ? 'Chưa có công việc hoàn thành gần đây.' : 'Tuyệt vời! Bạn không có việc nào tồn đọng.'}
+          </strong>
+          <p style="font-size:12px;margin:0 0 12px;">Mọi đầu việc được giao đã được xử lý xong.</p>
+          <a href="#/tasks" class="btn-secondary btn-sm">+ Tạo công việc mới</a>
+        </div>
+      `;
+      return;
+    }
+
+    listEl.innerHTML = filtered.slice(0, 8).map(task => {
+      const isDone = task.status === 'done';
+      let dueBadge = '';
+      if (task.due_date) {
+        if (isDone) {
+          dueBadge = `<span class="emp-due-badge future">Hạn: ${task.due_date}</span>`;
+        } else if (task.due_date < todayStr) {
+          dueBadge = `<span class="emp-due-badge overdue">⚠️ Quá hạn ${task.due_date}</span>`;
+        } else if (task.due_date === todayStr) {
+          dueBadge = `<span class="emp-due-badge today">🔥 Hạn hôm nay</span>`;
+        } else {
+          dueBadge = `<span class="emp-due-badge future">Hạn: ${task.due_date}</span>`;
+        }
+      }
+
+      const statusMap = {
+        todo: { label: 'Chờ làm', cls: 'open' },
+        open: { label: 'Chờ làm', cls: 'open' },
+        'in-progress': { label: 'Đang làm', cls: 'in_progress' },
+        in_progress: { label: 'Đang làm', cls: 'in_progress' },
+        review: { label: 'Review', cls: 'review' },
+        done: { label: 'Hoàn thành', cls: 'done' },
+        cancelled: { label: 'Đã hủy', cls: 'overdue' },
+      };
+      const st = statusMap[task.status] || { label: task.status || 'Mở', cls: 'open' };
+
+      return `
+        <div class="emp-task-item ${task.priority === 'urgent' && !isDone ? 'is-urgent' : ''}" data-task-id="${task.id}">
+          <button type="button" class="emp-task-check ${isDone ? 'checked' : ''}" data-action="toggle-task" data-task-id="${task.id}" title="${isDone ? 'Chuyển về đang làm' : 'Đánh dấu hoàn thành'}">
+            ${isDone ? '✓' : ''}
+          </button>
+          <div class="emp-task-content" data-action="open-task" data-task-id="${task.id}">
+            <div class="emp-task-title" style="${isDone ? 'text-decoration:line-through;color:var(--text-3);' : ''}">${esc(task.title)}</div>
+            <div class="emp-task-meta">
+              ${task.project_name ? `<span>📁 ${esc(task.project_name)}</span>` : ''}
+              ${task.group_name ? `<span>${esc(task.group_name)}</span>` : ''}
+              ${dueBadge}
+              ${task.subtask_total ? `<span>☑️ ${task.subtask_done}/${task.subtask_total} việc con</span>` : ''}
+            </div>
+          </div>
+          <span class="emp-task-status-pill ${st.cls}">${st.label}</span>
+        </div>
+      `;
+    }).join('');
+  }
+
+  async function loadTasks() {
+    try {
+      const data = await api.getTasks();
+      const all = Array.isArray(data) ? data : (data.tasks || []);
+      userTasks = all.filter(t => Number(t.assigned_to) === Number(me.id) || Number(t.assigned_by) === Number(me.id));
+      renderTaskBarChart();
+      renderTaskList();
+    } catch (_) {
+      const listEl = document.getElementById('emp-tasks-list');
+      if (listEl) listEl.innerHTML = `<div style="text-align:center;padding:16px;color:var(--text-3);">Không thể tải danh sách việc.</div>`;
+    }
+  }
+
+  // 4. Load Monthly Leave & OT Requests Widget (chưa duyệt / đã duyệt)
+  async function loadRequestsAndOT() {
+    const host = document.getElementById('emp-requests-content');
+    if (!host) return;
+    try {
+      const monthStr = `${currentYear}-${String(currentMonth).padStart(2, '0')}`;
+      const [leaveRes, otReqRes, otFormRes] = await Promise.allSettled([
+        api.getLeave({ self: 1 }),
+        api.getOvertimeRequests({ month: monthStr }),
+        api.getOvertimeForms({ month: monthStr }),
+      ]);
+
+      const allLeaves = (leaveRes.status === 'fulfilled' && leaveRes.value?.leave) ? leaveRes.value.leave : [];
+      const monthLeaves = allLeaves.filter(l => {
+        if (l.start_date && l.start_date.startsWith(monthStr)) return true;
+        if (l.end_date && l.end_date.startsWith(monthStr)) return true;
+        if (l.submitted_at && l.submitted_at.startsWith(monthStr)) return true;
+        return false;
+      });
+
+      const allOtReqs = (otReqRes.status === 'fulfilled' && otReqRes.value?.overtime_requests) ? otReqRes.value.overtime_requests : [];
+      const allOtForms = (otFormRes.status === 'fulfilled' && otFormRes.value?.overtime_forms) ? otFormRes.value.overtime_forms : [];
+
+      const pendingLeaves = monthLeaves.filter(l => l.status === 'pending');
+      const approvedLeaves = monthLeaves.filter(l => l.status === 'approved');
+
+      const pendingOtReqs = allOtReqs.filter(o => o.status === 'pending');
+      const approvedOtReqs = allOtReqs.filter(o => o.status === 'approved');
+      const pendingOtForms = allOtForms.filter(f => f.status === 'pending');
+      const approvedOtForms = allOtForms.filter(f => f.status === 'approved');
+
+      const pendingOtCount = pendingOtReqs.length + pendingOtForms.length;
+      const approvedOtCount = approvedOtReqs.length + approvedOtForms.length;
+
+      const unifiedItems = [
+        ...monthLeaves.map(l => ({
+          type: 'leave',
+          title: l.type_name || 'Nghỉ phép',
+          dateStr: l.start_date === l.end_date ? l.start_date : `${l.start_date} → ${l.end_date}`,
+          detail: `${l.total_days || 1} ngày · ${l.reason || 'Nghỉ phép cá nhân'}`,
+          status: l.status,
+          link: '#/leave',
+          rawDate: l.start_date || l.submitted_at || '',
+        })),
+        ...allOtReqs.map(o => ({
+          type: 'ot',
+          title: 'Tăng ca (Checkout)',
+          dateStr: o.work_date,
+          detail: `${((o.approved_minutes || o.requested_minutes || 0) / 60).toFixed(1)} giờ · ${o.reason || 'Tăng ca hoàn thành việc'}`,
+          status: o.status,
+          link: '#/attendance',
+          rawDate: o.work_date || o.created_at || '',
+        })),
+        ...allOtForms.map(f => ({
+          type: 'ot',
+          title: `Phiếu OT ${f.period_month || monthStr}`,
+          dateStr: f.period_month || monthStr,
+          detail: `${((f.approved_minutes || f.requested_minutes || 0) / 60).toFixed(1)} giờ (${(f.items || []).length} mục)`,
+          status: f.status,
+          link: '#/attendance',
+          rawDate: f.submitted_at || f.period_month || '',
+        })),
+      ];
+
+      unifiedItems.sort((a, b) => (b.rawDate || '').localeCompare(a.rawDate || ''));
+
+      host.innerHTML = `
+        <div class="emp-requests-summary">
+          <div class="emp-req-summary-pill">
+            <span>🏖️ Đơn nghỉ phép</span>
+            <strong>
+              <span class="highlight-pending">${pendingLeaves.length} chờ duyệt</span> ·
+              <span class="highlight-approved">${approvedLeaves.length} đã duyệt</span>
+            </strong>
+          </div>
+          <div class="emp-req-summary-pill">
+            <span>⏰ Tăng ca (OT)</span>
+            <strong>
+              <span class="highlight-pending">${pendingOtCount} chờ duyệt</span> ·
+              <span class="highlight-approved">${approvedOtCount} đã duyệt</span>
+            </strong>
+          </div>
+        </div>
+
+        ${unifiedItems.length ? `
+          <div class="emp-requests-list">
+            ${unifiedItems.slice(0, 6).map(item => {
+              const statusMap = {
+                pending: { label: '⏳ Chờ duyệt', cls: 'badge-warning' },
+                approved: { label: '✅ Đã duyệt', cls: 'badge-success' },
+                rejected: { label: '❌ Từ chối', cls: 'badge-danger' },
+                draft: { label: 'Nháp', cls: 'badge-gray' },
+              };
+              const st = statusMap[item.status] || { label: item.status, cls: 'badge-gray' };
+              const icon = item.type === 'leave' ? '🏖️' : '⏰';
+
+              return `
+                <a href="${item.link}" class="emp-req-item">
+                  <div class="emp-req-info">
+                    <div class="emp-req-head">
+                      <span>${icon}</span>
+                      <span class="emp-req-type">${esc(item.title)}</span>
+                      <span class="badge ${st.cls}" style="font-size:10px;padding:2px 6px;">${st.label}</span>
+                    </div>
+                    <div class="emp-req-meta">
+                      📅 ${esc(item.dateStr)} · ${esc(item.detail)}
+                    </div>
+                  </div>
+                  <span style="color:var(--primary);font-size:12px;font-weight:700;">→</span>
+                </a>
+              `;
+            }).join('')}
+          </div>
+        ` : `
+          <div style="text-align:center;padding:18px 12px;background:var(--surface-2);border-radius:10px;border:1px solid var(--border);">
+            <div style="font-size:24px;margin-bottom:4px;">✨</div>
+            <strong style="display:block;font-size:13px;color:var(--text);">Chưa có đơn nghỉ phép hay tăng ca nào</strong>
+            <p style="font-size:11.5px;color:var(--text-3);margin:4px 0 10px;">Tháng ${currentMonth}/${currentYear} chưa phát sinh yêu cầu mới.</p>
+            <div style="display:flex;justify-content:center;gap:8px;">
+              <a href="#/leave" class="btn-secondary btn-xs" style="text-decoration:none;">+ Xin nghỉ</a>
+              <a href="#/attendance" class="btn-secondary btn-xs" style="text-decoration:none;">+ Báo OT</a>
+            </div>
+          </div>
+        `}
+      `;
+    } catch (_) {
+      host.innerHTML = `<div style="font-size:12px;color:var(--text-3);padding:8px;text-align:center;">Không thể tải dữ liệu đơn từ & tăng ca.</div>`;
+    }
+  }
+
+  // 5. Load Attendance Monthly Summary with 2 Circular Progress Rings
+  async function loadAttendanceDetails() {
+    const host = document.getElementById('emp-att-summary-content');
+    if (!host) return;
+    try {
+      const data = await api.getEmployeeAttendanceSummary(me.id, { month: currentMonth, year: currentYear });
+      const summary = data?.summary || {};
+      const standardDays = Number(summary.standardWorkDays || 21);
+      const actualWorkDays = Number(summary.actualWorkDays || 0);
+      const attendanceRate = summary.attendanceRate != null ? Math.round(Number(summary.attendanceRate)) : (standardDays > 0 ? Math.min(100, Math.round((actualWorkDays / standardDays) * 100)) : 100);
+      const daysPercent = standardDays > 0 ? Math.min(100, Math.round((actualWorkDays / standardDays) * 100)) : 0;
+      const lateDays = Number(summary.lateDays || 0);
+      const paidLeaveDays = Number(summary.paidLeaveDays || 0);
+      const officeDays = Number(summary.officeDays || 0);
+      const wfhDays = Number(summary.wfhDays || 0);
+
+      const circumference = 251.33;
+      const attOffset = (circumference * (1 - Math.min(100, Math.max(0, attendanceRate)) / 100)).toFixed(1);
+      const daysOffset = (circumference * (1 - Math.min(100, Math.max(0, daysPercent)) / 100)).toFixed(1);
+
+      host.innerHTML = `
+        <div class="emp-circle-charts">
+          <!-- 1. Biểu đồ tròn Tỷ lệ chuyên cần -->
+          <div class="emp-circle-chart-item">
+            <div class="emp-ring-box">
+              <svg viewBox="0 0 100 100" class="emp-ring-svg">
+                <circle cx="50" cy="50" r="40" class="emp-ring-bg" />
+                <circle cx="50" cy="50" r="40" class="emp-ring-fill emerald" style="stroke-dashoffset:${attOffset};" />
+              </svg>
+              <div class="emp-ring-inner">
+                <strong style="color:#10b981;">${attendanceRate}%</strong>
+                <small>Chuyên cần</small>
+              </div>
+            </div>
+            <span class="emp-circle-label">Tỷ lệ chuyên cần</span>
+          </div>
+
+          <!-- 2. Biểu đồ tròn Số ngày công -->
+          <div class="emp-circle-chart-item">
+            <div class="emp-ring-box">
+              <svg viewBox="0 0 100 100" class="emp-ring-svg">
+                <circle cx="50" cy="50" r="40" class="emp-ring-bg" />
+                <circle cx="50" cy="50" r="40" class="emp-ring-fill indigo" style="stroke-dashoffset:${daysOffset};" />
+              </svg>
+              <div class="emp-ring-inner">
+                <strong style="color:#6366f1;">${actualWorkDays}<span>/${standardDays}</span></strong>
+                <small>Ngày công</small>
+              </div>
+            </div>
+            <span class="emp-circle-label">Số ngày công</span>
+          </div>
+        </div>
+
+        <div class="emp-att-details-pills">
+          <span class="emp-att-detail-pill">🏢 Văn phòng: <b>${officeDays}</b></span>
+          <span class="emp-att-detail-pill">🏠 WFH: <b>${wfhDays}</b></span>
+          <span class="emp-att-detail-pill" style="${lateDays > 0 ? 'color:#d97706;border-color:rgba(245,158,11,0.3);' : ''}">⏰ Đi muộn: <b>${lateDays} lần</b></span>
+          <span class="emp-att-detail-pill">🏖️ Nghỉ phép: <b>${paidLeaveDays} ngày</b></span>
+        </div>
+
+        <a href="#/attendance" class="btn-secondary btn-sm" style="display:flex;align-items:center;justify-content:center;gap:6px;margin-top:10px;text-decoration:none;">Xem lịch sử chấm công →</a>
+      `;
+    } catch (_) {
+      host.innerHTML = `<div style="font-size:12px;color:var(--text-3);padding:8px;text-align:center;">Chưa có dữ liệu kỳ công tháng ${currentMonth}/${currentYear}.</div>`;
+    }
+  }
+
+  // Event Listeners
+  document.getElementById('emp-task-tabs')?.addEventListener('click', e => {
+    const btn = e.target.closest('.emp-tab-pill');
+    if (!btn) return;
+    document.querySelectorAll('#emp-task-tabs .emp-tab-pill').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentTab = btn.dataset.tab;
+    renderTaskList();
+  });
+
+  const listElRef = document.getElementById('emp-tasks-list');
+  listElRef?.addEventListener('click', async e => {
+    const openBtn = e.target.closest('[data-action="open-task"]');
+    if (openBtn) {
+      const tid = parseInt(openBtn.dataset.taskId, 10);
+      if (tid) openTaskPanel(tid);
+      return;
+    }
+
+    const toggleBtn = e.target.closest('[data-action="toggle-task"]');
+    if (toggleBtn) {
+      const tid = parseInt(toggleBtn.dataset.taskId, 10);
+      const task = userTasks.find(t => t.id === tid);
+      if (!task) return;
+      const nextStatus = task.status === 'done' ? 'in_progress' : 'done';
+      try {
+        await api.updateTask(tid, { status: nextStatus });
+        task.status = nextStatus;
+        renderTaskList();
+        renderTaskBarChart();
+      } catch (err) {
+        alert(err.message || 'Không thể cập nhật trạng thái');
+      }
+    }
+  });
+
+  await Promise.allSettled([
+    loadTodayAttendance(),
+    loadTasks(),
+    loadRequestsAndOT(),
+    loadAttendanceDetails(),
+  ]);
 }
 
 const number = value => new Intl.NumberFormat('vi-VN').format(Number(value || 0));
@@ -127,8 +656,9 @@ async function renderAdminDashboard(el, me) {
 }
 
 // ── Admin dashboard: today's attendance location map (geofence viz) ──
-// Reuses the shared schematic renderer. Office selector lets admin switch
-// between e.g. Văn phòng HCM and Văn phòng Hà Nội. Server enforces the scope.
+// ── Admin dashboard: today's attendance location map (geofence viz) ──
+// Renders responsive multi-office grid (HCM, HN, Phim trường Q9, etc.)
+// allowing simultaneous side-by-side monitoring across all offices.
 async function renderAdminGeoPanel(el, me) {
   const host = el.querySelector('.admin-dashboard') || el;
   host.insertAdjacentHTML('beforeend', `
@@ -136,92 +666,127 @@ async function renderAdminGeoPanel(el, me) {
       <header>
         <h2>📍 Vị trí chấm công hôm nay</h2>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-          <select id="dash-geo-office" class="btn-secondary btn-sm"><option value="">Tự động</option></select>
+          <select id="dash-geo-office" class="btn-secondary btn-sm"><option value="all">Tất cả địa điểm</option></select>
           <button type="button" id="dash-geo-refresh" class="btn-secondary btn-sm">🔄 Làm mới</button>
         </div>
       </header>
-      <div id="dash-geo-meta" style="font-size:12px;color:var(--text-2);margin-bottom:8px;">Đang tải…</div>
-      <div id="dash-geo-map" style="height:320px;"></div>
-      <div class="att-clock-geo-legend" style="margin-top:10px;">
+      <div id="dash-geo-meta" style="font-size:12px;color:var(--text-2);margin-bottom:6px;">Đang tải danh sách địa điểm...</div>
+      <div id="dash-geo-container" class="admin-dash-geo-grid"></div>
+      <div class="att-clock-geo-legend" style="margin-top:14px;">
         <span class="att-geo-legend-item"><i class="att-geo-dot" style="background:#3B82F6"></i>Trong phạm vi</span>
         <span class="att-geo-legend-item"><i class="att-geo-dot" style="background:#EF4444"></i>Ngoài phạm vi</span>
         <span class="att-geo-legend-item"><i class="att-geo-dot geo-dot-current"></i>Tôi</span>
       </div>
-      <div id="dash-geo-status" style="font-size:12px;color:var(--text-2);margin-top:8px;"></div>
       <div style="font-size:10.5px;color:var(--text-3);margin-top:8px;">Điểm đánh dấu là vị trí check-in gần nhất của ngày hôm nay — không phải theo dõi liên tục.</div>
     </article>`);
 
-  const mapEl = document.getElementById('dash-geo-map');
+  const container = document.getElementById('dash-geo-container');
   const metaEl = document.getElementById('dash-geo-meta');
-  const statusEl = document.getElementById('dash-geo-status');
   const officeSelect = document.getElementById('dash-geo-office');
   const todayStr = today();
-  let geoMap = null;
-  let geoOfficeId = '';
-  let geoAutoSelected = false;
+  let allLocations = [];
 
   async function loadOffices() {
     try {
       const { locations = [] } = await api.getAttendanceLocations();
+      allLocations = locations.filter(l => l.is_active !== false && l.is_active !== 0);
       if (officeSelect) {
-        officeSelect.innerHTML = `<option value="">Tự động</option>` + locations.map(l => `<option value="${l.id}">${esc(l.name)}</option>`).join('');
-        if (!geoAutoSelected && geoOfficeId === '' && me?.work_location) {
-          const wl = String(me.work_location).trim().toLowerCase();
-          const match = locations.find(l => {
-            const code = String(l.code || '').toLowerCase();
-            const name = String(l.name || '').toLowerCase();
-            if (code && code.includes(wl)) return true;
-            if (wl === 'hcm' && (code.includes('hcm') || name.includes('hồ chí minh') || name.includes('ho chi minh'))) return true;
-            if (wl === 'hn' && (code.includes('hn') || name.includes('hà nội') || name.includes('ha noi'))) return true;
-            return false;
-          });
-          if (match) { geoOfficeId = String(match.id); geoAutoSelected = true; }
-        }
-        officeSelect.value = geoOfficeId || '';
+        officeSelect.innerHTML = `<option value="all">Tất cả địa điểm (${allLocations.length})</option>` +
+          allLocations.map(l => `<option value="${l.id}">${esc(l.name)}</option>`).join('');
       }
     } catch (_) { /* optional */ }
   }
   await loadOffices();
 
   async function loadPanel() {
-    if (!mapEl) return;
-    try {
-      const data = await api.getAttendanceCheckinPoints({ date: todayStr, office_id: geoOfficeId || '' });
-      if (!data.office) { if (metaEl) metaEl.textContent = data.reason || 'Chưa cấu hình địa điểm chấm công'; return; }
-      const office = data.office;
-      if (metaEl) metaEl.textContent = `${office.name} · Bán kính: ${Number(office.radius_meters)} m · ${data.markers.length} điểm chấm công`;
-      const markers = (data.markers || []).map(m => ({
-        latitude: m.latitude, longitude: m.longitude,
-        label: m.employee_name, employee_id: m.employee_id,
-        is_current_user: m.is_current_user, inside_geofence: m.inside_geofence,
-        requires_location_review: m.requires_location_review,
-        checkin_time: m.checkin_time, checkin_accuracy_meters: m.checkin_accuracy_meters,
-        distance_m: m.distance_m, kind: classifyMarker(m, me.id),
-        tooltipHTML: `<div class="geo-tooltip-name">${esc(m.employee_name || `NV ${m.employee_id}`)}</div>${m.checkin_time ? `<div>Check-in: ${esc(m.checkin_time)}</div>` : ''}${m.distance_m != null ? `<div>Khoảng cách: ${Math.round(Number(m.distance_m))} m</div>` : ''}${m.inside_geofence !== false ? '<div class="geo-tooltip-status geo-tooltip-inside">Trong phạm vi</div>' : '<div class="geo-tooltip-status geo-tooltip-outside">Ngoài phạm vi · Cần xem xét</div>'}`,
-      }));
-      if (geoMap) {
-        geoMap.setOffice({ latitude: Number(office.latitude), longitude: Number(office.longitude) }, Number(office.radius_meters), office.name);
-        geoMap.setMarkers(markers, { fit: true });
-      } else {
-        geoMap = renderGeoMap(mapEl, {
+    if (!container) return;
+    const selectedOfficeId = officeSelect?.value || 'all';
+    const targetLocations = selectedOfficeId === 'all'
+      ? allLocations
+      : allLocations.filter(l => String(l.id) === String(selectedOfficeId));
+
+    if (!targetLocations.length) {
+      container.innerHTML = `<div class="task-group-empty" style="padding:24px;text-align:center;color:var(--text-3);">Chưa có cấu hình địa điểm chấm công.</div>`;
+      if (metaEl) metaEl.textContent = 'Chưa có địa điểm';
+      return;
+    }
+
+    if (metaEl) {
+      metaEl.textContent = `Đang theo dõi ${targetLocations.length} địa điểm chấm công (TP.HCM, Hà Nội, Phim trường Q9...)`;
+    }
+
+    // Render cards scaffolding
+    container.innerHTML = targetLocations.map(loc => {
+      const isStudio = String(loc.name || '').toLowerCase().includes('phim trường') || String(loc.name || '').toLowerCase().includes('studio');
+      const icon = isStudio ? '🎬' : '🏢';
+      return `
+        <div class="admin-dash-geo-card" data-office-id="${loc.id}">
+          <div class="admin-dash-geo-card-head">
+            <div class="admin-dash-geo-card-title">
+              <span style="font-size:18px;">${icon}</span>
+              <div>
+                <strong>${esc(loc.name)}</strong>
+                ${loc.address ? `<div style="font-size:11px;color:var(--text-3);font-weight:normal;margin-top:1px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(loc.address)}">${esc(loc.address)}</div>` : ''}
+              </div>
+            </div>
+            <div class="admin-dash-geo-card-badges">
+              <span class="admin-dash-geo-badge" id="dash-geo-badge-${loc.id}">0 điểm check-in</span>
+              <span class="admin-dash-geo-badge admin-dash-geo-badge--muted">Bán kính: ${Number(loc.radius_meters || 100)} m</span>
+            </div>
+          </div>
+          <div id="dash-geo-map-${loc.id}" class="dash-geo-office-map" style="height:270px;"></div>
+          <div class="admin-dash-geo-card-foot" id="dash-geo-status-${loc.id}">Đang kết nối dữ liệu GPS...</div>
+        </div>
+      `;
+    }).join('');
+
+    // Fetch and render radar map for each office
+    await Promise.all(targetLocations.map(async loc => {
+      const mapEl = document.getElementById(`dash-geo-map-${loc.id}`);
+      const badgeEl = document.getElementById(`dash-geo-badge-${loc.id}`);
+      const statusEl = document.getElementById(`dash-geo-status-${loc.id}`);
+      if (!mapEl) return;
+
+      try {
+        const data = await api.getAttendanceCheckinPoints({ date: todayStr, office_id: loc.id });
+        const office = data.office || loc;
+        const markers = (data.markers || []).map(m => ({
+          latitude: m.latitude, longitude: m.longitude,
+          label: m.employee_name, employee_id: m.employee_id,
+          is_current_user: m.is_current_user, inside_geofence: m.inside_geofence,
+          requires_location_review: m.requires_location_review,
+          checkin_time: m.checkin_time, checkin_accuracy_meters: m.checkin_accuracy_meters,
+          distance_m: m.distance_m, kind: classifyMarker(m, me.id),
+          tooltipHTML: `<div class="geo-tooltip-name">${esc(m.employee_name || `NV ${m.employee_id}`)}</div>${m.checkin_time ? `<div>Check-in: ${esc(m.checkin_time)}</div>` : ''}${m.distance_m != null ? `<div>Khoảng cách: ${Math.round(Number(m.distance_m))} m</div>` : ''}${m.inside_geofence !== false ? '<div class="geo-tooltip-status geo-tooltip-inside">Trong phạm vi</div>' : '<div class="geo-tooltip-status geo-tooltip-outside">Ngoài phạm vi · Cần xem xét</div>'}`,
+        }));
+
+        if (badgeEl) {
+          badgeEl.textContent = `${markers.length} điểm check-in`;
+        }
+
+        renderGeoMap(mapEl, {
           center: { latitude: Number(office.latitude), longitude: Number(office.longitude) },
           radiusMeters: Number(office.radius_meters || 100),
           officeName: office.name,
           markers,
           theme: 'light',
-          height: 320,
+          height: 270,
         });
+
+        if (statusEl) {
+          const mine = markers.find(m => m.is_current_user);
+          statusEl.textContent = mine
+            ? `Bạn: check-in lúc ${mine.checkin_time || '—'} · cách ${Math.round(Number(mine.distance_m))} m · ${mine.inside_geofence !== false ? 'Trong phạm vi' : 'Ngoài phạm vi'}${mine.requires_location_review ? ' · cần xem xét' : ''}`
+            : `Chưa có lượt check-in của bạn tại ${office.name} hôm nay.`;
+        }
+      } catch (err) {
+        if (statusEl) statusEl.textContent = 'Không tải được dữ liệu điểm chấm công.';
       }
-      if (statusEl) {
-        const mine = (data.markers || []).find(m => m.is_current_user);
-        statusEl.textContent = mine
-          ? `Bạn: ghi nhận lúc ${mine.checkin_time || '—'} · khoảng cách ${Math.round(Number(mine.distance_m))} m · ${mine.inside_geofence !== false ? 'Trong phạm vi' : 'Ngoài phạm vi'}${mine.requires_location_review ? ' · cần xem xét' : ''}`
-          : 'Bạn chưa có điểm check-in GPS hôm nay.';
-      }
-    } catch (e) { if (metaEl) metaEl.textContent = e.message || 'Không tải được bản đồ'; }
+    }));
   }
+
   await loadPanel();
-  officeSelect?.addEventListener('change', e => { geoOfficeId = e.target.value || ''; loadPanel(); });
+  officeSelect?.addEventListener('change', () => loadPanel());
   document.getElementById('dash-geo-refresh')?.addEventListener('click', () => loadPanel());
 }
 

@@ -2958,17 +2958,33 @@ async function ensureAttendanceLocationSchema(env) {
   // attendance-locations endpoint into a 500. The table itself is still usable
   // without the index, so never let index creation fail the request.
   try { await env.DB.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_attendance_locations_code ON attendance_locations(code) WHERE code IS NOT NULL'); } catch (_) {}
-  // Official Hanoi office supplied by the administrator. Keep this seed
-  // idempotent because the schema guard runs on more than one Worker isolate.
+  // Official offices & studios supplied by administrator.
   try {
     await env.DB.prepare(`INSERT INTO attendance_locations
       (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active)
       SELECT ?,?,?,?,?,?,?,1
-       WHERE NOT EXISTS (SELECT 1 FROM attendance_locations WHERE code=?)`)
-      .bind('Văn phòng Hà Nội', 'NETVIET-HN', 'Hà Nội', 21.018472, 105.793595, 100, 100, 'NETVIET-HN')
+       WHERE NOT EXISTS (SELECT 1 FROM attendance_locations WHERE code=? OR name=?)`)
+      .bind('Văn phòng HCM', 'NETVIET-HCM', 'TP. Hồ Chí Minh', 10.762538, 106.682336, 100, 100, 'NETVIET-HCM', 'Văn phòng HCM')
+      .run();
+    await env.DB.prepare(`INSERT INTO attendance_locations
+      (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active)
+      SELECT ?,?,?,?,?,?,?,1
+       WHERE NOT EXISTS (SELECT 1 FROM attendance_locations WHERE code=? OR name=?)`)
+      .bind('Văn phòng Hà Nội', 'NETVIET-HN', 'Hà Nội', 21.018472, 105.793595, 100, 100, 'NETVIET-HN', 'Văn phòng Hà Nội')
+      .run();
+    await env.DB.prepare(`INSERT INTO attendance_locations
+      (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active)
+      SELECT ?,?,?,?,?,?,?,1
+       WHERE NOT EXISTS (SELECT 1 FROM attendance_locations WHERE code=? OR name=?)`)
+      .bind('Phim Trường NetVietTv', 'NETVIET-Q9', '76 D12, Khu đô thị mới Đông Tăng Long, Long Phước, Hồ Chí Minh 70000', 10.814200, 106.819500, 200, 150, 'NETVIET-Q9', 'Phim Trường NetVietTv')
+      .run();
+    await env.DB.prepare(`UPDATE attendance_locations
+      SET name=?, address=?, latitude=?, longitude=?, radius_meters=?, is_active=1
+      WHERE code=? OR name LIKE '%Phim trường%' OR name LIKE '%Phim Trường%'`)
+      .bind('Phim Trường NetVietTv', '76 D12, Khu đô thị mới Đông Tăng Long, Long Phước, Hồ Chí Minh 70000', 10.814200, 106.819500, 200, 'NETVIET-Q9')
       .run();
   } catch (error) {
-    console.error('Unable to seed Hanoi attendance location', error);
+    console.error('Unable to seed attendance locations', error);
   }
   for (const column of ['checkin_location_id INTEGER','checkout_location_id INTEGER','checkin_distance_meters REAL','checkout_distance_meters REAL','checkin_accuracy_meters REAL','checkout_accuracy_meters REAL','checkin_verification_method TEXT','checkout_verification_method TEXT','checkin_lat REAL','checkin_lng REAL','checkout_lat REAL','checkout_lng REAL','checkin_geofence_status TEXT','checkout_geofence_status TEXT','checkin_requires_review INTEGER DEFAULT 0','checkin_review_status TEXT DEFAULT \'none\'','checkin_reviewed_by INTEGER','checkin_review_note TEXT','checkin_reviewed_at TEXT','checkout_requires_review INTEGER DEFAULT 0','checkout_review_status TEXT DEFAULT \'none\'','checkout_reviewed_by INTEGER','checkout_review_note TEXT','checkout_reviewed_at TEXT']) {
     try { await env.DB.exec(`ALTER TABLE attendance ADD COLUMN ${column}`); } catch (_) {}
@@ -6241,6 +6257,30 @@ const attendanceRateTo =
     return json({ ok: true });
   }
 
+  if (path === '/api/task-project-groups/members' && request.method === 'PUT') {
+    if (!isTaskAdmin(me)) return json({ error: 'Khong co quyen' }, 403);
+    const b = await request.json();
+    const department = String(b.department || '').trim();
+    if (!department) return json({ error: 'Thieu ten nhom du an' }, 400);
+    const members = Array.isArray(b.members) ? b.members.map(Number).filter(Boolean) : [];
+    const { results: groupProjects = [] } = await env.DB.prepare(
+      'SELECT id, manager_id FROM task_projects WHERE department=?'
+    ).bind(department).all();
+
+    for (const p of groupProjects) {
+      const pMembers = [...members];
+      if (p.manager_id && !pMembers.includes(Number(p.manager_id))) {
+        pMembers.push(Number(p.manager_id));
+      }
+      await env.DB.prepare('DELETE FROM task_project_members WHERE project_id=?').bind(p.id).run();
+      for (const uid of [...new Set(pMembers)]) {
+        await env.DB.prepare('INSERT INTO task_project_members (project_id,user_id,role,added_by) VALUES (?,?,?,?)')
+          .bind(p.id, uid, uid === Number(p.manager_id) ? 'owner' : 'member', me.id).run();
+      }
+    }
+    return json({ ok: true, count: groupProjects.length });
+  }
+
   if (path === '/api/task-groups' && request.method === 'GET') {
     const projectId = intOrNull(url.searchParams.get('project_id'));
     if (!projectId) return json({ error: 'Thieu project_id' }, 400);
@@ -7192,13 +7232,17 @@ const attendanceRateTo =
     if (statusFilter) { query += ' AND lr.status=?'; params.push(statusFilter); }
     query += ' ORDER BY lr.id DESC';
     const { results } = await env.DB.prepare(query).bind(...params).all();
-    const leave = await Promise.all(results.map(async row => ({
-      ...row,
-      type_name: row.type_name || row.type,
-      paid_label: leavePaidLabel(row.paid_policy),
-      can_action: row.status === 'pending' && canAdvanceLeaveApproval(me, row),
-      document_count: Number((await env.DB.prepare('SELECT COUNT(*) AS cnt FROM leave_request_documents WHERE leave_request_id=?').bind(row.id).first())?.cnt || 0),
-    })));
+    const leave = await Promise.all(results.map(async row => {
+      const docs = await env.DB.prepare('SELECT id,original_filename,content_type,byte_size,required_label FROM leave_request_documents WHERE leave_request_id=?').bind(row.id).all();
+      return {
+        ...row,
+        type_name: row.type_name || row.type,
+        paid_label: leavePaidLabel(row.paid_policy),
+        can_action: row.status === 'pending' && canAdvanceLeaveApproval(me, row),
+        document_count: Number(docs.results?.length || 0),
+        documents: docs.results || [],
+      };
+    }));
     return json({ leave });
   }
   if (path === '/api/leave' && request.method === 'POST') {
@@ -7248,13 +7292,24 @@ const attendanceRateTo =
       return json({ error: e.message || 'Không thể tạo yêu cầu nghỉ phép, vui lòng thử lại sau' }, 500);
     }
   }
+  const leaveDocumentsListMatch = path.match(/^\/api\/leave\/(\d+)\/documents$/);
+  if (leaveDocumentsListMatch && request.method === 'GET') {
+    const leaveId = Number(leaveDocumentsListMatch[1]);
+    const leaveRow = await env.DB.prepare(`SELECT lr.*, u.department FROM leave_requests lr LEFT JOIN users u ON (u.id=lr.employee_id OR u.employee_code=lr.user_id) WHERE lr.id=?`).bind(leaveId).first();
+    if (!leaveRow) return json({ error: 'Đơn nghỉ không tồn tại' }, 404);
+    const isOwner = Number(leaveRow.employee_id) === Number(me.id) || String(leaveRow.user_id) === String(me.id) || String(leaveRow.user_id) === String(me.employee_code || '');
+    if (!isOwner && !canManageLeaveRequest(me, leaveRow)) return json({ error: 'Không có quyền xem tài liệu' }, 403);
+    const { results: documents = [] } = await env.DB.prepare('SELECT id,original_filename,content_type,byte_size,required_label,created_at FROM leave_request_documents WHERE leave_request_id=?').bind(leaveId).all();
+    return json({ documents });
+  }
   const leaveDocumentMatch = path.match(/^\/api\/leave\/(\d+)\/documents\/([0-9a-fA-F-]{36})$/);
   if (leaveDocumentMatch && request.method === 'GET') {
     const leaveId = Number(leaveDocumentMatch[1]), documentId = leaveDocumentMatch[2];
-    const document = await env.DB.prepare(`SELECT d.*,lr.employee_id,u.department FROM leave_request_documents d
-      JOIN leave_requests lr ON lr.id=d.leave_request_id LEFT JOIN users u ON u.id=lr.employee_id WHERE d.id=? AND d.leave_request_id=?`).bind(documentId, leaveId).first();
+    const document = await env.DB.prepare(`SELECT d.*,lr.employee_id,lr.user_id,u.department FROM leave_request_documents d
+      JOIN leave_requests lr ON lr.id=d.leave_request_id LEFT JOIN users u ON (u.id=lr.employee_id OR u.employee_code=lr.user_id) WHERE d.id=? AND d.leave_request_id=?`).bind(documentId, leaveId).first();
     if (!document) return json({ error: 'Tài liệu không tồn tại' }, 404);
-    if (Number(document.employee_id) !== Number(me.id) && !canManageLeaveRequest(me, document)) return json({ error: 'Không có quyền xem tài liệu' }, 403);
+    const isOwner = Number(document.employee_id) === Number(me.id) || String(document.user_id) === String(me.id) || String(document.user_id) === String(me.employee_code || '');
+    if (!isOwner && !canManageLeaveRequest(me, document)) return json({ error: 'Không có quyền xem tài liệu' }, 403);
     if (!env.HR_DOCUMENTS) return json({ error: 'Lưu trữ tài liệu chưa được cấu hình' }, 503);
     const object = await env.HR_DOCUMENTS.get(document.storage_key);
     if (!object) return json({ error: 'Tệp không tồn tại trên kho lưu trữ' }, 404);

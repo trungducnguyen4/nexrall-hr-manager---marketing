@@ -26,6 +26,57 @@ const daysBetween = (start, end, session = 'full') => {
 const isHcnsDepartment = (department) => ['hcns', 'phong hcns', 'nhan su', 'phong nhan su', 'hanh chinh nhan su', 'hr'].includes(String(department || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim());
 const isBodDepartment = (department) => ['ban giam doc', 'bgd', 'giam doc'].includes(String(department || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim());
 
+function formatDocSize(bytes) {
+  const n = Number(bytes || 0);
+  if (n <= 0) return '0 B';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function previewLeaveDocument(leaveId, docId, docName = 'tai-lieu', contentType = '') {
+  try {
+    toast('Đang mở tệp đính kèm...', 'info');
+    const { blob } = await api.getLeaveDocumentBlob(leaveId, docId, 'inline');
+    const mime = contentType || blob.type || '';
+    const blobUrl = URL.createObjectURL(blob);
+    const isImage = mime.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg)$/i.test(docName);
+    const isPdf = mime.includes('pdf') || /\.pdf$/i.test(docName);
+
+    if (isImage) {
+      openModal(`📎 ${esc(docName)}`, `
+        <div style="text-align:center;max-height:70vh;overflow:auto;padding:12px 0;">
+          <img src="${blobUrl}" style="max-width:100%;max-height:65vh;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,0.12);" alt="${esc(docName)}" />
+        </div>
+      `, `
+        <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Đóng</button>
+        <a href="${blobUrl}" download="${esc(docName)}" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none;">⬇ Tải về máy</a>
+      `);
+    } else if (isPdf) {
+      openModal(`📄 ${esc(docName)}`, `
+        <div style="width:100%;height:68vh;">
+          <iframe src="${blobUrl}" style="width:100%;height:100%;border:none;border-radius:8px;"></iframe>
+        </div>
+      `, `
+        <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Đóng</button>
+        <a href="${blobUrl}" target="_blank" class="btn-secondary" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none;">↗ Mở tab mới</a>
+        <a href="${blobUrl}" download="${esc(docName)}" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none;">⬇ Tải về</a>
+      `);
+    } else {
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = docName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10_000);
+      toast('Đã tải tệp về: ' + docName, 'success');
+    }
+  } catch (err) {
+    toast(err.message || 'Không thể xem tài liệu đính kèm', 'error');
+  }
+}
+
 export async function renderLeave(el, me) {
   const isManager = me.role === 'admin' || me.role === 'manager';
   const canConfigure = me.role === 'admin' || isHcnsDepartment(me.department);
@@ -161,6 +212,7 @@ export async function renderLeave(el, me) {
         const type = types.find(x => x.code === row.type) || row;
         const isApplicant = Number(row.employee_id) === Number(me.id) || String(row.user_id) === String(me.id);
         const showApplicantHeader = currentTab === 'review' || (!isApplicant && row.employee_name);
+        const docs = Array.isArray(row.documents) ? row.documents : [];
 
         return `
           <div class="leave-item">
@@ -180,9 +232,26 @@ export async function renderLeave(el, me) {
                 📅 ${esc(row.start_date)} → ${esc(row.end_date)} · ${sessionLabel(row.leave_session)} · <strong>${row.total_days ?? daysBetween(row.start_date, row.end_date, row.leave_session)} ngày</strong>
               </div>
               <div style="font-size:12px;color:var(--text-3);margin-top:4px;">
-                ${esc(row.reason || '')}${row.handover_user_name ? ` · Bàn giao: ${esc(row.handover_user_name)}` : ''}${row.document_count ? ` · 📎 ${row.document_count} tệp` : ''}
+                ${esc(row.reason || '')}${row.handover_user_name ? ` · Bàn giao: ${esc(row.handover_user_name)}` : ''}
               </div>
-              ${row.current_approver ? `<div style="font-size:12px;color:var(--primary);margin-top:3px;">Đang chờ: ${esc(row.current_approver)}</div>` : ''}
+              ${docs.length ? `
+                <div class="leave-doc-list" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;">
+                  ${docs.map(doc => `
+                    <button type="button" class="btn-secondary btn-xs leave-doc-item-btn" data-leave-id="${row.id}" data-doc-id="${doc.id}" data-doc-name="${esc(doc.original_filename)}" data-doc-type="${esc(doc.content_type || '')}" style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;font-size:11.5px;border-radius:6px;cursor:pointer;background:var(--surface-2);border-color:var(--border);">
+                      <span>📎</span>
+                      <span style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:var(--text);">${esc(doc.original_filename || 'Tài liệu')}</span>
+                      <span style="color:var(--text-3);font-size:10px;">(${formatDocSize(doc.byte_size)})</span>
+                    </button>
+                  `).join('')}
+                </div>
+              ` : (row.document_count ? `
+                <div class="leave-doc-list" style="margin-top:6px;">
+                  <button type="button" class="btn-secondary btn-xs leave-doc-fetch-btn" data-leave-id="${row.id}" style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;font-size:11.5px;border-radius:6px;cursor:pointer;background:var(--surface-2);border-color:var(--border);">
+                    <span>📎</span> Xem ${row.document_count} tệp đính kèm
+                  </button>
+                </div>
+              ` : '')}
+              ${row.current_approver ? `<div style="font-size:12px;color:var(--primary);margin-top:5px;">Đang chờ: ${esc(row.current_approver)}</div>` : ''}
             </div>
             <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
               ${row.can_action ? `
@@ -196,6 +265,69 @@ export async function renderLeave(el, me) {
           </div>
         `;
       }).join('') + paginationHTML(page);
+
+      list.querySelectorAll('.leave-doc-item-btn').forEach(btn => btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const leaveId = btn.dataset.leaveId;
+        const docId = btn.dataset.docId;
+        const docName = btn.dataset.docName;
+        const docType = btn.dataset.docType;
+        if (leaveId && docId) {
+          btn.disabled = true;
+          try {
+            await previewLeaveDocument(leaveId, docId, docName, docType);
+          } finally {
+            btn.disabled = false;
+          }
+        }
+      }));
+
+      list.querySelectorAll('.leave-doc-fetch-btn').forEach(btn => btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const leaveId = btn.dataset.leaveId;
+        if (!leaveId) return;
+        btn.disabled = true;
+        try {
+          const { documents = [] } = await api.getLeaveDocuments(leaveId);
+          if (!documents.length) {
+            toast('Không tìm thấy tệp đính kèm', 'info');
+            return;
+          }
+          if (documents.length === 1) {
+            await previewLeaveDocument(leaveId, documents[0].id, documents[0].original_filename, documents[0].content_type);
+          } else {
+            openModal('📎 Danh sách tệp đính kèm', `
+              <div style="display:flex;flex-direction:column;gap:8px;padding:8px 0;">
+                ${documents.map(d => `
+                  <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--surface-2);border-radius:8px;border:1px solid var(--border);">
+                    <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1;">
+                      <span style="font-size:16px;">📎</span>
+                      <div style="min-width:0;">
+                        <strong style="font-size:13px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(d.original_filename)}</strong>
+                        <small style="color:var(--text-3);">${formatDocSize(d.byte_size)}</small>
+                      </div>
+                    </div>
+                    <button type="button" class="btn-primary btn-xs preview-modal-doc-btn" data-doc-id="${d.id}" data-doc-name="${esc(d.original_filename)}" data-doc-type="${esc(d.content_type || '')}">Xem / Tải</button>
+                  </div>
+                `).join('')}
+              </div>
+            `, '<button class="btn-secondary" onclick="document.getElementById(\'modal-overlay\').classList.add(\'hidden\')">Đóng</button>');
+
+            document.querySelectorAll('.preview-modal-doc-btn').forEach(pBtn => pBtn.addEventListener('click', async () => {
+              pBtn.disabled = true;
+              try {
+                await previewLeaveDocument(leaveId, pBtn.dataset.docId, pBtn.dataset.docName, pBtn.dataset.docType);
+              } finally {
+                pBtn.disabled = false;
+              }
+            }));
+          }
+        } catch (err) {
+          toast(err.message || 'Không thể tải danh sách tệp đính kèm', 'error');
+        } finally {
+          btn.disabled = false;
+        }
+      }));
 
       list.querySelectorAll('.leave-approve').forEach(button => button.addEventListener('click', async () => {
         try {
