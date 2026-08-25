@@ -651,6 +651,10 @@ export async function renderTasks(el, me) {
       currentStatus = '';
       renderProjects();
       loadBoard();
+      if (window.matchMedia('(max-width: 767px)').matches) {
+        el.querySelector('.task-workspace-shell')?.classList.add('project-nav-collapsed');
+        updateToggleBtnState();
+      }
     }));
 
     list.querySelectorAll('[data-project-gear]').forEach(btn => btn.addEventListener('click', e => {
@@ -1405,11 +1409,15 @@ export async function renderTasks(el, me) {
       btn.className = isCollapsed ? 'btn-primary btn-sm' : 'btn-secondary btn-sm';
     }
   };
-  el.querySelector('#btn-toggle-project-nav')?.addEventListener('click', () => {
+  el.querySelector('#btn-toggle-project-nav')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
     el.querySelector('.task-workspace-shell')?.classList.toggle('project-nav-collapsed');
     updateToggleBtnState();
   });
-  el.querySelector('#btn-collapse-side-nav')?.addEventListener('click', () => {
+  el.querySelector('#btn-collapse-side-nav')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
     el.querySelector('.task-workspace-shell')?.classList.toggle('project-nav-collapsed');
     updateToggleBtnState();
   });

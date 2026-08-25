@@ -141,6 +141,7 @@ export async function migrate(env) {
   try { await ensureAttendanceOvertimeSchema(env); } catch (error) { console.error('Attendance schema check failed', error); }
   try { await ensureAttendanceLocationSchema(env); } catch (error) { console.error('Attendance location schema check failed', error); }
   try { await ensureProjectHandoverSchema(env); } catch (error) { console.error('Handover schema check failed', error); }
+  try { await ensureTTSAccounts(env); } catch (error) { console.error('TTS accounts check failed', error); }
   // Timeline columns are additive and must exist before the version fast path:
   // production databases may already carry an older matching schema marker.
   try { await ensureTaskActivityTimelineSchema(env); } catch (error) { console.error('Task timeline schema check failed', error); }
@@ -1155,12 +1156,34 @@ export async function migrate(env) {
   // HCNS "Ghi chú & kiến nghị" gửi Ban Giám đốc — one note per eval period.
   try { await env.DB.exec(`ALTER TABLE eval_periods ADD COLUMN hr_note TEXT`); } catch (_) {}
   try { await env.DB.exec(`ALTER TABLE eval_periods ADD COLUMN hr_note_by TEXT`); } catch (_) {}
-  try { await env.DB.exec(`ALTER TABLE eval_periods ADD COLUMN hr_note_at TEXT`); } catch (_) {}
+  // Ensure TTS-31 and TTS-32 accounts exist
   try {
     await env.DB.prepare('INSERT OR REPLACE INTO settings (setting_key,setting_value) VALUES (?,?)')
       .bind('schema_version', SCHEMA_VERSION).run();
   } catch (_) {}
   _migrated = true;
+}
+
+async function ensureTTSAccounts(env) {
+  try {
+    await env.DB.prepare(`INSERT OR IGNORE INTO users (
+      employee_code, employee_type, full_name, email, password_hash, role, department, position,
+      avatar_color, avatar_initials, phone, is_active, lifecycle_status, work_location, hire_date,
+      must_change_password, profile_pending
+    ) VALUES 
+    (
+      'TTS-31', 'TTS', 'Nguyễn Thị Thu Phương', 'tts-31@pending.local',
+      'b6bc7b58510319a151d168ba3d5aecb3ac0a9708d06dd930f37fbc89b6cdc697',
+      'employee', 'Thực Tập Sinh', 'TTS', '#4F46E5', 'TP', '', 1, 'Thực tập', 'HN', '2026-08-22', 1, 1
+    ),
+    (
+      'TTS-32', 'TTS', 'Kim Đức Long', 'tts-32@pending.local',
+      'b6bc7b58510319a151d168ba3d5aecb3ac0a9708d06dd930f37fbc89b6cdc697',
+      'employee', 'Thực Tập Sinh', 'TTS', '#0EA5E9', 'DL', '', 1, 'Thực tập', 'HN', '2026-08-22', 1, 1
+    )`).run();
+  } catch (err) {
+    console.error('ensureTTSAccounts error:', err);
+  }
 }
 
 async function ensureAttendanceOvertimeSchema(env) {

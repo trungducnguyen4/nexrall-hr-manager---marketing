@@ -12,7 +12,7 @@ async function getView(name) {
   if (!_viewModules[name]) {
     if (name === 'dashboard')    _viewModules[name] = await import('./views/dashboard.js?v=20260817-dash-geo-v1');
     else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js?v=20260817-att-map-v1');
-    else if (name === 'tasks')       _viewModules[name] = await import('./views/tasks.js?v=20260817-group-prefill-v1');
+    else if (name === 'tasks')       _viewModules[name] = await import('./views/tasks.js?v=20260825-tasks-collapse-v2');
     else if (name === 'invoices')    _viewModules[name] = await import('./views/invoices.js?v=20260730-payslip-detail-v1');
     else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260811-hr-access-v1');
     else if (name === 'wifi')        _viewModules[name] = await import('./views/wifi.js?v=20260817-geofence-soft-v1');
@@ -21,7 +21,7 @@ async function getView(name) {
     else if (name === 'departments') _viewModules[name] = await import('./views/departments.js');
     else if (name === 'recruitment') _viewModules[name] = await import('./views/recruitment.js');
     else if (name === 'payroll')     _viewModules[name] = await import('./views/payroll.js?v=20260811-hr-access-v1');
-    else if (name === 'leave')       _viewModules[name] = await import('./views/leave.js?v=20260804-leave-policy-v4');
+    else if (name === 'leave')       _viewModules[name] = await import('./views/leave.js?v=20260825-leave-saas-v2');
     else if (name === 'campaigns')   _viewModules[name] = await import('./views/campaigns.js?v=20260811-hr-access-v1');
     else if (name === 'evaluation')  _viewModules[name] = await import('./views/evaluation.js?v=20260811-penalty-policy-v1');
     else if (name === 'kpis')        _viewModules[name] = await import('./views/kpis.js?v=20260730-manual-kpi');
@@ -292,6 +292,8 @@ function initApp() {
   // Restore sidebar preference on desktop
   if (isDesktop() && localStorage.getItem('sidebar_collapsed') === '1') {
     appEl.classList.add('sidebar-collapsed');
+    document.body.classList.add('sidebar-collapsed');
+    document.documentElement.classList.add('sidebar-collapsed');
   }
 
   if (_appInitialized) {
@@ -302,12 +304,15 @@ function initApp() {
 
   startClock();
 
-  document.addEventListener('click', (e) => {
-    const toggleBtn = e.target.closest('#sidebar-edge-toggle, #btn-menu');
-    if (toggleBtn) {
-      e.preventDefault();
-      toggleSidebar();
-    }
+  document.getElementById('sidebar-edge-toggle')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleSidebar();
+  });
+  document.getElementById('btn-menu')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleSidebar();
   });
   document.getElementById('sidebar-close')?.addEventListener('click', closeMobileSidebar);
   sidebarOverlay?.addEventListener('click', closeMobileSidebar);
@@ -621,17 +626,37 @@ export async function openTaskPanel(taskId) {
 // ════════════════════════════════════════════════
 //  SIDEBAR
 // ════════════════════════════════════════════════
-export function toggleSidebar() {
+let _lastToggleTime = 0;
+
+export function toggleSidebar(e) {
+  if (e) {
+    e.preventDefault?.();
+    e.stopPropagation?.();
+  }
+  const now = Date.now();
+  if (now - _lastToggleTime < 200) return; // Debounce guard against double-clicks/bubbling
+  _lastToggleTime = now;
+
   const app = document.getElementById('app') || document.body;
   const sidebar = document.getElementById('sidebar');
   const overlay = document.getElementById('sidebar-overlay');
   
-  if (window.innerWidth >= 768) {
+  const isFromMenuBtn = !!(e?.target?.closest?.('#btn-menu') || e?.currentTarget?.id === 'btn-menu');
+  const isFromEdgeToggle = !!(e?.target?.closest?.('#sidebar-edge-toggle') || e?.currentTarget?.id === 'sidebar-edge-toggle');
+  const isDesktop = window.matchMedia('(min-width: 768px)').matches;
+
+  if (isFromEdgeToggle || (!isFromMenuBtn && isDesktop)) {
     const isCollapsed = app.classList.toggle('sidebar-collapsed');
+    document.body.classList.toggle('sidebar-collapsed', isCollapsed);
+    document.documentElement.classList.toggle('sidebar-collapsed', isCollapsed);
     try { localStorage.setItem('sidebar_collapsed', isCollapsed ? '1' : '0'); } catch(_) {}
     sidebar?.classList.remove('open');
     overlay?.classList.remove('active');
   } else {
+    // Mobile Drawer
+    app.classList.remove('sidebar-collapsed');
+    document.body.classList.remove('sidebar-collapsed');
+    document.documentElement.classList.remove('sidebar-collapsed');
     const isOpen = sidebar ? sidebar.classList.toggle('open') : false;
     if (isOpen) {
       overlay?.classList.add('active');
@@ -649,6 +674,24 @@ export function closeMobileSidebar() {
     overlay?.classList.remove('active');
   }
 }
+
+window.addEventListener('resize', () => {
+  const app = document.getElementById('app');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebar-overlay');
+  if (window.innerWidth >= 768) {
+    sidebar?.classList.remove('open');
+    overlay?.classList.remove('active');
+    const isCollapsed = localStorage.getItem('sidebar_collapsed') === '1';
+    app?.classList.toggle('sidebar-collapsed', isCollapsed);
+    document.body.classList.toggle('sidebar-collapsed', isCollapsed);
+    document.documentElement.classList.toggle('sidebar-collapsed', isCollapsed);
+  } else {
+    app?.classList.remove('sidebar-collapsed');
+    document.body.classList.remove('sidebar-collapsed');
+    document.documentElement.classList.remove('sidebar-collapsed');
+  }
+});
 
 window.toggleSidebar = toggleSidebar;
 window.closeMobileSidebar = closeMobileSidebar;
