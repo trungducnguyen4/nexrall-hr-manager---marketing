@@ -30,12 +30,12 @@ const REQUIRED_PROFILE_FIELDS = [
 ];
 
 const TAB_ITEMS = [
-  ['overview', 'Tổng quan'],
-  ['employment', 'Công việc & hợp đồng'],
-  ['compensation', 'Lương & BHXH'],
-  ['documents', 'Tài liệu'],
-  ['timeline', 'Timeline'],
-  ['audit', 'Nhật ký'],
+  ['overview', 'Tổng quan', 'userRound'],
+  ['employment', 'Công việc & hợp đồng', 'briefcaseBusiness'],
+  ['compensation', 'Lương & BHXH', 'creditCard'],
+  ['documents', 'Tài liệu', 'fileText'],
+  ['timeline', 'Timeline', 'clock'],
+  ['audit', 'Nhật ký thay đổi', 'history'],
 ];
 
 function isHr(user) {
@@ -49,8 +49,60 @@ function avatarMarkup(user, size = 'md') {
 }
 
 function valueOrEmpty(value, formatter = null) {
-  if (value === null || value === undefined || value === '') return '<span class="profile-empty-value">Chưa cập nhật</span>';
+  if (value === null || value === undefined || value === '') return '<span class="profile-empty-value">— Chưa cập nhật</span>';
   return esc(formatter ? formatter(value) : value);
+}
+
+function renderFieldCell(label, value, options = {}) {
+  let formatted = value;
+  const isEmpty = value === null || value === undefined || String(value).trim() === '';
+
+  if (isEmpty) {
+    formatted = '<span class="emp-val-empty">— Chưa cập nhật</span>';
+  } else if (options.formatter) {
+    formatted = esc(options.formatter(value));
+  } else if (options.isPhone) {
+    formatted = `<a href="tel:${esc(value)}" class="emp-val-link" title="Gọi số ${esc(value)}">${esc(value)}</a>`;
+  } else if (options.isEmail) {
+    formatted = `<a href="mailto:${esc(value)}" class="emp-val-link" title="Gửi email tới ${esc(value)}">${esc(value)}</a>`;
+  } else {
+    formatted = esc(value);
+  }
+
+  const copyButton = (!isEmpty && options.copyable) ? `
+    <button type="button" class="emp-val-copy" data-copy="${esc(value)}" title="Sao chép ${esc(label)}" aria-label="Sao chép ${esc(label)}">
+      ${icon('copy', 'xs')}
+    </button>` : '';
+
+  return `
+    <div class="emp-field-cell ${options.fullWidth ? 'emp-field-cell--full' : ''} ${options.highlight ? 'emp-field-cell--highlight' : ''}">
+      <span class="emp-field-label">${esc(label)}</span>
+      <div class="emp-field-value-wrap">
+        <span class="emp-field-value">${formatted}</span>
+        ${copyButton}
+      </div>
+    </div>`;
+}
+
+function renderInfoCard(title, subtitle, iconName, fieldsHtml, actionBtnId = null, actionBtnText = 'Chỉnh sửa') {
+  return `
+    <div class="emp-info-card">
+      <div class="emp-info-card-header">
+        <div class="emp-info-card-title-group">
+          <div class="emp-info-card-icon">${icon(iconName || 'fileText', 'sm')}</div>
+          <div>
+            <h3 class="emp-info-card-title">${esc(title)}</h3>
+            ${subtitle ? `<p class="emp-info-card-subtitle">${esc(subtitle)}</p>` : ''}
+          </div>
+        </div>
+        ${actionBtnId ? `<button type="button" class="btn-secondary btn-xs emp-info-card-action print-hidden" id="${actionBtnId}">${icon('pencil', 'xs')} <span>${esc(actionBtnText)}</span></button>` : ''}
+      </div>
+      <div class="emp-info-card-body">
+        <div class="emp-field-grid">
+          ${fieldsHtml}
+        </div>
+      </div>
+    </div>`;
 }
 
 function downloadBlob(blob, filename) {
@@ -127,36 +179,38 @@ async function renderEmployeeDirectory(el, me) {
   }
 
   const state = {
-    search: '', department: '', status: '', contract_type: '', position: '',
+    search: '', department: '', status: '', work_location: '', position: '',
     page: 1, page_size: 20, loading: false, request: 0,
   };
   let searchTimer = null;
-  let filterOptions = { departments: [], positions: [], contract_types: [], statuses: [] };
+  let filterOptions = { departments: [], positions: [], work_locations: [], statuses: [] };
 
   el.innerHTML = `
     <section class="employee-directory">
       <header class="employee-page-header">
-        <div>
-          <p class="employee-page-kicker">Quản lý nhân sự</p>
-          <h1>Hồ sơ nhân viên</h1>
-          <p>Theo dõi thông tin cá nhân, hợp đồng, lương và hồ sơ đính kèm.</p>
+        <div class="employee-header-title-wrap">
+          <div class="employee-title-icon-badge">${icon('users', 'lg')}</div>
+          <div>
+            <h1>Hồ sơ nhân viên</h1>
+            <p>Theo dõi thông tin cá nhân, hợp đồng, lương và hồ sơ đính kèm</p>
+          </div>
         </div>
         <div class="employee-header-actions">
-          ${isHr(me) ? `<button class="btn-secondary" id="employee-export">${icon('arrowDown', 'sm')} Xuất Excel</button>` : ''}
-          ${isHr(me) ? `<button class="btn-primary" id="employee-create">${icon('plus', 'sm')} Thêm nhân viên</button>` : ''}
+          ${isHr(me) ? `<button class="btn-secondary btn-sm" id="employee-export">${icon('arrowDown', 'sm')} <span>Xuất Excel</span></button>` : ''}
+          ${isHr(me) ? `<button class="btn-primary btn-sm" id="employee-create">${icon('plus', 'sm')} <span>Thêm nhân viên</span></button>` : ''}
         </div>
       </header>
       <div class="employee-toolbar" aria-label="Tìm kiếm và lọc nhân viên">
         <label class="employee-search">
           <span class="sr-only">Tìm kiếm nhân viên</span>
           ${icon('search', 'sm')}
-          <input id="employee-search" type="search" placeholder="Tìm theo tên, mã, email, phòng ban hoặc vị trí" autocomplete="off"/>
+          <input id="employee-search" type="search" placeholder="Tìm theo tên, mã, email, phòng ban hoặc vị trí..." autocomplete="off"/>
         </label>
         <select id="employee-filter-department" aria-label="Lọc theo phòng ban"><option value="">Tất cả phòng ban</option></select>
         <select id="employee-filter-status" aria-label="Lọc theo trạng thái"><option value="">Tất cả trạng thái</option></select>
-        <select id="employee-filter-contract" aria-label="Lọc theo loại hợp đồng"><option value="">Tất cả hợp đồng</option></select>
+        <select id="employee-filter-location" aria-label="Lọc theo địa điểm làm việc"><option value="">Tất cả địa điểm</option></select>
         <select id="employee-filter-position" aria-label="Lọc theo vị trí"><option value="">Tất cả vị trí</option></select>
-        <button class="btn-secondary btn-sm" id="employee-filter-reset">${icon('refreshCw', 'sm')} Xóa lọc</button>
+        <button class="btn-secondary btn-sm" id="employee-filter-reset">${icon('refreshCw', 'xs')} <span>Xóa lọc</span></button>
       </div>
       <div id="employee-directory-result">${loadingHTML()}</div>
     </section>`;
@@ -169,7 +223,7 @@ async function renderEmployeeDirectory(el, me) {
     const definitions = [
       ['employee-filter-department', 'Tất cả phòng ban', filterOptions.departments, state.department],
       ['employee-filter-status', 'Tất cả trạng thái', filterOptions.statuses, state.status],
-      ['employee-filter-contract', 'Tất cả hợp đồng', filterOptions.contract_types, state.contract_type],
+      ['employee-filter-location', 'Tất cả địa điểm', filterOptions.work_locations, state.work_location],
       ['employee-filter-position', 'Tất cả vị trí', filterOptions.positions, state.position],
     ];
     definitions.forEach(([id, label, values, selected]) => {
@@ -213,19 +267,30 @@ async function renderEmployeeDirectory(el, me) {
         <table class="employee-data-table">
           <thead><tr>
             <th>Nhân viên</th><th>Loại nhân sự</th><th>Phòng ban</th><th>Vị trí</th>
-            <th>Hợp đồng</th><th>Trạng thái</th><th><span class="sr-only">Mở hồ sơ</span></th>
+            <th>Địa điểm làm việc</th><th>Trạng thái</th><th><span class="sr-only">Mở hồ sơ</span></th>
           </tr></thead>
           <tbody>${users.map(user => `
             <tr data-user-id="${user.id}" tabindex="0" role="link" aria-label="Mở hồ sơ ${esc(user.full_name)}">
               <td data-label="Nhân viên">
-                <div class="employee-table-person">${avatarMarkup(user)}
-                  <div><strong>${esc(user.full_name)}</strong><span>${esc(user.employee_code || '')}<br/>${esc(user.email || '')}</span></div>
+                <div class="employee-table-person">
+                  ${avatarMarkup(user)}
+                  <div>
+                    <strong>${esc(user.full_name)}</strong>
+                    <span>
+                      ${user.employee_code ? `<span class="employee-code-chip">${esc(user.employee_code)}</span>` : ''}
+                      ${esc(user.email || '')}
+                    </span>
+                  </div>
                 </div>
               </td>
-              <td data-label="Loại nhân sự"><span class="employee-type-badge">${user.employee_type === 'TTS' ? 'Thực tập sinh' : 'Nhân viên'}</span></td>
-              <td data-label="Phòng ban">${valueOrEmpty(user.department)}</td>
-              <td data-label="Vị trí">${valueOrEmpty(user.position)}</td>
-              <td data-label="Hợp đồng"><strong class="employee-cell-primary">${valueOrEmpty(user.contract_type)}</strong>${user.contract_end_date ? `<span class="employee-cell-secondary">Đến ${esc(fmtDate(user.contract_end_date))}</span>` : ''}</td>
+              <td data-label="Loại nhân sự">
+                <span class="employee-type-badge ${user.employee_type === 'TTS' ? 'employee-type-badge--tts' : 'employee-type-badge--staff'}">
+                  ${user.employee_type === 'TTS' ? 'Thực tập sinh' : 'Nhân viên'}
+                </span>
+              </td>
+              <td data-label="Phòng ban"><span style="font-weight:600;color:var(--text);">${valueOrEmpty(user.department)}</span></td>
+              <td data-label="Vị trí"><span style="color:var(--text-2);">${valueOrEmpty(user.position)}</span></td>
+              <td data-label="Địa điểm làm việc"><span class="employee-cell-primary">${valueOrEmpty(user.work_location)}</span></td>
               <td data-label="Trạng thái">${lifecycleBadge(user.lifecycle_status)}</td>
               <td class="employee-row-action">${icon('arrowRight', 'sm')}</td>
             </tr>`).join('')}</tbody>
@@ -260,7 +325,7 @@ async function renderEmployeeDirectory(el, me) {
   [
     ['employee-filter-department', 'department'],
     ['employee-filter-status', 'status'],
-    ['employee-filter-contract', 'contract_type'],
+    ['employee-filter-location', 'work_location'],
     ['employee-filter-position', 'position'],
   ].forEach(([id, field]) => document.getElementById(id)?.addEventListener('change', event => {
     state[field] = event.target.value;
@@ -268,7 +333,7 @@ async function renderEmployeeDirectory(el, me) {
     loadDirectory();
   }));
   document.getElementById('employee-filter-reset')?.addEventListener('click', () => {
-    Object.assign(state, { search: '', department: '', status: '', contract_type: '', position: '', page: 1 });
+    Object.assign(state, { search: '', department: '', status: '', work_location: '', position: '', page: 1 });
     const search = document.getElementById('employee-search');
     if (search) search.value = '';
     syncFilterOptions();
@@ -326,34 +391,76 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
     .filter(([key]) => key !== 'compensation' || Object.prototype.hasOwnProperty.call(user, 'salary'))
     .map(([key]) => key);
   let activeTab = availableTabs.includes(requestedTab) ? requestedTab : 'overview';
+  const completionColorClass = (completion >= 80) ? 'emp-prog--high' : ((completion >= 50) ? 'emp-prog--mid' : 'emp-prog--low');
 
   el.innerHTML = `
     <section class="employee-profile-page" id="employee-print-root">
-      <button class="employee-back-link print-hidden" id="employee-back">${icon('arrowLeft', 'sm')} Danh sách nhân viên</button>
-      <header class="employee-profile-header">
-        <div class="employee-profile-identity">
-          <div class="employee-profile-avatar">${avatarMarkup(user, 'lg')}${permissions.can_manage_avatar ? `<button class="employee-avatar-edit print-hidden" id="employee-avatar-edit" aria-label="Cập nhật ảnh đại diện">${icon('pencil', 'xs')}</button>` : ''}</div>
-          <div>
-            <div class="employee-profile-meta">${esc(user.employee_code || '')} <span>${user.employee_type === 'TTS' ? 'Thực tập sinh' : 'Nhân viên'}</span></div>
-            <h1>${esc(user.full_name)}</h1>
-            <p>${esc(user.position || 'Chưa cập nhật vị trí')}<br class="profile-mobile-break"/> <span>${esc(user.department || 'Chưa cập nhật phòng ban')}</span></p>
+      <div class="emp-profile-topbar print-hidden">
+        <button class="employee-back-link" id="employee-back">${icon('arrowLeft', 'sm')} <span>Danh sách nhân viên</span></button>
+      </div>
+
+      <!-- Modern Hero Card -->
+      <header class="emp-hero-card">
+        <div class="emp-hero-banner"></div>
+        <div class="emp-hero-body">
+          <div class="emp-hero-left">
+            <div class="emp-hero-avatar-wrap">
+              ${avatarMarkup(user, 'lg')}
+              ${permissions.can_manage_avatar ? `<button class="emp-avatar-edit-badge print-hidden" id="employee-avatar-edit" title="Cập nhật ảnh đại diện" aria-label="Cập nhật ảnh đại diện">${icon('pencil', 'xs')}</button>` : ''}
+            </div>
+            <div class="emp-hero-details">
+              <div class="emp-hero-pills">
+                <span class="emp-pill emp-pill--code">${esc(user.employee_code || 'NV')}</span>
+                <span class="emp-pill ${user.employee_type === 'TTS' ? 'emp-pill--tts' : 'emp-pill--staff'}">${user.employee_type === 'TTS' ? 'Thực tập sinh' : 'Chính thức'}</span>
+                ${lifecycleBadge(user.lifecycle_status)}
+              </div>
+              <h1 class="emp-hero-fullname">${esc(user.full_name)}</h1>
+              <div class="emp-hero-meta-items">
+                <span class="emp-meta-item">🏢 <strong>${esc(user.department || 'Chưa phân phòng')}</strong></span>
+                <span class="emp-meta-dot">•</span>
+                <span class="emp-meta-item">💼 ${esc(user.position || 'Chưa cập nhật vị trí')}</span>
+                ${user.work_location ? `<span class="emp-meta-dot">•</span><span class="emp-meta-item">📍 ${esc(user.work_location)}</span>` : ''}
+              </div>
+            </div>
+          </div>
+
+          <div class="emp-hero-right print-hidden">
+            ${completion === null ? '' : `
+              <div class="emp-completion-widget">
+                <div class="emp-completion-top">
+                  <span class="emp-completion-title">Hồ sơ hoàn thiện</span>
+                  <span class="emp-completion-pct ${completionColorClass}">${completion}%</span>
+                </div>
+                <div class="emp-completion-track">
+                  <div class="emp-completion-bar ${completionColorClass}" style="width: ${completion}%;"></div>
+                </div>
+                <span class="emp-completion-hint">${completion === 100 ? '✅ Đã hoàn tất thông tin' : 'Cần bổ sung các mục còn thiếu'}</span>
+              </div>
+            `}
+
+            <div class="emp-hero-actions">
+              <button class="btn-secondary btn-sm emp-action-btn" id="employee-print" title="Xuất PDF">${icon('fileText', 'sm')} <span>Xuất PDF</span></button>
+              ${isHr(me) ? `<button class="btn-secondary btn-sm emp-action-btn" id="employee-lifecycle" title="Đổi trạng thái">${icon('refreshCw', 'sm')} <span>Đổi trạng thái</span></button>` : ''}
+              ${me.role === 'admin' && Number(user.id) !== Number(me.id) ? `<button class="btn-secondary btn-sm emp-action-btn" id="employee-reset-password" title="Reset mật khẩu">${icon('keyRound', 'sm')} <span>Reset mật khẩu</span></button>` : ''}
+            </div>
           </div>
         </div>
-        <div class="employee-profile-actions print-hidden">
-          <button class="btn-secondary" id="employee-print">${icon('fileText', 'sm')} Xuất PDF</button>
-          ${isHr(me) ? `<button class="btn-secondary" id="employee-lifecycle">${icon('refreshCw', 'sm')} Đổi trạng thái</button>` : ''}
-          ${me.role === 'admin' && Number(user.id) !== Number(me.id) ? `<button class="btn-secondary" id="employee-reset-password">${icon('keyRound', 'sm')} Reset mật khẩu</button>` : ''}
-        </div>
-        <div class="employee-profile-status">
-          <div>${lifecycleBadge(user.lifecycle_status)}</div>
-          ${completion === null ? '' : `<div class="employee-completion"><strong>${completion}%</strong><span>hoàn thiện hồ sơ</span></div>`}
-        </div>
       </header>
-      <nav class="employee-profile-tabs print-hidden" aria-label="Nội dung hồ sơ">
-        ${TAB_ITEMS.filter(([key]) => availableTabs.includes(key))
-          .map(([key, label]) => `<button data-profile-tab="${key}" class="${key === activeTab ? 'active' : ''}">${esc(label)}</button>`).join('')}
+
+      <!-- Modern Tabs Navigation -->
+      <nav class="emp-tabs-nav print-hidden" aria-label="Nội dung hồ sơ">
+        <div class="emp-tabs-track">
+          ${TAB_ITEMS.filter(([key]) => availableTabs.includes(key))
+            .map(([key, label, tabIcon]) => `
+              <button type="button" data-profile-tab="${key}" class="emp-tab-item ${key === activeTab ? 'active' : ''}">
+                <span class="emp-tab-item-icon">${icon(tabIcon || 'fileText', 'xs')}</span>
+                <span>${esc(label)}</span>
+              </button>
+            `).join('')}
+        </div>
       </nav>
-      <div id="employee-profile-content"></div>
+
+      <div id="employee-profile-content" class="emp-profile-content"></div>
     </section>`;
 
   const $ = selector => el.querySelector(selector);
@@ -364,73 +471,145 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
     const content = $('#employee-profile-content');
     if (!content) return;
     $$('[data-profile-tab]').forEach(button => button.classList.toggle('active', button.dataset.profileTab === activeTab));
+
     if (activeTab === 'overview') {
       content.innerHTML = `
-        <div class="employee-profile-section-head"><div><h2>Thông tin cá nhân</h2><p>Thông tin nhận diện và liên hệ của nhân viên.</p></div>
-          ${permissions.can_edit_personal ? `<button class="btn-secondary btn-sm print-hidden" id="employee-edit-personal">${icon('pencil', 'sm')} Chỉnh sửa</button>` : ''}</div>
-        <dl class="employee-detail-grid">
-          ${detailItem('Mã nhân viên', user.employee_code)}
-          ${detailItem('Họ và tên', user.full_name)}
-          ${detailItem('Email', user.email)}
-          ${detailItem('Số điện thoại', user.phone)}
-          ${Object.prototype.hasOwnProperty.call(user, 'birth_date') ? detailItem('Ngày sinh', user.birth_date, fmtDate) : ''}
-          ${Object.prototype.hasOwnProperty.call(user, 'national_id') ? detailItem('Số CCCD', user.national_id) : ''}
-          ${Object.prototype.hasOwnProperty.call(user, 'national_id_expiry_date') ? detailItem('Hạn CCCD', user.national_id_expiry_date, fmtDate) : ''}
-          ${Object.prototype.hasOwnProperty.call(user, 'home_address') ? detailItem('Địa chỉ liên hệ', user.home_address) : ''}
-          ${user.employee_type === 'TTS' && Object.prototype.hasOwnProperty.call(user, 'school_name') ? detailItem('Trường học', user.school_name) : ''}
-          ${Object.prototype.hasOwnProperty.call(user, 'emergency_contact_name') ? detailItem('Liên hệ khẩn cấp', [user.emergency_contact_name, user.emergency_contact_phone].filter(Boolean).join(' - ')) : ''}
-        </dl>`;
-      $('#employee-edit-personal')?.addEventListener('click', () =>
-        openProfileEditor(user, 'personal', { permissions, departments, basicUsers, metadata }, refreshProfile)
-      );
+        <div class="emp-cards-stack">
+          ${renderInfoCard(
+            'Thông tin định danh & Liên hệ',
+            'Các thông tin cơ bản phục vụ nhận diện và liên lạc của nhân viên',
+            'userRound',
+            `
+              ${renderFieldCell('Mã nhân viên', user.employee_code, { copyable: true })}
+              ${renderFieldCell('Họ và tên', user.full_name)}
+              ${renderFieldCell('Email liên hệ', user.email, { isEmail: true, copyable: true })}
+              ${renderFieldCell('Số điện thoại', user.phone, { isPhone: true, copyable: true })}
+              ${Object.prototype.hasOwnProperty.call(user, 'birth_date') ? renderFieldCell('Ngày sinh', user.birth_date, { formatter: fmtDate }) : ''}
+              ${renderFieldCell('Giới tính', user.gender)}
+              ${user.employee_type === 'TTS' && Object.prototype.hasOwnProperty.call(user, 'school_name') ? renderFieldCell('Trường học / Cơ sở đào tạo', user.school_name) : ''}
+              ${Object.prototype.hasOwnProperty.call(user, 'home_address') ? renderFieldCell('Địa chỉ thường trú / Liên hệ', user.home_address, { fullWidth: true }) : ''}
+            `,
+            permissions.can_edit_personal ? 'employee-edit-personal' : null
+          )}
+
+          ${renderInfoCard(
+            'Căn cước công dân (CCCD)',
+            'Giấy tờ tùy thân để khai báo thuế và bảo hiểm',
+            'badgeCheck',
+            `
+              ${Object.prototype.hasOwnProperty.call(user, 'national_id') ? renderFieldCell('Số CCCD / CMND', user.national_id, { copyable: true }) : ''}
+              ${Object.prototype.hasOwnProperty.call(user, 'national_id_expiry_date') ? renderFieldCell('Hạn sử dụng CCCD', user.national_id_expiry_date, { formatter: fmtDate }) : ''}
+            `,
+            permissions.can_edit_personal ? 'employee-edit-personal-cccd' : null
+          )}
+
+          ${(Object.prototype.hasOwnProperty.call(user, 'emergency_contact_name') || Object.prototype.hasOwnProperty.call(user, 'emergency_contact_phone')) ? renderInfoCard(
+            'Liên hệ khẩn cấp',
+            'Người thân liên hệ khi có sự cố khẩn cấp',
+            'shieldAlert',
+            `
+              ${renderFieldCell('Người liên hệ', user.emergency_contact_name)}
+              ${renderFieldCell('Số điện thoại khẩn cấp', user.emergency_contact_phone, { isPhone: true, copyable: true })}
+            `,
+            permissions.can_edit_personal ? 'employee-edit-personal-emergency' : null
+          ) : ''}
+        </div>
+      `;
+      $('#employee-edit-personal')?.addEventListener('click', () => openProfileEditor(user, 'personal', { permissions, departments, basicUsers, metadata }, refreshProfile));
+      $('#employee-edit-personal-cccd')?.addEventListener('click', () => openProfileEditor(user, 'personal', { permissions, departments, basicUsers, metadata }, refreshProfile));
+      $('#employee-edit-personal-emergency')?.addEventListener('click', () => openProfileEditor(user, 'personal', { permissions, departments, basicUsers, metadata }, refreshProfile));
       return;
     }
+
     if (activeTab === 'employment') {
       content.innerHTML = `
-        <div class="employee-profile-section-head"><div><h2>Công việc & hợp đồng</h2><p>Thông tin điều động, quản lý và hiệu lực hợp đồng.</p></div>
-          ${permissions.can_edit_employment ? `<button class="btn-secondary btn-sm print-hidden" id="employee-edit-employment">${icon('pencil', 'sm')} Chỉnh sửa</button>` : ''}</div>
-        <dl class="employee-detail-grid">
-          ${detailItem('Loại nhân sự', user.employee_type === 'TTS' ? 'Thực tập sinh' : 'Nhân viên')}
-          ${detailItem('Vị trí', user.position)}
-          ${detailItem('Phòng ban', user.department)}
-          ${detailItem('Quản lý trực tiếp', managerName())}
-          ${detailItem('Địa điểm làm việc', user.work_location)}
-          ${detailItem('Loại hợp đồng', user.contract_type)}
-          ${detailItem('Ngày vào làm', user.hire_date, fmtDate)}
-          ${detailItem('Ngày bắt đầu hợp đồng', user.contract_start_date, fmtDate)}
-          ${detailItem('Ngày ký hợp đồng', user.contract_signed_date, fmtDate)}
-          ${detailItem('Ngày hết hạn hợp đồng', user.contract_end_date, fmtDate)}
-          ${detailItem('Kết thúc thử việc', user.probation_end_date, fmtDate)}
-          ${detailItem('Ngày chính thức', user.official_date, fmtDate)}
-          ${user.lifecycle_status === 'Đã nghỉ' ? detailItem('Ngày nghỉ việc', user.termination_date, fmtDate) : ''}
-        </dl>`;
-      $('#employee-edit-employment')?.addEventListener('click', () =>
-        openProfileEditor(user, 'employment', { permissions, departments, basicUsers, metadata }, refreshProfile)
-      );
+        <div class="emp-cards-stack">
+          ${renderInfoCard(
+            'Vị trí & Tổ chức làm việc',
+            'Cơ cấu nhân sự, bộ phận và cấp quản lý trực tiếp',
+            'building2',
+            `
+              ${renderFieldCell('Loại nhân sự', user.employee_type === 'TTS' ? 'Thực tập sinh' : 'Nhân viên chính thức')}
+              ${renderFieldCell('Vị trí công việc', user.position)}
+              ${renderFieldCell('Phòng ban', user.department)}
+              ${renderFieldCell('Quản lý trực tiếp', managerName())}
+              ${renderFieldCell('Địa điểm làm việc', user.work_location, { fullWidth: true })}
+            `,
+            permissions.can_edit_employment ? 'employee-edit-employment' : null
+          )}
+
+          ${renderInfoCard(
+            'Hợp đồng & Thời hạn làm việc',
+            'Thông tin pháp lý hợp đồng, thời gian thử việc và hiệu lực',
+            'handshake',
+            `
+              ${renderFieldCell('Loại hợp đồng', user.contract_type)}
+              ${renderFieldCell('Ngày vào làm việc', user.hire_date, { formatter: fmtDate })}
+              ${renderFieldCell('Ngày bắt đầu HĐ', user.contract_start_date, { formatter: fmtDate })}
+              ${renderFieldCell('Ngày ký hợp đồng', user.contract_signed_date, { formatter: fmtDate })}
+              ${renderFieldCell('Ngày hết hạn HĐ', user.contract_end_date, { formatter: fmtDate })}
+              ${renderFieldCell('Kết thúc thử việc', user.probation_end_date, { formatter: fmtDate })}
+              ${renderFieldCell('Ngày chính thức', user.official_date, { formatter: fmtDate })}
+              ${user.lifecycle_status === 'Đã nghỉ' ? renderFieldCell('Ngày nghỉ việc', user.termination_date, { formatter: fmtDate }) : ''}
+            `,
+            permissions.can_edit_employment ? 'employee-edit-employment-contract' : null
+          )}
+        </div>
+      `;
+      $('#employee-edit-employment')?.addEventListener('click', () => openProfileEditor(user, 'employment', { permissions, departments, basicUsers, metadata }, refreshProfile));
+      $('#employee-edit-employment-contract')?.addEventListener('click', () => openProfileEditor(user, 'employment', { permissions, departments, basicUsers, metadata }, refreshProfile));
       return;
     }
+
     if (activeTab === 'compensation') {
+      const totalIncome = Number(user.salary || 0) + Number(user.allowance || 0);
       content.innerHTML = `
-        <div class="employee-profile-section-head"><div><h2>Lương, ngân hàng & BHXH</h2><p>Dữ liệu nhạy cảm, chỉ HCNS và Admin được cập nhật.</p></div>
-          ${permissions.can_edit_compensation ? `<button class="btn-secondary btn-sm print-hidden" id="employee-edit-compensation">${icon('pencil', 'sm')} Chỉnh sửa</button>` : ''}</div>
-        <dl class="employee-detail-grid">
-          ${detailItem('Lương cơ bản', user.salary, fmtMoney)}
-          ${detailItem('Phụ cấp', user.allowance, fmtMoney)}
-          ${detailItem('Tổng thu nhập', Number(user.salary || 0) + Number(user.allowance || 0), fmtMoney)}
-          ${detailItem('Lương đóng BHXH', user.insurance_salary, fmtMoney)}
-          ${detailItem('Số người phụ thuộc', user.dependent_count)}
-          ${detailItem('Số tài khoản', user.bank_account)}
-          ${detailItem('Ngân hàng', user.bank_name)}
-          ${detailItem('Chủ tài khoản', user.bank_account_holder)}
-          ${detailItem('Mã số thuế', user.tax_code)}
-          ${detailItem('Số BHXH', user.social_insurance_number)}
-          ${detailItem('Nơi đăng ký KCB BHYT', user.insurance_hospital)}
-        </dl>`;
-      $('#employee-edit-compensation')?.addEventListener('click', () =>
-        openProfileEditor(user, 'compensation', { permissions, departments, basicUsers, metadata }, refreshProfile)
-      );
+        <div class="emp-cards-stack">
+          ${renderInfoCard(
+            'Thu nhập & Giảm trừ gia cảnh',
+            'Chế độ đãi ngộ hàng tháng và thông tin thuế TNCN',
+            'banknote',
+            `
+              ${renderFieldCell('Lương cơ bản', user.salary, { formatter: fmtMoney })}
+              ${renderFieldCell('Phụ cấp', user.allowance, { formatter: fmtMoney })}
+              ${renderFieldCell('Tổng thu nhập hàng tháng', totalIncome, { formatter: fmtMoney, highlight: true })}
+              ${renderFieldCell('Mã số thuế cá nhân', user.tax_code, { copyable: true })}
+              ${renderFieldCell('Số người phụ thuộc', user.dependent_count)}
+            `,
+            permissions.can_edit_compensation ? 'employee-edit-compensation' : null
+          )}
+
+          ${renderInfoCard(
+            'Tài khoản ngân hàng nhận lương',
+            'Tài khoản thanh toán lương tự động hàng tháng',
+            'creditCard',
+            `
+              ${renderFieldCell('Ngân hàng', user.bank_name)}
+              ${renderFieldCell('Số tài khoản', user.bank_account, { copyable: true })}
+              ${renderFieldCell('Chủ tài khoản', user.bank_account_holder)}
+            `,
+            permissions.can_edit_compensation ? 'employee-edit-compensation-bank' : null
+          )}
+
+          ${renderInfoCard(
+            'Bảo hiểm xã hội & BHYT',
+            'Thông tin tham gia bảo hiểm bắt buộc theo luật lao động',
+            'heartPulse',
+            `
+              ${renderFieldCell('Lương đóng BHXH', user.insurance_salary, { formatter: fmtMoney })}
+              ${renderFieldCell('Số sổ BHXH', user.social_insurance_number, { copyable: true })}
+              ${renderFieldCell('Nơi đăng ký KCB BHYT', user.insurance_hospital, { fullWidth: true })}
+            `,
+            permissions.can_edit_compensation ? 'employee-edit-compensation-ins' : null
+          )}
+        </div>
+      `;
+      $('#employee-edit-compensation')?.addEventListener('click', () => openProfileEditor(user, 'compensation', { permissions, departments, basicUsers, metadata }, refreshProfile));
+      $('#employee-edit-compensation-bank')?.addEventListener('click', () => openProfileEditor(user, 'compensation', { permissions, departments, basicUsers, metadata }, refreshProfile));
+      $('#employee-edit-compensation-ins')?.addEventListener('click', () => openProfileEditor(user, 'compensation', { permissions, departments, basicUsers, metadata }, refreshProfile));
       return;
     }
+
     if (activeTab === 'documents') return renderDocumentsTab(content, user, permissions);
     if (activeTab === 'timeline') return renderTimelineTab(content, user);
     if (activeTab === 'audit') return renderAuditTab(content, user);
@@ -446,35 +625,65 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
     activeTab = button.dataset.profileTab;
     renderTab();
   }));
+
+  el.addEventListener('click', e => {
+    const copyBtn = e.target.closest('[data-copy]');
+    if (copyBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const text = copyBtn.dataset.copy;
+      if (text) {
+        navigator.clipboard?.writeText?.(text).then(() => {
+          toast(`Đã sao chép: ${text}`, 'success');
+        }).catch(() => {
+          toast('Đã chọn: ' + text, 'info');
+        });
+      }
+    }
+  });
+
   $('#employee-print')?.addEventListener('click', () => {
     const content = $('#employee-profile-content');
     if (!content) return;
     const previousTab = activeTab;
+    const totalIncome = Number(user.salary || 0) + Number(user.allowance || 0);
     content.innerHTML = `
-      <div class="employee-profile-section-head"><div><h2>Thông tin cá nhân</h2></div></div>
-      <dl class="employee-detail-grid">
-        ${detailItem('Mã nhân viên', user.employee_code)}${detailItem('Họ và tên', user.full_name)}
-        ${detailItem('Email', user.email)}${detailItem('Số điện thoại', user.phone)}
-        ${detailItem('Ngày sinh', user.birth_date, fmtDate)}${detailItem('Số CCCD', user.national_id)}
-        ${detailItem('Hạn CCCD', user.national_id_expiry_date, fmtDate)}${detailItem('Địa chỉ liên hệ', user.home_address)}
-        ${user.employee_type === 'TTS' ? detailItem('Trường học', user.school_name) : ''}
-      </dl>
-      <div class="employee-profile-section-head employee-print-section"><div><h2>Công việc & hợp đồng</h2></div></div>
-      <dl class="employee-detail-grid">
-        ${detailItem('Vị trí', user.position)}${detailItem('Phòng ban', user.department)}
-        ${detailItem('Quản lý trực tiếp', managerName())}${detailItem('Địa điểm làm việc', user.work_location)}
-        ${detailItem('Loại hợp đồng', user.contract_type)}${detailItem('Ngày vào làm', user.hire_date, fmtDate)}
-        ${detailItem('Ngày hết hạn hợp đồng', user.contract_end_date, fmtDate)}${detailItem('Ngày chính thức', user.official_date, fmtDate)}
-        ${user.lifecycle_status === 'Đã nghỉ' ? detailItem('Ngày nghỉ việc', user.termination_date, fmtDate) : ''}
-      </dl>
-      ${Object.prototype.hasOwnProperty.call(user, 'salary') ? `
-        <div class="employee-profile-section-head employee-print-section"><div><h2>Lương & BHXH</h2></div></div>
-        <dl class="employee-detail-grid">
-          ${detailItem('Lương cơ bản', user.salary, fmtMoney)}${detailItem('Phụ cấp', user.allowance, fmtMoney)}
-          ${detailItem('Lương đóng BHXH', user.insurance_salary, fmtMoney)}${detailItem('Số người phụ thuộc', user.dependent_count)}
-          ${detailItem('Ngân hàng', user.bank_name)}${detailItem('Số tài khoản', user.bank_account)}
-          ${detailItem('Số BHXH', user.social_insurance_number)}${detailItem('Nơi đăng ký KCB BHYT', user.insurance_hospital)}
-        </dl>` : ''}`;
+      <div class="emp-cards-stack">
+        ${renderInfoCard('Thông tin cá nhân & Liên hệ', '', 'userRound', `
+          ${renderFieldCell('Mã nhân viên', user.employee_code)}
+          ${renderFieldCell('Họ và tên', user.full_name)}
+          ${renderFieldCell('Email', user.email)}
+          ${renderFieldCell('Số điện thoại', user.phone)}
+          ${renderFieldCell('Ngày sinh', user.birth_date, { formatter: fmtDate })}
+          ${renderFieldCell('Số CCCD', user.national_id)}
+          ${renderFieldCell('Hạn CCCD', user.national_id_expiry_date, { formatter: fmtDate })}
+          ${renderFieldCell('Địa chỉ liên hệ', user.home_address, { fullWidth: true })}
+          ${user.employee_type === 'TTS' ? renderFieldCell('Trường học', user.school_name) : ''}
+        `)}
+        ${renderInfoCard('Công việc & Hợp đồng', '', 'briefcaseBusiness', `
+          ${renderFieldCell('Vị trí', user.position)}
+          ${renderFieldCell('Phòng ban', user.department)}
+          ${renderFieldCell('Quản lý trực tiếp', managerName())}
+          ${renderFieldCell('Địa điểm làm việc', user.work_location)}
+          ${renderFieldCell('Loại hợp đồng', user.contract_type)}
+          ${renderFieldCell('Ngày vào làm', user.hire_date, { formatter: fmtDate })}
+          ${renderFieldCell('Ngày hết hạn hợp đồng', user.contract_end_date, { formatter: fmtDate })}
+          ${renderFieldCell('Ngày chính thức', user.official_date, { formatter: fmtDate })}
+          ${user.lifecycle_status === 'Đã nghỉ' ? renderFieldCell('Ngày nghỉ việc', user.termination_date, { formatter: fmtDate }) : ''}
+        `)}
+        ${Object.prototype.hasOwnProperty.call(user, 'salary') ? renderInfoCard('Lương & BHXH', '', 'creditCard', `
+          ${renderFieldCell('Lương cơ bản', user.salary, { formatter: fmtMoney })}
+          ${renderFieldCell('Phụ cấp', user.allowance, { formatter: fmtMoney })}
+          ${renderFieldCell('Tổng thu nhập', totalIncome, { formatter: fmtMoney })}
+          ${renderFieldCell('Lương đóng BHXH', user.insurance_salary, { formatter: fmtMoney })}
+          ${renderFieldCell('Số người phụ thuộc', user.dependent_count)}
+          ${renderFieldCell('Ngân hàng', user.bank_name)}
+          ${renderFieldCell('Số tài khoản', user.bank_account)}
+          ${renderFieldCell('Số BHXH', user.social_insurance_number)}
+          ${renderFieldCell('Nơi đăng ký KCB BHYT', user.insurance_hospital, { fullWidth: true })}
+        `) : ''}
+      </div>
+    `;
     window.print();
     setTimeout(() => { activeTab = previousTab; renderTab(); }, 0);
   });
@@ -811,64 +1020,101 @@ function openAvatarEditor(user, onSaved) {
 
 function openCreateEmployee(users, departments, onSaved) {
   const departmentOptions = departments.map(item => item.name).filter(Boolean).map(value => `<option value="${esc(value)}">${esc(value)}</option>`).join('');
-  const managerOptions = users.map(item => `<option value="${item.id}">${esc(item.full_name)} - ${esc(item.position || '')}</option>`).join('');
-  const input = (id, label, type = 'text', required = false) => `<label class="field"><span>${esc(label)}${required ? ' *' : ''}</span><input id="${id}" type="${type}" ${required ? 'required' : ''}/></label>`;
-  openModal('Thêm nhân viên', `
-    <div class="employee-create-form">
-      <h4>Thông tin cá nhân</h4><div class="employee-edit-grid">
-        ${input('new-name','Họ và tên','text',true)}${input('new-email','Email','email',true)}
-        ${input('new-phone','Số điện thoại','tel',true)}${input('new-birth','Ngày sinh','date',true)}
-        ${input('new-national-id','Số CCCD','text',true)}${input('new-national-expiry','Hạn CCCD','date')}
-        ${input('new-address','Địa chỉ liên hệ','text',true)}
-        <label class="field"><span>Loại nhân sự *</span><select id="new-type"><option value="NV">Nhân viên</option><option value="TTS">Thực tập sinh</option></select></label>
-        <label class="field hidden" id="new-school-field"><span>Trường học</span><input id="new-school" type="text"/></label>
+
+  openModal('Thêm nhân viên mới', `
+    <div class="employee-create-form" style="display:flex;flex-direction:column;gap:16px;">
+      <div style="background:#FFF5F2;border:1px solid #FED7AA;border-radius:12px;padding:12px 14px;display:flex;align-items:flex-start;gap:10px;">
+        <span style="color:var(--primary);margin-top:2px;">${icon('info', 'sm') || 'ℹ️'}</span>
+        <div style="font-size:12.5px;color:var(--text-2);line-height:1.45;">
+          Chỉ cần nhập <strong>Mã nhân viên</strong> và <strong>Họ và tên đầy đủ</strong> để khởi tạo tài khoản nhanh. Mật khẩu đăng nhập mặc định là <strong style="color:var(--primary);">Pass@123</strong>.
+        </div>
       </div>
-      <h4>Công việc & hợp đồng</h4><div class="employee-edit-grid">
-        ${input('new-position','Vị trí','text',true)}
-        <label class="field"><span>Phòng ban *</span><select id="new-department" required><option value="">Chọn phòng ban</option>${departmentOptions}</select></label>
-        <label class="field"><span>Quản lý trực tiếp *</span><select id="new-manager" required><option value="">Chọn quản lý</option>${managerOptions}</select></label>
-        ${input('new-location','Địa điểm làm việc','text',true)}
-        <label class="field"><span>Loại hợp đồng *</span><select id="new-contract-type" required><option value="">Chọn hợp đồng</option>${['Thử việc','HĐCT','CTV','Thỏa thuận TTS','Khác'].map(value => `<option>${value}</option>`).join('')}</select></label>
-        ${input('new-hire-date','Ngày vào làm','date',true)}${input('new-probation-end','Ngày kết thúc thử việc','date')}
-        ${input('new-contract-end','Ngày hết hạn hợp đồng','date')}${input('new-official-date','Ngày chính thức','date')}
+
+      <div class="field" style="margin-bottom:0;">
+        <label style="font-size:12.5px;font-weight:700;margin-bottom:6px;display:block;">Mã nhân viên <span style="color:var(--danger);">*</span></label>
+        <input id="new-code" type="text" placeholder="Ví dụ: TTS-33 hoặc NV-10" style="height:44px;font-weight:700;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;text-transform:uppercase;" required autocomplete="off" />
       </div>
-      <h4>Lương, ngân hàng & BHXH</h4><div class="employee-edit-grid">
-        ${input('new-salary','Lương cơ bản','number')}${input('new-allowance','Phụ cấp','number')}
-        ${input('new-insurance-salary','Lương đóng BHXH','number')}${input('new-dependent-count','Số người phụ thuộc','number')}
-        ${input('new-bank-account','Số tài khoản')}${input('new-bank-name','Ngân hàng')}
-        ${input('new-social-insurance','Số BHXH')}${input('new-insurance-hospital','Nơi đăng ký KCB BHYT')}
+
+      <div class="field" style="margin-bottom:0;">
+        <label style="font-size:12.5px;font-weight:700;margin-bottom:6px;display:block;">Họ và tên đầy đủ <span style="color:var(--danger);">*</span></label>
+        <input id="new-name" type="text" placeholder="Ví dụ: Nguyễn Văn Siu" style="height:44px;font-weight:600;" required autocomplete="off" />
       </div>
-    </div>`, `<button class="btn-secondary" id="new-cancel">Hủy</button><button class="btn-primary" id="new-save">Tạo nhân viên</button>`);
+
+      <div class="field" style="margin-bottom:0;">
+        <label style="font-size:12.5px;font-weight:700;margin-bottom:6px;display:block;">Phòng ban</label>
+        <select id="new-department" style="height:44px;font-weight:600;">
+          <option value="">Tự động chọn theo mã (hoặc chọn bên dưới)</option>
+          ${departmentOptions}
+        </select>
+      </div>
+
+      <div id="new-create-error" style="color:var(--danger);font-size:12.5px;font-weight:600;min-height:16px;"></div>
+    </div>
+  `, `
+    <button class="btn-secondary" id="new-cancel">Hủy</button>
+    <button class="btn-primary" id="new-save">${icon('plus', 'sm')} <span>Tạo nhân viên</span></button>
+  `);
+
   document.getElementById('modal')?.classList.add('modal--employee-create');
   document.getElementById('new-cancel')?.addEventListener('click', closeModal);
   const unsavedGuard = bindUnsavedWarning('new-cancel');
-  document.getElementById('new-type')?.addEventListener('change', event => document.getElementById('new-school-field').classList.toggle('hidden', event.target.value !== 'TTS'));
-  document.getElementById('new-save')?.addEventListener('click', async event => {
-    const required = [...document.querySelectorAll('#modal-body [required]')];
-    const missing = required.find(input => !input.value.trim());
-    if (missing) { missing.focus(); toast('Vui lòng nhập đầy đủ các trường bắt buộc', 'error'); return; }
-    const value = id => document.getElementById(id)?.value?.trim() || '';
+
+  const codeInput = document.getElementById('new-code');
+  const nameInput = document.getElementById('new-name');
+  const deptSelect = document.getElementById('new-department');
+  const errorEl = document.getElementById('new-create-error');
+  const saveBtn = document.getElementById('new-save');
+
+  // Auto-suggest department when user types TTS
+  codeInput?.addEventListener('input', () => {
+    const val = (codeInput.value || '').trim().toUpperCase();
+    if (val.startsWith('TTS')) {
+      if (deptSelect && !deptSelect.value) {
+        const ttsOpt = Array.from(deptSelect.options).find(o => o.value.toLowerCase().includes('thực tập'));
+        if (ttsOpt) deptSelect.value = ttsOpt.value;
+      }
+    }
+  });
+
+  saveBtn?.addEventListener('click', async () => {
+    const code = (codeInput?.value || '').trim().toUpperCase();
+    const name = (nameInput?.value || '').trim();
+    if (!code) {
+      codeInput?.focus();
+      if (errorEl) errorEl.textContent = 'Vui lòng nhập mã nhân viên (ví dụ: TTS-33)';
+      return;
+    }
+    if (!name) {
+      nameInput?.focus();
+      if (errorEl) errorEl.textContent = 'Vui lòng nhập họ và tên đầy đủ';
+      return;
+    }
+    if (errorEl) errorEl.textContent = '';
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Đang tạo...';
+
+    const isTts = code.startsWith('TTS');
+    let dept = deptSelect?.value || (isTts ? 'Thực Tập Sinh' : 'Phòng Marketing');
+
     const data = {
-      full_name: value('new-name'), email: value('new-email'), phone: value('new-phone'),
-      birth_date: value('new-birth'), national_id: value('new-national-id'),
-      national_id_expiry_date: value('new-national-expiry'), home_address: value('new-address'),
-      employee_type: value('new-type'), school_name: value('new-school'), position: value('new-position'),
-      department: value('new-department'), direct_manager_id: value('new-manager'), work_location: value('new-location'),
-      contract_type: value('new-contract-type'), hire_date: value('new-hire-date'),
-      probation_end_date: value('new-probation-end'), contract_end_date: value('new-contract-end'),
-      official_date: value('new-official-date'), role: 'employee',
-      salary: Number(value('new-salary') || 0), allowance: Number(value('new-allowance') || 0),
-      insurance_salary: Number(value('new-insurance-salary') || 0), dependent_count: Number(value('new-dependent-count') || 0),
-      bank_account: value('new-bank-account'), bank_name: value('new-bank-name'),
-      social_insurance_number: value('new-social-insurance'), insurance_hospital: value('new-insurance-hospital'),
+      employee_code: code,
+      full_name: name,
+      department: dept,
+      employee_type: isTts ? 'TTS' : 'NV',
+      password: 'Pass@123',
     };
-    event.currentTarget.disabled = true;
+
     try {
       await api.createUser(data);
       unsavedGuard.commit();
       closeModal();
-      toast('Đã tạo nhân viên', 'success');
+      toast(`Đã tạo nhân viên ${code} - ${name} thành công! (Mật khẩu: Pass@123)`, 'success', 5000);
       onSaved();
-    } catch (error) { toast(error.message, 'error'); event.currentTarget.disabled = false; }
+    } catch (error) {
+      if (errorEl) errorEl.textContent = error.message || 'Lỗi khi tạo nhân viên';
+      toast(error.message || 'Lỗi khi tạo nhân viên', 'error');
+      saveBtn.disabled = false;
+      saveBtn.innerHTML = `${icon('plus', 'sm')} <span>Tạo nhân viên</span>`;
+    }
   });
 }

@@ -1,6 +1,7 @@
 import { api } from '../api.js?v=20260811-penalty-policy-v3';
 import { esc, fmtMoney, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination, avatarColor, initials, isHcnsDepartment } from '../utils.js?v=20260811-hr-access-v1';
 import { payslipDetailHTML, hydratePayslipAttendance, preparePayslipModal } from './payslip-detail.js?v=20260804-inline-line-notes-v1';
+import { icon } from '../icons.js';
 
 function formatMonth(month) {
   if (!/^\d{4}-\d{2}$/.test(month || '')) return month || '';
@@ -11,8 +12,8 @@ function formatMonth(month) {
 function payrollStatusBadge(p) {
   const status = p.data_status || (Number(p.base_salary || 0) > 0 ? 'ready' : 'missing_salary_config');
   return status === 'missing_salary_config'
-    ? '<span class="payroll-badge payroll-badge--warn">Thiếu cấu hình lương</span>'
-    : '<span class="payroll-badge payroll-badge--ok">Đủ dữ liệu</span>';
+    ? '<span class="payroll-badge payroll-badge--warn"><span class="payroll-badge-dot"></span><span>Thiếu cấu hình lương</span></span>'
+    : '<span class="payroll-badge payroll-badge--ok"><span class="payroll-badge-dot"></span><span>Đủ dữ liệu</span></span>';
 }
 
 function payrollReady(p) {
@@ -25,6 +26,46 @@ function payrollMoney(value, ready) {
   // even when the payroll row is missing salary config.
   if (n === 0) return '—';
   return fmtMoney(n);
+}
+
+function renderDonutChartSVG(slices, centerTitle, centerVal) {
+  const total = slices.reduce((sum, s) => sum + Math.max(0, Number(s.value || 0)), 0);
+  const size = 160;
+  const radius = 58;
+  const strokeWidth = 20;
+  const circumference = 2 * Math.PI * radius; // ~364.42
+
+  if (total <= 0) {
+    return `
+      <svg viewBox="0 0 ${size} ${size}" class="payroll-donut-svg">
+        <circle cx="${size/2}" cy="${size/2}" r="${radius}" stroke="#E2E8F0" stroke-width="${strokeWidth}" fill="none" />
+      </svg>
+      <div class="payroll-donut-center">
+        <span class="payroll-donut-center-label">${esc(centerTitle)}</span>
+        <span class="payroll-donut-center-val" style="color:var(--text-3);font-size:12px;">0</span>
+      </div>
+    `;
+  }
+
+  let accumulatedOffset = 0;
+  const circles = slices.filter(s => Number(s.value) > 0).map(slice => {
+    const fraction = Number(slice.value) / total;
+    const strokeDash = fraction * circumference;
+    const gap = circumference - strokeDash;
+    const offset = -accumulatedOffset;
+    accumulatedOffset += strokeDash;
+    return `<circle class="payroll-donut-segment" cx="${size/2}" cy="${size/2}" r="${radius}" stroke="${slice.color}" stroke-width="${strokeWidth}" stroke-dasharray="${strokeDash.toFixed(2)} ${gap.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}" fill="none" data-label="${esc(slice.label)}" title="${esc(slice.label)}: ${slice.formattedValue || slice.value} (${(fraction * 100).toFixed(1)}%)"/>`;
+  }).join('');
+
+  return `
+    <svg viewBox="0 0 ${size} ${size}" class="payroll-donut-svg">
+      ${circles}
+    </svg>
+    <div class="payroll-donut-center">
+      <span class="payroll-donut-center-label">${esc(centerTitle)}</span>
+      <span class="payroll-donut-center-val">${esc(centerVal)}</span>
+    </div>
+  `;
 }
 
 // Memoize row HTML per row signature so editing one row doesn't re-render all rows.
@@ -51,10 +92,7 @@ function payrollRowHTML(p) {
       </td>
       <td class="payroll-col-dept" data-label="Phòng ban"><span class="payroll-dept">${esc(p.department || '—')}</span></td>
       <td class="payroll-col-money" data-label="Lương CB">${payrollMoney(p.base_salary, ready)}</td>
-      <td class="payroll-col-money payroll-col-money--pos" data-label="KPI Bonus">${payrollMoney(p.kpi_bonus, ready)}</td>
-      <td class="payroll-col-money payroll-col-money--pos" data-label="Phụ cấp">${payrollMoney(p.allowance, ready)}</td>
-      <td class="payroll-col-money payroll-col-money--neg" data-label="Khấu trừ">${payrollMoney(p.deduction, ready)}</td>
-      <td class="payroll-col-money payroll-col-net" data-label="Thực lĩnh"><strong>${payrollMoney(net, ready)}</strong></td>
+      <td class="payroll-col-money payroll-col-net" data-label="Thực lĩnh">${payrollMoney(net, ready)}</td>
     </tr>
   `;
   payrollRowCache.set(p.id, { sig, html });
@@ -66,7 +104,7 @@ export async function renderPayroll(el, me) {
   const isHr = me.role === 'admin' || me.role === 'manager' || isHcnsDepartment(me.department);
   const canEditPayroll = me.role === 'admin' || isHcnsDepartment(me.department);
   if (!isHr) {
-    el.innerHTML = `<div class="empty-state"><div class="empty-icon">🔒</div><div class="empty-text">Không có quyền truy cập</div></div>`;
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">${icon('lock', 'lg')}</div><div class="empty-text">Không có quyền truy cập</div></div>`;
     return;
   }
 
@@ -80,33 +118,55 @@ export async function renderPayroll(el, me) {
   let currentPage = 1;
 
   el.innerHTML = `
-    <div class="page-header">
-      <div class="page-header-left">
-        <div class="page-title">💰 Bảng lương</div>
-        <div class="page-sub">Quản lý lương và KPI nhân viên</div>
+    <div class="page-header" style="margin-bottom:18px;">
+      <div class="payroll-header-title-wrap">
+        <div class="payroll-title-icon-badge">${icon('banknote', 'lg')}</div>
+        <div>
+          <h1 class="page-title">Bảng lương</h1>
+          <p class="page-sub">Quản lý lương, quỹ phòng ban, chuyên cần và phát hành phiếu lương</p>
+        </div>
       </div>
     </div>
 
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;">
-      <label style="font-size:13px;font-weight:600;color:var(--text-2);">Tháng:</label>
-      <input type="month" id="payroll-month" value="${curMonth}" style="max-width:160px;font-weight:600;"/>
-      ${canEditPayroll ? `<button id="btn-sync-payroll" class="btn-secondary" style="font-size:14px;font-weight:700;padding:11px 18px;min-height:44px;">🔄 Đồng bộ / Tạo bảng lương</button>` : ''}
-      <button id="btn-export-payslips" class="btn-primary" style="font-size:14px;font-weight:800;padding:11px 18px;min-height:44px;">Xuất phiếu lương tháng ${formatMonth(curMonth)}</button>
+    <!-- Month Picker & Action Controls -->
+    <div class="payroll-control-bar">
+      <div class="payroll-control-left">
+        <div class="payroll-month-wrap">
+          <span style="color:var(--text-3);display:flex;align-items:center;">${icon('calendarDays', 'xs')}</span>
+          <span class="payroll-month-label">Kỳ lương:</span>
+          <input type="month" id="payroll-month" class="payroll-month-input" value="${curMonth}"/>
+        </div>
+      </div>
+      <div class="payroll-control-right">
+        ${canEditPayroll ? `<button id="btn-sync-payroll" class="btn-secondary btn-sm">${icon('refreshCw', 'sm')} <span>Đồng bộ / Tạo bảng lương</span></button>` : ''}
+        <button id="btn-export-payslips" class="btn-primary btn-sm">${icon('fileText', 'sm')} <span>Xuất phiếu lương tháng ${formatMonth(curMonth)}</span></button>
+      </div>
     </div>
-    <div id="payroll-load-status" style="min-height:18px;font-size:12px;color:var(--text-2);margin:-8px 0 12px;"></div>
+    <div id="payroll-load-status" class="payroll-status-note"></div>
 
-    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
-      <input type="text" id="payroll-search" placeholder="Tìm theo tên, mã nhân viên..." style="flex:2;min-width:220px;"/>
-      <select id="payroll-dept-filter" style="flex:1;min-width:180px;">
-        <option value="">Tất cả phòng ban</option>
-        ${DEPARTMENTS.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}
-      </select>
+    <!-- Interactive Donut Charts Grid (Budget by Dept & Attendance Breakdown) -->
+    <div id="payroll-charts-container" class="payroll-charts-grid"></div>
+
+    <!-- Adjustments Suggestion Panel -->
+    <div id="payroll-adjustments"></div>
+
+    <!-- Filter Card Box -->
+    <div class="payroll-filter-card">
+      <div class="payroll-search-wrap" style="flex:1;min-width:240px;">
+        <span class="payroll-search-icon">${icon('search', 'sm')}</span>
+        <input type="text" id="payroll-search" class="payroll-search-input" placeholder="Tìm theo tên nhân viên, mã nhân viên..."/>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <select id="payroll-dept-filter" class="payroll-dept-select" style="min-width:180px;">
+          <option value="">Tất cả phòng ban</option>
+          ${DEPARTMENTS.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}
+        </select>
+        <div id="payroll-filter-count" style="font-size:12px;font-weight:700;color:var(--text-2);padding:7px 12px;background:#F8FAFC;border:1px solid var(--border);border-radius:var(--radius-sm);white-space:nowrap;"></div>
+      </div>
     </div>
 
-    <div id="payroll-summary" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:18px;"></div>
-    <div id="payroll-adjustments" style="margin-bottom:18px;"></div>
-
-    <div class="card" style="padding:0;">
+    <!-- Main Payroll Data Table -->
+    <div class="payroll-table-card">
       <div id="payroll-table">${loadingHTML()}</div>
     </div>
   `;
@@ -167,60 +227,72 @@ export async function renderPayroll(el, me) {
     const totalSuggestedBonus = suggestions.filter(x => x.type === 'bonus').reduce((s, x) => s + Number(x.amount || 0), 0);
     const totalSuggestedPenalty = suggestions.filter(x => x.type === 'penalty').reduce((s, x) => s + Number(x.amount || 0), 0);
     el.innerHTML = `
-      <div class="card" style="padding:0;">
-        <div class="card-header" style="padding:12px 14px;border-bottom:1px solid var(--border);">
+      <div class="payroll-adjustments-card">
+        <div class="payroll-adjustments-header">
           <div>
-            <div class="card-title">Đề xuất thưởng-phạt tháng ${formatMonth(month)}</div>
-            <div style="font-size:12px;color:var(--text-2);margin-top:2px;">Tự động gợi ý từ đánh giá đã khóa, chấm công và deadline. HCNS xác nhận trước khi cộng/trừ lương.</div>
+            <div class="payroll-adjustments-title">Đề xuất thưởng-phạt tháng ${formatMonth(month)}</div>
+            <div class="payroll-adjustments-sub">Tự động gợi ý từ đánh giá đã khóa, chấm công và deadline. HCNS xác nhận trước khi cộng/trừ lương.</div>
           </div>
-          <div style="display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end;">
-            ${canEditPayroll ? '<button class="btn-secondary btn-sm" id="payroll-adjust-manual">Phạt thủ công</button><button class="btn-secondary btn-sm" id="payroll-policy-reset">Đổi quy định phạt</button>' : ''}
-            <button class="btn-secondary btn-sm" id="payroll-adjust-refresh">Làm mới đề xuất</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+            ${canEditPayroll ? `
+              <button class="btn-secondary btn-xs" id="payroll-adjust-manual">${icon('triangleAlert', 'xs')} <span>Phạt thủ công</span></button>
+              <button class="btn-secondary btn-xs" id="payroll-policy-reset">${icon('settings', 'xs')} <span>Đổi quy định phạt</span></button>
+            ` : ''}
+            <button class="btn-secondary btn-xs" id="payroll-adjust-refresh">${icon('refreshCw', 'xs')} <span>Làm mới đề xuất</span></button>
           </div>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:12px 14px;border-bottom:1px solid var(--border);">
-          <div class="detail-item"><div class="detail-label">Chưa áp dụng</div><div class="detail-val">${suggestions.length}</div></div>
-          <div class="detail-item"><div class="detail-label">Thưởng đề xuất</div><div class="detail-val" style="color:var(--success);">+${fmtMoney(totalSuggestedBonus)}</div></div>
-          <div class="detail-item"><div class="detail-label">Phạt đề xuất</div><div class="detail-val" style="color:var(--danger);">-${fmtMoney(totalSuggestedPenalty)}</div></div>
+        <div class="payroll-adjustments-kpis">
+          <div class="payroll-adj-kpi-item">
+            <span class="payroll-adj-kpi-label">Chưa áp dụng</span>
+            <span class="payroll-adj-kpi-val">${suggestions.length}</span>
+          </div>
+          <div class="payroll-adj-kpi-item">
+            <span class="payroll-adj-kpi-label">Thưởng đề xuất</span>
+            <span class="payroll-adj-kpi-val" style="color:var(--success);">+${fmtMoney(totalSuggestedBonus)}</span>
+          </div>
+          <div class="payroll-adj-kpi-item">
+            <span class="payroll-adj-kpi-label">Phạt đề xuất</span>
+            <span class="payroll-adj-kpi-val" style="color:var(--danger);">-${fmtMoney(totalSuggestedPenalty)}</span>
+          </div>
         </div>
         ${suggestions.length ? `
           <div class="table-wrap" style="border:none;border-radius:0;">
             <table>
-              <thead><tr><th></th><th>Nhân viên</th><th>Nguồn</th><th>Loại</th><th>Ngày vi phạm</th><th>Tháng áp dụng</th><th>Số tiền</th><th>Điểm</th><th>Lý do</th>${canEditPayroll ? '<th>Thao tác</th>' : ''}</tr></thead>
+              <thead><tr><th></th><th>Nhân viên</th><th>Nguồn</th><th>Loại</th><th>Ngày vi phạm</th><th>Tháng áp dụng</th><th>Số tiền</th><th>Điểm</th><th>Lý do</th>${canEditPayroll ? '<th style="text-align:right;">Thao tác</th>' : ''}</tr></thead>
               <tbody>
                 ${pageData.rows.map(s => `
                   <tr>
                     <td><input type="checkbox" class="adj-check" data-ref="${esc(s.source_ref)}" ${s.can_apply === false ? 'disabled' : 'checked'} title="${s.can_apply === false ? 'Cần đồng bộ/tạo dòng bảng lương trước' : ''}"></td>
-                    <td><strong>${esc(s.employee_name || '—')}</strong><br><span style="font-size:11px;color:var(--text-3);">${esc(s.employee_code || '')}</span></td>
+                    <td><strong>${esc(s.employee_name || '—')}</strong><br><span style="font-size:11px;font-family:monospace;color:var(--text-3);">${esc(s.employee_code || '')}</span></td>
                     <td><span class="badge badge-gray">${esc(adjustmentSourceLabel(s.source))}</span></td>
                     <td>${esc(adjustmentTypeLabel(s.type))}</td>
                     <td>${esc(s.violation_date || '—')}</td>
                     <td>${esc(s.policy_month || month)}</td>
-                    <td>${s.amount > 0 ? `<input type="number" class="adj-amount" data-ref="${esc(s.source_ref)}" value="${Number(s.amount || 0)}" min="0" step="50000" style="width:120px;" ${s.can_apply === false ? 'disabled' : ''}>` : '—'}</td>
+                    <td>${s.amount > 0 ? `<input type="number" class="adj-amount" data-ref="${esc(s.source_ref)}" value="${Number(s.amount || 0)}" min="0" step="50000" style="width:120px;padding:4px 8px;border-radius:6px;" ${s.can_apply === false ? 'disabled' : ''}>` : '—'}</td>
                     <td>${s.score_delta ? (s.score_delta > 0 ? '+' : '') + s.score_delta : '—'}</td>
                     <td style="white-space:normal;min-width:220px;font-size:12px;color:var(--text-2);">${esc(adjustmentReason(s.reason))}${s.can_apply === false ? '<br><span style="color:var(--warning);font-weight:700;">Cần đồng bộ/tạo dòng bảng lương trước khi áp dụng tiền.</span>' : ''}</td>
-                    ${canEditPayroll ? `<td><button class="btn-danger btn-sm adj-dismiss" data-ref="${esc(s.source_ref)}">Xóa</button></td>` : ''}
+                    ${canEditPayroll ? `<td style="text-align:right;"><button class="btn-secondary btn-xs adj-dismiss" data-ref="${esc(s.source_ref)}" style="color:var(--danger);border-color:rgba(239,68,68,0.25);">${icon('trash2', 'xs')} <span>Xóa</span></button></td>` : ''}
                   </tr>
                 `).join('')}
               </tbody>
             </table>
           </div>
           ${paginationHTML(pageData)}
-          <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 14px;">
-            <button class="btn-primary btn-sm" id="payroll-adjust-apply">Áp dụng đề xuất đã chọn</button>
+          <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 18px;background:#FAFBFD;border-top:1px solid var(--border);">
+            <button class="btn-primary btn-sm" id="payroll-adjust-apply">${icon('check', 'sm')} <span>Áp dụng đề xuất đã chọn</span></button>
           </div>
-        ` : `<div style="padding:14px;color:var(--text-2);font-size:13px;">Chưa có đề xuất mới. Các khoản mềm như sáng kiến/top tuần/báo cáo sẽ nhập thủ công khi có quyết định.</div>`}
+        ` : `<div style="padding:16px 20px;color:var(--text-2);font-size:13px;">Chưa có đề xuất mới. Các khoản mềm như sáng kiến/top tuần/báo cáo sẽ nhập thủ công khi có quyết định.</div>`}
         ${approved.length ? `
-          <div style="padding:0 14px 14px;">
-            <div class="section-title" style="margin-top:4px;">Đã áp dụng</div>
-            <div style="display:grid;gap:6px;">
+          <div style="padding:14px 20px 18px;border-top:1px solid var(--divider);">
+            <div class="section-title" style="margin:0 0 10px;font-size:13px;font-weight:700;color:var(--text-2);text-transform:uppercase;letter-spacing:0.4px;">Đã áp dụng gần đây</div>
+            <div style="display:grid;gap:8px;">
               ${approved.slice(0, 6).map(a => {
                 const tone = approvedAdjustmentTone(a);
                 const hasAmount = Number(a.amount || 0) > 0;
                 return `
-                  <div style="display:flex;justify-content:space-between;gap:12px;border:1px solid ${tone.border};background:${tone.bg};border-radius:8px;padding:9px 11px;font-size:12px;align-items:flex-start;">
+                  <div style="display:flex;justify-content:space-between;gap:12px;border:1px solid ${tone.border};background:${tone.bg};border-radius:10px;padding:10px 14px;font-size:12.5px;align-items:center;">
                     <span style="color:${tone.color};line-height:1.45;"><strong>${esc(a.employee_name || '—')}</strong> · ${esc(adjustmentSourceLabel(a.source))} · ${a.violation_date ? `Ngày ${esc(a.violation_date)} · ` : ''}Kỳ ${esc(a.policy_month || a.month || month)} · ${esc(adjustmentReason(a.reason))}</span>
-                    <span style="white-space:nowrap;color:${tone.color};font-weight:800;">${hasAmount ? tone.sign + fmtMoney(a.amount) : (a.score_delta || 'audit')}</span>
+                    <span style="white-space:nowrap;color:${tone.color};font-weight:800;font-variant-numeric:tabular-nums;">${hasAmount ? tone.sign + fmtMoney(a.amount) : (a.score_delta || 'audit')}</span>
                   </div>
                 `;
               }).join('')}
@@ -466,36 +538,190 @@ export async function renderPayroll(el, me) {
       const pageData = paginateRows(filtered, currentPage);
       currentPage = pageData.page;
 
-      if (sumEl) {
-        sumEl.innerHTML = `
-          <div class="stat-card" style="--stat-color:#6366F1;--stat-bg:#EEF2FF;">
-            <div class="stat-icon-wrap">👥</div>
-            <div class="stat-val">${payrolls.length}</div>
-            <div class="stat-label">Nhân sự tháng ${month}</div>
-          </div>
-          <div class="stat-card" style="--stat-color:#10B981;--stat-bg:#D1FAE5;">
-            <div class="stat-icon-wrap">💵</div>
-            <div class="stat-val" style="font-size:16px;">${fmtMoney(totalNet)}</div>
-            <div class="stat-label">Tổng thực lĩnh</div>
-          </div>
-          <div class="stat-card" style="--stat-color:#F59E0B;--stat-bg:#FEF3C7;">
-            <div class="stat-icon-wrap">⚠️</div>
-            <div class="stat-val" style="font-size:16px;">${missingSalaryCount}</div>
-            <div class="stat-label">Thiếu cấu hình lương</div>
-          </div>
-        `;
+      const chartsEl = document.getElementById('payroll-charts-container');
+      const countEl = document.getElementById('payroll-filter-count');
+      if (countEl) {
+        countEl.textContent = `Hiển thị ${filtered.length} / ${payrolls.length} nhân sự`;
+      }
+
+      if (chartsEl) {
+        if (!payrolls.length) {
+          chartsEl.style.display = 'none';
+        } else {
+          chartsEl.style.display = 'grid';
+
+          // 1. Quỹ lương theo phòng ban
+          const deptColors = ['#EE4D2D', '#3B82F6', '#0B1F3A', '#10B981', '#8B5CF6', '#F59E0B', '#EC4899', '#14B8A6', '#6366F1'];
+          const deptMap = new Map();
+          payrolls.forEach(p => {
+            const dept = p.department || 'Chưa phân loại';
+            const net = (p.base_salary || 0) + (p.kpi_bonus || 0) + (p.allowance || 0) - (p.deduction || 0);
+            deptMap.set(dept, (deptMap.get(dept) || 0) + net);
+          });
+
+          const deptSlices = Array.from(deptMap.entries())
+            .sort((a, b) => b[1] - a[1])
+            .map(([dept, amount], idx) => ({
+              label: dept,
+              value: amount,
+              formattedValue: fmtMoney(amount),
+              color: deptColors[idx % deptColors.length],
+            }));
+
+          const totalDeptBudget = deptSlices.reduce((s, x) => s + x.value, 0);
+
+          const deptLegendHTML = deptSlices.map(s => {
+            const pct = totalDeptBudget > 0 ? ((s.value / totalDeptBudget) * 100).toFixed(1) : '0';
+            return `
+              <div class="payroll-legend-item" data-filter-dept="${esc(s.label)}" title="Lọc theo phòng ban ${esc(s.label)}">
+                <div class="payroll-legend-left">
+                  <span class="payroll-legend-dot" style="background:${s.color};"></span>
+                  <span class="payroll-legend-name">${esc(s.label)}</span>
+                </div>
+                <div class="payroll-legend-right">
+                  <span class="payroll-legend-percent">${pct}%</span>
+                  <span class="payroll-legend-val">${s.formattedValue}</span>
+                </div>
+              </div>
+            `;
+          }).join('');
+
+          // 2. Chuyên cần & Chấm công tháng (tính đến ngày hiện tại là 100%)
+          let attRecords = [];
+          try {
+            const [yearStr, monthStr] = month.split('-');
+            const attRes = await api.getAttendance({ month: monthStr, year: yearStr });
+            attRecords = attRes.attendance || [];
+          } catch (_) {}
+
+          const now = new Date();
+          const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+          const isCurMonth = month === `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+          const relevantAtt = attRecords.filter(a => {
+            if (isCurMonth && a.date > todayStr) return false;
+            return true;
+          });
+
+          let onTimeCount = 0;
+          let lateCount = 0;
+          let earlyCount = 0;
+          let leaveCount = 0;
+
+          relevantAtt.forEach(a => {
+            if (a.status === 'leave' || a.status === 'absent') {
+              leaveCount++;
+            } else if (Number(a.late_minutes || 0) > 0) {
+              lateCount++;
+            } else if (Number(a.early_minutes || 0) > 0) {
+              earlyCount++;
+            } else if (a.checkin_time && a.checkout_time) {
+              onTimeCount++;
+            } else if (a.checkin_time) {
+              onTimeCount++;
+            }
+          });
+
+          const totalAttEvents = onTimeCount + lateCount + earlyCount + leaveCount;
+          const onTimeRate = totalAttEvents > 0 ? Math.round((onTimeCount / totalAttEvents) * 100) : (relevantAtt.length ? 100 : 0);
+
+          const attSlices = [
+            { label: 'Đúng giờ', value: onTimeCount, formattedValue: `${onTimeCount} ca`, color: '#10B981' },
+            { label: 'Đi trễ', value: lateCount, formattedValue: `${lateCount} ca`, color: '#F59E0B' },
+            { label: 'Về sớm', value: earlyCount, formattedValue: `${earlyCount} ca`, color: '#EE4D2D' },
+            { label: 'Nghỉ / Phép', value: leaveCount, formattedValue: `${leaveCount} ca`, color: '#64748B' },
+          ];
+
+          const attLegendHTML = attSlices.map(s => {
+            const pct = totalAttEvents > 0 ? ((s.value / totalAttEvents) * 100).toFixed(1) : '0';
+            return `
+              <div class="payroll-legend-item">
+                <div class="payroll-legend-left">
+                  <span class="payroll-legend-dot" style="background:${s.color};"></span>
+                  <span class="payroll-legend-name">${esc(s.label)}</span>
+                </div>
+                <div class="payroll-legend-right">
+                  <span class="payroll-legend-percent">${pct}%</span>
+                  <span class="payroll-legend-val">${s.formattedValue}</span>
+                </div>
+              </div>
+            `;
+          }).join('');
+
+          chartsEl.innerHTML = `
+            <!-- Chart 1: Quỹ lương phòng ban -->
+            <div class="payroll-chart-card">
+              <div class="payroll-chart-header">
+                <div class="payroll-chart-title-wrap">
+                  <div class="payroll-chart-icon">${icon('banknote', 'sm')}</div>
+                  <div>
+                    <h3 class="payroll-chart-title">Quỹ lương theo phòng ban</h3>
+                    <p class="payroll-chart-sub">Tỷ lệ phân bổ chi phí tháng ${formatMonth(month)}</p>
+                  </div>
+                </div>
+                <span class="payroll-chart-badge">${fmtMoney(totalNet)}</span>
+              </div>
+              <div class="payroll-chart-body">
+                <div class="payroll-donut-wrap">
+                  ${renderDonutChartSVG(deptSlices, 'Tổng quỹ', fmtMoney(totalNet))}
+                </div>
+                <div class="payroll-legend-list">
+                  ${deptLegendHTML}
+                </div>
+              </div>
+            </div>
+
+            <!-- Chart 2: Chuyên cần trong tháng -->
+            <div class="payroll-chart-card">
+              <div class="payroll-chart-header">
+                <div class="payroll-chart-title-wrap">
+                  <div class="payroll-chart-icon payroll-chart-icon--emerald">${icon('clock3', 'sm')}</div>
+                  <div>
+                    <h3 class="payroll-chart-title">Chuyên cần & Chấm công</h3>
+                    <p class="payroll-chart-sub">Tỷ lệ đúng giờ tính đến hiện tại</p>
+                  </div>
+                </div>
+                <span class="payroll-chart-badge payroll-chart-badge--emerald">${onTimeRate}% đúng giờ</span>
+              </div>
+              <div class="payroll-chart-body">
+                <div class="payroll-donut-wrap">
+                  ${renderDonutChartSVG(attSlices, 'Đúng giờ', `${onTimeRate}%`)}
+                </div>
+                <div class="payroll-legend-list">
+                  ${attLegendHTML}
+                </div>
+              </div>
+              <div class="payroll-chart-footer-note">
+                * So sánh tính đến ${isCurMonth ? `hôm nay (${todayStr.split('-').reverse().slice(0,2).join('/')}) là 100% kỳ vọng` : `cuối tháng ${formatMonth(month)}`}.
+              </div>
+            </div>
+          `;
+
+          // Bind clicking on department legend to filter table
+          chartsEl.querySelectorAll('[data-filter-dept]').forEach(item => {
+            item.addEventListener('click', () => {
+              const deptName = item.getAttribute('data-filter-dept');
+              const select = document.getElementById('payroll-dept-filter');
+              if (select) {
+                select.value = select.value === deptName ? '' : deptName;
+                currentPage = 1;
+                loadPayroll({ keepStatus: true });
+              }
+            });
+          });
+        }
       }
 
       if (!payrolls.length) {
         if (statusEl && !options.keepStatus) statusEl.textContent = `Chưa có dữ liệu bảng lương tháng ${formatMonth(month)}.`;
         tableEl.innerHTML = `
           <div style="padding:48px 24px;text-align:center;">
-            <div style="font-size:42px;margin-bottom:12px;">📊</div>
+            <div style="width:56px;height:56px;margin:0 auto 16px;display:grid;place-items:center;background:#FFF5F2;color:var(--primary);border-radius:16px;">${icon('banknote', 'xl')}</div>
             <h3 style="font-size:16px;font-weight:800;margin:0 0 8px;color:var(--text);">Chưa khởi tạo bảng lương tháng ${formatMonth(month)}</h3>
             <p style="font-size:13.5px;color:var(--text-2);max-width:520px;margin:0 auto 18px;line-height:1.5;">
               Tháng này chưa có danh sách bảng lương. Bạn hãy nhấn nút bên dưới để hệ thống tự động tổng hợp danh sách <strong>toàn bộ nhân sự đang hoạt động</strong> và mức lương cấu hình.
             </p>
-            ${canEditPayroll ? `<button id="btn-empty-sync-payroll" class="btn-primary" style="padding:11px 22px;font-weight:700;font-size:14px;border-radius:10px;">🔄 Khởi tạo bảng lương tháng ${formatMonth(month)} ngay</button>` : ''}
+            ${canEditPayroll ? `<button id="btn-empty-sync-payroll" class="btn-primary" style="padding:11px 22px;font-weight:700;font-size:14px;border-radius:10px;">${icon('refreshCw', 'sm')} <span>Khởi tạo bảng lương tháng ${formatMonth(month)} ngay</span></button>` : ''}
           </div>
         `;
         document.getElementById('btn-empty-sync-payroll')?.addEventListener('click', openCreatePayrollBatchConfirm);
@@ -503,7 +729,7 @@ export async function renderPayroll(el, me) {
       }
       if (!filtered.length) {
         if (statusEl && !options.keepStatus) statusEl.textContent = `Không tìm thấy dòng lương phù hợp với bộ lọc.`;
-        tableEl.innerHTML = `<div style="padding:16px;">${emptyHTML('🔍', `Không có dòng lương phù hợp`, 'Thử đổi từ khóa tìm kiếm hoặc phòng ban')}</div>`;
+        tableEl.innerHTML = `<div style="padding:24px 16px;">${emptyHTML('🔍', `Không có dòng lương phù hợp`, 'Thử đổi từ khóa tìm kiếm hoặc chọn phòng ban khác')}</div>`;
         return;
       }
       if (statusEl && !options.keepStatus) statusEl.textContent = `Đã tải ${payrolls.length} dòng bảng lương tháng ${month}. Đang hiển thị ${filtered.length} dòng phù hợp.`;
@@ -515,9 +741,6 @@ export async function renderPayroll(el, me) {
               <col class="payroll-width-employee" />
               <col class="payroll-width-dept" />
               <col class="payroll-width-money" />
-              <col class="payroll-width-money" />
-              <col class="payroll-width-money" />
-              <col class="payroll-width-money" />
               <col class="payroll-width-net" />
             </colgroup>
             <thead>
@@ -525,9 +748,6 @@ export async function renderPayroll(el, me) {
                 <th class="payroll-col-employee">Nhân viên</th>
                 <th class="payroll-col-dept">Phòng ban</th>
                 <th class="payroll-col-money">Lương CB</th>
-                <th class="payroll-col-money">KPI Bonus</th>
-                <th class="payroll-col-money">Phụ cấp</th>
-                <th class="payroll-col-money">Khấu trừ</th>
                 <th class="payroll-col-money payroll-col-net">Thực lĩnh</th>
               </tr>
             </thead>

@@ -10,7 +10,7 @@ const TYPE_LABELS = {
   missing_documents: 'Hồ sơ còn thiếu',
   document_due: 'Tài liệu sắp hết hạn',
   attendance_late: 'Đi làm muộn',
-  attendance_checkout_late: 'Checkout trễ',
+  attendance_early: 'Đi về sớm',
   attendance_unexcused_absence: 'Vắng không có lý do',
 };
 

@@ -1,5 +1,6 @@
 import { api } from '../api.js';
 import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, paginationHTML, paginateRows, bindPagination } from '../utils.js';
+import { icon } from '../icons.js';
 
 const FALLBACK_TYPES = [
   { code:'annual', name:'Phép năm', paid_policy:'paid', deducts_annual_leave:1, short_description:'Dùng số ngày phép năm còn lại của bạn', policy_description:'Áp dụng cho nhu cầu nghỉ cá nhân và trừ vào số dư phép năm.' },
@@ -16,9 +17,9 @@ const paidLabel = type => type.paid_policy === 'unpaid' ? 'Không hưởng lươ
 const paidClass = type => type.paid_policy === 'unpaid' ? 'unpaid' : type.paid_policy === 'configurable' ? 'config' : 'paid';
 const sessionLabel = value => ({ full:'Cả ngày', morning:'Buổi sáng', afternoon:'Buổi chiều' })[value] || 'Cả ngày';
 const statusData = status => ({
-  pending: ['pending', '🟠 Chờ duyệt'],
-  approved: ['approved', '🟢 Đã duyệt'],
-  rejected: ['rejected', '🔴 Từ chối']
+  pending: ['pending', 'Chờ duyệt'],
+  approved: ['approved', 'Đã duyệt'],
+  rejected: ['rejected', 'Từ chối']
 }[status] || ['pending', status]);
 
 const daysBetween = (start, end, session = 'full') => {
@@ -112,45 +113,48 @@ export async function renderLeave(el, me) {
   const annualBalance = Number(userBalances.find(x => x.leave_type_code === 'annual')?.available_days ?? 12);
 
   el.innerHTML = `
-    <div class="page-header" style="margin-bottom:16px;">
-      <div class="page-header-left">
-        <div class="page-title" style="font-size:22px;font-weight:700;">🏖️ Nghỉ phép</div>
-        <div class="page-sub" style="font-size:13px;color:var(--text-2);margin-top:2px;">Quản lý đơn xin nghỉ, phê duyệt và theo dõi số dư phép</div>
+    <div class="page-header" style="margin-bottom:18px;">
+      <div class="leave-header-title-wrap">
+        <div class="leave-title-icon-badge">${icon('calendarDays', 'lg')}</div>
+        <div>
+          <h1 class="page-title">Nghỉ phép</h1>
+          <p class="page-sub">Quản lý đơn xin nghỉ, phê duyệt và theo dõi số dư phép</p>
+        </div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
         ${canConfigure ? `
-          <button id="leave-balance" class="btn-secondary btn-sm" title="Điều chỉnh số dư ngày nghỉ của nhân viên">⚖️ Số dư</button>
-          <button id="leave-policy" class="btn-secondary btn-sm" title="Cấu hình quy định các loại nghỉ phép">⚙️ Cấu hình</button>
+          <button id="leave-balance" class="btn-secondary btn-sm" title="Điều chỉnh số dư ngày nghỉ của nhân viên">${icon('tag', 'sm')} <span>Số dư</span></button>
+          <button id="leave-policy" class="btn-secondary btn-sm" title="Cấu hình quy định các loại nghỉ phép">${icon('settings', 'sm')} <span>Cấu hình</span></button>
         ` : ''}
-        <button id="btn-new-leave" class="btn-primary btn-sm">+ Tạo đơn nghỉ</button>
+        <button id="btn-new-leave" class="btn-primary btn-sm">${icon('plus', 'sm')} <span>Tạo đơn nghỉ</span></button>
       </div>
     </div>
 
     <!-- KPI Summary Metric Cards -->
     <div class="leave-metrics-grid" id="leave-metrics">
-      <div class="leave-metric-card" data-metric-status="pending">
-        <span class="leave-metric-icon pending">⏳</span>
+      <div class="leave-metric-card leave-metric-card--pending" data-metric-status="pending" title="Nhấn để lọc đơn chờ duyệt">
+        <div class="leave-metric-icon pending">${icon('clock3', 'lg')}</div>
         <div class="leave-metric-info">
           <span class="leave-metric-value" id="kpi-pending-val">0</span>
           <span class="leave-metric-label">Chờ duyệt</span>
         </div>
       </div>
-      <div class="leave-metric-card" data-metric-status="approved">
-        <span class="leave-metric-icon approved">✅</span>
+      <div class="leave-metric-card leave-metric-card--approved" data-metric-status="approved" title="Nhấn để lọc đơn đã duyệt">
+        <div class="leave-metric-icon approved">${icon('circleCheck', 'lg')}</div>
         <div class="leave-metric-info">
           <span class="leave-metric-value" id="kpi-approved-val">0</span>
           <span class="leave-metric-label">Đã duyệt</span>
         </div>
       </div>
-      <div class="leave-metric-card" data-metric-status="rejected">
-        <span class="leave-metric-icon rejected">❌</span>
+      <div class="leave-metric-card leave-metric-card--rejected" data-metric-status="rejected" title="Nhấn để lọc đơn từ chối">
+        <div class="leave-metric-icon rejected">${icon('circleX', 'lg')}</div>
         <div class="leave-metric-info">
           <span class="leave-metric-value" id="kpi-rejected-val">0</span>
           <span class="leave-metric-label">Từ chối</span>
         </div>
       </div>
-      <div class="leave-metric-card" id="kpi-fourth-card">
-        <span class="leave-metric-icon balance">📅</span>
+      <div class="leave-metric-card leave-metric-card--balance" id="kpi-fourth-card">
+        <div class="leave-metric-icon balance">${icon('bookmark', 'lg')}</div>
         <div class="leave-metric-info">
           <span class="leave-metric-value" id="kpi-fourth-val">${annualBalance}</span>
           <span class="leave-metric-label" id="kpi-fourth-label">Phép năm còn lại</span>
@@ -163,26 +167,34 @@ export async function renderLeave(el, me) {
       ${canReview ? `
         <div class="leave-scope-tabs" id="leave-scope-tabs">
           <button type="button" class="leave-scope-tab ${currentTab === 'mine' ? 'active' : ''}" data-tab="mine">
-            📌 Đơn của tôi
+            ${icon('pin', 'xs')} <span>Đơn của tôi</span>
           </button>
           <button type="button" class="leave-scope-tab ${currentTab === 'review' ? 'active' : ''}" data-tab="review">
-            📋 Duyệt đơn nhân viên
+            ${icon('clipboardCheck', 'xs')} <span>Duyệt đơn nhân viên</span>
             <span id="leave-pending-badge" class="leave-counter-pill hidden">0</span>
           </button>
         </div>
       ` : '<div></div>'}
 
-      <div style="font-size:12.5px;color:var(--text-3);padding-bottom:6px;">
+      <div style="font-size:12px;font-weight:600;color:var(--text-3);padding-bottom:6px;">
         Năm ${new Date().getFullYear()}
       </div>
     </div>
 
     <div class="leave-toolbar">
       <div class="leave-status-segmented" id="leave-status-filters">
-        <button type="button" class="leave-status-seg-btn ${currentStatus === '' ? 'active' : ''}" data-status="">Tất cả</button>
-        <button type="button" class="leave-status-seg-btn ${currentStatus === 'pending' ? 'active' : ''}" data-status="pending">🟠 Chờ duyệt</button>
-        <button type="button" class="leave-status-seg-btn ${currentStatus === 'approved' ? 'active' : ''}" data-status="approved">🟢 Đã duyệt</button>
-        <button type="button" class="leave-status-seg-btn ${currentStatus === 'rejected' ? 'active' : ''}" data-status="rejected">🔴 Từ chối</button>
+        <button type="button" class="leave-status-seg-btn ${currentStatus === '' ? 'active' : ''}" data-status="">
+          <span>Tất cả</span>
+        </button>
+        <button type="button" class="leave-status-seg-btn ${currentStatus === 'pending' ? 'active' : ''}" data-status="pending">
+          <span class="leave-seg-dot pending"></span><span>Chờ duyệt</span>
+        </button>
+        <button type="button" class="leave-status-seg-btn ${currentStatus === 'approved' ? 'active' : ''}" data-status="approved">
+          <span class="leave-seg-dot approved"></span><span>Đã duyệt</span>
+        </button>
+        <button type="button" class="leave-status-seg-btn ${currentStatus === 'rejected' ? 'active' : ''}" data-status="rejected">
+          <span class="leave-seg-dot rejected"></span><span>Từ chối</span>
+        </button>
       </div>
 
       <div class="leave-filters-right">
@@ -190,7 +202,10 @@ export async function renderLeave(el, me) {
           <option value="">Tất cả loại nghỉ</option>
           ${types.map(t => `<option value="${esc(t.code)}">${esc(t.name)}</option>`).join('')}
         </select>
-        <input id="leave-search" class="leave-search-input" placeholder="🔍 Tìm theo tên, mã NV, phòng ban, lý do..."/>
+        <div class="leave-search-wrap">
+          <span class="leave-search-icon">${icon('search', 'sm')}</span>
+          <input id="leave-search" class="leave-search-input" placeholder="Tìm theo tên, mã NV, phòng ban, lý do..."/>
+        </div>
       </div>
     </div>
 
@@ -378,7 +393,7 @@ export async function renderLeave(el, me) {
                       </td>
                     ` : ''}
                     <td>
-                      <div>
+                      <div class="leave-type-cell">
                         <div class="leave-type-pill">
                           <span>${esc(row.type_name || type.name || row.type)}</span>
                         </div>
@@ -389,7 +404,9 @@ export async function renderLeave(el, me) {
                     </td>
                     <td>
                       <div class="leave-period-text">
-                        ${esc(row.start_date)} → ${esc(row.end_date)}
+                        <span>${esc(row.start_date)}</span>
+                        <span style="color:var(--text-3);font-size:12px;">→</span>
+                        <span>${esc(row.end_date)}</span>
                       </div>
                       <div class="leave-period-sub">
                         ${sessionLabel(row.leave_session)} · <strong>${days} ngày</strong>
@@ -401,41 +418,46 @@ export async function renderLeave(el, me) {
                       </div>
                       ${row.handover_user_name ? `
                         <div class="leave-handover-text">
-                          🤝 Bàn giao: <strong>${esc(row.handover_user_name)}</strong>
+                          <span style="opacity:0.8;">🤝 Bàn giao:</span> <strong>${esc(row.handover_user_name)}</strong>
                         </div>
                       ` : ''}
                       ${docs.length ? `
-                        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:5px;">
+                        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;">
                           ${docs.map(doc => `
-                            <button type="button" class="btn-secondary btn-xs leave-doc-item-btn" data-leave-id="${row.id}" data-doc-id="${doc.id}" data-doc-name="${esc(doc.original_filename)}" data-doc-type="${esc(doc.content_type || '')}" style="display:inline-flex;align-items:center;gap:3px;padding:2px 7px;font-size:11px;border-radius:5px;cursor:pointer;">
-                              <span>📎</span> ${esc(doc.original_filename || 'Tệp')} <small style="color:var(--text-3);">(${formatDocSize(doc.byte_size)})</small>
+                            <button type="button" class="leave-doc-chip leave-doc-item-btn" data-leave-id="${row.id}" data-doc-id="${doc.id}" data-doc-name="${esc(doc.original_filename)}" data-doc-type="${esc(doc.content_type || '')}">
+                              ${icon('paperclip', 'xs')} <span>${esc(doc.original_filename || 'Tệp')}</span> <small style="color:var(--text-3);">(${formatDocSize(doc.byte_size)})</small>
                             </button>
                           `).join('')}
                         </div>
                       ` : (row.document_count ? `
-                        <div style="margin-top:5px;">
-                          <button type="button" class="btn-secondary btn-xs leave-doc-fetch-btn" data-leave-id="${row.id}" style="display:inline-flex;align-items:center;gap:3px;padding:2px 7px;font-size:11px;border-radius:5px;cursor:pointer;">
-                            <span>📎</span> Xem ${row.document_count} tệp
+                        <div style="margin-top:6px;">
+                          <button type="button" class="leave-doc-chip leave-doc-fetch-btn" data-leave-id="${row.id}">
+                            ${icon('paperclip', 'xs')} <span>Xem ${row.document_count} tệp</span>
                           </button>
                         </div>
                       ` : '')}
                     </td>
                     <td>
-                      <span class="leave-status-chip ${cls}">${label}</span>
-                      ${row.status === 'pending' && row.current_approver ? `
-                        <div style="font-size:11px;color:var(--text-3);margin-top:3px;">
-                          Chờ: <em>${esc(row.current_approver)}</em>
-                        </div>
-                      ` : ''}
+                      <div class="leave-status-cell">
+                        <span class="leave-status-chip ${cls}">
+                          <span class="leave-status-dot ${cls}"></span>
+                          <span>${label}</span>
+                        </span>
+                        ${row.status === 'pending' && row.current_approver ? `
+                          <div class="leave-approver-hint">
+                            Chờ: <em>${esc(row.current_approver)}</em>
+                          </div>
+                        ` : ''}
+                      </div>
                     </td>
                     <td>
                       <div class="leave-actions-cell">
                         ${row.can_action ? `
-                          <button class="btn-primary btn-xs leave-approve" data-id="${row.id}" title="Phê duyệt đơn">Duyệt</button>
-                          <button class="btn-secondary btn-xs leave-reject" data-id="${row.id}" title="Từ chối đơn" style="color:var(--danger);border-color:rgba(239,68,68,0.25);">Từ chối</button>
+                          <button class="btn-primary btn-xs leave-approve" data-id="${row.id}" title="Phê duyệt đơn">${icon('check', 'xs')} <span>Duyệt</span></button>
+                          <button class="btn-secondary btn-xs leave-reject" data-id="${row.id}" title="Từ chối đơn" style="color:var(--danger);border-color:rgba(239,68,68,0.25);">${icon('x', 'xs')} <span>Từ chối</span></button>
                         ` : ''}
                         ${isApplicant && row.status === 'pending' ? `
-                          <button class="btn-secondary btn-xs leave-delete" data-id="${row.id}" title="Hủy đơn xin nghỉ này">Hủy đơn</button>
+                          <button class="btn-secondary btn-xs leave-delete" data-id="${row.id}" title="Hủy đơn xin nghỉ này">${icon('trash2', 'xs')} <span>Hủy đơn</span></button>
                         ` : ''}
                       </div>
                     </td>
@@ -577,16 +599,16 @@ async function openLeaveForm(me, types, refresh = noop) {
         </select>
       </div>
       ${type ? `
-        <div class="card" style="padding:14px;margin:0 0 14px;border-color:rgba(79, 70, 229, 0.25);background:rgba(79, 70, 229, 0.03);">
-          <div style="display:flex;gap:7px;align-items:center;">
-            <strong style="font-size:14px;">${esc(type.name)}</strong>
+        <div class="card" style="padding:14px 16px;margin:0 0 16px;border-color:rgba(238, 77, 45, 0.2);background:rgba(238, 77, 45, 0.03);border-radius:12px;">
+          <div style="display:flex;gap:8px;align-items:center;">
+            <strong style="font-size:14px;color:var(--text);">${esc(type.name)}</strong>
             <span class="leave-paid-badge ${paidClass(type)}">${paidLabel(type)}</span>
           </div>
-          <div style="font-size:12.5px;color:var(--text-2);margin-top:6px;line-height:1.4;">
+          <div style="font-size:12.5px;color:var(--text-2);margin-top:6px;line-height:1.45;">
             ${esc(type.policy_description || type.short_description || 'Theo chính sách công ty.')}
           </div>
-          ${balanceCode ? `<div style="font-size:12.5px;margin-top:6px;">Số dư hiện có: <strong>${balanceOf(balanceCode)} ngày</strong></div>` : ''}
-          <div style="font-size:11.5px;color:var(--text-3);margin-top:5px;">
+          ${balanceCode ? `<div style="font-size:12.5px;color:var(--text);margin-top:6px;">Số dư hiện có: <strong style="color:var(--primary);">${balanceOf(balanceCode)} ngày</strong></div>` : ''}
+          <div style="font-size:11.5px;color:var(--text-3);margin-top:6px;padding-top:6px;border-top:1px dashed rgba(238,77,45,0.15);">
             Hồ sơ: ${esc(docText)} · Luồng duyệt: ${type.approval_flow === 'manager_hr_bgd' || type.requires_bod_approval ? 'Quản lý → HCNS → Ban Giám đốc' : 'Quản lý → HCNS'}${type.notice_hours != null ? ` · Báo trước ${type.notice_hours}h` : ''}
           </div>
         </div>
@@ -618,7 +640,7 @@ async function openLeaveForm(me, types, refresh = noop) {
       <div class="field">
         <label>Tài liệu đính kèm ${type?.requires_evidence ? '*' : ''}</label>
         <input type="file" id="lf-files" accept=".pdf,image/jpeg,image/png,image/webp" multiple/>
-        <div class="field-hint">PDF, JPG, PNG hoặc WebP; tối đa 10 MB mỗi tệp.</div>
+        <div class="field-hint" style="font-size:11px;color:var(--text-3);margin-top:3px;">PDF, JPG, PNG hoặc WebP; tối đa 10 MB mỗi tệp.</div>
       </div>
       <div class="field">
         <label>Người nhận bàn giao công việc</label>
@@ -629,7 +651,7 @@ async function openLeaveForm(me, types, refresh = noop) {
           `).join('')}
         </select>
       </div>
-      <div id="lf-total" style="text-align:center;padding:10px;background:var(--primary-light, rgba(79, 70, 229, 0.08));border-radius:8px;font-size:13px;font-weight:600;color:var(--primary);"></div>
+      <div id="lf-total" style="text-align:center;padding:12px;background:#FFF5F2;border:1px solid #FED7AA;border-radius:10px;font-size:13px;font-weight:700;color:var(--primary);"></div>
     `;
   };
 

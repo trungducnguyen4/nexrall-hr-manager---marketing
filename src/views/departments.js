@@ -1,5 +1,6 @@
 import { api } from '../api.js';
-import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, filterBySearch, paginateRows, paginationHTML, bindPagination } from '../utils.js';
+import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb } from '../utils.js';
+import { icon } from '../icons.js';
 
 const DEPT_COLORS = [
   '#6366F1', '#10B981', '#F59E0B', '#EF4444', '#3B82F6',
@@ -23,97 +24,207 @@ export async function renderDepartments(el, me) {
   const isAdmin = me.role === 'admin' || me.role === 'manager';
 
   el.innerHTML = `
-    <div class="page-header">
-      <div class="page-header-left">
-        <div class="page-title">🏢 Phòng ban</div>
-        <div class="page-sub">Cơ cấu tổ chức công ty marketing</div>
+    <section class="departments-page">
+      <!-- Header -->
+      <div class="departments-header">
+        <div class="departments-header-left">
+          <h1 class="departments-title">🏢 Phòng ban & Cơ cấu tổ chức</h1>
+          <p class="departments-sub">Quản lý sơ đồ phòng ban, trưởng bộ phận và phân bổ nhân sự toàn công ty</p>
+        </div>
+        ${isAdmin ? `<button id="btn-new-dept" class="btn-primary btn-sm dept-add-btn">${icon('plus', 'sm')} <span>Thêm phòng ban</span></button>` : ''}
       </div>
-      ${isAdmin ? '<button id="btn-new-dept" class="btn-primary btn-sm">+ Thêm phòng ban</button>' : ''}
-    </div>
 
-    <div class="search-bar" style="margin-bottom:12px;">
-      <span class="search-icon">🔍</span>
-      <input type="text" id="dept-search" placeholder="Tìm theo tên phòng ban, trưởng phòng..."/>
-    </div>
+      <!-- Top KPI Metrics -->
+      <div id="dept-metrics" class="dept-metrics-grid">
+        <div class="dept-metric-card dept-metric-skeleton"></div>
+        <div class="dept-metric-card dept-metric-skeleton"></div>
+        <div class="dept-metric-card dept-metric-skeleton"></div>
+        <div class="dept-metric-card dept-metric-skeleton"></div>
+      </div>
 
-    <div id="dept-list">${loadingHTML()}</div>
-    <div id="dept-employees" style="margin-top:20px;"></div>
+      <!-- Controls & Filter Toolbar -->
+      <div class="dept-toolbar">
+        <div class="dept-search-box">
+          <span class="dept-search-icon">${icon('search', 'sm')}</span>
+          <input type="text" id="dept-search" placeholder="Tìm theo tên phòng ban, trưởng phòng, nhân sự..."/>
+        </div>
+        <div class="dept-filter-tabs" id="dept-filter-tabs">
+          <button class="dept-filter-btn active" data-filter="all">Tất cả</button>
+          <button class="dept-filter-btn" data-filter="has-manager">Đã có trưởng phòng</button>
+          <button class="dept-filter-btn" data-filter="no-manager">Chưa có trưởng phòng</button>
+        </div>
+      </div>
+
+      <!-- Main Department Grid -->
+      <div id="dept-grid-container">${loadingHTML()}</div>
+
+      <!-- Unassigned Employees Section (if any) -->
+      <div id="dept-unassigned-section" class="dept-unassigned-wrap"></div>
+    </section>
   `;
 
   let currentDepts = [];
   let currentUsers = [];
-  let currentPage = 1;
+  let activeFilter = 'all';
 
   document.getElementById('btn-new-dept')?.addEventListener('click', () => openDeptForm(null, loadDepts, currentDepts, currentUsers));
+  
   document.getElementById('dept-search')?.addEventListener('input', () => {
-    currentPage = 1;
-    renderDeptList();
+    renderDeptDashboard();
+  });
+
+  document.getElementById('dept-filter-tabs')?.addEventListener('click', e => {
+    const btn = e.target.closest('[data-filter]');
+    if (btn) {
+      document.querySelectorAll('.dept-filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeFilter = btn.dataset.filter;
+      renderDeptDashboard();
+    }
   });
 
   async function loadDepts() {
-    const listEl = document.getElementById('dept-list');
-    if (!listEl) return;
-    listEl.innerHTML = loadingHTML();
+    const gridEl = document.getElementById('dept-grid-container');
+    if (!gridEl) return;
+    gridEl.innerHTML = loadingHTML();
     try {
       const [deptsRes, usersRes] = await Promise.allSettled([api.getDepartments(), api.getUsers()]);
       currentDepts = deptsRes.status === 'fulfilled'
         ? (deptsRes.value.departments || []).map(d => ({ ...d, manager: d.manager_name || d.manager || '' }))
         : [];
       currentUsers = usersRes.status === 'fulfilled' ? (usersRes.value.users || []) : [];
-      renderDeptList();
+      renderDeptDashboard();
     } catch (e) {
-      listEl.innerHTML = emptyHTML('⚠️', e.message);
+      gridEl.innerHTML = emptyHTML('⚠️', e.message);
     }
   }
 
-  function renderDeptList() {
-    const listEl = document.getElementById('dept-list');
-    const empEl = document.getElementById('dept-employees');
-    if (!listEl) return;
+  function renderDeptDashboard() {
+    const gridEl = document.getElementById('dept-grid-container');
+    const metricsEl = document.getElementById('dept-metrics');
+    const unassignedEl = document.getElementById('dept-unassigned-section');
+    if (!gridEl) return;
 
-    const filtered = filterBySearch(currentDepts, document.getElementById('dept-search')?.value || '', ['name', 'manager', 'manager_name', 'description']);
+    // Group users by department
+    const byDept = {};
+    const unassignedUsers = [];
+    currentUsers.forEach(u => {
+      if (u.department && u.department.trim()) {
+        const dName = u.department.trim();
+        if (!byDept[dName]) byDept[dName] = [];
+        byDept[dName].push(u);
+      } else {
+        unassignedUsers.push(u);
+      }
+    });
+
+    // Render Metrics
+    const totalDepts = currentDepts.length;
+    const totalAssignedUsers = currentUsers.length - unassignedUsers.length;
+    const deptsWithManager = currentDepts.filter(d => d.manager_id || (d.manager && d.manager.trim())).length;
+
+    if (metricsEl) {
+      metricsEl.innerHTML = `
+        <div class="dept-metric-card">
+          <div class="dept-metric-icon dept-metric-icon--blue">🏢</div>
+          <div class="dept-metric-data">
+            <span class="dept-metric-val">${totalDepts}</span>
+            <span class="dept-metric-lbl">Phòng ban hoạt động</span>
+          </div>
+        </div>
+        <div class="dept-metric-card">
+          <div class="dept-metric-icon dept-metric-icon--green">👥</div>
+          <div class="dept-metric-data">
+            <span class="dept-metric-val">${totalAssignedUsers}</span>
+            <span class="dept-metric-lbl">Nhân sự đã phân bổ</span>
+          </div>
+        </div>
+        <div class="dept-metric-card">
+          <div class="dept-metric-icon dept-metric-icon--purple">👔</div>
+          <div class="dept-metric-data">
+            <span class="dept-metric-val">${deptsWithManager} <small style="font-size:12px;font-weight:600;color:var(--text-3);">/ ${totalDepts}</small></span>
+            <span class="dept-metric-lbl">Đã bổ nhiệm trưởng phòng</span>
+          </div>
+        </div>
+        <div class="dept-metric-card ${unassignedUsers.length > 0 ? 'dept-metric-card--warn' : ''}">
+          <div class="dept-metric-icon ${unassignedUsers.length > 0 ? 'dept-metric-icon--amber' : 'dept-metric-icon--slate'}">
+            ${unassignedUsers.length > 0 ? '⚠️' : '✅'}
+          </div>
+          <div class="dept-metric-data">
+            <span class="dept-metric-val">${unassignedUsers.length}</span>
+            <span class="dept-metric-lbl">Chưa xếp phòng ban</span>
+          </div>
+        </div>
+      `;
+    }
+
+    // Filter departments
+    const query = (document.getElementById('dept-search')?.value || '').trim();
+    let filtered = currentDepts;
+
+    if (query) {
+      const qLower = query.toLowerCase();
+      filtered = filtered.filter(d => {
+        const dName = (d.name || '').toLowerCase();
+        const dMgr = (d.manager || d.manager_name || '').toLowerCase();
+        const dDesc = (d.description || '').toLowerCase();
+        const members = byDept[d.name] || [];
+        const memberMatch = members.some(m => (m.full_name || '').toLowerCase().includes(qLower));
+        return dName.includes(qLower) || dMgr.includes(qLower) || dDesc.includes(qLower) || memberMatch;
+      });
+    }
+
+    if (activeFilter === 'has-manager') {
+      filtered = filtered.filter(d => Boolean(d.manager_id || (d.manager && d.manager.trim())));
+    } else if (activeFilter === 'no-manager') {
+      filtered = filtered.filter(d => !d.manager_id && (!d.manager || !d.manager.trim()));
+    }
+
     if (!filtered.length) {
-      listEl.innerHTML = emptyHTML('🏢', 'Không tìm thấy phòng ban', isAdmin ? 'Nhấn + Thêm phòng ban để bắt đầu' : '');
-      if (empEl) empEl.innerHTML = '';
+      gridEl.innerHTML = emptyHTML('🏢', 'Không tìm thấy phòng ban phù hợp', isAdmin ? 'Nhấn “+ Thêm phòng ban” để tạo mới.' : '');
+      if (unassignedEl) unassignedEl.innerHTML = '';
       return;
     }
 
-    const countMap = {};
-    currentUsers.forEach(u => {
-      if (u.department) countMap[u.department] = (countMap[u.department] || 0) + 1;
-    });
-
-    const pageData = paginateRows(filtered, currentPage);
-    currentPage = pageData.page;
-    listEl.innerHTML = `
-      <div style="display:grid;grid-template-columns:1fr;gap:10px;">
-        ${pageData.rows.map(d => deptCardHTML(d, countMap[d.name] || 0, isAdmin)).join('')}
+    gridEl.innerHTML = `
+      <div class="dept-hub-grid">
+        ${filtered.map(d => deptHubCardHTML(d, byDept[d.name] || [], currentUsers, isAdmin)).join('')}
       </div>
-      ${paginationHTML(pageData)}
     `;
-    bindPagination(listEl, page => {
-      currentPage = page;
-      renderDeptList();
+
+    // Bind Expandable Members toggle
+    gridEl.querySelectorAll('[data-toggle-members]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const card = btn.closest('.dept-hub-card');
+        const list = card.querySelector('.dept-extra-members');
+        if (list) {
+          const isHidden = list.classList.toggle('hidden');
+          btn.innerHTML = isHidden 
+            ? `<span>+${btn.dataset.count} thành viên khác ▾</span>` 
+            : `<span>Thu gọn ▴</span>`;
+        }
+      });
     });
 
-    if (empEl) empEl.innerHTML = employeesByDeptHTML(currentUsers);
-
+    // Bind Edit and Delete buttons
     if (isAdmin) {
-      listEl.querySelectorAll('.dept-edit').forEach(btn => {
+      gridEl.querySelectorAll('.dept-hub-edit').forEach(btn => {
         btn.addEventListener('click', e => {
           e.stopPropagation();
           const d = currentDepts.find(x => x.id === parseInt(btn.dataset.did, 10));
           if (d) openDeptForm(d, loadDepts, currentDepts, currentUsers);
         });
       });
-      listEl.querySelectorAll('.dept-del').forEach(btn => {
+
+      gridEl.querySelectorAll('.dept-hub-del').forEach(btn => {
         btn.addEventListener('click', async e => {
           e.stopPropagation();
           const d = currentDepts.find(x => x.id === parseInt(btn.dataset.did, 10));
-          if (!d || !confirm(`Xóa phòng ban "${d.name}"?`)) return;
+          if (!d || !confirm(`Bạn có chắc chắn muốn xóa phòng ban "${d.name}"?`)) return;
           try {
             await api.deleteDepartment(d.id);
-            toast('Đã xóa phòng ban', 'success');
+            toast('Đã xóa phòng ban thành công', 'success');
             loadDepts();
           } catch (err) {
             toast(err.message, 'error');
@@ -121,70 +232,145 @@ export async function renderDepartments(el, me) {
         });
       });
     }
+
+    // Render Unassigned Employees Section
+    if (unassignedEl) {
+      if (unassignedUsers.length > 0) {
+        unassignedEl.innerHTML = `
+          <div class="dept-unassigned-card">
+            <div class="dept-unassigned-head">
+              <div class="dept-unassigned-title-group">
+                <span class="dept-unassigned-icon">⚠️</span>
+                <div>
+                  <h3 class="dept-unassigned-title">Nhân sự chưa phân bổ phòng ban (${unassignedUsers.length} người)</h3>
+                  <p class="dept-unassigned-sub">Nhấn vào nhân sự để cập nhật phòng ban công tác</p>
+                </div>
+              </div>
+            </div>
+            <div class="dept-unassigned-body">
+              <div class="dept-members-chip-list">
+                ${unassignedUsers.map(u => memberChipHTML(u, '#f59e0b')).join('')}
+              </div>
+            </div>
+          </div>
+        `;
+      } else {
+        unassignedEl.innerHTML = '';
+      }
+    }
   }
 
   loadDepts();
 }
 
-function deptCardHTML(d, empCount, isAdmin) {
-  const color = colorForDept(d.name);
-  const icon = iconForDept(d.name);
+function memberChipHTML(u, deptColor = '#6366F1') {
+  const avColor = u.avatar_color || colorForDept(u.full_name || 'NV');
+  const avInitials = u.avatar_initials || (u.full_name ? u.full_name.charAt(0) : 'NV');
   return `
-    <div class="dept-card" style="--dept-color:${color}" data-did="${d.id}">
-      <div style="display:flex;align-items:flex-start;gap:14px;">
-        <div style="width:48px;height:48px;border-radius:12px;background:${color}20;display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0;">${icon}</div>
-        <div style="flex:1;min-width:0;">
-          <div class="dept-card-name">${esc(d.name)}</div>
-          ${d.manager ? `<div style="font-size:12px;color:var(--text-2);margin-bottom:6px;">👤 Trưởng phòng: <strong>${esc(d.manager)}</strong></div>` : ''}
-          ${d.description ? `<div style="font-size:12px;color:var(--text-3);margin-bottom:8px;">${esc(d.description)}</div>` : ''}
-          <div class="dept-card-meta">
-            <span class="dept-card-stat" style="background:${color}15;padding:3px 8px;border-radius:6px;color:${color};font-weight:600;">👥 ${empCount} nhân viên</span>
-          </div>
-        </div>
-        ${isAdmin ? `
-          <div style="display:flex;gap:6px;flex-shrink:0;">
-            <button class="btn-xs btn-secondary dept-edit" data-did="${d.id}">✏️</button>
-            <button class="btn-xs btn-danger dept-del" data-did="${d.id}">🗑</button>
-          </div>
-        ` : ''}
+    <a href="#/users/${u.id}" class="dept-member-chip" title="Xem hồ sơ ${esc(u.full_name)}">
+      <span class="avatar avatar-xs" style="background:${esc(avColor)};">${esc(avInitials)}</span>
+      <div class="dept-member-chip-info">
+        <span class="dept-member-chip-name">${esc(u.full_name)}</span>
+        ${u.position ? `<span class="dept-member-chip-pos">${esc(u.position)}</span>` : ''}
       </div>
-    </div>
+    </a>
   `;
 }
 
-function employeesByDeptHTML(users) {
-  if (!users.length) return '';
-  const byDept = {};
-  users.forEach(u => {
-    const key = u.department || 'Không có phòng ban';
-    if (!byDept[key]) byDept[key] = [];
-    byDept[key].push(u);
-  });
+function deptHubCardHTML(d, members, allUsers, isAdmin) {
+  const color = colorForDept(d.name);
+  const iconChar = iconForDept(d.name);
+  const memberCount = members.length;
+  
+  // Find manager object if available
+  let managerObj = null;
+  if (d.manager_id) {
+    managerObj = allUsers.find(u => Number(u.id) === Number(d.manager_id));
+  }
+  const managerName = managerObj ? managerObj.full_name : (d.manager || d.manager_name || '');
+  const managerPos = managerObj ? (managerObj.position || 'Trưởng phòng') : 'Trưởng phòng';
+  const managerAvColor = managerObj?.avatar_color || color;
+  const managerAvInitials = managerObj?.avatar_initials || (managerName ? managerName.charAt(0) : 'TP');
+
+  const INITIAL_SHOW = 6;
+  const initialMembers = members.slice(0, INITIAL_SHOW);
+  const remainingMembers = members.slice(INITIAL_SHOW);
 
   return `
-    <div class="section-title">Nhân viên theo phòng ban</div>
-    ${Object.entries(byDept).map(([dept, members]) => {
-      const color = colorForDept(dept);
-      return `
-        <div class="card" style="margin-bottom:12px;">
-          <div class="card-header">
-            <div class="card-title" style="color:${color}">${iconForDept(dept)} ${esc(dept)}</div>
-            <span class="badge" style="background:${color}20;color:${color};">${members.length} người</span>
+    <div class="dept-hub-card" style="--dept-theme-color:${color}" data-did="${d.id}">
+      <!-- Card Header -->
+      <div class="dept-hub-header">
+        <div class="dept-hub-identity">
+          <div class="dept-hub-icon-box" style="background:${color}18; color:${color};">
+            ${iconChar}
           </div>
-          <div style="display:flex;flex-wrap:wrap;gap:8px;">
-            ${members.map(u => `
-              <div style="display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 10px;">
-                <div class="avatar avatar-sm" style="background:${esc(u.avatar_color || color)}">${esc(u.avatar_initials || u.full_name.charAt(0))}</div>
-                <div>
-                  <div style="font-size:12px;font-weight:600;color:var(--text);">${esc(u.full_name)}</div>
-                  <div style="font-size:11px;color:var(--text-3);">${esc(u.position || '—')}</div>
-                </div>
-              </div>
-            `).join('')}
+          <div class="dept-hub-title-box">
+            <h2 class="dept-hub-name">${esc(d.name)}</h2>
+            ${d.description ? `<p class="dept-hub-desc" title="${esc(d.description)}">${esc(d.description)}</p>` : `<p class="dept-hub-desc dept-hub-desc--empty">Chưa có mô tả chức năng</p>`}
           </div>
         </div>
-      `;
-    }).join('')}
+
+        ${isAdmin ? `
+          <div class="dept-hub-actions print-hidden">
+            <button class="dept-hub-action-btn dept-hub-edit" data-did="${d.id}" title="Chỉnh sửa phòng ban" aria-label="Chỉnh sửa">${icon('pencil', 'xs')}</button>
+            <button class="dept-hub-action-btn dept-hub-del dept-hub-action-btn--danger" data-did="${d.id}" title="Xóa phòng ban" aria-label="Xóa">${icon('trash2', 'xs')}</button>
+          </div>
+        ` : ''}
+      </div>
+
+      <!-- Manager Row -->
+      <div class="dept-hub-manager-strip">
+        ${managerName ? `
+          <div class="dept-hub-manager-info">
+            <span class="avatar avatar-sm dept-hub-mgr-avatar" style="background:${esc(managerAvColor)};">${esc(managerAvInitials)}</span>
+            <div class="dept-hub-mgr-details">
+              <div class="dept-hub-mgr-header">
+                <span class="dept-hub-mgr-name">${esc(managerName)}</span>
+                <span class="dept-hub-mgr-tag">Trưởng bộ phận</span>
+              </div>
+              <span class="dept-hub-mgr-sub">${esc(managerPos)}</span>
+            </div>
+          </div>
+        ` : `
+          <div class="dept-hub-manager-unassigned">
+            <span class="dept-hub-unassigned-icon">👤</span>
+            <span class="dept-hub-unassigned-text">Chưa bổ nhiệm trưởng phòng</span>
+          </div>
+        `}
+      </div>
+
+      <!-- Members Section -->
+      <div class="dept-hub-members-section">
+        <div class="dept-hub-members-head">
+          <span class="dept-hub-members-title">
+            👥 Danh sách nhân sự
+          </span>
+          <span class="dept-hub-member-badge" style="background:${color}15; color:${color};">
+            ${memberCount} thành viên
+          </span>
+        </div>
+
+        ${memberCount === 0 ? `
+          <div class="dept-hub-empty-members">
+            Chưa có nhân sự nào trong phòng ban này
+          </div>
+        ` : `
+          <div class="dept-members-chip-list">
+            ${initialMembers.map(u => memberChipHTML(u, color)).join('')}
+          </div>
+          ${remainingMembers.length > 0 ? `
+            <div class="dept-extra-members hidden">
+              <div class="dept-members-chip-list" style="margin-top:6px;">
+                ${remainingMembers.map(u => memberChipHTML(u, color)).join('')}
+              </div>
+            </div>
+            <button type="button" class="dept-more-members-btn" data-toggle-members data-count="${remainingMembers.length}">
+              <span>+${remainingMembers.length} thành viên khác ▾</span>
+            </button>
+          ` : ''}
+        `}
+      </div>
+    </div>
   `;
 }
 
@@ -195,22 +381,26 @@ function openDeptForm(dept, onRefresh = noop, existingDepts = [], users = []) {
     const label = `${u.full_name}${u.department ? ' - ' + u.department : ''}${u.position ? ' (' + u.position + ')' : ''}`;
     return `<option value="${u.id}" ${Number(dept?.manager_id) === Number(u.id) ? 'selected' : ''}>${esc(label)}</option>`;
   }).join('');
-  openModal(isEdit ? 'Sửa phòng ban' : 'Thêm phòng ban', `
-    <div class="field"><label>Tên phòng ban *</label>
-      <input type="text" id="df-name" value="${esc(dept?.name || '')}" placeholder="Nhập tên phòng ban"/>
+
+  openModal(isEdit ? 'Sửa thông tin phòng ban' : 'Thêm phòng ban mới', `
+    <div class="field">
+      <label>Tên phòng ban *</label>
+      <input type="text" id="df-name" value="${esc(dept?.name || '')}" placeholder="Ví dụ: Phòng Marketing, Phòng Kỹ thuật..."/>
     </div>
-    <div class="field"><label>Trưởng phòng</label>
+    <div class="field">
+      <label>Trưởng bộ phận / Quản lý</label>
       <select id="df-manager-id">
-        <option value="">-- Chưa chọn --</option>
+        <option value="">-- Chưa bổ nhiệm trưởng phòng --</option>
         ${managerOptions}
       </select>
     </div>
-    <div class="field"><label>Mô tả</label>
-      <textarea id="df-desc" rows="3" placeholder="Mô tả hoạt động của phòng ban...">${esc(dept?.description || '')}</textarea>
+    <div class="field">
+      <label>Mô tả chức năng & nhiệm vụ</label>
+      <textarea id="df-desc" rows="3" placeholder="Mô tả chức năng hoạt động, nhiệm vụ của phòng ban...">${esc(dept?.description || '')}</textarea>
     </div>
   `, `
     <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Hủy</button>
-    <button class="btn-primary" id="df-save">Lưu</button>
+    <button class="btn-primary" id="df-save">Lưu phòng ban</button>
   `);
 
   const deptNormKey = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -246,7 +436,7 @@ function openDeptForm(dept, onRefresh = noop, existingDepts = [], users = []) {
       if (isEdit) await api.updateDepartment(dept.id, data);
       else await api.createDepartment(data);
       closeModal();
-      toast(isEdit ? 'Đã cập nhật phòng ban' : 'Đã tạo phòng ban', 'success');
+      toast(isEdit ? 'Đã cập nhật phòng ban' : 'Đã tạo phòng ban thành công', 'success');
       onRefresh();
     } catch (e) {
       toast(e.message, 'error');
