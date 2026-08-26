@@ -48,8 +48,8 @@
 
   <link rel="canonical" href="https://nexrall-hr-manager-marketing.netviettv-hr-manager.workers.dev/"/>
 
-  <link rel="stylesheet" href="/styles/main.css?v=20260826-mobile-menu-sidebar-v16"/>
-  <link rel="stylesheet" href="/styles/chat.css?v=20260826-mobile-menu-sidebar-v16"/>
+  <link rel="stylesheet" href="/styles/main.css?v=20260826-bottom-nav-interact-v18"/>
+  <link rel="stylesheet" href="/styles/chat.css?v=20260826-bottom-nav-interact-v18"/>
 </head>
 <body>
 
@@ -218,6 +218,62 @@
     <!-- Content -->
     <main id="content"></main>
   </div>
+
+  <!-- Mobile Bottom Navigation Bar (5 tabs) -->
+  <nav id="bottom-nav" class="bottom-nav" aria-label="Điều hướng chính di động">
+    <a href="#/dashboard" class="bottom-nav-item" data-bottom-nav="dashboard" aria-label="Trang chủ">
+      <div class="bottom-nav-icon-wrap">
+        <svg class="bottom-nav-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+          <polyline points="9 22 9 12 15 12 15 22"></polyline>
+        </svg>
+      </div>
+      <span class="bottom-nav-label">Trang chủ</span>
+    </a>
+
+    <a href="#/attendance" class="bottom-nav-item" data-bottom-nav="attendance" aria-label="Chấm công">
+      <div class="bottom-nav-icon-wrap">
+        <svg class="bottom-nav-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"></circle>
+          <polyline points="12 6 12 12 16.5 12"></polyline>
+        </svg>
+      </div>
+      <span class="bottom-nav-label">Chấm công</span>
+    </a>
+
+    <a href="#/users" class="bottom-nav-item" data-bottom-nav="users" aria-label="Nhân sự">
+      <div class="bottom-nav-icon-wrap">
+        <svg class="bottom-nav-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+          <circle cx="9" cy="7" r="4"></circle>
+          <path d="M22 21v-2a4 4 0 0 0-3-3.87"></path>
+          <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+        </svg>
+      </div>
+      <span class="bottom-nav-label">Nhân sự</span>
+    </a>
+
+    <a href="#/notifications" class="bottom-nav-item" data-bottom-nav="notifications" aria-label="Thông báo">
+      <div class="bottom-nav-icon-wrap">
+        <svg class="bottom-nav-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10.27 21a2 2 0 0 0 3.46 0"></path>
+          <path d="M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.6 14.06 18 12.22 18 8a6 6 0 0 0-12 0c0 4.22-1.6 6.06-2.74 7.33"></path>
+        </svg>
+        <span id="bottom-nav-notif-badge" class="bottom-nav-badge hidden">0</span>
+      </div>
+      <span class="bottom-nav-label">Thông báo</span>
+    </a>
+
+    <a id="bottom-nav-profile-link" href="#/users" class="bottom-nav-item" data-bottom-nav="profile" aria-label="Cá nhân">
+      <div class="bottom-nav-icon-wrap">
+        <svg class="bottom-nav-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="8" r="5"></circle>
+          <path d="M20 21a8 8 0 0 0-16 0"></path>
+        </svg>
+      </div>
+      <span class="bottom-nav-label">Cá nhân</span>
+    </a>
+  </nav>
 </div>
 
 <!-- ═══════════════════ MODAL ═══════════════════ -->
@@ -249,7 +305,7 @@
 
 <link rel="stylesheet" href="/src/vendor/cropperjs/cropper.min.css?v=1.6.2">
 <script src="/src/vendor/cropperjs/cropper.min.js?v=1.6.2"></script>
-  <script type="module" src="/src/app.js?v=20260826-mobile-menu-sidebar-v16"></script>
+  <script type="module" src="/src/app.js?v=20260826-bottom-nav-interact-v18"></script>
 <script defer src="/src/pwa-register.js?v=pwa-v8"></script>
 </body>
 </html>

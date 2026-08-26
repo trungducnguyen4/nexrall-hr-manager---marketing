@@ -137,15 +137,23 @@ async function boot() {
 async function refreshEmployeeAlertBadge() {
   const iconHost = document.getElementById('employee-alert-icon');
   const countHost = document.getElementById('employee-alert-count');
+  const bottomBadge = document.getElementById('bottom-nav-notif-badge');
   if (iconHost && !iconHost.firstElementChild) iconHost.innerHTML = icon('bell', 'sm');
-  if (!countHost) return;
   try {
     const response = await api.getNotifications({ window: 30, page: 1, page_size: 10 });
     const count = Number(response.active_total || 0);
-    countHost.textContent = count > 99 ? '99+' : String(count);
-    countHost.classList.toggle('hidden', count < 1);
+    const badgeText = count > 99 ? '99+' : String(count);
+    if (countHost) {
+      countHost.textContent = badgeText;
+      countHost.classList.toggle('hidden', count < 1);
+    }
+    if (bottomBadge) {
+      bottomBadge.textContent = badgeText;
+      bottomBadge.classList.toggle('hidden', count < 1);
+    }
   } catch (_) {
-    countHost.classList.add('hidden');
+    if (countHost) countHost.classList.add('hidden');
+    if (bottomBadge) bottomBadge.classList.add('hidden');
   }
 }
 
@@ -274,6 +282,8 @@ function initApp() {
   document.getElementById('sidebar-role').textContent = roleLabel(me.role);
   setAvatar(document.getElementById('header-av'), me.full_name, me.avatar_color, me.avatar_initials, me.avatar_url);
   document.getElementById('sidebar-profile-link').href = `#/users/${me.id}`;
+  const bottomProfileLink = document.getElementById('bottom-nav-profile-link');
+  if (bottomProfileLink) bottomProfileLink.href = `#/users/${me.id}`;
 
   // Admin nav visibility
   const isManager = me.role === 'admin' || me.role === 'manager' || isHcnsDepartment(me.department);
@@ -310,6 +320,16 @@ function initApp() {
   document.getElementById('sidebar-overlay')?.addEventListener('click', closeMobileSidebar);
   document.getElementById('header-av-btn')?.addEventListener('click', () => navigate(`#/users/${me.id}`));
   document.getElementById('sidebar-profile-link')?.addEventListener('click', closeMobileSidebar);
+  document.querySelectorAll('.bottom-nav-item').forEach(link => {
+    link.addEventListener('click', (e) => {
+      closeMobileSidebar();
+      const href = link.getAttribute('href');
+      if (href) {
+        e.preventDefault();
+        navigate(href);
+      }
+    });
+  });
   document.addEventListener('hr-avatar-updated', event => {
     const { userId, url } = event.detail || {};
     if (Number(userId) !== Number(me?.id)) return;
@@ -526,6 +546,20 @@ const iconObserver = new MutationObserver(mutations => {
 });
 iconObserver.observe(document.documentElement, { childList: true, subtree: true });
 
+function syncBottomNav(hash, path, segments) {
+  const isSelfProfile = path === 'users' && segments[1] && String(segments[1]) === String(me?.id);
+  let activeNav = '';
+  if (path === 'dashboard') activeNav = 'dashboard';
+  else if (path === 'attendance') activeNav = 'attendance';
+  else if (path === 'notifications') activeNav = 'notifications';
+  else if (isSelfProfile) activeNav = 'profile';
+  else if (path === 'users') activeNav = 'users';
+
+  document.querySelectorAll('.bottom-nav-item[data-bottom-nav]').forEach(item => {
+    item.classList.toggle('active', item.dataset.bottomNav === activeNav);
+  });
+}
+
 // ════════════════════════════════════════════════
 //  ROUTER  (DOM-level view cache)
 // ════════════════════════════════════════════════
@@ -539,6 +573,8 @@ async function route() {
   document.querySelectorAll('.nav-item[data-nav]').forEach(link => {
     link.classList.toggle('active', link.dataset.nav === path);
   });
+
+  syncBottomNav(hash, path, segments);
 
   // Keep exactly one route view in the DOM. Views contain repeated element IDs
   // and some legacy global selectors; retaining hidden route DOM lets events
@@ -663,11 +699,7 @@ export function openMobileSidebar() {
   overlay?.classList.add('active');
 }
 
-export function closeMobileSidebar(e) {
-  if (e) {
-    e.preventDefault?.();
-    e.stopPropagation?.();
-  }
+export function closeMobileSidebar() {
   const sidebar = document.getElementById('sidebar');
   const overlay = document.getElementById('sidebar-overlay');
   sidebar?.classList.remove('open');

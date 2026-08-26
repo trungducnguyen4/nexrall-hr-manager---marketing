@@ -5850,4 +5850,144 @@ html.native-private body::after { content: 'NetViet HR'; position: fixed; inset:
     font-size: 14px;
     border-radius: 12px;
   }
+
+  /* Mobile Content Bottom Clearance for Bottom Nav */
+  #content {
+    padding-bottom: calc(82px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  /* ── Mobile Bottom Navigation Bar ── */
+  .bottom-nav {
+    position: fixed !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    z-index: 99 !important;
+    display: flex !important;
+    align-items: stretch !important;
+    justify-content: space-around !important;
+    height: calc(60px + env(safe-area-inset-bottom, 0px)) !important;
+    padding-bottom: env(safe-area-inset-bottom, 0px) !important;
+    background: rgba(255, 255, 255, 0.98) !important;
+    backdrop-filter: blur(16px) !important;
+    -webkit-backdrop-filter: blur(16px) !important;
+    border-top: 1px solid rgba(226, 232, 240, 0.9) !important;
+    box-shadow: 0 -4px 20px rgba(11, 31, 58, 0.08) !important;
+    user-select: none !important;
+  }
+
+  .bottom-nav-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    min-height: 48px;
+    padding: 4px 2px;
+    text-decoration: none;
+    color: #64748B;
+    position: relative;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    cursor: pointer;
+    pointer-events: auto;
+    transition: color 0.15s ease, transform 0.1s ease;
+  }
+
+  .bottom-nav-item:active {
+    transform: scale(0.92);
+  }
+
+  .bottom-nav-icon-wrap,
+  .bottom-nav-icon,
+  .bottom-nav-label {
+    pointer-events: none;
+  }
+
+  .bottom-nav-icon-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 24px;
+  }
+
+  .bottom-nav-icon {
+    width: 22px;
+    height: 22px;
+    stroke: currentColor;
+    transition: stroke 0.15s ease;
+  }
+
+  .bottom-nav-label {
+    font-size: 11px;
+    line-height: 14px;
+    font-weight: 500;
+    letter-spacing: -0.1px;
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: currentColor;
+    transition: color 0.15s ease, font-weight 0.15s ease;
+  }
+
+  /* Active tab state */
+  .bottom-nav-item.active {
+    color: var(--primary, #EE4D2D);
+  }
+
+  .bottom-nav-item.active .bottom-nav-label {
+    font-weight: 700;
+    color: var(--primary, #EE4D2D);
+  }
+
+  .bottom-nav-item.active .bottom-nav-icon {
+    stroke: var(--primary, #EE4D2D);
+    stroke-width: 2.2px;
+  }
+
+  .bottom-nav-item.active::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 24px;
+    height: 3px;
+    border-radius: 0 0 3px 3px;
+    background: var(--primary, #EE4D2D);
+  }
+
+  /* Notification count badge */
+  .bottom-nav-badge {
+    position: absolute;
+    top: -4px;
+    right: -8px;
+    min-width: 17px;
+    height: 17px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: var(--primary, #EE4D2D);
+    color: #FFFFFF;
+    font-size: 9px;
+    font-weight: 800;
+    line-height: 15px;
+    text-align: center;
+    border: 1.5px solid #FFFFFF;
+    box-shadow: 0 1px 4px rgba(238, 77, 45, 0.4);
+    pointer-events: none;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .bottom-nav-badge.hidden {
+    display: none !important;
+  }
+}
+
+/* Default (Desktop / Tablet > 768px): Hide Bottom Nav */
+.bottom-nav {
+  display: none;
 }
