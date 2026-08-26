@@ -5,6 +5,7 @@ import { api, setToken, loadToken, clearCache } from './api.js?v=20260817-geofen
 import { initNativeShell, verifyBiometricIfAvailable } from './native.js';
 import { setAvatar, toast, initials, avatarColor, closeModal, isHcnsDepartment } from './utils.js?v=20260811-hr-access-v1';
 import { icon } from './icons.js';
+import { playChatSound, playMentionSound, playTaskSound } from './sound.js';
 
 // ── Lazy view imports ───────────────────────────
 let _viewModules = {};
@@ -28,7 +29,7 @@ async function getView(name) {
     else if (name === 'notifications') _viewModules[name] = await import('./views/notifications.js?v=20260826-notification-tabs-count-v15');
     else if (name === 'assets')      _viewModules[name] = await import('./views/assets.js?v=20260804-project-handover-v1');
     else if (name === 'db-admin')    _viewModules[name] = await import('./views/dbadmin.js');
-    else if (name === 'chat')        _viewModules[name] = await import('./views/chat.js?v=20260826-chat-image-lightbox-v11');
+    else if (name === 'chat')        _viewModules[name] = await import('./views/chat.js?v=20260826-audio-notification-chimes-v20');
   }
   return _viewModules[name];
 }
@@ -157,13 +158,22 @@ async function refreshEmployeeAlertBadge() {
   }
 }
 
+let _lastTaskMentionCount = null;
+let _lastChatUnreadCount = null;
+let _lastChatMentionKey = null;
+
 async function refreshTaskMentionBadge() {
   const badge = document.getElementById('task-mention-badge');
   if (!badge) return;
   try {
     const { count = 0 } = await api.getUnreadMentionCount();
-    badge.textContent = count > 99 ? '99+' : String(count);
-    badge.classList.toggle('hidden', count < 1);
+    const numCount = Number(count || 0);
+    if (_lastTaskMentionCount !== null && numCount > _lastTaskMentionCount) {
+      playTaskSound();
+    }
+    _lastTaskMentionCount = numCount;
+    badge.textContent = numCount > 99 ? '99+' : String(numCount);
+    badge.classList.toggle('hidden', numCount < 1);
   } catch (_) {}
 }
 
@@ -229,7 +239,25 @@ async function refreshChatHeaderSummary() {
   try {
     const summary = await api.get('/api/chat/header-summary');
     if (!me || Number(me.id) !== Number(userIdAtStart)) return;
-    setChatUnreadBadge(summary.unread_count);
+    const unread = Number(summary.unread_count || 0);
+    const mention = summary.mention;
+    const mentionKey = mention ? `${mention.conversation_id}:${mention.message_id}` : null;
+
+    if (mentionKey && mentionKey !== _lastChatMentionKey) {
+      if (_lastChatMentionKey !== null) {
+        playMentionSound();
+      }
+      _lastChatMentionKey = mentionKey;
+    } else if (!mentionKey) {
+      _lastChatMentionKey = null;
+    }
+
+    if (_lastChatUnreadCount !== null && unread > _lastChatUnreadCount && !mentionKey) {
+      playChatSound();
+    }
+    _lastChatUnreadCount = unread;
+
+    setChatUnreadBadge(unread);
     setChatAttention(summary);
   } catch (_) {
     // Keep the last known header state when a transient request fails.

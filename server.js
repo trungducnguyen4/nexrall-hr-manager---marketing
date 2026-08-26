@@ -447,11 +447,20 @@ export async function migrate(env) {
   try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN data_warnings TEXT'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN source_synced_at TEXT'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN overtime_pay REAL DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN approved_overtime_minutes INTEGER DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN paid_leave_days REAL DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN absent_days REAL DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN late_days INTEGER DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN late_minutes INTEGER DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN early_leave_minutes INTEGER DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN missing_checkinout_days INTEGER DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN tax REAL DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN insurance REAL DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN work_days REAL DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN standard_days REAL DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE payroll ADD COLUMN note TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN approved_overtime_minutes INTEGER DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE invoices ADD COLUMN overtime_pay REAL DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE candidates ADD COLUMN cv_storage_key TEXT'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE candidates ADD COLUMN cv_original_filename TEXT'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE candidates ADD COLUMN cv_content_type TEXT'); } catch (_) {}
@@ -2802,14 +2811,17 @@ function rateLimit(request, scope, limit, windowMs) {
 async function buildMonthlyOvertimeSummary(env, userId, month, year, baseSalary = 0) {
   const mm = String(month).padStart(2, '0');
   const { results: legacyResults = [] } = await env.DB.prepare(
-    "SELECT work_date, approved_minutes FROM overtime_requests WHERE user_id=? AND status='approved' AND strftime('%m',work_date)=? AND strftime('%Y',work_date)=?"
-  ).bind(userId, mm, String(year)).all();
+    "SELECT work_date, COALESCE(approved_minutes, requested_minutes, 0) AS approved_minutes FROM overtime_requests WHERE (user_id=? OR CAST(user_id AS TEXT)=CAST(? AS TEXT)) AND status='approved' AND strftime('%m',work_date)=? AND strftime('%Y',work_date)=?"
+  ).bind(userId, userId, mm, String(year)).all();
   const { results: formResults = [] } = await env.DB.prepare(
-    `SELECT substr(i.start_at,1,10) AS work_date,i.approved_minutes,i.time_category
+    `SELECT substr(i.start_at,1,10) AS work_date,
+            COALESCE(NULLIF(i.approved_minutes, 0), i.requested_minutes, 0) AS approved_minutes,
+            i.time_category
        FROM overtime_form_items i JOIN overtime_forms f ON f.id=i.form_id
-      WHERE f.user_id=? AND f.status IN ('approved','partially_approved')
+      WHERE (f.user_id=? OR CAST(f.user_id AS TEXT)=CAST(? AS TEXT))
+        AND f.status IN ('approved','partially_approved')
         AND strftime('%m',substr(i.start_at,1,10))=? AND strftime('%Y',substr(i.start_at,1,10))=?`
-  ).bind(userId, mm, String(year)).all();
+  ).bind(userId, userId, mm, String(year)).all();
   const { results: holidays = [] } = await env.DB.prepare(
     "SELECT holiday_date FROM company_holidays WHERE is_active=1 AND strftime('%m',holiday_date)=? AND strftime('%Y',holiday_date)=?"
   ).bind(mm, String(year)).all();
@@ -2829,12 +2841,24 @@ async function buildMonthlyOvertimeSummary(env, userId, month, year, baseSalary 
 }
 
 async function refreshInvoiceOvertime(env, userId, month, year, actor = null) {
+  const mm = String(month).padStart(2, '0');
+  const monthKey = `${year}-${mm}`;
+  const user = await env.DB.prepare('SELECT salary FROM users WHERE id=?').bind(userId).first();
+  const baseSalary = Number(user?.salary || 0);
+  const ot = await buildMonthlyOvertimeSummary(env, userId, month, year, baseSalary);
+
   const invoice = await env.DB.prepare('SELECT * FROM invoices WHERE user_id=? AND month=? AND year=? ORDER BY id DESC LIMIT 1').bind(userId, month, year).first();
-  if (!invoice) return null;
-  const ot = await buildMonthlyOvertimeSummary(env, userId, month, year, invoice.base_salary);
-  const net = Number(invoice.base_salary || 0) + Number(invoice.bonus || 0) + Number(invoice.allowance || 0) + ot.overtimePay - Number(invoice.deduction || 0) - Number(invoice.tax || 0) - Number(invoice.insurance || 0);
-  await env.DB.prepare('UPDATE invoices SET approved_overtime_minutes=?,overtime_pay=?,net_salary=? WHERE id=?').bind(ot.approvedOvertimeMinutes, ot.overtimePay, net, invoice.id).run();
-  if (actor) await env.DB.prepare('INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)').bind(invoice.id, invoice.status, invoice.status, actor.id, actor.full_name || '', `Overtime approval recalculated: ${ot.approvedOvertimeHours.toFixed(2)}h`).run();
+  if (invoice) {
+    const net = Number(invoice.base_salary || baseSalary) + Number(invoice.bonus || 0) + Number(invoice.allowance || 0) + ot.overtimePay - Number(invoice.deduction || 0) - Number(invoice.tax || 0) - Number(invoice.insurance || 0);
+    await env.DB.prepare('UPDATE invoices SET approved_overtime_minutes=?,overtime_pay=?,net_salary=? WHERE id=?').bind(ot.approvedOvertimeMinutes, ot.overtimePay, net, invoice.id).run();
+    if (actor) await env.DB.prepare('INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)').bind(invoice.id, invoice.status, invoice.status, actor.id, actor.full_name || '', `Overtime approval recalculated: ${ot.approvedOvertimeHours.toFixed(2)}h`).run();
+  }
+
+  const payroll = await env.DB.prepare('SELECT * FROM payroll WHERE employee_id=? AND month=? LIMIT 1').bind(userId, monthKey).first();
+  if (payroll) {
+    const pNet = Number(payroll.base_salary || baseSalary) + Number(payroll.kpi_bonus || 0) + Number(payroll.allowance || 0) + ot.overtimePay - Number(payroll.deduction || 0) - Number(payroll.tax || 0) - Number(payroll.insurance || 0);
+    await env.DB.prepare('UPDATE payroll SET approved_overtime_minutes=?,overtime_pay=?,net_salary=? WHERE id=?').bind(ot.approvedOvertimeMinutes, ot.overtimePay, pNet, payroll.id).run();
+  }
   return ot;
 }
 
@@ -7697,6 +7721,9 @@ const attendanceRateTo =
     if (batch && ['locked','paid'].includes(String(batch.status || '').toLowerCase())) {
       return json({ error: 'Bang luong thang nay da khoa, khong the dong bo du lieu.' }, 409);
     }
+    const [yearStr, mmStr] = month.split('-');
+    const year = Number(yearStr);
+    const invMonth = Number(mmStr);
     const { results: users = [] } = await env.DB.prepare(
       'SELECT id,employee_code,full_name,department,salary FROM users WHERE is_active=1 ORDER BY id'
     ).all();
@@ -7706,9 +7733,11 @@ const attendanceRateTo =
       const base = Number(u.salary || 0);
       const status = base > 0 ? 'ready' : 'missing_salary_config';
       const warnings = base > 0 ? '' : 'Thiếu cấu hình lương';
+      const workSummary = await buildMonthlyWorkSummary(env, u.id, invMonth, year);
+      const overtime = await buildMonthlyOvertimeSummary(env, u.id, invMonth, year, base);
       if (base > 0) {
         ready++;
-        estimatedTotal += base;
+        estimatedTotal += (base + overtime.overtimePay);
       } else {
         missingSalary++;
       }
@@ -7718,15 +7747,16 @@ const attendanceRateTo =
         const kpi = Number(existing.kpi_bonus || 0);
         const allowance = Number(existing.allowance || 0);
         const deduction = Number(existing.deduction || 0);
-        const net = base + kpi + allowance - deduction;
+        const net = base + kpi + allowance + overtime.overtimePay - deduction;
         await env.DB.prepare(
-          "UPDATE payroll SET user_id=?,employee_name=?,employee_code=?,department=?,base_salary=?,net_salary=?,data_status=?,data_warnings=?,source_synced_at=datetime('now','localtime') WHERE id=?"
-        ).bind(String(me.id), u.full_name || '', u.employee_code || '', u.department || '', base, net, status, warnings, existing.id).run();
+          `UPDATE payroll SET user_id=?,employee_name=?,employee_code=?,department=?,base_salary=?,kpi_bonus=?,allowance=?,deduction=?,overtime_pay=?,approved_overtime_minutes=?,work_days=?,standard_days=?,paid_leave_days=?,absent_days=?,late_days=?,late_minutes=?,early_leave_minutes=?,missing_checkinout_days=?,net_salary=?,data_status=?,data_warnings=?,source_synced_at=datetime('now','localtime') WHERE id=?`
+        ).bind(String(me.id), u.full_name || '', u.employee_code || '', u.department || '', base, kpi, allowance, deduction, overtime.overtimePay, overtime.approvedOvertimeMinutes, workSummary.actualWorkDays, workSummary.standardWorkDays, workSummary.paidLeaveDays, workSummary.absentDays, workSummary.lateDays, workSummary.lateMinutes, workSummary.earlyLeaveMinutes, workSummary.incompleteDays, net, status, warnings, existing.id).run();
         updated++;
       } else {
+        const net = base + overtime.overtimePay;
         await env.DB.prepare(
-          "INSERT INTO payroll (user_id,employee_id,employee_name,employee_code,department,month,base_salary,kpi_bonus,allowance,deduction,net_salary,data_status,data_warnings,source_synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))"
-        ).bind(String(me.id), u.id, u.full_name || '', u.employee_code || '', u.department || '', month, base, 0, 0, 0, base, status, warnings).run();
+          `INSERT INTO payroll (user_id,employee_id,employee_name,employee_code,department,month,base_salary,kpi_bonus,allowance,deduction,overtime_pay,approved_overtime_minutes,work_days,standard_days,paid_leave_days,absent_days,late_days,late_minutes,early_leave_minutes,missing_checkinout_days,net_salary,data_status,data_warnings,source_synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))`
+        ).bind(String(me.id), u.id, u.full_name || '', u.employee_code || '', u.department || '', month, base, 0, 0, 0, overtime.overtimePay, overtime.approvedOvertimeMinutes, workSummary.actualWorkDays, workSummary.standardWorkDays, workSummary.paidLeaveDays, workSummary.absentDays, workSummary.lateDays, workSummary.lateMinutes, workSummary.earlyLeaveMinutes, workSummary.incompleteDays, net, status, warnings).run();
         created++;
       }
     }
@@ -7829,8 +7859,9 @@ const attendanceRateTo =
         const bonus = Number(p.kpi_bonus || 0);
         const allowance = Number(p.allowance || 0);
         const deduction = Number(p.deduction || 0);
-        const net = Number(p.net_salary || (base + bonus + allowance - deduction));
         const workSummary = await buildMonthlyWorkSummary(env, employeeId, invMonth, year);
+        const overtime = await buildMonthlyOvertimeSummary(env, employeeId, invMonth, year, base);
+        const net = Number(base + bonus + allowance + overtime.overtimePay - deduction);
         const existing = await env.DB.prepare(
           'SELECT * FROM invoices WHERE payroll_id=? OR (user_id=? AND month=? AND year=?) ORDER BY id DESC LIMIT 1'
         ).bind(p.id, employeeId, invMonth, year).first();
@@ -7844,7 +7875,8 @@ const attendanceRateTo =
         if (existing) {
           const fromStatus = existing.status || null;
           await env.DB.prepare(
-            `UPDATE invoices SET payroll_id=?,base_salary=?,bonus=?,allowance=?,deduction=?,tax=0,insurance=0,net_salary=?,
+            `UPDATE invoices SET payroll_id=?,base_salary=?,bonus=?,allowance=?,deduction=?,tax=0,insurance=0,
+               approved_overtime_minutes=?,overtime_pay=?,net_salary=?,
                work_days=?,absent_days=?,late_days=?,standard_days=?,paid_leave_days=?,late_minutes=?,early_leave_minutes=?,missing_checkinout_days=?,
                status='issued',issued_at=datetime('now','localtime'),issued_by=?,issued_by_name=?,
                review_resolved_at=CASE WHEN status='review_requested' THEN datetime('now','localtime') ELSE review_resolved_at END,
@@ -7852,7 +7884,8 @@ const attendanceRateTo =
                review_note=CASE WHEN status='review_requested' THEN 'Reissued from payroll' ELSE review_note END
              WHERE id=?`
           ).bind(
-            p.id, base, bonus, allowance, deduction, net,
+            p.id, base, bonus, allowance, deduction,
+            overtime.approvedOvertimeMinutes, overtime.overtimePay, net,
             workSummary.actualWorkDays, workSummary.absentDays, workSummary.lateDays,
             workSummary.standardWorkDays, workSummary.paidLeaveDays, workSummary.lateMinutes,
             workSummary.earlyLeaveMinutes, workSummary.incompleteDays,
@@ -7867,11 +7900,13 @@ const attendanceRateTo =
         } else {
           const invNum = await nextInvoiceNumber(env, year, invMonth);
           const r = await env.DB.prepare(
-            `INSERT INTO invoices (invoice_number,user_id,month,year,base_salary,bonus,allowance,deduction,tax,insurance,net_salary,
+            `INSERT INTO invoices (invoice_number,user_id,month,year,base_salary,bonus,allowance,deduction,tax,insurance,
+               approved_overtime_minutes,overtime_pay,net_salary,
                work_days,absent_days,late_days,standard_days,paid_leave_days,late_minutes,early_leave_minutes,missing_checkinout_days,
                status,note,payroll_id,issued_at,issued_by,issued_by_name,review_status)
              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'),?,?,'none')`
-          ).bind(invNum, employeeId, invMonth, year, base, bonus, allowance, deduction, 0, 0, net,
+          ).bind(invNum, employeeId, invMonth, year, base, bonus, allowance, deduction, 0, 0,
+            overtime.approvedOvertimeMinutes, overtime.overtimePay, net,
             workSummary.actualWorkDays, workSummary.absentDays, workSummary.lateDays,
             workSummary.standardWorkDays, workSummary.paidLeaveDays, workSummary.lateMinutes,
             workSummary.earlyLeaveMinutes, workSummary.incompleteDays,

@@ -31,13 +31,15 @@ function recordValues(record) {
   const insurance = number(record.insurance);
   const standardDays = number(record.standard_days);
   const workDays = number(record.work_days);
-  const incomeFromWork = standardDays > 0 && workDays > 0
-    ? Math.round(base * Math.min(workDays, standardDays) / standardDays)
+  const paidLeaveDays = number(record.paid_leave_days);
+  const effectiveDays = workDays + paidLeaveDays;
+  const incomeFromWork = standardDays > 0 && effectiveDays > 0
+    ? Math.round(base * Math.min(effectiveDays, standardDays) / standardDays)
     : base;
   const totalIncome = incomeFromWork + overtime + allowance + bonus;
   const calculatedNet = totalIncome - deduction - tax - insurance;
   return {
-    base, bonus, allowance, overtime, deduction, tax, insurance, standardDays, workDays,
+    base, bonus, allowance, overtime, deduction, tax, insurance, standardDays, workDays, paidLeaveDays,
     incomeFromWork, totalIncome,
     net: record.net_salary === undefined || record.net_salary === null ? calculatedNet : number(record.net_salary),
   };

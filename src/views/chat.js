@@ -7,6 +7,7 @@ import { api } from '../api.js';
 import { navigate } from '../app.js';
 import { esc, toast, openModal, closeModal, loadingHTML } from '../utils.js';
 import { icon } from '../icons.js';
+import { playChatSound, playMentionSound } from '../sound.js';
 
 let conversations = [];
 let activeConvId = null;
@@ -1687,6 +1688,20 @@ function connectWS(convId) {
           ws.close();
         }
       } else if (data.type === 'message:new') {
+        const msg = data.message;
+        if (msg && Number(msg.sender_id) !== Number(me?.id)) {
+          const isMentioned = Boolean(
+            msg.mention_all ||
+            (Array.isArray(msg.mentions) && msg.mentions.some(m => Number(m.user_id || m.id) === Number(me?.id))) ||
+            (Array.isArray(msg.mention_ids) && msg.mention_ids.some(id => Number(id) === Number(me?.id))) ||
+            (msg.content && me?.full_name && msg.content.toLowerCase().includes(`@${me.full_name.toLowerCase()}`))
+          );
+          if (isMentioned) {
+            playMentionSound();
+          } else {
+            playChatSound();
+          }
+        }
         if (Number(data.message.conversation_id) === activeConvId) {
           if (!messages.find(m => m.id === data.message.id)) {
             messages.push(data.message);
