@@ -28,6 +28,20 @@ function payrollMoney(value, ready) {
   return fmtMoney(n);
 }
 
+function getDeptIcon(deptName) {
+  const name = String(deptName || '').toLowerCase();
+  if (name.includes('gameshow') || name.includes('game')) return '🎬';
+  if (name.includes('giám đốc') || name.includes('bgd') || name.includes('ban giám đốc')) return '👑';
+  if (name.includes('marketing') || name.includes('truyền thông')) return '📣';
+  if (name.includes('biên tập') || name.includes('nội dung') || name.includes('content')) return '📝';
+  if (name.includes('hcns') || name.includes('nhân sự') || name.includes('hành chính')) return '👥';
+  if (name.includes('kế toán') || name.includes('tài chính')) return '💰';
+  if (name.includes('tạp vụ') || name.includes('bảo vệ')) return '🛡️';
+  if (name.includes('kỹ thuật') || name.includes('it') || name.includes('dev')) return '💻';
+  if (name.includes('sản xuất') || name.includes('phim trường')) return '🎥';
+  return '🏢';
+}
+
 function renderDonutChartSVG(slices, centerTitle, centerVal) {
   const total = slices.reduce((sum, s) => sum + Math.max(0, Number(s.value || 0)), 0);
   const size = 160;
@@ -144,8 +158,12 @@ export async function renderPayroll(el, me) {
     </div>
     <div id="payroll-load-status" class="payroll-status-note"></div>
 
-    <!-- Interactive Donut Charts Grid (Budget by Dept & Attendance Breakdown) -->
-    <div id="payroll-charts-container" class="payroll-charts-grid"></div>
+    <!-- Interactive Charts Grid (Dumbbell Chart, Budget by Dept & Attendance Breakdown) -->
+    <div id="payroll-charts-container" class="payroll-charts-grid">
+      <div class="payroll-chart-card payroll-dumbbell-card" style="min-height:220px;display:flex;align-items:center;justify-content:center;color:var(--text-3);font-size:13px;">Đang tính toán so sánh % Nhân sự ↔ % Quỹ lương...</div>
+      <div class="payroll-chart-card" style="min-height:220px;display:flex;align-items:center;justify-content:center;color:var(--text-3);font-size:13px;">Đang tính toán phân bổ ngân sách...</div>
+      <div class="payroll-chart-card" style="min-height:220px;display:flex;align-items:center;justify-content:center;color:var(--text-3);font-size:13px;">Đang tính toán cơ cấu chấm công...</div>
+    </div>
 
     <!-- Adjustments Suggestion Panel -->
     <div id="payroll-adjustments"></div>
@@ -550,28 +568,117 @@ export async function renderPayroll(el, me) {
         } else {
           chartsEl.style.display = 'grid';
 
-          // 1. Quỹ lương theo phòng ban
-          const deptColors = ['#EE4D2D', '#3B82F6', '#0B1F3A', '#10B981', '#8B5CF6', '#F59E0B', '#EC4899', '#14B8A6', '#6366F1'];
+          // 1. Dumbbell Chart: So sánh % Nhân sự ↔ % Quỹ lương theo phòng ban
           const deptMap = new Map();
+          let totalHeadcount = 0;
+          let totalPayrollBudget = 0;
+
           payrolls.forEach(p => {
             const dept = p.department || 'Chưa phân loại';
             const net = (p.base_salary || 0) + (p.kpi_bonus || 0) + (p.allowance || 0) - (p.deduction || 0);
-            deptMap.set(dept, (deptMap.get(dept) || 0) + net);
+            if (!deptMap.has(dept)) {
+              deptMap.set(dept, { count: 0, totalNet: 0 });
+            }
+            const entry = deptMap.get(dept);
+            entry.count += 1;
+            entry.totalNet += net;
+            totalHeadcount += 1;
+            totalPayrollBudget += net;
           });
 
-          const deptSlices = Array.from(deptMap.entries())
-            .sort((a, b) => b[1] - a[1])
-            .map(([dept, amount], idx) => ({
-              label: dept,
-              value: amount,
-              formattedValue: fmtMoney(amount),
-              color: deptColors[idx % deptColors.length],
-            }));
+          const dumbbellRows = Array.from(deptMap.entries()).map(([dept, data]) => {
+            const empPct = totalHeadcount > 0 ? (data.count / totalHeadcount) * 100 : 0;
+            const budgetPct = totalPayrollBudget > 0 ? (data.totalNet / totalPayrollBudget) * 100 : 0;
+            const delta = budgetPct - empPct;
+            const avgSalary = data.count > 0 ? data.totalNet / data.count : 0;
+            return {
+              dept,
+              icon: getDeptIcon(dept),
+              count: data.count,
+              totalNet: data.totalNet,
+              avgSalary,
+              empPct,
+              budgetPct,
+              delta,
+            };
+          }).sort((a, b) => b.totalNet - a.totalNet);
 
-          const totalDeptBudget = deptSlices.reduce((s, x) => s + x.value, 0);
+          const rawMax = Math.max(...dumbbellRows.map(r => Math.max(r.empPct, r.budgetPct)), 25);
+          const scaleMax = Math.min(100, Math.max(35, Math.ceil((rawMax * 1.25) / 5) * 5));
+
+          const dumbbellRowsHTML = dumbbellRows.map(r => {
+            const minVal = Math.min(r.empPct, r.budgetPct);
+            const maxVal = Math.max(r.empPct, r.budgetPct);
+            const leftPercent = (minVal / scaleMax) * 100;
+            const widthPercent = Math.max(1.5, ((maxVal - minVal) / scaleMax) * 100);
+
+            const empLeft = (r.empPct / scaleMax) * 100;
+            const budgetLeft = (r.budgetPct / scaleMax) * 100;
+
+            let barClass = 'bar-even';
+            let deltaClass = 'delta-even';
+            let deltaLabel = `${r.delta.toFixed(1)}%`;
+            let tooltipNote = 'Mức chi trả tương xứng quy mô nhân sự';
+
+            if (r.delta > 0.4) {
+              barClass = 'bar-high';
+              deltaClass = 'delta-high';
+              deltaLabel = `+${r.delta.toFixed(1)}%`;
+              tooltipNote = 'Lương bình quân cao hơn mặt bằng chung toàn công ty';
+            } else if (r.delta < -0.4) {
+              barClass = 'bar-low';
+              deltaClass = 'delta-low';
+              deltaLabel = `${r.delta.toFixed(1)}%`;
+              tooltipNote = 'Lương bình quân thấp hơn mặt bằng chung toàn công ty';
+            }
+
+            return `
+              <div class="payroll-dumbbell-row" data-filter-dept="${esc(r.dept)}" title="${esc(r.dept)}: ${tooltipNote}. Bấm để lọc bảng lương.">
+                <div class="dumbbell-td dumbbell-td-dept">
+                  <span class="dumbbell-dept-icon">${r.icon}</span>
+                  <div class="dumbbell-dept-info">
+                    <span class="dumbbell-dept-name">${esc(r.dept)}</span>
+                    <span class="dumbbell-dept-meta">${r.count} nhân sự · TB: ${fmtMoney(r.avgSalary)}</span>
+                  </div>
+                </div>
+                <div class="dumbbell-td dumbbell-td-visual">
+                  <div class="dumbbell-track">
+                    <div class="dumbbell-grid-marks">
+                      <span class="dumbbell-mark" style="left: 0%"></span>
+                      <span class="dumbbell-mark" style="left: 25%"></span>
+                      <span class="dumbbell-mark" style="left: 50%"></span>
+                      <span class="dumbbell-mark" style="left: 75%"></span>
+                      <span class="dumbbell-mark" style="left: 100%"></span>
+                    </div>
+                    <div class="dumbbell-bar ${barClass}" style="left: ${leftPercent.toFixed(1)}%; width: ${widthPercent.toFixed(1)}%;"></div>
+                    <div class="dumbbell-dot dumbbell-dot-emp" style="left: ${empLeft.toFixed(1)}%;" title="👤 Nhân sự: ${r.empPct.toFixed(1)}% (${r.count} người)">
+                      <span class="dumbbell-dot-badge">👤 ${r.empPct.toFixed(1)}%</span>
+                    </div>
+                    <div class="dumbbell-dot dumbbell-dot-budget" style="left: ${budgetLeft.toFixed(1)}%;" title="💰 Quỹ lương: ${r.budgetPct.toFixed(1)}% (${fmtMoney(r.totalNet)})">
+                      <span class="dumbbell-dot-badge">💰 ${r.budgetPct.toFixed(1)}%</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="dumbbell-td dumbbell-td-delta">
+                  <span class="dumbbell-delta-tag ${deltaClass}">
+                    ${deltaLabel}
+                  </span>
+                </div>
+              </div>
+            `;
+          }).join('');
+
+          // 2. Quỹ lương theo phòng ban (Donut Chart)
+          const deptColors = ['#EE4D2D', '#3B82F6', '#0B1F3A', '#10B981', '#8B5CF6', '#F59E0B', '#EC4899', '#14B8A6', '#6366F1'];
+          const deptSlices = dumbbellRows.map((r, idx) => ({
+            label: r.dept,
+            value: r.totalNet,
+            formattedValue: fmtMoney(r.totalNet),
+            color: deptColors[idx % deptColors.length],
+          }));
 
           const deptLegendHTML = deptSlices.map(s => {
-            const pct = totalDeptBudget > 0 ? ((s.value / totalDeptBudget) * 100).toFixed(1) : '0';
+            const pct = totalPayrollBudget > 0 ? ((s.value / totalPayrollBudget) * 100).toFixed(1) : '0';
             return `
               <div class="payroll-legend-item" data-filter-dept="${esc(s.label)}" title="Lọc theo phòng ban ${esc(s.label)}">
                 <div class="payroll-legend-left">
@@ -586,7 +693,7 @@ export async function renderPayroll(el, me) {
             `;
           }).join('');
 
-          // 2. Chuyên cần & Chấm công tháng (tính đến ngày hiện tại là 100%)
+          // 3. Chuyên cần & Chấm công tháng (tính đến ngày hiện tại là 100%)
           let attRecords = [];
           try {
             const [yearStr, monthStr] = month.split('-');
@@ -649,7 +756,42 @@ export async function renderPayroll(el, me) {
           }).join('');
 
           chartsEl.innerHTML = `
-            <!-- Chart 1: Quỹ lương phòng ban -->
+            <!-- Chart 1: Dumbbell Chart: % Nhân sự ↔ % Quỹ lương theo phòng ban -->
+            <div class="payroll-chart-card payroll-dumbbell-card">
+              <div class="payroll-chart-header">
+                <div class="payroll-chart-title-wrap">
+                  <div class="payroll-chart-icon" style="background:#EFF6FF;color:#2563EB;">${icon('chartLine', 'sm') || '📊'}</div>
+                  <div>
+                    <h3 class="payroll-chart-title">So sánh % Nhân sự ↔ % Quỹ lương</h3>
+                    <p class="payroll-chart-sub">Dumbbell Chart tương quan quy mô nhân sự & chi phí tháng ${formatMonth(month)}</p>
+                  </div>
+                </div>
+                <div class="payroll-dumbbell-legend">
+                  <span class="payroll-dumbbell-legend-item"><span class="dumbbell-legend-dot dumbbell-legend-dot--emp"></span> 👤 % Nhân sự</span>
+                  <span class="payroll-dumbbell-legend-item"><span class="dumbbell-legend-dot dumbbell-legend-dot--budget"></span> 💰 % Quỹ lương</span>
+                </div>
+              </div>
+
+              <div class="payroll-dumbbell-table">
+                <div class="payroll-dumbbell-thead">
+                  <div class="dumbbell-th dumbbell-th-dept">Phòng ban</div>
+                  <div class="dumbbell-th dumbbell-th-visual">
+                    <span>% Nhân sự ↔ % Quỹ lương</span>
+                    <span class="dumbbell-scale-label">0% → ${scaleMax}%</span>
+                  </div>
+                  <div class="dumbbell-th dumbbell-th-delta">Chênh lệch</div>
+                </div>
+                <div class="payroll-dumbbell-tbody">
+                  ${dumbbellRowsHTML}
+                </div>
+              </div>
+
+              <div class="payroll-chart-footer-note">
+                * <strong>Chênh lệch</strong> = % Quỹ lương − % Nhân sự. Giá trị <strong>(+)</strong> biểu thị lương bình quân phòng ban cao hơn mức trung bình chung toàn công ty.
+              </div>
+            </div>
+
+            <!-- Chart 2: Quỹ lương theo phòng ban (Donut Chart) -->
             <div class="payroll-chart-card">
               <div class="payroll-chart-header">
                 <div class="payroll-chart-title-wrap">
@@ -671,7 +813,7 @@ export async function renderPayroll(el, me) {
               </div>
             </div>
 
-            <!-- Chart 2: Chuyên cần trong tháng -->
+            <!-- Chart 3: Chuyên cần & Chấm công (Donut Chart) -->
             <div class="payroll-chart-card">
               <div class="payroll-chart-header">
                 <div class="payroll-chart-title-wrap">

@@ -110,7 +110,10 @@ export async function renderLeave(el, me) {
     if (bData.balances) userBalances = bData.balances;
   } catch (_) {}
 
-  const annualBalance = Number(userBalances.find(x => x.leave_type_code === 'annual')?.available_days ?? 12);
+  const isOfficial = me?.employee_type !== 'TTS' && me?.lifecycle_status !== 'Thử việc' && me?.lifecycle_status !== 'Thực tập' && me?.lifecycle_status !== 'Chờ tiếp nhận' && me?.contract_type !== 'Thử việc' && me?.contract_type !== 'Thỏa thuận TTS';
+  const defaultAnnual = isOfficial ? 12 : 0;
+  const userAnnualRecord = userBalances.find(x => x.leave_type_code === 'annual');
+  const annualBalance = userAnnualRecord ? Number(userAnnualRecord.available_days) : defaultAnnual;
 
   el.innerHTML = `
     <div class="page-header" style="margin-bottom:18px;">
@@ -580,9 +583,15 @@ export async function renderLeave(el, me) {
 async function openLeaveForm(me, types, refresh = noop) {
   refresh = safeCb(refresh);
   const today = new Date().toISOString().slice(0,10);
+  const isOfficial = me?.employee_type !== 'TTS' && me?.lifecycle_status !== 'Thử việc' && me?.lifecycle_status !== 'Thực tập' && me?.lifecycle_status !== 'Chờ tiếp nhận' && me?.contract_type !== 'Thử việc' && me?.contract_type !== 'Thỏa thuận TTS';
   const { balances = [] } = await api.getLeaveBalances({ year: new Date().getFullYear() }).catch(() => ({ balances: [] }));
   const { users = [] } = await api.getUsersBasic().catch(() => ({ users: [] }));
-  const balanceOf = code => Number(balances.find(x => x.leave_type_code === code)?.available_days || 0);
+  const balanceOf = code => {
+    const rec = balances.find(x => x.leave_type_code === code);
+    if (rec) return Number(rec.available_days || 0);
+    if (code === 'annual') return isOfficial ? 12 : 0;
+    return 0;
+  };
 
   const render = selectedCode => {
     const type = types.find(x => x.code === selectedCode);
@@ -595,7 +604,11 @@ async function openLeaveForm(me, types, refresh = noop) {
         <label>Loại nghỉ phép *</label>
         <select id="lf-type">
           <option value="">Chọn loại nghỉ phép phù hợp</option>
-          ${types.map(x => `<option value="${esc(x.code)}" ${x.code===selectedCode?'selected':''}>${esc(x.name)} — ${paidLabel(x)}</option>`).join('')}
+          ${types.map(x => {
+            const isAnnualType = x.code === 'annual' || x.deducts_annual_leave;
+            const suffix = !isOfficial && isAnnualType ? ' (Chỉ dành cho NV chính thức)' : ` — ${paidLabel(x)}`;
+            return `<option value="${esc(x.code)}" ${x.code===selectedCode?'selected':''}>${esc(x.name)}${suffix}</option>`;
+          }).join('')}
         </select>
       </div>
       ${type ? `
@@ -607,7 +620,11 @@ async function openLeaveForm(me, types, refresh = noop) {
           <div style="font-size:12.5px;color:var(--text-2);margin-top:6px;line-height:1.45;">
             ${esc(type.policy_description || type.short_description || 'Theo chính sách công ty.')}
           </div>
-          ${balanceCode ? `<div style="font-size:12.5px;color:var(--text);margin-top:6px;">Số dư hiện có: <strong style="color:var(--primary);">${balanceOf(balanceCode)} ngày</strong></div>` : ''}
+          ${!isOfficial && balanceCode === 'annual' ? `
+            <div style="font-size:12px;color:#d97706;margin-top:8px;padding:8px 12px;background:#FEF3C7;border-radius:8px;font-weight:600;line-height:1.4;">
+              ⚠️ Chế độ phép năm chỉ áp dụng cho nhân viên chính thức (12 ngày/năm). Thực tập sinh và nhân viên thử việc vui lòng chọn hình thức nghỉ khác (ví dụ: Nghỉ không lương).
+            </div>
+          ` : balanceCode ? `<div style="font-size:12.5px;color:var(--text);margin-top:6px;">Số dư hiện có: <strong style="color:var(--primary);">${balanceOf(balanceCode)} ngày</strong></div>` : ''}
           <div style="font-size:11.5px;color:var(--text-3);margin-top:6px;padding-top:6px;border-top:1px dashed rgba(238,77,45,0.15);">
             Hồ sơ: ${esc(docText)} · Luồng duyệt: ${type.approval_flow === 'manager_hr_bgd' || type.requires_bod_approval ? 'Quản lý → HCNS → Ban Giám đốc' : 'Quản lý → HCNS'}${type.notice_hours != null ? ` · Báo trước ${type.notice_hours}h` : ''}
           </div>
@@ -682,6 +699,10 @@ async function openLeaveForm(me, types, refresh = noop) {
 
     if (!type || !start || !end || !reason) {
       toast('Vui lòng chọn loại nghỉ, ngày nghỉ và nhập lý do', 'error');
+      return;
+    }
+    if ((policy?.deducts_annual_leave || type === 'annual') && !isOfficial) {
+      toast('Chế độ phép năm chỉ áp dụng cho nhân viên chính thức. Thực tập sinh và nhân viên thử việc vui lòng chọn loại nghỉ khác (ví dụ: Nghỉ không lương).', 'error');
       return;
     }
     if (start > end || (session !== 'full' && start !== end)) {

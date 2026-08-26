@@ -142,6 +142,8 @@ export async function migrate(env) {
   try { await ensureAttendanceLocationSchema(env); } catch (error) { console.error('Attendance location schema check failed', error); }
   try { await ensureProjectHandoverSchema(env); } catch (error) { console.error('Handover schema check failed', error); }
   try { await ensureTTSAccounts(env); } catch (error) { console.error('TTS accounts check failed', error); }
+  try { await ensureWorkLocationStandardization(env); } catch (error) { console.error('Work location standardization check failed', error); }
+  try { await ensureLeaveBalancesMigration(env); } catch (error) { console.error('Leave balance migration failed', error); }
   // Timeline columns are additive and must exist before the version fast path:
   // production databases may already carry an older matching schema marker.
   try { await ensureTaskActivityTimelineSchema(env); } catch (error) { console.error('Task timeline schema check failed', error); }
@@ -1186,6 +1188,80 @@ async function ensureTTSAccounts(env) {
   }
 }
 
+const VALID_WORK_LOCATIONS = ['HCM', 'HN', 'Phim trường Netviet'];
+
+function normalizeWorkLocation(loc, dept = '') {
+  const s = String(loc || '').trim();
+  const d = String(dept || '').trim().toLowerCase();
+  if (d.includes('gameshow')) return 'Phim trường Netviet';
+  if (/phim trường/i.test(s)) return 'Phim trường Netviet';
+  if (/^(hn|hà nội|ha noi)$/i.test(s)) return 'HN';
+  if (/^(hcm|tphcm|tp\.hcm|tp hcm|hồ chí minh|ho chi minh|180|h)$/i.test(s) || s.includes('Điện Biên Phủ') || s.includes('HCM')) return 'HCM';
+  if (VALID_WORK_LOCATIONS.includes(s)) return s;
+  return s ? s : 'HCM';
+}
+
+async function ensureWorkLocationStandardization(env) {
+  try {
+    await env.DB.prepare(
+      `UPDATE users SET work_location = 'Phim trường Netviet'
+       WHERE (department LIKE '%Gameshow%' OR department LIKE '%gameshow%')
+         AND (work_location != 'Phim trường Netviet' OR work_location IS NULL)`
+    ).run();
+
+    await env.DB.prepare(
+      `UPDATE users SET work_location = 'HCM'
+       WHERE (work_location LIKE '%Điện Biên Phủ%' OR work_location IN ('TPHCM', 'tp.hcm', 'H', 'hcm', 'Hồ Chí Minh', 'Văn phòng') OR work_location IS NULL OR work_location = '')
+         AND department NOT LIKE '%Gameshow%' AND department NOT LIKE '%gameshow%'`
+    ).run();
+
+    await env.DB.prepare(
+      `UPDATE users SET work_location = 'HN'
+       WHERE work_location IN ('Hà Nội', 'ha noi', 'hn')
+         AND department NOT LIKE '%Gameshow%' AND department NOT LIKE '%gameshow%'`
+    ).run();
+  } catch (err) {
+    console.error('ensureWorkLocationStandardization error:', err);
+  }
+}
+
+async function ensureLeaveBalancesMigration(env) {
+  try {
+    // Set 0 annual leave balance for all TTS / Probation users
+    await env.DB.prepare(
+      `UPDATE leave_balances SET available_days = 0, updated_at = datetime('now','localtime')
+       WHERE leave_type_code = 'annual'
+         AND user_id IN (
+           SELECT id FROM users
+           WHERE employee_type = 'TTS'
+              OR contract_type = 'Thử việc'
+              OR contract_type = 'Thỏa thuận TTS'
+              OR lifecycle_status = 'Thử việc'
+              OR lifecycle_status = 'Thực tập'
+         )`
+    ).run();
+
+    // Ensure official employees have 12 annual leave days by default
+    const currentYear = new Date().getFullYear();
+    const officialUsers = await env.DB.prepare(
+      `SELECT id FROM users
+       WHERE (employee_type IS NULL OR employee_type != 'TTS')
+         AND (contract_type IS NULL OR contract_type NOT IN ('Thử việc', 'Thỏa thuận TTS'))
+         AND (lifecycle_status IS NULL OR lifecycle_status NOT IN ('Thử việc', 'Thực tập', 'Đã nghỉ'))
+         AND is_active = 1`
+    ).all().then(r => r.results || []);
+
+    for (const u of officialUsers) {
+      await env.DB.prepare(
+        `INSERT OR IGNORE INTO leave_balances (user_id, leave_type_code, balance_year, available_days)
+         VALUES (?, 'annual', ?, 12)`
+      ).bind(u.id, currentYear).run();
+    }
+  } catch (err) {
+    console.error('ensureLeaveBalancesMigration error:', err);
+  }
+}
+
 async function ensureAttendanceOvertimeSchema(env) {
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS overtime_forms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,period_month TEXT NOT NULL,
@@ -1485,6 +1561,7 @@ function normalizeEmployeeProfileValue(field, value) {
   if (field === 'direct_manager_id') return value ? Number(value) : null;
   if (field === 'department') return normalizeDeptName(String(value || ''));
   if (field === 'employee_type') return employeeTypeCode(value);
+  if (field === 'work_location') return normalizeWorkLocation(value);
   if (field.endsWith('_date') || field === 'hire_date' || field === 'national_id_expiry_date') return value || null;
   return typeof value === 'string' ? value.trim() : value;
 }
@@ -3385,7 +3462,15 @@ async function getLeaveBalance(env, userId, leaveTypeCode, year) {
   const row = await env.DB.prepare(
     'SELECT available_days FROM leave_balances WHERE user_id=? AND leave_type_code=? AND balance_year=?'
   ).bind(userId, leaveTypeCode, year).first();
-  return Number(row?.available_days || 0);
+  if (row !== null && row !== undefined && row.available_days !== null) {
+    return Number(row.available_days);
+  }
+  if (leaveTypeCode === 'annual') {
+    const user = await env.DB.prepare('SELECT employee_type, lifecycle_status, contract_type FROM users WHERE id=?').bind(userId).first();
+    const isOfficial = user && user.employee_type !== 'TTS' && user.lifecycle_status !== 'Thử việc' && user.contract_type !== 'Thử việc' && user.contract_type !== 'Thỏa thuận TTS';
+    return isOfficial ? 12 : 0;
+  }
+  return 0;
 }
 
 function canManageLeaveRequest(me, request) {
@@ -3972,6 +4057,7 @@ export async function handle(request, env) {
   // ── EMPLOYEE PROFILE DIRECTORY ───────────────────────────────────
   if (path === '/api/users/directory' && request.method === 'GET') {
     if (!isManager) return json({ error: 'Không có quyền' }, 403);
+    await ensureWorkLocationStandardization(env).catch(() => {});
     const hasHrScope = isAdmin || isHcns(me);
     const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
     const pageSize = Math.min(100, Math.max(5, parseInt(url.searchParams.get('page_size') || '20', 10)));
@@ -4000,7 +4086,7 @@ export async function handle(request, env) {
       filter_options: {
         departments: values(departments),
         positions: values(positions),
-        work_locations: values(workLocations),
+        work_locations: Array.from(new Set([...VALID_WORK_LOCATIONS, ...values(workLocations)])).filter(Boolean),
         statuses: values(statuses),
       },
     });
@@ -4361,6 +4447,30 @@ export async function handle(request, env) {
     return json({ ok: true, change_set_id: changeSetId, changed_fields: actualChanges.map(([field]) => field) });
   }
 
+  const userDeleteMatch = path.match(/^\/api\/users\/(\d+)$/);
+  if (userDeleteMatch && request.method === 'DELETE') {
+    if (!(isAdmin || isHcns(me))) return json({ error: 'Chỉ HCNS hoặc Admin mới có quyền xóa tài khoản nhân viên' }, 403);
+    const userId = parseInt(userDeleteMatch[1], 10);
+    if (Number(me.id) === userId) return json({ error: 'Không thể tự xóa tài khoản của chính mình' }, 400);
+    const target = await env.DB.prepare('SELECT id, full_name, employee_code FROM users WHERE id=?').bind(userId).first();
+    if (!target) return json({ error: 'Không tìm thấy tài khoản nhân viên' }, 404);
+
+    try {
+      await env.DB.prepare('DELETE FROM users WHERE id=?').bind(userId).run();
+      try { await env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(userId).run(); } catch (_) {}
+      try { await env.DB.prepare('DELETE FROM attendance WHERE user_id=?').bind(userId).run(); } catch (_) {}
+      try { await env.DB.prepare('DELETE FROM employee_documents WHERE user_id=?').bind(userId).run(); } catch (_) {}
+      try { await env.DB.prepare('DELETE FROM employee_profile_audit WHERE user_id=?').bind(userId).run(); } catch (_) {}
+      try { await env.DB.prepare('DELETE FROM task_mention_notifications WHERE user_id=?').bind(userId).run(); } catch (_) {}
+      try { await env.DB.prepare('DELETE FROM leave_requests WHERE user_id=? OR employee_id=?').bind(userId, userId).run(); } catch (_) {}
+      try { await env.DB.prepare('DELETE FROM leave_balances WHERE user_id=? OR employee_id=?').bind(userId, userId).run(); } catch (_) {}
+      try { await env.DB.prepare('DELETE FROM conversation_members WHERE user_id=?').bind(userId).run(); } catch (_) {}
+      return json({ ok: true, message: `Đã xóa tài khoản nhân viên ${target.full_name}` });
+    } catch (err) {
+      return json({ error: err?.message || 'Không thể xóa tài khoản nhân viên' }, 500);
+    }
+  }
+
   const employeeAuditMatch = path.match(/^\/api\/users\/(\d+)\/audit$/);
   if (employeeAuditMatch && request.method === 'GET') {
     const hasHrScope = isAdmin || isHcns(me);
@@ -4631,7 +4741,7 @@ export async function handle(request, env) {
         b.avatar_color || avatarColor(fullName), ini, b.phone || '', b.salary || 0,
         b.bank_account || '', b.bank_name || '', b.birth_date || null, b.gender || '',
         b.national_id || '', b.home_address || '', b.emergency_contact_name || '',
-        b.emergency_contact_phone || '', directManagerId, b.work_location || 'Văn phòng',
+        b.emergency_contact_phone || '', directManagerId, normalizeWorkLocation(b.work_location, dept),
         contractType, b.contract_start_date || null, b.contract_end_date || null,
         b.contract_signed_date || null, b.official_date || null, b.termination_date || null,
         b.allowance || 0, b.insurance_salary || 0, b.bank_account_holder || '',
@@ -7189,10 +7299,22 @@ const attendanceRateTo =
     const requestedUserId = Number(url.searchParams.get('user_id') || me.id);
     if (requestedUserId !== Number(me.id) && !isHcns(me)) return json({ error: 'Không có quyền xem số dư' }, 403);
     const year = Number(url.searchParams.get('year') || new Date().getFullYear());
-    const { results = [] } = await env.DB.prepare(
+    const targetUser = await env.DB.prepare('SELECT employee_type, lifecycle_status, contract_type FROM users WHERE id=?').bind(requestedUserId).first();
+    const isOfficial = targetUser && targetUser.employee_type !== 'TTS' && targetUser.lifecycle_status !== 'Thử việc' && targetUser.lifecycle_status !== 'Thực tập' && targetUser.contract_type !== 'Thử việc' && targetUser.contract_type !== 'Thỏa thuận TTS';
+    const defaultAnnualDays = isOfficial ? 12 : 0;
+
+    let { results = [] } = await env.DB.prepare(
       'SELECT leave_type_code,available_days,balance_year,updated_at FROM leave_balances WHERE user_id=? AND balance_year=?'
     ).bind(requestedUserId, year).all();
-    return json({ balances: results, year });
+
+    if (!results.find(x => x.leave_type_code === 'annual')) {
+      results.push({
+        leave_type_code: 'annual',
+        available_days: defaultAnnualDays,
+        balance_year: year,
+      });
+    }
+    return json({ balances: results, year, is_official: isOfficial, default_annual_days: defaultAnnualDays });
   }
   if (path === '/api/leave/balances' && request.method === 'POST') {
     if (!isHcns(me)) return json({ error: 'Chỉ HCNS được điều chỉnh số dư' }, 403);
@@ -7294,6 +7416,12 @@ const attendanceRateTo =
       if (documents.length !== documentIds.length) return json({ error: 'Tài liệu đính kèm không hợp lệ' }, 400);
     }
     const balanceType = leaveBalanceType(leaveType), balanceYear = Number(String(b.start_date).slice(0, 4));
+    if (balanceType === 'annual') {
+      const isOfficial = me.employee_type !== 'TTS' && me.lifecycle_status !== 'Thử việc' && me.lifecycle_status !== 'Thực tập' && me.contract_type !== 'Thử việc' && me.contract_type !== 'Thỏa thuận TTS';
+      if (!isOfficial) {
+        return json({ error: 'Chế độ phép năm chỉ áp dụng cho nhân viên chính thức. Thực tập sinh và nhân viên thử việc chưa có phép năm, vui lòng chọn loại nghỉ khác (ví dụ: Nghỉ không lương).' }, 400);
+      }
+    }
     if (balanceType && await getLeaveBalance(env, me.id, balanceType, balanceYear) < leaveDays) return json({ error: `Không đủ số dư ${balanceType === 'annual' ? 'phép năm' : 'nghỉ bù'}` }, 400);
     const isHcnsApplicant = normalizeDeptName(me.department) === 'Phòng HCNS';
     const flow = leavePolicyFor(leaveType), needsBod = flow === 'manager_hr_bgd' || isHcnsApplicant;

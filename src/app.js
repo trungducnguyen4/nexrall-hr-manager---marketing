@@ -12,23 +12,23 @@ async function getView(name) {
   if (!_viewModules[name]) {
     if (name === 'dashboard')    _viewModules[name] = await import('./views/dashboard.js?v=20260817-dash-geo-v1');
     else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js?v=20260817-att-map-v1');
-    else if (name === 'tasks')       _viewModules[name] = await import('./views/tasks.js?v=20260825-tasks-collapse-v2');
+    else if (name === 'tasks')       _viewModules[name] = await import('./views/tasks.js?v=20260826-project-members-picker-v7');
     else if (name === 'invoices')    _viewModules[name] = await import('./views/invoices.js?v=20260730-payslip-detail-v1');
-    else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260826-users-location-col-v3');
+    else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260826-leave-annual-policy-v6');
     else if (name === 'wifi')        _viewModules[name] = await import('./views/wifi.js?v=20260817-geofence-soft-v1');
     else if (name === 'settings')    _viewModules[name] = await import('./views/settings.js?v=20260804-password-policy-v2');
-    else if (name === 'taskpanel')   _viewModules[name] = await import('./views/taskpanel.js?v=20260817-subtask-desc-v1');
+    else if (name === 'taskpanel')   _viewModules[name] = await import('./views/taskpanel.js?v=20260826-taskpanel-mention-fix-v10');
     else if (name === 'departments') _viewModules[name] = await import('./views/departments.js');
     else if (name === 'recruitment') _viewModules[name] = await import('./views/recruitment.js');
-    else if (name === 'payroll')     _viewModules[name] = await import('./views/payroll.js?v=20260825-payroll-charts-v1');
-    else if (name === 'leave')       _viewModules[name] = await import('./views/leave.js?v=20260825-leave-ui-redesign-v4');
+    else if (name === 'payroll')     _viewModules[name] = await import('./views/payroll.js?v=20260826-dumbbell-and-donut-v14');
+    else if (name === 'leave')       _viewModules[name] = await import('./views/leave.js?v=20260826-leave-annual-policy-v6');
     else if (name === 'campaigns')   _viewModules[name] = await import('./views/campaigns.js?v=20260811-hr-access-v1');
     else if (name === 'evaluation')  _viewModules[name] = await import('./views/evaluation.js?v=20260811-penalty-policy-v1');
     else if (name === 'kpis')        _viewModules[name] = await import('./views/kpis.js?v=20260730-manual-kpi');
-    else if (name === 'notifications') _viewModules[name] = await import('./views/notifications.js?v=20260730-notification-center-v1');
+    else if (name === 'notifications') _viewModules[name] = await import('./views/notifications.js?v=20260826-notification-tabs-count-v15');
     else if (name === 'assets')      _viewModules[name] = await import('./views/assets.js?v=20260804-project-handover-v1');
     else if (name === 'db-admin')    _viewModules[name] = await import('./views/dbadmin.js');
-    else if (name === 'chat')        _viewModules[name] = await import('./views/chat.js?v=20260814-event-rsvp-v2');
+    else if (name === 'chat')        _viewModules[name] = await import('./views/chat.js?v=20260826-chat-image-lightbox-v11');
   }
   return _viewModules[name];
 }

@@ -59,9 +59,6 @@ export async function renderNotifications(el) {
         </div>
       </header>
 
-      <!-- Interactive Click-to-Filter Stat Cards -->
-      <div id="notification-summary" class="notification-summary" aria-live="polite"></div>
-
       <!-- Modern Toolbar Card -->
       <div class="notification-toolbar-card" aria-label="Tìm kiếm và lọc thông báo">
         <div class="notification-search-row">
@@ -88,12 +85,12 @@ export async function renderNotifications(el) {
           </div>
         </div>
 
-        <!-- Quick Severity Tabs -->
+        <!-- Quick Severity Tabs with Direct Counts -->
         <div class="notification-tabs-row" id="notification-severity-tabs">
-          <button type="button" class="notif-tab-pill active" data-severity="">Tất cả</button>
-          <button type="button" class="notif-tab-pill danger" data-severity="danger">🚨 Khẩn cấp</button>
-          <button type="button" class="notif-tab-pill warning" data-severity="warning">⏳ Cần xử lý</button>
-          <button type="button" class="notif-tab-pill info" data-severity="info">ℹ️ Thông tin</button>
+          <button type="button" class="notif-tab-pill active" data-severity=""><span>Tất cả</span></button>
+          <button type="button" class="notif-tab-pill danger" data-severity="danger"><span>🚨 Khẩn cấp</span></button>
+          <button type="button" class="notif-tab-pill warning" data-severity="warning"><span>🕒 Cần xử lý</span></button>
+          <button type="button" class="notif-tab-pill info" data-severity="info"><span>ℹ️ Thông tin</span></button>
         </div>
 
         <!-- Collapsible Advanced Filter Drawer -->
@@ -144,71 +141,28 @@ export async function renderNotifications(el) {
 
   function renderSummary(data) {
     const summary = data.summary || {};
-    const host = document.getElementById('notification-summary');
-    if (!host) return;
-
     const total = Number(data.active_total || 0);
     const danger = Number(summary.danger || 0);
     const warning = Number(summary.warning || 0);
-    const att = Number(summary.attendance || 0);
+    const info = Number(summary.info || 0);
 
-    host.innerHTML = `
-      <button type="button" class="notification-summary-card ${!state.severity && !state.module ? 'is-active' : ''}" data-filter-type="all">
-        <span class="notification-summary-icon all">${icon('bell', 'md')}</span>
-        <div class="summary-text">
-          <strong>${total}</strong>
-          <span>Tổng thông báo</span>
-        </div>
-      </button>
-      <button type="button" class="notification-summary-card danger ${state.severity === 'danger' ? 'is-active' : ''}" data-filter-type="danger">
-        <span class="notification-summary-icon danger">${icon('triangleAlert', 'md')}</span>
-        <div class="summary-text">
-          <strong>${danger}</strong>
-          <span>Khẩn cấp</span>
-        </div>
-      </button>
-      <button type="button" class="notification-summary-card warning ${state.severity === 'warning' ? 'is-active' : ''}" data-filter-type="warning">
-        <span class="notification-summary-icon warning">${icon('clock3', 'md')}</span>
-        <div class="summary-text">
-          <strong>${warning}</strong>
-          <span>Cần xử lý</span>
-        </div>
-      </button>
-      <button type="button" class="notification-summary-card att ${state.module === 'attendance' ? 'is-active' : ''}" data-filter-type="attendance">
-        <span class="notification-summary-icon att">${icon('activity', 'md')}</span>
-        <div class="summary-text">
-          <strong>${att}</strong>
-          <span>Bất thường công</span>
-        </div>
-      </button>`;
+    const tabs = document.getElementById('notification-severity-tabs');
+    if (tabs) {
+      const allBtn = tabs.querySelector('[data-severity=""]');
+      const dangerBtn = tabs.querySelector('[data-severity="danger"]');
+      const warningBtn = tabs.querySelector('[data-severity="warning"]');
+      const infoBtn = tabs.querySelector('[data-severity="info"]');
 
-    // Click handler for summary stat cards
-    host.querySelectorAll('.notification-summary-card').forEach(card => {
-      card.addEventListener('click', () => {
-        const type = card.dataset.filterType;
-        if (type === 'all') {
-          state.severity = '';
-          state.module = '';
-        } else if (type === 'danger') {
-          state.severity = 'danger';
-          state.module = '';
-        } else if (type === 'warning') {
-          state.severity = 'warning';
-          state.module = '';
-        } else if (type === 'attendance') {
-          state.module = 'attendance';
-          state.severity = '';
-        }
-        state.page = 1;
-        syncTabButtons();
-        load();
-      });
-    });
+      if (allBtn) allBtn.innerHTML = `<span>Tất cả</span> <span class="notif-pill-count">${total}</span>`;
+      if (dangerBtn) dangerBtn.innerHTML = `<span>🚨 Khẩn cấp</span> <span class="notif-pill-count">${danger}</span>`;
+      if (warningBtn) warningBtn.innerHTML = `<span>🕒 Cần xử lý</span> <span class="notif-pill-count">${warning}</span>`;
+      if (infoBtn) infoBtn.innerHTML = `<span>ℹ️ Thông tin</span> <span class="notif-pill-count">${info}</span>`;
+    }
   }
 
   function syncTabButtons() {
     document.querySelectorAll('#notification-severity-tabs .notif-tab-pill').forEach(btn => {
-      if (btn.dataset.severity === (state.severity || '')) {
+      if ((btn.dataset.severity || '') === (state.severity || '')) {
         btn.classList.add('active');
       } else {
         btn.classList.remove('active');

@@ -24,6 +24,8 @@ let loadingMore = false;
 let activeTab = 'all';
 let selectedMentions = [];
 let selectedMentionAll = false;
+let pendingFiles = [];
+let pendingFileCounter = 0;
 let conversationRefreshTimer = null;
 const DEFAULT_REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '😡'];
 const FALLBACK_PICKER_EMOJIS = ['😀','😁','😂','🤣','😊','😍','😘','😎','🤔','😭','😡','👍','👎','❤️','🎉','✅','🔥','👏','🙏','👀'];
@@ -235,6 +237,8 @@ async function openConversation(convId, targetMessageId = null) {
   selectedMentions = [];
   selectedMentionAll = false;
   replyTo = null;
+  pendingFiles.forEach(item => { if (item.previewUrl) URL.revokeObjectURL(item.previewUrl); });
+  pendingFiles = [];
   messages = [];
   disconnectWS();
 
@@ -374,6 +378,33 @@ function renderConversation(conv) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   });
 
+  // Paste listener for Ctrl + V images / files
+  input?.addEventListener('paste', handlePaste);
+  document.getElementById('chat-composer')?.addEventListener('paste', handlePaste);
+  document.getElementById('chat-conversation')?.addEventListener('paste', handlePaste);
+
+  // Drag & drop support
+  const messagesEl = document.getElementById('chat-messages');
+  const composerEl = document.getElementById('chat-composer');
+  [messagesEl, composerEl].forEach(el => {
+    if (!el) return;
+    el.addEventListener('dragover', e => {
+      e.preventDefault();
+      el.classList.add('drag-over');
+    });
+    el.addEventListener('dragleave', () => {
+      el.classList.remove('drag-over');
+    });
+    el.addEventListener('drop', e => {
+      e.preventDefault();
+      el.classList.remove('drag-over');
+      const files = Array.from(e.dataTransfer?.files || []);
+      if (files.length) {
+        addPendingFiles(files);
+      }
+    });
+  });
+
   // Scroll to load more
   document.getElementById('chat-messages')?.addEventListener('scroll', onScrollLoadMore);
 }
@@ -388,6 +419,7 @@ function renderComposer() {
         <span id="chat-composer-reply-text"></span>
         <button class="chat-composer-reply-close" id="chat-composer-reply-close" aria-label="Hủy trả lời">${icon('x', 'sm')}</button>
       </div>
+      <div class="chat-pending-attachments" id="chat-pending-attachments" style="display:none"></div>
       <div class="chat-composer-box">
         <button type="button" class="chat-composer-btn chat-composer-tool" data-composer-action="attach" aria-label="Đính kèm">${icon('paperclip', 'md')}</button>
         <button type="button" class="chat-composer-btn chat-composer-tool" data-composer-action="emoji" aria-label="Biểu cảm">${icon('smile', 'md')}</button>
@@ -487,7 +519,7 @@ function renderMessages() {
     let attHtml = '';
     for (const att of (msg.attachments || [])) {
       if (att.type === 'image') {
-        attHtml += `<img class="chat-attachment-image" src="${getFileUrl(att.storage_key)}" alt="${esc(att.file_name)}" />`;
+        attHtml += `<img class="chat-attachment-image" src="${getFileUrl(att.storage_key)}" data-key="${esc(att.storage_key)}" alt="${esc(att.file_name)}" />`;
       } else {
         attHtml += `<div class="chat-attachment" data-key="${att.storage_key}">
           <span class="chat-attachment-icon">${icon('fileText', 'md')}</span>
@@ -827,8 +859,10 @@ function bindMessageActions(container) {
   });
 
   container.querySelectorAll('.chat-attachment-image').forEach(img => {
-    img.addEventListener('click', () => {
-      if (img.requestFullscreen) img.requestFullscreen();
+    img.addEventListener('click', e => {
+      e.stopPropagation();
+      const key = img.dataset.key || img.getAttribute('src');
+      openImageLightbox(key);
     });
   });
 
@@ -845,24 +879,45 @@ async function sendMessage() {
   if (!activeConvId) return;
   const input = document.getElementById('chat-input');
   const content = (input?.value || '').trim();
-  if (!content && !uploading) return;
+  if (!content && !pendingFiles.length && !uploading) return;
 
   const btn = document.getElementById('chat-send-btn');
   btn.disabled = true;
-  const success = await trySend(content);
-  if (success) {
-    if (input) { input.value = ''; autoGrow(input); }
-    selectedMentions = [];
-    selectedMentionAll = false;
-    closeMentionMenu();
-    replyTo = null;
-    updateReplyPreview();
+  uploading = true;
+
+  try {
+    const attachments = [];
+    if (pendingFiles.length > 0) {
+      toast('Đang tải hình ảnh / tệp lên...', 'info', 3000);
+      for (const item of pendingFiles) {
+        const att = await api.uploadFile(`/api/conversations/${activeConvId}/upload`, item.file);
+        if (att) attachments.push(att);
+      }
+    }
+
+    const success = await trySend(content, attachments);
+    if (success) {
+      if (input) { input.value = ''; autoGrow(input); }
+      // Clean up object URLs
+      pendingFiles.forEach(item => { if (item.previewUrl) URL.revokeObjectURL(item.previewUrl); });
+      pendingFiles = [];
+      renderPendingAttachments();
+      selectedMentions = [];
+      selectedMentionAll = false;
+      closeMentionMenu();
+      replyTo = null;
+      updateReplyPreview();
+    }
+  } catch (err) {
+    toast(err.message || 'Không thể gửi tin nhắn', 'error');
+  } finally {
+    uploading = false;
+    btn.disabled = false;
+    input?.focus();
   }
-  btn.disabled = false;
-  input?.focus();
 }
 
-async function trySend(content) {
+async function trySend(content, attachments = []) {
   const mention_ids = selectedMentions
     .filter(member => content.includes(`@${member.full_name}`))
     .map(member => Number(member.user_id));
@@ -870,14 +925,15 @@ async function trySend(content) {
   const payload = { type: 'message:send', content, mention_ids, mention_all };
   if (replyTo) payload.reply_to_id = replyTo.id;
 
-  // @all needs an authoritative REST response so the sender sees a clear
-  // permission error in a direct conversation instead of clearing the draft.
-  if (!mention_all && ws && ws.readyState === WebSocket.OPEN && wsAuthenticated) {
+  const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
+
+  // @all or attachments need an authoritative REST response
+  if (!hasAttachments && !mention_all && ws && ws.readyState === WebSocket.OPEN && wsAuthenticated) {
     ws.send(JSON.stringify(payload));
     return true;
   }
 
-  if (ws && ws.readyState === WebSocket.OPEN && !wsAuthenticated) {
+  if (!hasAttachments && ws && ws.readyState === WebSocket.OPEN && !wsAuthenticated) {
     await waitForWsAuth(3000);
     if (wsAuthenticated && !mention_all) {
       ws.send(JSON.stringify(payload));
@@ -886,7 +942,9 @@ async function trySend(content) {
   }
 
   try {
-    const { message } = await api.post(`/api/conversations/${activeConvId}/messages`, { content, reply_to_id: replyTo?.id, mention_ids, mention_all });
+    const postBody = { content, reply_to_id: replyTo?.id, mention_ids, mention_all };
+    if (hasAttachments) postBody.attachments = attachments;
+    const { message } = await api.post(`/api/conversations/${activeConvId}/messages`, postBody);
     if (message && !messages.find(m => m.id === message.id)) {
       messages.push(message);
       renderMessages();
@@ -1162,20 +1220,110 @@ function editEvent(message) {
   });
 }
 
-// ── File upload ─────────────────────────────────────────────────────
-async function handleFileUpload(e) {
+// ── Pending Attachments & File Staging ─────────────────────────────
+function addPendingFiles(files) {
+  if (!files || !files.length) return;
+  for (const file of Array.from(files)) {
+    const isImg = Boolean(file.type && file.type.startsWith('image/'));
+    const previewUrl = isImg ? URL.createObjectURL(file) : null;
+    pendingFiles.push({
+      id: ++pendingFileCounter,
+      file,
+      previewUrl,
+      isImage: isImg,
+    });
+  }
+  renderPendingAttachments();
+  const input = document.getElementById('chat-input');
+  input?.focus();
+}
+
+function renderPendingAttachments() {
+  const container = document.getElementById('chat-pending-attachments');
+  if (!container) return;
+  if (!pendingFiles.length) {
+    container.innerHTML = '';
+    container.style.display = 'none';
+    return;
+  }
+
+  container.style.display = 'flex';
+  container.innerHTML = pendingFiles.map(item => {
+    if (item.isImage) {
+      return `
+        <div class="chat-pending-card chat-pending-image" data-pending-id="${item.id}">
+          <img src="${item.previewUrl}" alt="${esc(item.file.name)}" class="chat-pending-thumb" />
+          <button type="button" class="chat-pending-remove" data-remove-pending="${item.id}" title="Xóa ảnh">✕</button>
+        </div>
+      `;
+    }
+    return `
+      <div class="chat-pending-card chat-pending-file" data-pending-id="${item.id}">
+        <span class="chat-pending-file-icon">${icon('paperclip', 'sm') || '📎'}</span>
+        <div class="chat-pending-file-info">
+          <span class="chat-pending-file-name" title="${esc(item.file.name)}">${esc(item.file.name)}</span>
+          <span class="chat-pending-file-size">${formatSize(item.file.size)}</span>
+        </div>
+        <button type="button" class="chat-pending-remove" data-remove-pending="${item.id}" title="Xóa tệp">✕</button>
+      </div>
+    `;
+  }).join('');
+
+  container.querySelectorAll('[data-remove-pending]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const id = Number(btn.dataset.removePending);
+      const index = pendingFiles.findIndex(p => p.id === id);
+      if (index !== -1) {
+        if (pendingFiles[index].previewUrl) URL.revokeObjectURL(pendingFiles[index].previewUrl);
+        pendingFiles.splice(index, 1);
+        renderPendingAttachments();
+      }
+    });
+  });
+}
+
+function handleFileUpload(e) {
   const files = Array.from(e.target.files || []);
   if (!files.length || !activeConvId) return;
-  uploading = true;
-  try {
-    for (const file of files) {
-      const att = await api.uploadFile(`/api/conversations/${activeConvId}/upload`, file);
-      await api.post(`/api/conversations/${activeConvId}/messages`, { content: '', attachments: [att] });
-    }
-    await refreshMessages();
-  } catch (err) { toast(err.message, 'error'); }
-  uploading = false;
+  addPendingFiles(files);
   e.target.value = '';
+}
+
+function handlePaste(e) {
+  if (!activeConvId) return;
+  const clipboardData = e.clipboardData || window.clipboardData;
+  if (!clipboardData) return;
+
+  const items = Array.from(clipboardData.items || []);
+  const files = [];
+
+  for (const item of items) {
+    if (item.kind === 'file' || (item.type && item.type.startsWith('image/'))) {
+      const file = item.getAsFile();
+      if (file) {
+        const ext = file.type?.split('/')[1]?.replace('+xml', '') || 'png';
+        const namedFile = file.name && file.name !== 'image.png'
+          ? file
+          : new File([file], `image-${Date.now()}.${ext}`, { type: file.type || 'image/png' });
+        files.push(namedFile);
+      }
+    }
+  }
+
+  if (!files.length && clipboardData.files && clipboardData.files.length) {
+    for (const file of Array.from(clipboardData.files)) {
+      if (file.type && file.type.startsWith('image/')) {
+        files.push(file);
+      }
+    }
+  }
+
+  if (files.length > 0) {
+    e.preventDefault();
+    e.stopPropagation();
+    addPendingFiles(files);
+  }
 }
 
 // ── Task picker ─────────────────────────────────────────────────────
@@ -1368,7 +1516,7 @@ function bindSharedPanelActions(panel, data) {
     if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
     else toast('Tin nhắn này nằm ngoài lịch sử đang tải.', 'info');
   }));
-  panel.querySelectorAll('[data-open-image]').forEach(button => button.addEventListener('click', () => window.open(getFileUrl(button.dataset.openImage), '_blank', 'noopener')));
+  panel.querySelectorAll('[data-open-image]').forEach(button => button.addEventListener('click', () => openImageLightbox(button.dataset.openImage)));
   panel.querySelectorAll('[data-open-file]').forEach(button => button.addEventListener('click', () => window.open(getFileUrl(button.dataset.openFile), '_blank', 'noopener')));
   panel.querySelectorAll('[data-shared-all]').forEach(button => button.addEventListener('click', () => openSharedItemsModal(button.dataset.sharedAll, data)));
 }
@@ -1380,7 +1528,7 @@ function openSharedItemsModal(kind, data) {
     : kind === 'files' ? `<div class="chat-shared-file-list">${items.map(item => `<button class="chat-shared-file" data-open-file="${esc(item.storage_key)}"><span class="chat-shared-file-icon">${icon('fileText', 'md')}</span><span><strong>${esc(item.file_name || 'Tệp đính kèm')}</strong><small>${formatSize(item.file_size)} · ${formatChatTime(item.message_created_at)}</small></span></button>`).join('')}</div>`
     : `<div class="chat-shared-link-list">${items.map(item => `<a class="chat-shared-link" href="${esc(item.url)}" target="_blank" rel="noopener noreferrer"><span class="chat-shared-link-icon">${icon('link', 'sm')}</span><span><strong>${esc(linkLabel(item.url))}</strong><small>${esc(linkDomain(item.url))} · ${formatChatTime(item.message_created_at)}</small></span></a>`).join('')}</div>`;
   openModal(title, `<div class="chat-shared-all-modal">${content || '<div class="chat-shared-empty">Chưa có nội dung để hiển thị.</div>'}</div>`);
-  document.querySelectorAll('#modal [data-open-image]').forEach(button => button.addEventListener('click', () => window.open(getFileUrl(button.dataset.openImage), '_blank', 'noopener')));
+  document.querySelectorAll('#modal [data-open-image]').forEach(button => button.addEventListener('click', () => { closeModal(); openImageLightbox(button.dataset.openImage); }));
   document.querySelectorAll('#modal [data-open-file]').forEach(button => button.addEventListener('click', () => window.open(getFileUrl(button.dataset.openFile), '_blank', 'noopener')));
 }
 
@@ -1821,4 +1969,255 @@ function closeMentionMenu() {
   mentionState = null;
   const menu = document.getElementById('chat-mention-menu');
   if (menu) { menu.hidden = true; menu.innerHTML = ''; }
+}
+
+// ── Full-screen Image Lightbox Viewer (Facebook / Messenger style) ──
+let lightboxState = {
+  isOpen: false,
+  images: [],
+  currentIndex: 0,
+  scale: 1,
+};
+
+function getAllConversationImages() {
+  const list = [];
+  const seenKeys = new Set();
+  (messages || []).forEach(m => {
+    (m.attachments || []).forEach(att => {
+      const isImg = att.type === 'image' ||
+        String(att.mime_type || '').startsWith('image/') ||
+        String(att.file_name || '').match(/\.(png|jpe?g|gif|webp|svg|bmp)$/i);
+      if (isImg && att.storage_key && !seenKeys.has(att.storage_key)) {
+        seenKeys.add(att.storage_key);
+        list.push({
+          id: att.id || att.storage_key,
+          storage_key: att.storage_key,
+          file_name: att.file_name || 'Hình ảnh',
+          file_size: att.file_size,
+          url: getFileUrl(att.storage_key),
+          message_id: m.id,
+          sender_name: m.sender_name || 'Người dùng',
+          created_at: m.created_at,
+        });
+      }
+    });
+  });
+  return list;
+}
+
+function openImageLightbox(selectedStorageKeyOrUrl) {
+  let images = getAllConversationImages();
+  let index = images.findIndex(img => img.storage_key === selectedStorageKeyOrUrl || img.url === selectedStorageKeyOrUrl);
+
+  if (index === -1) {
+    const single = {
+      storage_key: selectedStorageKeyOrUrl,
+      url: getFileUrl(selectedStorageKeyOrUrl) || selectedStorageKeyOrUrl,
+      file_name: 'Hình ảnh',
+      sender_name: activeConversation?.name || '',
+      created_at: null,
+    };
+    images = [single, ...images];
+    index = 0;
+  }
+
+  lightboxState = {
+    isOpen: true,
+    images,
+    currentIndex: index,
+    scale: 1,
+  };
+
+  renderLightbox();
+}
+
+function renderLightbox() {
+  let root = document.getElementById('chat-lightbox-root');
+  if (!root) {
+    root = document.createElement('div');
+    root.id = 'chat-lightbox-root';
+    document.body.appendChild(root);
+  }
+
+  if (!lightboxState.isOpen || !lightboxState.images.length) {
+    root.innerHTML = '';
+    root.style.display = 'none';
+    document.removeEventListener('keydown', handleLightboxKeydown);
+    return;
+  }
+
+  root.style.display = 'block';
+  const current = lightboxState.images[lightboxState.currentIndex];
+  const total = lightboxState.images.length;
+  const currNum = lightboxState.currentIndex + 1;
+
+  root.innerHTML = `
+    <div class="chat-lightbox-backdrop" id="chat-lightbox-backdrop">
+      <div class="chat-lightbox-header">
+        <div class="chat-lightbox-header-left">
+          <button type="button" class="chat-lightbox-btn" id="chat-lightbox-close" title="Đóng (Esc)">
+            ${icon('x', 'md') || '✕'}
+          </button>
+          <div class="chat-lightbox-meta">
+            <div class="chat-lightbox-title">${esc(current.file_name || 'Hình ảnh')}</div>
+            <div class="chat-lightbox-sub">
+              ${current.sender_name ? esc(current.sender_name) : ''}
+              ${current.created_at ? ` · ${formatChatTime(current.created_at)}` : ''}
+              ${total > 1 ? ` · <span class="chat-lightbox-counter">${currNum} / ${total}</span>` : ''}
+            </div>
+          </div>
+        </div>
+        <div class="chat-lightbox-header-right">
+          <button type="button" class="chat-lightbox-btn" id="chat-lightbox-zoom-out" title="Thu nhỏ (-)">
+            ${icon('minus', 'sm') || '−'}
+          </button>
+          <button type="button" class="chat-lightbox-btn" id="chat-lightbox-zoom-in" title="Phóng to (+)">
+            ${icon('plus', 'sm') || '+'}
+          </button>
+          <a href="${current.url}" target="_blank" download="${esc(current.file_name || 'image.png')}" class="chat-lightbox-btn" id="chat-lightbox-download" title="Tải xuống">
+            ${icon('download', 'sm') || '⬇'}
+          </a>
+          <a href="${current.url}" target="_blank" rel="noopener noreferrer" class="chat-lightbox-btn" title="Mở tab mới">
+            ${icon('externalLink', 'sm') || '↗'}
+          </a>
+        </div>
+      </div>
+
+      <div class="chat-lightbox-stage" id="chat-lightbox-stage">
+        ${total > 1 ? `
+          <button type="button" class="chat-lightbox-nav chat-lightbox-prev ${lightboxState.currentIndex === 0 ? 'disabled' : ''}" id="chat-lightbox-prev" aria-label="Ảnh trước">
+            ${icon('chevronLeft', 'lg') || '‹'}
+          </button>
+        ` : ''}
+
+        <div class="chat-lightbox-image-container" id="chat-lightbox-img-wrap">
+          <img src="${current.url}" alt="${esc(current.file_name)}" class="chat-lightbox-main-img" id="chat-lightbox-main-img" style="transform: scale(${lightboxState.scale});" />
+        </div>
+
+        ${total > 1 ? `
+          <button type="button" class="chat-lightbox-nav chat-lightbox-next ${lightboxState.currentIndex === total - 1 ? 'disabled' : ''}" id="chat-lightbox-next" aria-label="Ảnh kế tiếp">
+            ${icon('chevronRight', 'lg') || '›'}
+          </button>
+        ` : ''}
+      </div>
+
+      ${total > 1 ? `
+        <div class="chat-lightbox-filmstrip">
+          <div class="chat-lightbox-filmstrip-track">
+            ${lightboxState.images.map((img, i) => `
+              <div class="chat-lightbox-thumb-item ${i === lightboxState.currentIndex ? 'active' : ''}" data-lightbox-jump="${i}">
+                <img src="${img.url}" alt="${esc(img.file_name)}" />
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+    </div>
+  `;
+
+  // Bind events
+  document.getElementById('chat-lightbox-close')?.addEventListener('click', closeImageLightbox);
+  document.getElementById('chat-lightbox-stage')?.addEventListener('click', e => {
+    if (e.target.id === 'chat-lightbox-stage' || e.target.id === 'chat-lightbox-img-wrap') {
+      closeImageLightbox();
+    }
+  });
+
+  document.getElementById('chat-lightbox-prev')?.addEventListener('click', e => {
+    e.stopPropagation();
+    if (lightboxState.currentIndex > 0) {
+      lightboxState.currentIndex--;
+      lightboxState.scale = 1;
+      renderLightbox();
+    }
+  });
+
+  document.getElementById('chat-lightbox-next')?.addEventListener('click', e => {
+    e.stopPropagation();
+    if (lightboxState.currentIndex < lightboxState.images.length - 1) {
+      lightboxState.currentIndex++;
+      lightboxState.scale = 1;
+      renderLightbox();
+    }
+  });
+
+  document.getElementById('chat-lightbox-zoom-in')?.addEventListener('click', e => {
+    e.stopPropagation();
+    lightboxState.scale = Math.min(3.5, Number((lightboxState.scale + 0.3).toFixed(1)));
+    updateImageZoom();
+  });
+
+  document.getElementById('chat-lightbox-zoom-out')?.addEventListener('click', e => {
+    e.stopPropagation();
+    lightboxState.scale = Math.max(0.4, Number((lightboxState.scale - 0.3).toFixed(1)));
+    updateImageZoom();
+  });
+
+  document.getElementById('chat-lightbox-main-img')?.addEventListener('click', e => {
+    e.stopPropagation();
+    lightboxState.scale = lightboxState.scale > 1.2 ? 1 : 1.8;
+    updateImageZoom();
+  });
+
+  root.querySelectorAll('[data-lightbox-jump]').forEach(thumb => {
+    thumb.addEventListener('click', e => {
+      e.stopPropagation();
+      lightboxState.currentIndex = Number(thumb.dataset.lightboxJump);
+      lightboxState.scale = 1;
+      renderLightbox();
+    });
+  });
+
+  document.removeEventListener('keydown', handleLightboxKeydown);
+  document.addEventListener('keydown', handleLightboxKeydown);
+
+  // Auto-scroll active thumbnail into view
+  const activeThumb = root.querySelector('.chat-lightbox-thumb-item.active');
+  if (activeThumb) {
+    activeThumb.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+  }
+}
+
+function updateImageZoom() {
+  const img = document.getElementById('chat-lightbox-main-img');
+  if (img) {
+    img.style.transform = `scale(${lightboxState.scale})`;
+    img.style.cursor = lightboxState.scale > 1.2 ? 'zoom-out' : 'zoom-in';
+  }
+}
+
+function handleLightboxKeydown(e) {
+  if (!lightboxState.isOpen) return;
+  if (e.key === 'Escape') {
+    closeImageLightbox();
+  } else if (e.key === 'ArrowLeft') {
+    if (lightboxState.currentIndex > 0) {
+      lightboxState.currentIndex--;
+      lightboxState.scale = 1;
+      renderLightbox();
+    }
+  } else if (e.key === 'ArrowRight') {
+    if (lightboxState.currentIndex < lightboxState.images.length - 1) {
+      lightboxState.currentIndex++;
+      lightboxState.scale = 1;
+      renderLightbox();
+    }
+  } else if (e.key === '+' || e.key === '=') {
+    lightboxState.scale = Math.min(3.5, Number((lightboxState.scale + 0.3).toFixed(1)));
+    updateImageZoom();
+  } else if (e.key === '-' || e.key === '_') {
+    lightboxState.scale = Math.max(0.4, Number((lightboxState.scale - 0.3).toFixed(1)));
+    updateImageZoom();
+  }
+}
+
+function closeImageLightbox() {
+  lightboxState.isOpen = false;
+  lightboxState.scale = 1;
+  const root = document.getElementById('chat-lightbox-root');
+  if (root) {
+    root.innerHTML = '';
+    root.style.display = 'none';
+  }
+  document.removeEventListener('keydown', handleLightboxKeydown);
 }

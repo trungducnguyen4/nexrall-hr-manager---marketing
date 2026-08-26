@@ -267,7 +267,7 @@ async function renderEmployeeDirectory(el, me) {
         <table class="employee-data-table">
           <thead><tr>
             <th>Nhân viên</th><th>Loại nhân sự</th><th>Phòng ban</th><th>Vị trí</th>
-            <th>Địa điểm làm việc</th><th>Trạng thái</th><th><span class="sr-only">Mở hồ sơ</span></th>
+            <th>Địa điểm làm việc</th><th><span class="sr-only">Mở hồ sơ</span></th>
           </tr></thead>
           <tbody>${users.map(user => `
             <tr data-user-id="${user.id}" tabindex="0" role="link" aria-label="Mở hồ sơ ${esc(user.full_name)}">
@@ -291,7 +291,6 @@ async function renderEmployeeDirectory(el, me) {
               <td data-label="Phòng ban"><span style="font-weight:600;color:var(--text);">${valueOrEmpty(user.department)}</span></td>
               <td data-label="Vị trí"><span style="color:var(--text-2);">${valueOrEmpty(user.position)}</span></td>
               <td data-label="Địa điểm làm việc"><span class="employee-cell-primary">${valueOrEmpty(user.work_location)}</span></td>
-              <td data-label="Trạng thái">${lifecycleBadge(user.lifecycle_status)}</td>
               <td class="employee-row-action">${icon('arrowRight', 'sm')}</td>
             </tr>`).join('')}</tbody>
         </table>
@@ -442,6 +441,7 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
               <button class="btn-secondary btn-sm emp-action-btn" id="employee-print" title="Xuất PDF">${icon('fileText', 'sm')} <span>Xuất PDF</span></button>
               ${isHr(me) ? `<button class="btn-secondary btn-sm emp-action-btn" id="employee-lifecycle" title="Đổi trạng thái">${icon('refreshCw', 'sm')} <span>Đổi trạng thái</span></button>` : ''}
               ${me.role === 'admin' && Number(user.id) !== Number(me.id) ? `<button class="btn-secondary btn-sm emp-action-btn" id="employee-reset-password" title="Reset mật khẩu">${icon('keyRound', 'sm')} <span>Reset mật khẩu</span></button>` : ''}
+              ${isHr(me) && Number(user.id) !== Number(me.id) ? `<button class="btn-danger btn-sm emp-action-btn" id="employee-delete-account" title="Xóa tài khoản">${icon('trash2', 'sm')} <span>Xóa tài khoản</span></button>` : ''}
             </div>
           </div>
         </div>
@@ -544,6 +544,17 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
             'handshake',
             `
               ${renderFieldCell('Loại hợp đồng', user.contract_type)}
+              ${(() => {
+                const isTts = user.employee_type === 'TTS';
+                const isProbation = user.lifecycle_status === 'Thử việc' || user.contract_type === 'Thử việc' || user.contract_type === 'Thỏa thuận TTS';
+                const isOfficial = !isTts && !isProbation;
+                const leaveText = isTts
+                  ? '0 ngày (Chưa áp dụng cho TTS)'
+                  : isProbation
+                    ? '0 ngày (Thử việc - cấp 12 ngày sau khi chính thức)'
+                    : '12 ngày / năm';
+                return renderFieldCell('Phép năm', leaveText, { highlight: isOfficial });
+              })()}
               ${renderFieldCell('Ngày vào làm việc', user.hire_date, { formatter: fmtDate })}
               ${renderFieldCell('Ngày bắt đầu HĐ', user.contract_start_date, { formatter: fmtDate })}
               ${renderFieldCell('Ngày ký hợp đồng', user.contract_signed_date, { formatter: fmtDate })}
@@ -702,6 +713,21 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
       button.disabled = false;
     }
   });
+  $('#employee-delete-account')?.addEventListener('click', async event => {
+    if (!confirm(`Bạn có chắc chắn muốn XÓA VĨNH VIỄN tài khoản của ${user.full_name} (${user.employee_code || ''})?\n\nHành động này sẽ xóa hồ sơ nhân viên và dữ liệu liên quan. Không thể hoàn tác!`)) return;
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = 'Đang xóa...';
+    try {
+      await api.deleteUser(user.id);
+      toast(`Đã xóa tài khoản ${user.full_name}`, 'success');
+      navigate('#/users');
+    } catch (error) {
+      toast(error.message || 'Không thể xóa tài khoản', 'error');
+      button.disabled = false;
+      button.innerHTML = `${icon('trash2', 'sm')} <span>Xóa tài khoản</span>`;
+    }
+  });
   renderTab();
 }
 
@@ -827,7 +853,11 @@ function openProfileEditor(user, section, context, onSaved) {
       ${field('ep-position','Vị trí *','text',user.position,'required')}
       <label class="field"><span>Phòng ban *</span><select id="ep-department" required><option value="">Chọn phòng ban</option>${departmentNames.map(value => `<option value="${esc(value)}" ${user.department === value ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select></label>
       <label class="field"><span>Quản lý trực tiếp *</span><select id="ep-manager" required><option value="">Chọn quản lý</option>${basicUsers.filter(item => Number(item.id) !== Number(user.id)).map(item => `<option value="${item.id}" ${Number(user.direct_manager_id) === Number(item.id) ? 'selected' : ''}>${esc(item.full_name)} - ${esc(item.position || '')}</option>`).join('')}</select></label>
-      ${field('ep-location','Địa điểm làm việc *','text',user.work_location,'required')}
+      <label class="field"><span>Địa điểm làm việc *</span><select id="ep-location" required>
+        <option value="HCM" ${user.work_location === 'HCM' ? 'selected' : ''}>HCM</option>
+        <option value="HN" ${user.work_location === 'HN' ? 'selected' : ''}>HN</option>
+        <option value="Phim trường Netviet" ${user.work_location === 'Phim trường Netviet' ? 'selected' : ''}>Phim trường Netviet</option>
+      </select></label>
       ${permissions.can_edit_contract ? `<label class="field"><span>Loại hợp đồng *</span><select id="ep-contract-type" required><option value="">Chọn hợp đồng</option>${(metadata.contract_types || []).map(value => `<option value="${esc(value)}" ${user.contract_type === value ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select></label>
       ${field('ep-hire-date','Ngày vào làm *','date',user.hire_date,'required')}
       ${field('ep-contract-start','Ngày bắt đầu hợp đồng','date',user.contract_start_date)}
@@ -1048,6 +1078,15 @@ function openCreateEmployee(users, departments, onSaved) {
         </select>
       </div>
 
+      <div class="field" style="margin-bottom:0;">
+        <label style="font-size:12.5px;font-weight:700;margin-bottom:6px;display:block;">Địa điểm làm việc</label>
+        <select id="new-location" style="height:44px;font-weight:600;">
+          <option value="HCM" selected>HCM</option>
+          <option value="HN">HN</option>
+          <option value="Phim trường Netviet">Phim trường Netviet</option>
+        </select>
+      </div>
+
       <div id="new-create-error" style="color:var(--danger);font-size:12.5px;font-weight:600;min-height:16px;"></div>
     </div>
   `, `
@@ -1062,6 +1101,7 @@ function openCreateEmployee(users, departments, onSaved) {
   const codeInput = document.getElementById('new-code');
   const nameInput = document.getElementById('new-name');
   const deptSelect = document.getElementById('new-department');
+  const locSelect = document.getElementById('new-location');
   const errorEl = document.getElementById('new-create-error');
   const saveBtn = document.getElementById('new-save');
 
@@ -1095,11 +1135,13 @@ function openCreateEmployee(users, departments, onSaved) {
 
     const isTts = code.startsWith('TTS');
     let dept = deptSelect?.value || (isTts ? 'Thực Tập Sinh' : 'Phòng Marketing');
+    let location = locSelect?.value || (dept.toLowerCase().includes('gameshow') ? 'Phim trường Netviet' : 'HCM');
 
     const data = {
       employee_code: code,
       full_name: name,
       department: dept,
+      work_location: location,
       employee_type: isTts ? 'TTS' : 'NV',
       password: 'Pass@123',
     };

@@ -426,7 +426,7 @@ function renderCommentContent(c) {
   mentions.forEach(m => {
     const name = esc(m.name || '');
     const pattern = '@' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    html = html.replace(new RegExp(pattern, 'gi'), '<span class="tp-mention-highlight">@$&</span>');
+    html = html.replace(new RegExp(pattern, 'gi'), '<span class="tp-mention-highlight">$&</span>');
   });
   return html;
 }
