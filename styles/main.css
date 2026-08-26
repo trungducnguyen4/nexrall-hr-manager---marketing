@@ -5991,3 +5991,226 @@ html.native-private body::after { content: 'NetViet HR'; position: fixed; inset:
 .bottom-nav {
   display: none;
 }
+
+/* ════════════════════════════════════════════════
+   SETTINGS VIEW MODERN REDESIGN
+   ════════════════════════════════════════════════ */
+.settings-container {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 0 4px 32px;
+}
+
+.settings-header {
+  margin-bottom: 20px;
+}
+
+.settings-nav-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+  scrollbar-width: none;
+}
+.settings-nav-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.settings-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.settings-tab-btn:hover {
+  background: var(--surface-2, #f8fafc);
+  color: var(--text-1);
+}
+
+.settings-tab-btn.active {
+  background: var(--surface);
+  color: var(--primary);
+  border-color: #fbd6ce;
+  box-shadow: 0 2px 8px rgba(238, 77, 45, 0.08);
+}
+
+.settings-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 24px;
+  margin-bottom: 20px;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.04);
+}
+
+.settings-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border-light, #f1f5f9);
+}
+
+.settings-card-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-1);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-card-subtitle {
+  font-size: 13px;
+  color: var(--text-2);
+  margin-top: 3px;
+  line-height: 1.45;
+}
+
+.settings-form-narrow {
+  max-width: 520px;
+}
+
+.settings-action-bar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-light, #f1f5f9);
+}
+
+.sound-toggle-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2, #f8fafc);
+  margin-bottom: 16px;
+  gap: 14px;
+}
+
+.sound-test-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.sound-test-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  transition: all 0.15s ease;
+}
+
+.sound-test-item:hover {
+  border-color: #efb9ad;
+  background: #fff8f6;
+}
+
+.settings-profile-banner {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding-bottom: 18px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--border-light, #f1f5f9);
+}
+
+.settings-profile-info h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-1);
+}
+
+.settings-profile-badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.settings-grid-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.dow-pill-group {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.dow-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.15s ease;
+}
+
+.dow-pill:has(input:checked) {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #ffffff;
+  box-shadow: 0 2px 6px rgba(238, 77, 45, 0.25);
+}
+
+.dow-pill input {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .settings-grid-2col {
+    grid-template-columns: 1fr;
+  }
+  .settings-card {
+    padding: 16px;
+  }
+  .sound-toggle-hero {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .settings-action-bar {
+    justify-content: stretch;
+  }
+  .settings-action-bar button {
+    width: 100%;
+  }
+}
+

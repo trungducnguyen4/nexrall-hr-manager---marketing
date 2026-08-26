@@ -34,32 +34,15 @@ export async function loadToken() {
 export function getToken() { return _token; }
 
 // ════════════════════════════════════════════════
-//  In-memory GET cache (stale-while-revalidate)
+//  In-memory GET cache (Only for static lookups)
 // ════════════════════════════════════════════════
 // TTL values (ms) per URL prefix
 const CACHE_TTL = {
-  '/api/users':            60_000,   // 60 s — users rarely change
-  '/api/departments':      60_000,
-  '/api/employees':        60_000,
-  '/api/settings':        120_000,   // 2 min
-  '/api/wifi-whitelist':   60_000,
-  '/api/campaigns':        30_000,
-  '/api/tasks':            30_000,
-  '/api/task-projects':     30_000,
-  '/api/task-groups':       30_000,
-  '/api/task-labels':       30_000,
-  '/api/attendance':       20_000,
-  '/api/leave-types':      60_000,
-  '/api/candidates':       30_000,
-  '/api/payroll':          30_000,
-  '/api/invoices':         30_000,
-  '/api/users/basic':      60_000,
   '/api/integrations/vietqr/banks': 24 * 60 * 60_000,
-  '/api/assets':           20_000,
-  '/api/eval-periods':     60_000,
-  '/api/evaluations':      20_000,
-  '/api/evaluations/report':    20_000,
-  '/api/evaluations/dashboard': 20_000,
+  '/api/leave-types':               30_000,
+  '/api/departments':               30_000,
+  '/api/wifi-whitelist':            30_000,
+  '/api/attendance-locations':      30_000,
 };
 
 // Map of cacheKey → { data, ts, inflight }
@@ -82,9 +65,6 @@ export function invalidateCache(prefix) {
 export function clearCache() { _cache.clear(); }
 
 // A monotonic write-generation counter — incremented by every inv() call.
-// Each inflight bg-revalidation captures the generation at launch; if the
-// generation has changed by the time it resolves, the result is discarded
-// instead of being written back into the cache (which would overwrite fresh data).
 let _writeGen = 0;
 
 // ────────────────────────────────────────────────
@@ -191,12 +171,15 @@ async function cachedGet(path) {
 function inv(...prefixes) {
   _writeGen++;
   prefixes.forEach(p => invalidateCache(p));
+  if (typeof document !== 'undefined') {
+    document.dispatchEvent(new CustomEvent('hr-data-mutated', { detail: { prefixes } }));
+  }
 }
 
 // ════════════════════════════════════════════════
 export const api = {
   // Raw (bypass cache — for non-GET or special cases)
-  get:    (path) => cachedGet(path),
+  get:    (path) => req('GET', path),
   post:   (path, body) => req('POST', path, body),
   put:    (path, body) => req('PUT', path, body),
   patch:  (path, body) => req('PATCH', path, body),
@@ -210,9 +193,8 @@ export const api = {
   changePassword: (old_password, new_password) =>
     req('PUT', '/api/auth/change-password', { old_password, new_password }),
 
-  // Users — user records are JOINed into attendance, tasks, and invoices
-  // (full_name, department, position), so writes must cross-invalidate those caches too.
-  getUsers:   () => cachedGet('/api/users'),
+  // Users
+  getUsers:   () => req('GET', '/api/users'),
   getEmployeeDirectory: (params = {}) => {
     const q = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== '' && value !== null && value !== undefined)).toString();
     return req('GET', '/api/users/directory' + (q ? '?' + q : ''));
@@ -246,45 +228,40 @@ export const api = {
   uploadUserDocument: (id, kind, file) => uploadFile(`/api/users/${id}/documents/${kind}`, file).then(r => { inv('/api/users'); return r; }),
   deleteUserDocument: (id, kind) => req('DELETE', `/api/users/${id}/documents/${kind}`).then(r => { inv('/api/users'); return r; }),
   deleteUser: (id) => req('DELETE', `/api/users/${id}`).then(r => { inv('/api/users', '/api/employees', '/api/attendance', '/api/tasks', '/api/invoices'); return r; }),
-  // Safe minimal user fields (for pickers, e.g. Mentor select) — any authenticated user may call
-  getUsersBasic: () => cachedGet('/api/users/basic'),
-  // Public reference data is fetched through our Worker so provider calls do
-  // not receive any employee financial or tax information.
+  // Safe minimal user fields
+  getUsersBasic: () => req('GET', '/api/users/basic'),
+  // Public reference data is fetched through our Worker
   getVietqrBanks: () => cachedGet('/api/integrations/vietqr/banks'),
-  // Lifecycle status (Vòng đời nhân sự) — HCNS/Ban Giám Đốc only (enforced server-side)
+  // Lifecycle status
   changeLifecycleStatus: (id, status, reason) =>
     req('PUT', `/api/users/${id}/lifecycle`, { status, reason }).then(r => { inv('/api/users'); return r; }),
 
-  // Asset handover (Bàn giao tài sản cho TTS)
-  getAssets: () => cachedGet('/api/assets'),
+  // Asset handover
+  getAssets: () => req('GET', '/api/assets'),
   createAsset: (d) => req('POST', '/api/assets', d).then(r => { inv('/api/assets'); return r; }),
   updateAsset: (id, d) => req('PUT', `/api/assets/${id}`, d).then(r => { inv('/api/assets'); return r; }),
   deleteAsset: (id) => req('DELETE', `/api/assets/${id}`).then(r => { inv('/api/assets'); return r; }),
   revealAssetCredential: (id) => req('POST', `/api/assets/${id}/reveal-credential`),
-  getAssetHistory: (id) => cachedGet(`/api/assets/${id}/history`),
+  getAssetHistory: (id) => req('GET', `/api/assets/${id}/history`),
 
   // Attendance
   getAttendance: (params = {}) => {
     const q = new URLSearchParams(params).toString();
-    return cachedGet('/api/attendance' + (q ? '?' + q : ''));
+    return req('GET', '/api/attendance' + (q ? '?' + q : ''));
   },
-  getAttendanceToday: () => cachedGet('/api/attendance/today'),
-  // Map panel: server-recorded check-in GPS points for a date (never cached — must
-  // reflect the latest check-in right away, and the response depends on the viewer's role).
+  getAttendanceToday: () => req('GET', '/api/attendance/today'),
   getAttendanceCheckinPoints: (params = {}) => {
     const q = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== '' && value !== null && value !== undefined)).toString();
     return req('GET', '/api/attendance/checkin-points' + (q ? '?' + q : ''));
   },
-  getMyAttendanceCompliance: (month = '') => cachedGet('/api/attendance/my-compliance' + (month ? `?month=${encodeURIComponent(month)}` : '')),
-  // Not cached — used to auto-fill "Ngày công" right before creating a payroll invoice,
-  // must always reflect the latest attendance data (and support an explicit retry on error).
+  getMyAttendanceCompliance: (month = '') => req('GET', '/api/attendance/my-compliance' + (month ? `?month=${encodeURIComponent(month)}` : '')),
   getAttendanceSummary: (params = {}) => {
     const q = new URLSearchParams(params).toString();
     return req('GET', '/api/attendance/summary' + (q ? '?' + q : ''));
   },
   getAttendanceEmployees: (params = {}) => {
     const q = new URLSearchParams(params).toString();
-    return cachedGet('/api/attendance/employees' + (q ? '?' + q : ''));
+    return req('GET', '/api/attendance/employees' + (q ? '?' + q : ''));
   },
   getEmployeeAttendanceSummary: (employeeId, params = {}) => {
     const q = new URLSearchParams(params).toString();
@@ -293,12 +270,9 @@ export const api = {
   registerAttendance: (body) => req('POST', '/api/attendance/register', body).then(r => { inv('/api/attendance'); return r; }),
   checkin:  (body) => req('POST', '/api/attendance/checkin', body).then(r => { inv('/api/attendance'); return r; }),
   checkout: (body) => req('POST', '/api/attendance/checkout', body).then(r => { inv('/api/attendance'); return r; }),
-  // Admin/HCNS review of an out-of-geofence check-in (approved/rejected). Audit only.
   reviewAttendanceLocation: (id, data) => req('POST', `/api/attendance/${id}/location-review`, data).then(r => { inv('/api/attendance'); return r; }),
   updateAttendance: (id, d) => req('PUT', `/api/attendance/${id}`, d).then(r => { inv('/api/attendance'); return r; }),
   deleteAttendance: (id) => req('DELETE', `/api/attendance/${id}`).then(r => { inv('/api/attendance'); return r; }),
-  // Add attendance for a date range; backend skips non-working days + existing rows.
-  // Pass dryRun=true to preview (no write). Sum of created/skipped/exists.
   addAttendanceBatch: (d, dryRun = false) =>
     req('POST', '/api/attendance/batch' + (dryRun ? '?dry_run=1' : ''), d).then(r => { inv('/api/attendance', '/api/attendance/employees', '/api/invoices'); return r; }),
   getOvertimeRequests: (params = {}) => { const q = new URLSearchParams(params).toString(); return req('GET', '/api/overtime-requests' + (q ? '?' + q : '')); },
@@ -327,7 +301,7 @@ export const api = {
   updateAttendanceLocation: (id, d) => req('PUT', `/api/attendance-locations/${id}`, d).then(r => { inv('/api/attendance-locations'); return r; }),
   deleteAttendanceLocation: (id) => req('DELETE', `/api/attendance-locations/${id}`).then(r => { inv('/api/attendance-locations'); return r; }),
 
-  // Database Admin (admin only, never cached)
+  // Database Admin
   getDbTables: () => req('GET', '/api/db-admin/tables'),
   getDbRows: (table, params = {}) => {
     const q = new URLSearchParams(params).toString();
@@ -340,11 +314,11 @@ export const api = {
   // Tasks
   getTasks: (params = {}) => {
     const q = new URLSearchParams(params).toString();
-    return cachedGet('/api/tasks' + (q ? '?' + q : ''));
+    return req('GET', '/api/tasks' + (q ? '?' + q : ''));
   },
   getTaskProjects: (params = {}) => {
     const q = new URLSearchParams(params).toString();
-    return cachedGet('/api/task-projects' + (q ? '?' + q : ''));
+    return req('GET', '/api/task-projects' + (q ? '?' + q : ''));
   },
   getTaskProjectTimeline: (id, params = {}) => {
     const q = new URLSearchParams(params).toString();
@@ -363,29 +337,27 @@ export const api = {
   }),
   getTaskGroups: (params = {}) => {
     const q = new URLSearchParams(params).toString();
-    return cachedGet('/api/task-groups' + (q ? '?' + q : ''));
+    return req('GET', '/api/task-groups' + (q ? '?' + q : ''));
   },
   createTaskGroup: (d) => req('POST', '/api/task-groups', d).then(r => { inv('/api/task-groups', '/api/tasks'); return r; }),
   updateTaskGroup: (id, d) => req('PUT', `/api/task-groups/${id}`, d).then(r => { inv('/api/task-groups', '/api/tasks'); return r; }),
   archiveTaskGroup: (id) => req('DELETE', `/api/task-groups/${id}`).then(r => { inv('/api/task-groups', '/api/tasks'); return r; }),
   getTaskLabels: (params = {}) => {
     const q = new URLSearchParams(params).toString();
-    return cachedGet('/api/task-labels' + (q ? '?' + q : ''));
+    return req('GET', '/api/task-labels' + (q ? '?' + q : ''));
   },
   createTaskLabel: (d) => req('POST', '/api/task-labels', d).then(r => { inv('/api/task-labels', '/api/tasks'); return r; }),
   updateTaskLabel: (id, d) => req('PUT', `/api/task-labels/${id}`, d).then(r => { inv('/api/task-labels', '/api/tasks'); return r; }),
   deleteTaskLabel: (id) => req('DELETE', `/api/task-labels/${id}`).then(r => { inv('/api/task-labels', '/api/tasks'); return r; }),
-  getTask:    (id) => req('GET', `/api/tasks/${id}`), // single task detail — bypass cache (task panel needs fresh)
+  getTask:    (id) => req('GET', `/api/tasks/${id}`),
   createTask: (d) => req('POST', '/api/tasks', d).then(r => { inv('/api/tasks'); return r; }),
   updateTask: (id, d) => req('PUT', `/api/tasks/${id}`, d).then(r => { inv('/api/tasks'); return r; }),
   deleteTask: (id) => req('DELETE', `/api/tasks/${id}`).then(r => { inv('/api/tasks'); return r; }),
   reorderTasks: (d) => req('POST', '/api/tasks/reorder', d).then(r => { inv('/api/tasks'); return r; }),
-  // Subtask/comment writes change task data that is included in the task list response,
-  // so invalidate /api/tasks to prevent the list from serving stale subtask counts.
   createSubtask: (taskId, d) => req('POST', `/api/tasks/${taskId}/subtasks`, d).then(r => { inv('/api/tasks'); return r; }),
   updateSubtask: (id, d) => req('PUT', `/api/subtasks/${id}`, d).then(r => { inv('/api/tasks'); return r; }),
   deleteSubtask: (id) => req('DELETE', `/api/subtasks/${id}`).then(r => { inv('/api/tasks'); return r; }),
-  getComments: (taskId) => req('GET', `/api/tasks/${taskId}/comments`), // always fresh (no cache)
+  getComments: (taskId) => req('GET', `/api/tasks/${taskId}/comments`),
   addComment:  (taskId, content, mentions) => req('POST', `/api/tasks/${taskId}/comments`, { content, mentions: mentions || [] }).then(r => { inv('/api/tasks'); return r; }),
   addTaskFollower: (taskId, userId) => req('POST', `/api/tasks/${taskId}/followers`, userId ? { user_id: userId } : {}).then(r => { inv('/api/tasks'); return r; }),
   removeTaskFollower: (taskId, userId) => req('DELETE', `/api/tasks/${taskId}/followers/${userId}`).then(r => { inv('/api/tasks'); return r; }),
@@ -412,7 +384,7 @@ export const api = {
   // Invoices
   getInvoices: (params = {}) => {
     const q = new URLSearchParams(params).toString();
-    return cachedGet('/api/invoices' + (q ? '?' + q : ''));
+    return req('GET', '/api/invoices' + (q ? '?' + q : ''));
   },
   getInvoice:    (id) => req('GET', `/api/invoices/${id}`),
   createInvoice: (d) => req('POST', '/api/invoices', d).then(r => { inv('/api/invoices'); return r; }),
@@ -423,20 +395,20 @@ export const api = {
   resolveInvoiceReview: (id, d) => req('POST', `/api/invoices/${id}/resolve-review`, d).then(r => { inv('/api/invoices'); return r; }),
 
   // Settings
-  getSettings:  () => cachedGet('/api/settings'),
+  getSettings:  () => req('GET', '/api/settings'),
   saveSettings: (d) => req('PUT', '/api/settings', d).then(r => { inv('/api/settings'); return r; }),
 
-  // IP (never cached — it's a live lookup)
+  // IP
   getIp: () => req('GET', '/api/get-ip'),
 
-  // Departments — employees reference department_id so cross-invalidate that cache too
+  // Departments
   getDepartments:   () => cachedGet('/api/departments'),
   createDepartment: (d) => req('POST', '/api/departments', d).then(r => { inv('/api/departments', '/api/employees'); return r; }),
   updateDepartment: (id, d) => req('PUT', `/api/departments/${id}`, d).then(r => { inv('/api/departments', '/api/employees'); return r; }),
   deleteDepartment: (id) => req('DELETE', `/api/departments/${id}`).then(r => { inv('/api/departments', '/api/employees'); return r; }),
 
-  // Employees (extended profile)
-  getEmployees:   () => cachedGet('/api/employees'),
+  // Employees
+  getEmployees:   () => req('GET', '/api/employees'),
   createEmployee: (d) => req('POST', '/api/employees', d).then(r => { inv('/api/employees'); return r; }),
   updateEmployee: (id, d) => req('PUT', `/api/employees/${id}`, d).then(r => { inv('/api/employees'); return r; }),
   deleteEmployee: (id) => req('DELETE', `/api/employees/${id}`).then(r => { inv('/api/employees'); return r; }),
@@ -446,15 +418,15 @@ export const api = {
     const q = new URLSearchParams(params).toString();
     return req('GET', '/api/leave' + (q ? '?' + q : ''));
   },
-  createLeave: (d) => req('POST', '/api/leave', d).then(r => { inv('/api/leave'); return r; }),
-  updateLeave: (id, d) => req('PUT', `/api/leave/${id}`, d).then(r => { inv('/api/leave'); return r; }),
-  deleteLeave: (id) => req('DELETE', `/api/leave/${id}`).then(r => { inv('/api/leave'); return r; }),
+  createLeave: (d) => req('POST', '/api/leave', d).then(r => { inv('/api/leave', '/api/attendance', '/api/payroll'); return r; }),
+  updateLeave: (id, d) => req('PUT', `/api/leave/${id}`, d).then(r => { inv('/api/leave', '/api/attendance', '/api/payroll'); return r; }),
+  deleteLeave: (id) => req('DELETE', `/api/leave/${id}`).then(r => { inv('/api/leave', '/api/attendance', '/api/payroll'); return r; }),
   getLeaveTypes: (includeInactive = false) => cachedGet('/api/leave-types' + (includeInactive ? '?includeInactive=1' : '')),
   createLeaveType: (d) => req('POST', '/api/leave-types', d).then(r => { inv('/api/leave-types'); return r; }),
   updateLeaveType: (id, d) => req('PUT', `/api/leave-types/${id}`, d).then(r => { inv('/api/leave-types'); return r; }),
   deleteLeaveType: (id) => req('DELETE', `/api/leave-types/${id}`).then(r => { inv('/api/leave-types'); return r; }),
   getLeaveBalances: (params = {}) => { const q = new URLSearchParams(params).toString(); return req('GET', '/api/leave/balances' + (q ? '?' + q : '')); },
-  adjustLeaveBalance: (d) => req('POST', '/api/leave/balances', d).then(r => { inv('/api/leave'); return r; }),
+  adjustLeaveBalance: (d) => req('POST', '/api/leave/balances', d).then(r => { inv('/api/leave', '/api/attendance', '/api/payroll'); return r; }),
   uploadLeaveDocument: (file, label = '') => uploadForm('/api/leave/uploads', { label }, file),
   getLeaveDocuments: (leaveId) => req('GET', `/api/leave/${leaveId}/documents`),
   getLeaveDocumentBlob: (leaveId, documentId, disposition = 'inline') => fetchBlob(`/api/leave/${leaveId}/documents/${documentId}?disposition=${encodeURIComponent(disposition)}`),
@@ -462,7 +434,7 @@ export const api = {
   // Candidates / Recruitment
   getCandidates: (params = {}) => {
     const q = new URLSearchParams(params).toString();
-    return cachedGet('/api/candidates' + (q ? '?' + q : ''));
+    return req('GET', '/api/candidates' + (q ? '?' + q : ''));
   },
   createCandidate: (d) => req('POST', '/api/candidates', d).then(r => { inv('/api/candidates'); return r; }),
   updateCandidate: (id, d) => req('PUT', `/api/candidates/${id}`, d).then(r => { inv('/api/candidates'); return r; }),
@@ -471,7 +443,7 @@ export const api = {
   // Payroll
   getPayroll: (params = {}) => {
     const q = new URLSearchParams(params).toString();
-    return cachedGet('/api/payroll' + (q ? '?' + q : ''));
+    return req('GET', '/api/payroll' + (q ? '?' + q : ''));
   },
   createPayroll: (d) => req('POST', '/api/payroll', d).then(r => { inv('/api/payroll'); return r; }),
   loadPayrollData: (month) => req('POST', '/api/payroll/load', { month }).then(r => { inv('/api/payroll'); return r; }),
@@ -488,44 +460,44 @@ export const api = {
   previewPenaltyPolicyReset: () => req('GET', '/api/payroll-adjustments/penalty-policy-reset-preview'),
   resetPenaltyPolicy: () => req('POST', '/api/payroll-adjustments/penalty-policy-reset', { confirmation: 'RESET_PENALTY_POLICY_2026_08' }).then(r => { inv('/api/payroll'); return r; }),
 
-  // Campaigns (marketing specific)
+  // Campaigns
   getCampaigns: (params = {}) => {
     const q = new URLSearchParams(params).toString();
-    return cachedGet('/api/campaigns' + (q ? '?' + q : ''));
+    return req('GET', '/api/campaigns' + (q ? '?' + q : ''));
   },
   createCampaign: (d) => req('POST', '/api/campaigns', d).then(r => { inv('/api/campaigns'); return r; }),
   updateCampaign: (id, d) => req('PUT', `/api/campaigns/${id}`, d).then(r => { inv('/api/campaigns'); return r; }),
   deleteCampaign: (id) => req('DELETE', `/api/campaigns/${id}`).then(r => { inv('/api/campaigns'); return r; }),
 
-  // Đánh giá hiệu suất (Performance Evaluation) — TTS workflow
-  getEvalPeriods:   () => cachedGet('/api/eval-periods'),
+  // Performance Evaluation
+  getEvalPeriods:   () => req('GET', '/api/eval-periods'),
   createEvalPeriod: (d) => req('POST', '/api/eval-periods', d).then(r => { inv('/api/eval-periods'); return r; }),
   getEvaluations: (params = {}) => {
     const q = new URLSearchParams(params).toString();
-    return cachedGet('/api/evaluations' + (q ? '?' + q : ''));
+    return req('GET', '/api/evaluations' + (q ? '?' + q : ''));
   },
-  getEvaluation:     (id) => req('GET', `/api/evaluations/${id}`), // always fresh (workflow detail)
+  getEvaluation:     (id) => req('GET', `/api/evaluations/${id}`),
   assignEvaluation:  (d) => req('POST', '/api/evaluations', d).then(r => { inv('/api/evaluations'); return r; }),
   evalAction: (id, body) => req('POST', `/api/evaluations/${id}/action`, body).then(r => { inv('/api/evaluations'); return r; }),
   saveEvalPeriodNote: (id, note) => req('POST', `/api/eval-periods/${id}/note`, { note }).then(r => { inv('/api/eval-periods'); return r; }),
   getEvalReport: (params = {}) => {
     const q = new URLSearchParams(params).toString();
-    return cachedGet('/api/evaluations/report' + (q ? '?' + q : ''));
+    return req('GET', '/api/evaluations/report' + (q ? '?' + q : ''));
   },
   getEvalDashboard: (params = {}) => {
     const q = new URLSearchParams(params).toString();
-    return cachedGet('/api/evaluations/dashboard' + (q ? '?' + q : ''));
+    return req('GET', '/api/evaluations/dashboard' + (q ? '?' + q : ''));
   },
   getAdminDashboard: () => req('GET', '/api/dashboard/admin'),
-  // KPI theo nhân viên: giữ các thao tác thủ công (nhập kết quả, minh chứng và HCNS chấm KPI văn bản).
-  getKpiDashboard: (params = {}) => { const q = new URLSearchParams(params).toString(); return cachedGet('/api/kpis/dashboard' + (q ? '?' + q : '')); },
-  getKpis: (params = {}) => { const q = new URLSearchParams(params).toString(); return cachedGet('/api/kpis' + (q ? '?' + q : '')); },
+  // KPIs
+  getKpiDashboard: (params = {}) => { const q = new URLSearchParams(params).toString(); return req('GET', '/api/kpis/dashboard' + (q ? '?' + q : '')); },
+  getKpis: (params = {}) => { const q = new URLSearchParams(params).toString(); return req('GET', '/api/kpis' + (q ? '?' + q : '')); },
   saveKpis: (data) => req('POST', '/api/kpis', data).then(r => { inv('/api/kpis'); return r; }),
   submitKpis: (id, items) => req('POST', `/api/kpis/${id}/submit`, { items }).then(r => { inv('/api/kpis'); return r; }),
   reviewKpis: (id, approve, note = '', manual_scores = {}, item_notes = {}) => req('POST', `/api/kpis/${id}/review`, { approve, note, manual_scores, item_notes }).then(r => { inv('/api/kpis'); return r; }),
   saveKpiEvidence: (planId, itemId, evidence) => req('POST', `/api/kpis/${planId}/evidence`, { item_id: itemId, evidence }).then(r => { inv('/api/kpis'); return r; }),
   getKpiSnapshot: (planId) => req('GET', `/api/kpis/${planId}/snapshot`),
-  getKpiTemplates: () => cachedGet('/api/kpi-templates'),
+  getKpiTemplates: () => req('GET', '/api/kpi-templates'),
   saveKpiTemplate: (data) => req('POST', '/api/kpi-templates', data).then(r => { inv('/api/kpi-templates'); return r; }),
   applyKpiTemplate: (id, data) => req('POST', `/api/kpi-templates/${id}/apply`, data).then(r => { inv('/api/kpis'); return r; }),
 };

@@ -144,6 +144,15 @@ export function invStatusBadge(s) {
   return `<span class="badge ${cls}">${esc(label)}</span>`;
 }
 
+export function roleLabel(r) {
+  const map = {
+    admin:    '👑 Quản trị viên',
+    manager:  '⭐ Nhân sự',
+    employee: '👤 Nhân viên',
+  };
+  return map[r] || r || '—';
+}
+
 export function roleBadge(r) {
   const map = {
     admin: ['badge-danger', '👑 Admin'],

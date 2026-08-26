@@ -36,7 +36,7 @@ if (typeof document !== 'undefined') {
   document.addEventListener('touchstart', unlock, { passive: true });
 }
 
-function isSoundEnabled() {
+export function isSoundEnabled() {
   try {
     return localStorage.getItem('hr_sound_enabled') !== '0';
   } catch (_) {
@@ -47,7 +47,20 @@ function isSoundEnabled() {
 export function setSoundEnabled(enabled) {
   try {
     localStorage.setItem('hr_sound_enabled', enabled ? '1' : '0');
+    if (typeof document !== 'undefined') {
+      document.dispatchEvent(new CustomEvent('hr-sound-toggled', { detail: { enabled: !!enabled } }));
+    }
   } catch (_) {}
+}
+
+export function toggleSound() {
+  const current = isSoundEnabled();
+  const next = !current;
+  setSoundEnabled(next);
+  if (next) {
+    playChatSound();
+  }
+  return next;
 }
 
 /**

@@ -3,9 +3,9 @@
 // ════════════════════════════════════════════════
 import { api, setToken, loadToken, clearCache } from './api.js?v=20260817-geofence-soft-v1';
 import { initNativeShell, verifyBiometricIfAvailable } from './native.js';
-import { setAvatar, toast, initials, avatarColor, closeModal, isHcnsDepartment } from './utils.js?v=20260811-hr-access-v1';
+import { setAvatar, toast, initials, avatarColor, closeModal, isHcnsDepartment, roleLabel } from './utils.js?v=20260826-role-label-fix-v1';
 import { icon } from './icons.js';
-import { playChatSound, playMentionSound, playTaskSound } from './sound.js';
+import { playChatSound, playMentionSound, playTaskSound, isSoundEnabled, toggleSound } from './sound.js';
 
 // ── Lazy view imports ───────────────────────────
 let _viewModules = {};
@@ -17,7 +17,7 @@ async function getView(name) {
     else if (name === 'invoices')    _viewModules[name] = await import('./views/invoices.js?v=20260730-payslip-detail-v1');
     else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260826-leave-annual-policy-v6');
     else if (name === 'wifi')        _viewModules[name] = await import('./views/wifi.js?v=20260817-geofence-soft-v1');
-    else if (name === 'settings')    _viewModules[name] = await import('./views/settings.js?v=20260804-password-policy-v2');
+    else if (name === 'settings')    _viewModules[name] = await import('./views/settings.js?v=20260826-rolelabel-fix-v24');
     else if (name === 'taskpanel')   _viewModules[name] = await import('./views/taskpanel.js?v=20260826-taskpanel-mention-fix-v10');
     else if (name === 'departments') _viewModules[name] = await import('./views/departments.js');
     else if (name === 'recruitment') _viewModules[name] = await import('./views/recruitment.js');
@@ -267,7 +267,12 @@ async function refreshChatHeaderSummary() {
 }
 
 function onChatUnreadForeground() {
-  if (!document.hidden) refreshChatHeaderSummary();
+  if (!document.hidden) {
+    refreshChatHeaderSummary();
+    refreshTaskMentionBadge();
+    refreshEmployeeAlertBadge();
+    document.dispatchEvent(new CustomEvent('hr-window-focused'));
+  }
 }
 
 function onChatUnreadChanged(event) {
@@ -275,15 +280,26 @@ function onChatUnreadChanged(event) {
   refreshChatHeaderSummary();
 }
 
+function onDataMutated() {
+  refreshEmployeeAlertBadge();
+  refreshTaskMentionBadge();
+}
+
 function startChatUnreadWatcher() {
   if (!_chatUnreadWatchersBound) {
     document.addEventListener('visibilitychange', onChatUnreadForeground);
     window.addEventListener('focus', onChatUnreadForeground);
     document.addEventListener('hr-chat-unread-changed', onChatUnreadChanged);
+    document.addEventListener('hr-data-mutated', onDataMutated);
     _chatUnreadWatchersBound = true;
   }
   refreshChatHeaderSummary();
-  if (!_chatUnreadTimer) _chatUnreadTimer = window.setInterval(refreshChatHeaderSummary, 10_000);
+  refreshEmployeeAlertBadge();
+  refreshTaskMentionBadge();
+  if (!_chatUnreadTimer) _chatUnreadTimer = window.setInterval(() => {
+    refreshChatHeaderSummary();
+    refreshEmployeeAlertBadge();
+  }, 10_000);
 }
 
 function stopChatUnreadWatcher() {
@@ -295,12 +311,24 @@ function stopChatUnreadWatcher() {
     document.removeEventListener('visibilitychange', onChatUnreadForeground);
     window.removeEventListener('focus', onChatUnreadForeground);
     document.removeEventListener('hr-chat-unread-changed', onChatUnreadChanged);
+    document.removeEventListener('hr-data-mutated', onDataMutated);
     _chatUnreadWatchersBound = false;
   }
   _chatUnreadRequestInFlight = false;
   setChatUnreadBadge(0);
   clearChatAttention();
   document.getElementById('header-chat-button')?.classList.add('hidden');
+}
+
+function renderSoundButton() {
+  const iconHost = document.getElementById('header-sound-icon');
+  const btn = document.getElementById('header-sound-button');
+  if (!iconHost || !btn) return;
+  const enabled = isSoundEnabled();
+  iconHost.innerHTML = icon(enabled ? 'volume2' : 'volumeX', 'sm');
+  btn.setAttribute('aria-label', enabled ? 'Đang bật âm thanh thông báo (Bấm để tắt)' : 'Đang tắt âm thanh thông báo (Bấm để bật)');
+  btn.setAttribute('title', enabled ? 'Âm thanh thông báo: BẬT (Bấm để tắt)' : 'Âm thanh thông báo: TẮT (Bấm để bật)');
+  btn.classList.toggle('header-btn-muted', !enabled);
 }
 
 function initApp() {
@@ -321,6 +349,7 @@ function initApp() {
   document.getElementById('db-admin-nav-item')?.classList.toggle('hidden', me.role !== 'admin');
   const alertButton = document.getElementById('employee-alert-button');
   alertButton?.classList.remove('hidden');
+  renderSoundButton();
   refreshEmployeeAlertBadge();
   refreshTaskMentionBadge();
   if (_mentionBadgeTimer) clearInterval(_mentionBadgeTimer);
@@ -366,6 +395,12 @@ function initApp() {
     setAvatar(document.getElementById('header-av'), me.full_name, me.avatar_color, me.avatar_initials, me.avatar_url);
   });
   document.addEventListener('task-mentions-read', refreshTaskMentionBadge);
+  document.getElementById('header-sound-button')?.addEventListener('click', () => {
+    const next = toggleSound();
+    renderSoundButton();
+    toast(next ? 'Đã bật âm thanh thông báo' : 'Đã tắt âm thanh thông báo', 'info');
+  });
+  document.addEventListener('hr-sound-toggled', renderSoundButton);
   document.getElementById('employee-alert-button')?.addEventListener('click', () => navigate('#/notifications'));
   document.getElementById('header-chat-button')?.addEventListener('click', () => navigate('#/chat'));
   document.getElementById('header-chat-attention')?.addEventListener('click', event => {
@@ -771,17 +806,6 @@ function startClock() {
   setInterval(tick, 1000);
 }
 
-// ════════════════════════════════════════════════
-//  HELPERS
-// ════════════════════════════════════════════════
-function roleLabel(r) {
-  const map = {
-    admin:    '👑 Quản trị viên',
-    manager:  '⭐ Nhân sự',
-    employee: '👤 Nhân viên',
-  };
-  return map[r] || r || '—';
-}
 
 // ════════════════════════════════════════════════
 //  START
