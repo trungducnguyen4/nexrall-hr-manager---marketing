@@ -56,6 +56,7 @@ export async function renderChat(el, user, route = {}) {
   if (Number(conversationId)) openConversation(Number(conversationId), Number(messageId) || null);
   conversationRefreshTimer = setInterval(loadConversationsSilently, 10_000);
   el._cleanup = () => {
+    document.body.classList.remove('in-chat-conv', 'in-chat-page');
     disconnectWS();
     if (conversationRefreshTimer) clearInterval(conversationRefreshTimer);
     conversationRefreshTimer = null;
@@ -246,6 +247,7 @@ async function openConversation(convId, targetMessageId = null) {
   // Mobile: switch to conversation view
   const workspace = document.getElementById('chat-workspace');
   workspace?.classList.add('show-conv');
+  document.body.classList.add('in-chat-conv');
 
   // Highlight active
   document.querySelectorAll('.chat-conv-item').forEach(i => i.classList.remove('active'));
@@ -338,6 +340,7 @@ function renderConversation(conv) {
 
   document.getElementById('chat-back-btn')?.addEventListener('click', () => {
     activeConvId = null;
+    document.body.classList.remove('in-chat-conv');
     document.getElementById('chat-workspace')?.classList.remove('show-conv');
     renderEmptyChat();
   });
@@ -1774,11 +1777,26 @@ function loadConversationsSilently() {
 }
 
 // ── Scroll ──────────────────────────────────────────────────────────
-function scrollToBottom() {
-  setTimeout(() => {
-    const container = document.getElementById('chat-messages');
-    if (container) container.scrollTop = container.scrollHeight;
-  }, 50);
+function scrollToBottom(force = true) {
+  const container = document.getElementById('chat-messages');
+  if (!container) return;
+  const doScroll = () => {
+    container.scrollTop = container.scrollHeight;
+  };
+  doScroll();
+  requestAnimationFrame(doScroll);
+  setTimeout(doScroll, 40);
+  setTimeout(doScroll, 160);
+  setTimeout(doScroll, 400);
+
+  // Re-scroll when images or avatars load
+  container.querySelectorAll('img').forEach(img => {
+    if (!img.complete) {
+      img.addEventListener('load', () => {
+        container.scrollTop = container.scrollHeight;
+      }, { once: true });
+    }
+  });
 }
 
 function scrollToMessage(messageId) {

@@ -6,6 +6,8 @@
 //          typing:stop, conversation:read
 // =====================================================================
 
+import { sendWebPushNotification } from '../server.js';
+
 export class ChatRoom {
   constructor(ctx, env) {
     this.ctx = ctx;
@@ -199,6 +201,43 @@ export class ChatRoom {
     if (!fullMsg) return;
 
     this.broadcast({ type: 'message:new', message: fullMsg });
+
+    // ── Web Push to offline members (lock screen / background) ──
+    try {
+      const { results: memberRows = [] } = await this.env.DB.prepare(
+        'SELECT user_id FROM conversation_members WHERE conversation_id = ?'
+      ).bind(convId).all();
+
+      // Collect online user IDs from active WebSocket sessions
+      const onlineUserIds = new Set();
+      for (const [, s] of this.sessions) {
+        if (s.userId) onlineUserIds.add(Number(s.userId));
+      }
+
+      // Push only to users NOT currently connected via WebSocket
+      const offlineRecipientIds = memberRows
+        .map(r => Number(r.user_id))
+        .filter(uid => uid && uid !== session.userId && !onlineUserIds.has(uid));
+
+      if (offlineRecipientIds.length) {
+        const convRow = await this.env.DB.prepare('SELECT name, type FROM conversations WHERE id = ?').bind(convId).first();
+        const senderName = fullMsg.sender_name || session.userName || 'NetViet Chat';
+        const isGroup = convRow?.type !== 'direct';
+        const title = isGroup && convRow?.name ? `${convRow.name} (${senderName})` : senderName;
+        const preview = fullMsg.content || '📎 [Tệp đính kèm]';
+
+        await sendWebPushNotification(this.env, offlineRecipientIds, {
+          title,
+          body: preview,
+          icon: fullMsg.sender_avatar || '/icon-192.png',
+          badge: '/icon-192.png',
+          url: `/#/chat/${convId}/${messageId}`,
+          tag: `chat-${convId}-${messageId}`,
+        });
+      }
+    } catch (pushErr) {
+      console.warn('ChatRoom WS push error:', pushErr?.message || pushErr);
+    }
   }
 
   async handleEdit(session, msg) {

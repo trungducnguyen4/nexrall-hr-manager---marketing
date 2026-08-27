@@ -6,6 +6,7 @@ import { initNativeShell, verifyBiometricIfAvailable } from './native.js';
 import { setAvatar, toast, initials, avatarColor, closeModal, isHcnsDepartment, roleLabel } from './utils.js?v=20260826-role-label-fix-v1';
 import { icon } from './icons.js';
 import { playChatSound, playMentionSound, playTaskSound, isSoundEnabled, toggleSound } from './sound.js';
+import { autoSyncPushSubscription } from './push.js';
 
 // ── Lazy view imports ───────────────────────────
 let _viewModules = {};
@@ -17,7 +18,7 @@ async function getView(name) {
     else if (name === 'invoices')    _viewModules[name] = await import('./views/invoices.js?v=20260730-payslip-detail-v1');
     else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260826-leave-annual-policy-v6');
     else if (name === 'wifi')        _viewModules[name] = await import('./views/wifi.js?v=20260817-geofence-soft-v1');
-    else if (name === 'settings')    _viewModules[name] = await import('./views/settings.js?v=20260826-rolelabel-fix-v24');
+    else if (name === 'settings')    _viewModules[name] = await import('./views/settings.js?v=20260826-webpush-lockscreen-v25');
     else if (name === 'taskpanel')   _viewModules[name] = await import('./views/taskpanel.js?v=20260826-taskpanel-mention-fix-v10');
     else if (name === 'departments') _viewModules[name] = await import('./views/departments.js');
     else if (name === 'recruitment') _viewModules[name] = await import('./views/recruitment.js');
@@ -355,6 +356,7 @@ function initApp() {
   if (_mentionBadgeTimer) clearInterval(_mentionBadgeTimer);
   _mentionBadgeTimer = setInterval(refreshTaskMentionBadge, 30000);
   startChatUnreadWatcher();
+  autoSyncPushSubscription().catch(() => {});
 
   // Restore sidebar preference on desktop
   if (isDesktop() && localStorage.getItem('sidebar_collapsed') === '1') {
@@ -421,6 +423,32 @@ function initApp() {
         e.preventDefault();
         toggleSidebar();
       }
+    }
+  });
+
+  // Mobile virtual keyboard detection (hides bottom nav bar when typing)
+  if (window.visualViewport) {
+    let initialViewportH = window.visualViewport.height;
+    window.visualViewport.addEventListener('resize', () => {
+      const isKeyboard = window.visualViewport.height < initialViewportH * 0.82;
+      document.body.classList.toggle('keyboard-open', isKeyboard);
+    });
+  }
+  document.addEventListener('focusin', (e) => {
+    const target = e.target;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+      document.body.classList.add('keyboard-open');
+    }
+  });
+  document.addEventListener('focusout', (e) => {
+    const target = e.target;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+      setTimeout(() => {
+        const active = document.activeElement;
+        if (!active || (active.tagName !== 'INPUT' && active.tagName !== 'TEXTAREA' && !active.isContentEditable)) {
+          document.body.classList.remove('keyboard-open');
+        }
+      }, 100);
     }
   });
 

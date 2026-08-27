@@ -1,6 +1,7 @@
 import { api } from '../api.js';
 import { esc, toast, openModal, closeModal, loadingHTML, roleLabel, setAvatar } from '../utils.js';
 import { isSoundEnabled, toggleSound, playChatSound, playMentionSound, playTaskSound } from '../sound.js';
+import { isPushSupported, getPushPermission, getExistingPushSubscription, subscribePushNotification, unsubscribePushNotification, testPushNotification } from '../push.js';
 import { icon } from '../icons.js';
 
 let _activeSettingsTab = 'notifications';
@@ -25,12 +26,19 @@ export async function renderSettings(el, me) {
     _activeSettingsTab = 'notifications';
   }
 
+  let _existingSub = null;
+  if (isPushSupported()) {
+    try {
+      _existingSub = await getExistingPushSubscription();
+    } catch (_) {}
+  }
+
   function renderFrame() {
     el.innerHTML = `
       <div class="settings-container">
         <div class="settings-header">
           <div class="page-title">⚙️ Cài đặt hệ thống</div>
-          <div class="page-sub">Quản lý thông báo, bảo mật tài khoản và cấu hình doanh nghiệp</div>
+          <div class="page-sub">Quản lý thông báo đẩy màn hình khóa, âm thanh, bảo mật tài khoản và cấu hình doanh nghiệp</div>
         </div>
 
         <div class="settings-nav-tabs" role="tablist">
@@ -69,8 +77,87 @@ export async function renderSettings(el, me) {
   }
 
   function renderNotificationsTab() {
-    const enabled = isSoundEnabled();
+    const soundEnabled = isSoundEnabled();
+    const pushSupported = isPushSupported();
+    const pushPermission = getPushPermission();
+    const isPushActive = Boolean(pushSupported && pushPermission === 'granted' && _existingSub);
+    const isStandalone = typeof window !== 'undefined' && (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true);
+    const isIos = typeof navigator !== 'undefined' && (/iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream);
+
     return `
+      <!-- PWA / Web Push Notification Hero Card -->
+      <div class="settings-card">
+        <div class="settings-card-header">
+          <div>
+            <div class="settings-card-title">
+              ${icon('smartPhone', 'md')}
+              <span>Thông báo đẩy màn hình khóa (PWA / Web Push)</span>
+            </div>
+            <div class="settings-card-subtitle">
+              Nhận thông báo nổi trực tiếp trên màn hình khóa điện thoại, sáng màn hình và rung chuông khi có tin nhắn mới hoặc có người tag tên bạn.
+            </div>
+          </div>
+        </div>
+
+        <div class="sound-toggle-hero" style="background:${isPushActive ? '#f0fdf4' : (pushPermission === 'denied' ? '#fff1f2' : 'var(--surface-2, #f8fafc)')}; border-color:${isPushActive ? '#bbf7d0' : (pushPermission === 'denied' ? '#fecdd3' : 'var(--border)')};">
+          <div style="display:flex;align-items:center;gap:14px;">
+            <div style="width:44px;height:44px;border-radius:12px;display:grid;place-items:center;background:${isPushActive ? '#dcfce7' : (pushPermission === 'denied' ? '#ffe4e6' : '#f1f5f9')};color:${isPushActive ? '#16a34a' : (pushPermission === 'denied' ? '#e11d48' : 'var(--text-3)')};font-size:22px;">
+              ${isPushActive ? '🔔' : (pushPermission === 'denied' ? '🚫' : '📱')}
+            </div>
+            <div>
+              <div style="font-weight:700;font-size:14.5px;color:var(--text-1);">
+                Trạng thái: 
+                ${isPushActive 
+                  ? '<span style="color:#16a34a;">ĐÃ KÍCH HOẠT TRÊN THIẾT BỊ NÀY</span>'
+                  : (pushPermission === 'denied' 
+                    ? '<span style="color:#e11d48;">BỊ CHẶN TRONG TRÌNH DUYỆT</span>'
+                    : '<span style="color:var(--text-3);">CHƯA KÍCH HOẠT</span>')}
+              </div>
+              <div style="font-size:12.5px;color:var(--text-2);margin-top:2px;">
+                ${isPushActive 
+                  ? 'Thiết bị sẵn sàng nhận popup thông báo và rung chuông, kể cả khi bạn đã khóa màn hình.'
+                  : (pushPermission === 'denied' 
+                    ? 'Bạn đã chặn quyền thông báo. Vui lòng mở Cài đặt trình duyệt để Cho phép (Allow) thông báo.'
+                    : (isIos && !isStandalone 
+                      ? 'Trên iPhone: Cần mở app từ icon Màn hình chính (Home Screen) để kích hoạt thông báo.' 
+                      : 'Bấm nút kích hoạt bên cạnh để nhận thông báo nổi trên màn hình khóa.'))}
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            ${isPushActive ? `
+              <button type="button" id="btn-test-push-action" class="btn-primary" style="min-width:140px;font-weight:600;">
+                🚀 Gửi thử thông báo
+              </button>
+              <button type="button" id="btn-disable-push-action" class="btn-secondary btn-sm" style="color:var(--danger);">
+                Tắt trên máy này
+              </button>
+            ` : (pushPermission !== 'denied' ? `
+              <button type="button" id="btn-enable-push-action" class="btn-primary" style="min-width:170px;font-weight:600;">
+                🔔 Kích hoạt thông báo
+              </button>
+            ` : '')}
+          </div>
+        </div>
+
+        ${isIos && !isStandalone ? `
+          <div style="margin-top:14px;padding:14px 16px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;font-size:13px;color:#92400e;line-height:1.6;">
+            <strong>⚠️ Để app xuất hiện trong mục "Cài đặt ➔ Thông báo" của iPhone:</strong><br/>
+            1. Bấm nút <strong>Chia sẻ (Share - biểu tượng ⎋ / ô vuông có mũi tên lên)</strong> ở thanh dưới Safari.<br/>
+            2. Chọn <strong>"Thêm vào MH chính" (Add to Home Screen)</strong>.<br/>
+            3. <strong>Mở app từ icon NetViet HR trên màn hình chính</strong> (không mở từ tab Safari).<br/>
+            4. Vào lại <strong>Cài đặt</strong> ➔ Bấm <strong>"🔔 Kích hoạt thông báo"</strong> và chọn <strong>Cho phép (Allow)</strong>.<br/>
+            👉 <em>Khi đó iPhone sẽ tự động thêm "NetViet HR" vào danh sách Thông báo hệ thống!</em>
+          </div>
+        ` : `
+          <div style="margin-top:14px;padding:12px 14px;background:#f8fafc;border:1px dashed #cbd5e1;border-radius:10px;font-size:12.5px;color:#475569;line-height:1.5;">
+            <strong>💡 Mẹo:</strong> Sau khi bấm <strong>"Kích hoạt thông báo"</strong> và chọn <strong>Cho phép</strong>, ứng dụng sẽ được hệ điều hành lưu vào mục <em>Cài đặt ➔ Thông báo</em> để bạn tùy chỉnh biểu ngữ, âm thanh và hiển thị trên màn hình khóa.
+          </div>
+        `}
+      </div>
+
+      <!-- Sound & Chimes Card -->
       <div class="settings-card">
         <div class="settings-card-header">
           <div>
@@ -79,32 +166,32 @@ export async function renderSettings(el, me) {
               <span>Âm thanh & Chuông thông báo</span>
             </div>
             <div class="settings-card-subtitle">
-              Phát âm thanh thông báo tức thì khi bạn được gắn thẻ trong công việc, có tin nhắn mới hoặc có nhắc tên trong nhóm chat.
+              Phát âm thanh thông báo tức thì khi bạn đang mở ứng dụng.
             </div>
           </div>
         </div>
 
         <div class="sound-toggle-hero">
           <div style="display:flex;align-items:center;gap:14px;">
-            <div style="width:42px;height:42px;border-radius:10px;display:grid;place-items:center;background:${enabled ? '#fff0eb' : '#f1f5f9'};color:${enabled ? 'var(--primary)' : 'var(--text-3)'};">
-              ${icon(enabled ? 'volume2' : 'volumeX', 'md')}
+            <div style="width:42px;height:42px;border-radius:10px;display:grid;place-items:center;background:${soundEnabled ? '#fff0eb' : '#f1f5f9'};color:${soundEnabled ? 'var(--primary)' : 'var(--text-3)'};">
+              ${icon(soundEnabled ? 'volume2' : 'volumeX', 'md')}
             </div>
             <div>
               <div style="font-weight:700;font-size:14.5px;color:var(--text-1);">
-                Trạng thái: <span style="color:${enabled ? 'var(--primary)' : 'var(--text-3)'};">${enabled ? 'ĐANG BẬT' : 'ĐANG TẮT'}</span>
+                Trạng thái chuông: <span style="color:${soundEnabled ? 'var(--primary)' : 'var(--text-3)'};">${soundEnabled ? 'ĐANG BẬT' : 'ĐANG TẮT'}</span>
               </div>
               <div style="font-size:12.5px;color:var(--text-2);margin-top:2px;">
-                ${enabled ? 'Hệ thống sẽ phát chuông khi có sự kiện mới.' : 'Hệ thống đang ở chế độ im lặng.'}
+                ${soundEnabled ? 'Hệ thống sẽ phát chuông khi có sự kiện mới.' : 'Hệ thống đang ở chế độ im lặng.'}
               </div>
             </div>
           </div>
 
-          <button type="button" id="btn-toggle-sound-action" class="${enabled ? 'btn-secondary' : 'btn-primary'}" style="min-width:130px;font-weight:600;">
-            ${enabled ? '🔇 Tắt âm thanh' : '🔊 Bật âm thanh'}
+          <button type="button" id="btn-toggle-sound-action" class="${soundEnabled ? 'btn-secondary' : 'btn-primary'}" style="min-width:130px;font-weight:600;">
+            ${soundEnabled ? '🔇 Tắt âm thanh' : '🔊 Bật âm thanh'}
           </button>
         </div>
 
-        <div style="margin-top:24px;">
+        <div style="margin-top:20px;">
           <div style="font-weight:700;font-size:13.5px;color:var(--text-1);margin-bottom:4px;">
             🎵 Nghe thử các kiểu chuông hệ thống
           </div>
@@ -340,6 +427,45 @@ export async function renderSettings(el, me) {
       document.getElementById('btn-test-chat')?.addEventListener('click', () => playChatSound());
       document.getElementById('btn-test-mention')?.addEventListener('click', () => playMentionSound());
       document.getElementById('btn-test-task')?.addEventListener('click', () => playTaskSound());
+
+      // Web Push handlers
+      document.getElementById('btn-enable-push-action')?.addEventListener('click', async () => {
+        const btn = document.getElementById('btn-enable-push-action');
+        if (btn) { btn.disabled = true; btn.textContent = 'Đang kích hoạt...'; }
+        try {
+          _existingSub = await subscribePushNotification();
+          toast('Kích hoạt thông báo màn hình khóa thành công!', 'success');
+          renderFrame();
+        } catch (err) {
+          toast(err.message, 'error');
+          if (btn) { btn.disabled = false; btn.textContent = '🔔 Kích hoạt thông báo'; }
+        }
+      });
+
+      document.getElementById('btn-disable-push-action')?.addEventListener('click', async () => {
+        if (!confirm('Bạn có chắc muốn tắt nhận thông báo màn hình khóa trên thiết bị này?')) return;
+        try {
+          await unsubscribePushNotification();
+          _existingSub = null;
+          toast('Đã tắt thông báo màn hình khóa trên thiết bị này', 'info');
+          renderFrame();
+        } catch (err) {
+          toast(err.message, 'error');
+        }
+      });
+
+      document.getElementById('btn-test-push-action')?.addEventListener('click', async () => {
+        const btn = document.getElementById('btn-test-push-action');
+        if (btn) { btn.disabled = true; btn.textContent = 'Đang gửi...'; }
+        try {
+          await testPushNotification();
+          toast('Đã gửi thông báo thử nghiệm! Kiểm tra màn hình khóa hoặc thanh thông báo của bạn nhé.', 'success', 5000);
+        } catch (err) {
+          toast(err.message, 'error');
+        } finally {
+          if (btn) { btn.disabled = false; btn.textContent = '🚀 Gửi thử thông báo'; }
+        }
+      });
     }
 
     if (_activeSettingsTab === 'security') {

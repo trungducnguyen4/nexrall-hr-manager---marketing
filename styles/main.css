@@ -5856,6 +5856,12 @@ html.native-private body::after { content: 'NetViet HR'; position: fixed; inset:
     padding-bottom: calc(82px + env(safe-area-inset-bottom, 0px)) !important;
   }
 
+  /* When inside chat or keyboard is active, remove content clearance */
+  body.in-chat-conv #content,
+  body.keyboard-open #content {
+    padding-bottom: env(safe-area-inset-bottom, 0px) !important;
+  }
+
   /* ── Mobile Bottom Navigation Bar ── */
   .bottom-nav {
     position: fixed !important;
@@ -5874,6 +5880,19 @@ html.native-private body::after { content: 'NetViet HR'; position: fixed; inset:
     border-top: 1px solid rgba(226, 232, 240, 0.9) !important;
     box-shadow: 0 -4px 20px rgba(11, 31, 58, 0.08) !important;
     user-select: none !important;
+    transition: transform 0.2s ease, opacity 0.2s ease;
+  }
+
+  /* Hide bottom nav when virtual keyboard is active or inside chat conversation */
+  body.keyboard-open .bottom-nav,
+  body.in-chat-conv .bottom-nav,
+  body.keyboard-open #bottom-nav,
+  body.in-chat-conv #bottom-nav {
+    display: none !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+    transform: translateY(100%) !important;
+    opacity: 0 !important;
   }
 
   .bottom-nav-item {

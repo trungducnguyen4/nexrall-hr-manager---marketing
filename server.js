@@ -131,13 +131,198 @@ async function getVietqrBanks() {
   return data;
 }
 
+// ════════════════════════════════════════════════════════════════
+//  WEB PUSH NOTIFICATIONS (RFC 8291 / RFC 8292 / VAPID)
+// ════════════════════════════════════════════════════════════════
+const VAPID_KEYS = {
+  publicKey: 'BO1yCyvvHowbl4Vb5fsahzZH1_EScdsychTfuhOrzJOpra52gvz8csTMRYL4CVoztyNTohowAnymlVRuwbzQi0g',
+  privateJwk: {
+    kty: 'EC',
+    crv: 'P-256',
+    x: '7XILK-8ejBuXhVvl-xqHNkfX8RJx2zJyFN-6E6vMk6k',
+    y: 'ra52gvz8csTMRYL4CVoztyNTohowAnymlVRuwbzQi0g',
+    d: 'MwMdsfZHpo_HzYICfQz7q07q19y6B7qb2c9jeYwHDq8'
+  },
+  subject: 'mailto:admin@netviet.tv'
+};
+
+async function ensurePushSchema(env) {
+  if (!env.DB) return;
+  try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      endpoint TEXT NOT NULL UNIQUE,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      user_agent TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      updated_at TEXT DEFAULT (datetime('now','localtime'))
+    )`).run();
+    await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_push_sub_user ON push_subscriptions(user_id)').run();
+  } catch (err) {
+    console.error('ensurePushSchema error:', err);
+  }
+}
+
+function b64Url(buf) {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function b64UrlToBytes(str) {
+  const pad = '='.repeat((4 - (str.length % 4)) % 4);
+  const base64 = (str + pad).replace(/\-/g, '+').replace(/_/g, '/');
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function signVapidJwt(aud) {
+  const enc = new TextEncoder();
+  const header = b64Url(enc.encode(JSON.stringify({ typ: 'JWT', alg: 'ES256' })));
+  const payload = b64Url(enc.encode(JSON.stringify({
+    aud,
+    exp: Math.floor(Date.now() / 1000) + 12 * 3600,
+    sub: VAPID_KEYS.subject
+  })));
+  const unsigned = header + '.' + payload;
+
+  const key = await crypto.subtle.importKey(
+    'jwk',
+    VAPID_KEYS.privateJwk,
+    { name: 'ECDSA', namedCurve: 'P-256' },
+    false,
+    ['sign']
+  );
+
+  const sig = await crypto.subtle.sign(
+    { name: 'ECDSA', hash: { name: 'SHA-256' } },
+    key,
+    enc.encode(unsigned)
+  );
+
+  return unsigned + '.' + b64Url(new Uint8Array(sig));
+}
+
+async function hkdfExtract(saltBytes, ikmBytes) {
+  const key = await crypto.subtle.importKey('raw', saltBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return new Uint8Array(await crypto.subtle.sign('HMAC', key, ikmBytes));
+}
+
+async function hkdfExpand(prkBytes, infoBytes, length) {
+  const key = await crypto.subtle.importKey('raw', prkBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const infoWithCounter = new Uint8Array(infoBytes.length + 1);
+  infoWithCounter.set(infoBytes, 0);
+  infoWithCounter[infoBytes.length] = 1;
+  const okm = new Uint8Array(await crypto.subtle.sign('HMAC', key, infoWithCounter));
+  return okm.slice(0, length);
+}
+
+async function encryptWebPushPayload(subscriber, payloadObj) {
+  const enc = new TextEncoder();
+  const clientPubRaw = b64UrlToBytes(subscriber.p256dh);
+  const clientAuth = b64UrlToBytes(subscriber.auth);
+
+  const senderKeys = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  const senderPubRaw = await crypto.subtle.exportKey('raw', senderKeys.publicKey);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+
+  const importedClientPub = await crypto.subtle.importKey('raw', clientPubRaw, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  const ecdhSecret = await crypto.subtle.deriveBits({ name: 'ECDH', public: importedClientPub }, senderKeys.privateKey, 256);
+
+  const infoPrefix = enc.encode('WebPush: info\0');
+  const authInfo = new Uint8Array(infoPrefix.length + clientPubRaw.byteLength + senderPubRaw.byteLength);
+  authInfo.set(infoPrefix, 0);
+  authInfo.set(clientPubRaw, infoPrefix.length);
+  authInfo.set(new Uint8Array(senderPubRaw), infoPrefix.length + clientPubRaw.byteLength);
+
+  const prk = await hkdfExtract(clientAuth, new Uint8Array(ecdhSecret));
+  const ikm = await hkdfExpand(prk, authInfo, 32);
+
+  const prkSalt = await hkdfExtract(salt, ikm);
+  const cek = await hkdfExpand(prkSalt, enc.encode('Content-Encoding: aes128gcm\0'), 16);
+  const nonce = await hkdfExpand(prkSalt, enc.encode('Content-Encoding: nonce\0'), 12);
+
+  const payloadBytes = enc.encode(JSON.stringify(payloadObj));
+  const plaintext = new Uint8Array(payloadBytes.length + 1);
+  plaintext.set(payloadBytes, 0);
+  plaintext[payloadBytes.length] = 2;
+
+  const aesKey = await crypto.subtle.importKey('raw', cek, 'AES-GCM', false, ['encrypt']);
+  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, tagLength: 128 }, aesKey, plaintext);
+
+  const header = new Uint8Array(16 + 4 + 1 + 65);
+  header.set(salt, 0);
+  const view = new DataView(header.buffer);
+  view.setUint32(16, 4096, false);
+  header[20] = 65;
+  header.set(new Uint8Array(senderPubRaw), 21);
+
+  const body = new Uint8Array(header.length + ciphertext.byteLength);
+  body.set(header, 0);
+  body.set(new Uint8Array(ciphertext), header.length);
+
+  return body;
+}
+
+export async function sendWebPushNotification(env, userIds, payloadObj) {
+  if (!env.DB) return;
+  const ids = (Array.isArray(userIds) ? userIds : [userIds]).map(Number).filter(Boolean);
+  if (!ids.length) return;
+
+  await ensurePushSchema(env);
+
+  const placeholders = ids.map(() => '?').join(',');
+  const { results: subscriptions = [] } = await env.DB.prepare(
+    `SELECT * FROM push_subscriptions WHERE user_id IN (${placeholders})`
+  ).bind(...ids).all();
+
+  console.log(`[WebPush] Found ${subscriptions.length} subscription(s) for userIds=[${ids.join(',')}]`);
+  if (!subscriptions.length) return;
+
+  const promises = subscriptions.map(async (sub) => {
+    try {
+      const endpointUrl = new URL(sub.endpoint);
+      const aud = endpointUrl.origin;
+      const jwt = await signVapidJwt(aud);
+      const body = await encryptWebPushPayload(sub, payloadObj);
+
+      console.log(`[WebPush] Sending to user_id=${sub.user_id}, endpoint=${sub.endpoint.slice(0, 60)}...`);
+
+      const res = await fetch(sub.endpoint, {
+        method: 'POST',
+        headers: {
+          'Authorization': `vapid t=${jwt}, k=${VAPID_KEYS.publicKey}`,
+          'Content-Type': 'application/octet-stream',
+          'Content-Encoding': 'aes128gcm',
+          'TTL': '86400',
+          'Urgency': 'high',
+        },
+        body,
+      });
+
+      const resBody = await res.text().catch(() => '');
+      console.log(`[WebPush] Response: status=${res.status} ${res.statusText}, body=${resBody.slice(0, 200)}`);
+
+      if (res.status === 404 || res.status === 410) {
+        console.log(`[WebPush] Removing expired subscription for user_id=${sub.user_id}`);
+        await env.DB.prepare('DELETE FROM push_subscriptions WHERE endpoint=?').bind(sub.endpoint).run();
+      }
+    } catch (err) {
+      console.error('[WebPush] Push delivery error for endpoint:', sub.endpoint?.slice(0, 60), err?.message || err);
+    }
+  });
+
+  await Promise.allSettled(promises);
+}
+
 export async function migrate(env) {
   if (_migrated) return;
-  // These additive tables are self-healed before the schema-version fast path.
-  // A previous interrupted deployment can otherwise leave the version marker
-  // behind while a new API starts querying a table that was never created.
-  // Older deployment helpers are best-effort: a legacy D1 inconsistency in
-  // one optional module must not make Chat (or login) unavailable.
+  try { await ensurePushSchema(env); } catch (error) { console.error('Push schema check failed', error); }
   try { await ensureAttendanceOvertimeSchema(env); } catch (error) { console.error('Attendance schema check failed', error); }
   try { await ensureAttendanceLocationSchema(env); } catch (error) { console.error('Attendance location schema check failed', error); }
   try { await ensureProjectHandoverSchema(env); } catch (error) { console.error('Handover schema check failed', error); }
@@ -4253,6 +4438,85 @@ export async function handle(request, env) {
     });
   }
 
+  // ── Web Push Notification Endpoints (PWA / Lock Screen) ────────────
+  if (path === '/api/notifications/push-vapid-public-key' && request.method === 'GET') {
+    return json({ public_key: VAPID_KEYS.publicKey });
+  }
+
+  if (path === '/api/notifications/push-subscribe' && request.method === 'POST') {
+    try {
+      await ensurePushSchema(env);
+      const b = await request.json().catch(() => ({}));
+      const endpoint = String(b.endpoint || '').trim();
+      const p256dh = String(b.p256dh || '').trim();
+      const auth = String(b.auth || '').trim();
+      const user_agent = String(b.user_agent || '').slice(0, 500);
+
+      if (!endpoint || !p256dh || !auth) {
+        return json({ error: 'Thông tin Push Subscription không hợp lệ (thiếu endpoint hoặc keys)' }, 400);
+      }
+
+      // Upsert subscription
+      try {
+        await env.DB.prepare(
+          `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent, updated_at)
+           VALUES (?, ?, ?, ?, ?, datetime('now','localtime'))
+           ON CONFLICT(endpoint) DO UPDATE SET
+             user_id=excluded.user_id,
+             p256dh=excluded.p256dh,
+             auth=excluded.auth,
+             user_agent=excluded.user_agent,
+             updated_at=datetime('now','localtime')`
+        ).bind(me.id, endpoint, p256dh, auth, user_agent).run();
+      } catch (upsertErr) {
+        // Fallback for DB engines
+        await env.DB.prepare('DELETE FROM push_subscriptions WHERE endpoint=?').bind(endpoint).run();
+        await env.DB.prepare(
+          `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent, updated_at)
+           VALUES (?, ?, ?, ?, ?, datetime('now','localtime'))`
+        ).bind(me.id, endpoint, p256dh, auth, user_agent).run();
+      }
+
+      return json({ ok: true });
+    } catch (err) {
+      console.error('Push subscribe error:', err);
+      return json({ error: 'Không thể lưu thông tin thông báo: ' + (err?.message || err) }, 500);
+    }
+  }
+
+  if (path === '/api/notifications/push-unsubscribe' && request.method === 'POST') {
+    try {
+      await ensurePushSchema(env);
+      const b = await request.json().catch(() => ({}));
+      const endpoint = String(b.endpoint || '').trim();
+      if (endpoint) {
+        await env.DB.prepare('DELETE FROM push_subscriptions WHERE endpoint=? AND user_id=?').bind(endpoint, me.id).run();
+      } else {
+        await env.DB.prepare('DELETE FROM push_subscriptions WHERE user_id=?').bind(me.id).run();
+      }
+      return json({ ok: true });
+    } catch (err) {
+      return json({ error: 'Lỗi hủy đăng ký push: ' + (err?.message || err) }, 500);
+    }
+  }
+
+  if (path === '/api/notifications/test-push' && request.method === 'POST') {
+    try {
+      await ensurePushSchema(env);
+      await sendWebPushNotification(env, [me.id], {
+        title: '🔔 NetViet HR - PWA',
+        body: `Xin chào ${me.full_name || 'bạn'}! Thông báo đẩy lên màn hình khóa đã hoạt động thành công 🚀`,
+        icon: me.avatar_url || '/icon-192.png',
+        badge: '/icon-192.png',
+        url: '/#/notifications',
+        tag: 'test-push-notification',
+      });
+      return json({ ok: true, message: 'Đã gửi thông báo thử nghiệm đến thiết bị của bạn' });
+    } catch (err) {
+      return json({ error: 'Lỗi gửi test push: ' + (err?.message || err) }, 500);
+    }
+  }
+
   if (path === '/api/notifications/task-mentions/unread-count' && request.method === 'GET') {
     const totalRow = await env.DB.prepare('SELECT COUNT(*) AS cnt FROM task_mention_notifications WHERE user_id=? AND is_read=0').bind(me.id).first();
     const { results: projectRows = [] } = await env.DB.prepare(
@@ -6914,6 +7178,22 @@ const attendanceRateTo =
             'INSERT INTO task_mention_notifications (user_id,task_id,comment_id,mentioned_by,mentioned_by_name,task_title,comment_snippet) VALUES (?,?,?,?,?,?,?)'
           ).bind(m.user_id, tid, commentId, me.id, me.full_name || '', taskTitle, b.content.slice(0, 120)).run();
         }
+
+        const targetMentionIds = mentions.map(m => Number(m.user_id)).filter(uid => uid && uid !== Number(me.id));
+        if (targetMentionIds.length) {
+          try {
+            await sendWebPushNotification(env, targetMentionIds, {
+              title: '🔔 ' + (taskTitle || 'Công việc mới'),
+              body: `${me.full_name || 'Đồng nghiệp'} đã nhắc tên bạn: "${b.content.slice(0, 100)}"`,
+              icon: me.avatar_url || '/icon-192.png',
+              badge: '/icon-192.png',
+              url: `/#/tasks?id=${tid}`,
+              tag: `task-${tid}-${commentId || Date.now()}`,
+            });
+          } catch (err) {
+            console.warn('Task mention push error:', err);
+          }
+        }
       }
       return json({ ok: true, id: commentId });
     }
@@ -9040,6 +9320,34 @@ const attendanceRateTo =
     }
     const message = await getChatMessage(env, messageId, me.id);
     await broadcastChatUpdate(env, convId, { type: 'message:new', message });
+
+    // Web Push Notification to conversation members (Lock screen / Background)
+    try {
+      const { results: memberRows = [] } = await env.DB.prepare(
+        'SELECT user_id FROM conversation_members WHERE conversation_id = ?'
+      ).bind(convId).all();
+      const recipientIds = memberRows
+        .map(r => Number(r.user_id))
+        .filter(uid => uid && uid !== Number(me.id));
+      if (recipientIds.length) {
+        const convRow = await env.DB.prepare('SELECT name, type FROM conversations WHERE id = ?').bind(convId).first();
+        const senderName = message.sender_name || me.full_name || 'NetViet Chat';
+        const isGroup = convRow?.type !== 'direct';
+        const title = isGroup && convRow?.name ? `${convRow.name} (${senderName})` : senderName;
+        const preview = message.content || (message.attachments?.length ? '📎 [Tệp đính kèm]' : (message.poll ? '📊 [Cuộc bình chọn]' : (message.event ? '📅 [Sự kiện]' : 'Đã gửi một tin nhắn')));
+        await sendWebPushNotification(env, recipientIds, {
+          title,
+          body: preview,
+          icon: message.sender_avatar || '/icon-192.png',
+          badge: '/icon-192.png',
+          url: `/#/chat/${convId}/${messageId}`,
+          tag: `chat-${convId}-${messageId || Date.now()}`,
+        });
+      }
+    } catch (pushErr) {
+      console.warn('Failed to dispatch chat push notification:', pushErr);
+    }
+
     return json({ message, mentioned_user_ids: mentionedUserIds });
   }
 
