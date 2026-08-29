@@ -340,6 +340,14 @@ export async function sendWebPushNotification(env, userIds, payloadObj) {
 
 export async function migrate(env) {
   if (_migrated) return;
+  try {
+    const row = await env.DB.prepare("SELECT setting_value FROM settings WHERE setting_key='schema_version'").first();
+    if (row?.setting_value === SCHEMA_VERSION) {
+      _migrated = true;
+      return;
+    }
+  } catch (_) {}
+
   try { await ensurePushSchema(env); } catch (error) { console.error('Push schema check failed', error); }
   try { await ensureAttendanceOvertimeSchema(env); } catch (error) { console.error('Attendance schema check failed', error); }
   try { await ensureAttendanceLocationSchema(env); } catch (error) { console.error('Attendance location schema check failed', error); }
@@ -4925,6 +4933,8 @@ export async function handle(request, env) {
     await ensureWorkLocationStandardization(env).catch(() => {});
     const hasHrScope = isAdmin || isHcns(me);
     const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
+    const pageSize = Math.min(100, Math.max(1, parseInt(url.searchParams.get('page_size') || '20', 10)));
+    const { where, binds } = buildEmployeeDirectoryFilter(url, me, hasHrScope);
     const { results: allUsers = [] } = await env.DB.prepare(
       `SELECT u.id,u.employee_code,u.employee_type,u.full_name,u.email,u.department,u.position,
               u.avatar_color,u.avatar_initials,u.avatar_url,u.is_active,u.lifecycle_status,
@@ -5459,11 +5469,16 @@ export async function handle(request, env) {
     for (const [field, type, title] of datedFields) {
       if (target[field]) events.push({ id: `${field}-${userId}`, type, title, event_date: target[field], source: 'profile' });
     }
-    const { results: lifecycle = [] } = await env.DB.prepare(
-      `SELECT id,from_status,to_status,changed_by_name,reason,
-              created_at AS event_date
-       FROM lifecycle_history WHERE user_id=? ORDER BY id`
-    ).bind(userId).all();
+    let lifecycle = [];
+    try {
+      const r = await env.DB.prepare(
+        `SELECT id,from_status,to_status,changed_by_name,reason,
+                created_at AS event_date
+         FROM lifecycle_history WHERE user_id=? ORDER BY id`
+      ).bind(userId).all();
+      lifecycle = r.results || [];
+    } catch (_) {}
+
     for (const row of lifecycle) events.push({
       id: `lifecycle-${row.id}`,
       type: 'lifecycle',
@@ -5473,13 +5488,19 @@ export async function handle(request, env) {
       event_date: row.event_date,
       source: 'lifecycle',
     });
+
     const auditFields = [...EMPLOYEE_TIMELINE_FIELDS].filter(field => hasHrScope || !['salary','allowance'].includes(field));
     if (auditFields.length) {
-      const placeholders = auditFields.map(() => '?').join(',');
-      const { results: auditEvents = [] } = await env.DB.prepare(
-        `SELECT id,field_name,old_value,new_value,changed_by_name,changed_at
-         FROM employee_profile_audit WHERE user_id=? AND field_name IN (${placeholders}) ORDER BY changed_at`
-      ).bind(userId, ...auditFields).all();
+      let auditEvents = [];
+      try {
+        const placeholders = auditFields.map(() => '?').join(',');
+        const r = await env.DB.prepare(
+          `SELECT id,field_name,old_value,new_value,changed_by_name,changed_at
+           FROM employee_profile_audit WHERE user_id=? AND field_name IN (${placeholders}) ORDER BY changed_at`
+        ).bind(userId, ...auditFields).all();
+        auditEvents = r.results || [];
+      } catch (_) {}
+
       for (const row of auditEvents) events.push({
         id: `audit-${row.id}`,
         type: row.field_name === 'department' ? 'transfer' : row.field_name === 'salary' ? 'salary' : 'profile_change',
@@ -5492,10 +5513,16 @@ export async function handle(request, env) {
         source: 'audit',
       });
     }
-    const { results: documentEvents = [] } = await env.DB.prepare(
-      `SELECT id,category,title,uploaded_by_name,uploaded_at,deleted_at,deleted_by_name
-       FROM employee_documents WHERE user_id=? ORDER BY uploaded_at`
-    ).bind(userId).all();
+
+    let documentEvents = [];
+    try {
+      const r = await env.DB.prepare(
+        `SELECT id,category,title,uploaded_by_name,uploaded_at,deleted_at,deleted_by_name
+         FROM employee_documents WHERE user_id=? ORDER BY uploaded_at`
+      ).bind(userId).all();
+      documentEvents = r.results || [];
+    } catch (_) {}
+
     for (const document of documentEvents) {
       events.push({
         id: `document-upload-${document.id}`,
@@ -6430,23 +6457,17 @@ const attendanceRateTo =
 
   if (path === '/api/attendance/today' && request.method === 'GET') {
     const today = vnTodayStr();
-    // Older registrations inherited the table default "present" even though
-    // no clock-in happened. Repair only today's incomplete registrations so
-    // they cannot be displayed or interpreted as on-time attendance.
-    await env.DB.prepare(
-      "UPDATE attendance SET status='registered' WHERE date=? AND registered=1 AND checkin_time IS NULL AND status='present'"
-    ).bind(today).run();
     let rows;
     if (isManager) {
       const scope = (!isAdmin && !isAttendanceHcns) ? ' AND u.department=?' : '';
       const stmt = env.DB.prepare(
-        `SELECT a.*, u.full_name, u.employee_code, u.department FROM attendance a JOIN users u ON a.user_id=u.id WHERE a.date=?${scope} ORDER BY a.checkin_time`
+        `SELECT a.*, CASE WHEN a.registered=1 AND a.checkin_time IS NULL AND a.status='present' THEN 'registered' ELSE a.status END AS status, u.full_name, u.employee_code, u.department FROM attendance a JOIN users u ON a.user_id=u.id WHERE a.date=?${scope} ORDER BY a.checkin_time`
       );
       const r = scope ? await stmt.bind(today, me.department).all() : await stmt.bind(today).all();
       rows = r.results;
     } else {
       const r = await env.DB.prepare(
-        'SELECT a.*, u.full_name, u.employee_code, u.department FROM attendance a JOIN users u ON a.user_id=u.id WHERE a.user_id=? AND a.date=?'
+        "SELECT a.*, CASE WHEN a.registered=1 AND a.checkin_time IS NULL AND a.status='present' THEN 'registered' ELSE a.status END AS status, u.full_name, u.employee_code, u.department FROM attendance a JOIN users u ON a.user_id=u.id WHERE a.user_id=? AND a.date=?"
       ).bind(me.id, today).all();
       rows = r.results;
     }

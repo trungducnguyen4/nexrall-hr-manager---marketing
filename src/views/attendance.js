@@ -159,12 +159,12 @@ export async function renderAttendance(el, me, route = {}) {
   `;
 
   // Live clock
-  const liveTime = document.getElementById('att-live-time');
-  const liveDate = document.getElementById('att-live-date');
+  const liveTime = el.querySelector('#att-live-time') || document.getElementById('att-live-time');
+  const liveDate = el.querySelector('#att-live-date') || document.getElementById('att-live-date');
   function tickClock() {
     const now = new Date();
-    liveTime.textContent = now.toLocaleTimeString('vi-VN');
-    liveDate.textContent = now.toLocaleDateString('vi-VN', { weekday:'long', year:'numeric', month:'long', day:'numeric' });
+    if (liveTime) liveTime.textContent = now.toLocaleTimeString('vi-VN');
+    if (liveDate) liveDate.textContent = now.toLocaleDateString('vi-VN', { weekday:'long', year:'numeric', month:'long', day:'numeric' });
   }
   tickClock();
   const clockInterval = setInterval(tickClock, 1000);
@@ -329,8 +329,6 @@ export async function renderAttendance(el, me, route = {}) {
       if (regShifts.size === 0) { regShifts.add('morning'); regShifts.add('afternoon'); }
       updateShiftChips();
       renderClockState();
-      void loadAttendanceCompliance();
-      void loadGeoPanel();
     } catch(e) {
       document.getElementById('att-status-line').innerHTML = `<span style="font-size:12px;opacity:.7">Lỗi tải trạng thái</span>`;
     }
@@ -1426,6 +1424,9 @@ document.getElementById('btn-register').addEventListener('click', async () => {
     loadTodayStatus(),
     loadHistory(),
     loadGeoPanel(),
+    loadAttendanceCompliance(),
+    canManageAttendance ? loadOvertimeRequests() : Promise.resolve(),
+    loadOvertimeForms(),
   ]);
   if (routeEmployeeId && (canManageAttendance || routeEmployeeId === Number(me.id))) {
     openAttendanceSummary(routeEmployeeId, routeDate);

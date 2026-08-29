@@ -85,10 +85,12 @@ loginForm.addEventListener('submit', async (e) => {
     me = userData;
     realtime.connect({ user: me, token });
     if (me.must_change_password) window.location.hash = '#/settings';
+    document.documentElement?.classList?.add('has-auth-token');
     loginScreen.classList.add('hidden');
     appEl.classList.remove('hidden');
     initApp();
   } catch(e) {
+    document.documentElement?.classList?.remove('has-auth-token');
     showLoginError(e.message || 'Đăng nhập thất bại');
   } finally {
     loginBtn.disabled = false;
@@ -107,11 +109,14 @@ function showLoginError(msg) {
 async function boot() {
   loginUser.value = '';
   loginPw.value = '';
-  appEl.classList.add('hidden');
-  loginScreen.classList.remove('hidden');
 
   const token = await loadToken();
-  if (!token) return;
+  if (!token) {
+    document.documentElement?.classList?.remove('has-auth-token');
+    appEl.classList.add('hidden');
+    loginScreen.classList.remove('hidden');
+    return;
+  }
 
   loginBtn.disabled = true;
   loginBtn.textContent = 'Đang kiểm tra phiên...';
@@ -122,6 +127,7 @@ async function boot() {
     me = userData;
     realtime.connect({ user: me, token });
     if (me.must_change_password) window.location.hash = '#/settings';
+    document.documentElement?.classList?.add('has-auth-token');
     loginScreen.classList.add('hidden');
     appEl.classList.remove('hidden');
     initApp();
@@ -131,6 +137,7 @@ async function boot() {
     clearCache();
     loginUser.value = '';
     loginPw.value = '';
+    document.documentElement?.classList?.remove('has-auth-token');
     loginScreen.classList.remove('hidden');
     appEl.classList.add('hidden');
   } finally {
@@ -564,6 +571,7 @@ function initApp() {
     clearCache();
     _destroyAllViews();
     _appInitialized = false;
+    document.documentElement?.classList?.remove('has-auth-token');
     appEl.classList.add('hidden');
     loginScreen.classList.remove('hidden');
     loginUser.value = '';
@@ -634,55 +642,50 @@ async function route() {
 
   syncBottomNav(hash, path, segments);
 
-  // Yield to allow the browser to paint the immediate active tab/nav feedback
-  await yieldToMain();
-  if (routeGeneration !== _routeGeneration) return;
-
-  // Keep exactly one route view in the DOM. Views contain repeated element IDs
-  // and some legacy global selectors; retaining hidden route DOM lets events
-  // bind to a stale instance and is the root cause of the "refresh to use" bug.
-  if (_activeViewCleanup) {
-    try { _activeViewCleanup(); } catch (error) { console.warn('View cleanup failed', error); }
-  }
-  _activeViewCleanup = null;
-  if (_activeViewNode) _activeViewNode.remove();
-  _activeViewNode = null;
-  contentEl.querySelectorAll(':scope > .view-container').forEach(node => node.remove());
-
-  // Create a fresh container node for this view
-  const viewNode = document.createElement('div');
-  viewNode.className = 'view-container';
-  viewNode.dataset.view = routeKey;
-  contentEl.appendChild(viewNode);
-
-  _currentView = routeKey;
-
   try {
     const mod = await getView(path);
-    if (routeGeneration !== _routeGeneration) {
-      if (viewNode._cleanup) viewNode._cleanup();
-      viewNode.remove();
-      return;
+    if (routeGeneration !== _routeGeneration) return;
+
+    // Cleanup previous active view
+    if (_activeViewCleanup) {
+      try { _activeViewCleanup(); } catch (error) { console.warn('View cleanup failed', error); }
     }
+    _activeViewCleanup = null;
+
+    // Create and mount the container node for this view
+    const viewNode = document.createElement('div');
+    viewNode.className = 'view-container';
+    viewNode.dataset.view = routeKey;
+
+    // Replace children atomically so viewNode is in document immediately
+    contentEl.replaceChildren(viewNode);
+    _activeViewNode = viewNode;
+
     const fnName = 'render' + path.split('-').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join('');
     if (mod && typeof mod[fnName] === 'function') {
       await mod[fnName](viewNode, me, { hash, routeKey, segments });
       if (routeGeneration !== _routeGeneration) {
         if (viewNode._cleanup) viewNode._cleanup();
-        viewNode.remove();
         return;
       }
       normalizeIcons(viewNode);
-      _activeViewNode = viewNode;
       _activeViewCleanup = viewNode._cleanup || null;
       viewNode._cleanup = null;
     } else {
       viewNode.innerHTML = `<div class="empty-state"><div class="empty-icon">404</div><div class="empty-text">Trang không tìm thấy</div></div>`;
-      _activeViewNode = viewNode;
     }
   } catch(e) {
     console.error('Route error:', e);
+    const viewNode = document.createElement('div');
+    viewNode.className = 'view-container';
+    viewNode.dataset.view = routeKey;
     viewNode.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
+
+    if (_activeViewCleanup) {
+      try { _activeViewCleanup(); } catch (_) {}
+    }
+    _activeViewCleanup = null;
+    contentEl.replaceChildren(viewNode);
     _activeViewNode = viewNode;
   }
 }

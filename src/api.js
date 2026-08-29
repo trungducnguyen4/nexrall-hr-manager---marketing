@@ -113,7 +113,35 @@ function headers(extra = {}) {
   return h;
 }
 
+const _inflightGets = new Map();
+
 async function req(method, path, body) {
+  if (method === 'GET') {
+    const key = path;
+    if (_inflightGets.has(key)) {
+      return _inflightGets.get(key);
+    }
+    const p = (async () => {
+      try {
+        const opts = { method, headers: headers() };
+        const res = await fetch(apiUrl(path), opts);
+        const text = await res.text().catch(() => '');
+        let data = {};
+        if (text) {
+          try { data = JSON.parse(text); }
+          catch (_) { data = { error: text }; }
+        }
+        const message = data.error || data.message || (res.statusText ? `${res.status} ${res.statusText}` : `HTTP ${res.status}`);
+        if (!res.ok) throw Object.assign(new Error(message), { status: res.status, data });
+        return data;
+      } finally {
+        _inflightGets.delete(key);
+      }
+    })();
+    _inflightGets.set(key, p);
+    return p;
+  }
+
   const opts = { method, headers: headers() };
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res = await fetch(apiUrl(path), opts);

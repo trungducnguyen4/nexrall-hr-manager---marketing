@@ -50,6 +50,12 @@
 
   <link rel="stylesheet" href="/styles/main.css?v=20260826-webpush-lockscreen-v25"/>
   <link rel="stylesheet" href="/styles/chat.css?v=20260826-webpush-lockscreen-v25"/>
+  <script>
+    try {
+      var t = localStorage.getItem('token') || (document.cookie.match(/(?:^|;\s*)auth_token=([^;]+)/) || [])[1];
+      if (t) document.documentElement.classList.add('has-auth-token');
+    } catch (_) {}
+  </script>
 </head>
 <body>
 

@@ -272,20 +272,21 @@ async function renderWorkflowSection(el, me) {
     sections.push(ttsSectionHtml(own));
   }
 
+  if (hr || ceo) {
+    sections.push('<div id="eval-report-section"></div>');
+    sections.push('<div id="eval-dash-section"></div>');
+  }
+
   if (!sections.length) { el.innerHTML = ''; return; }
   el.innerHTML = sections.join('');
   wireWorkflowHandlers(el, me, { evaluations, periods, basicUsers });
 
-  // ── Report & Dashboard sections (HCNS/BGD) rendered separately after main sections ──
+  // ── Report & Dashboard sections (HCNS/BGD) ──
   if (hr || ceo) {
-    const reportEl = document.createElement('div');
-    reportEl.id = 'eval-report-section';
-    el.appendChild(reportEl);
-    const dashEl = document.createElement('div');
-    dashEl.id = 'eval-dash-section';
-    el.appendChild(dashEl);
-    renderEvalReport(reportEl, me, latestPeriod);
-    renderEvalDashboard(dashEl, me, latestPeriod);
+    const reportEl = el.querySelector('#eval-report-section');
+    const dashEl = el.querySelector('#eval-dash-section');
+    if (reportEl) renderEvalReport(reportEl, me, latestPeriod);
+    if (dashEl) renderEvalDashboard(dashEl, me, latestPeriod);
   }
 }
 

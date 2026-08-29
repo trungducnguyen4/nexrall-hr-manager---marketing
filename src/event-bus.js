@@ -84,7 +84,7 @@ export class EventBusClass {
       exact.forEach(h => handlersToCall.add(h));
     }
 
-    // 2. Wildcard prefix handlers (e.g. 'task:*' or 'tasks:*')
+    // 2. Wildcard prefix handlers (e.g. 'task:*' or 'tasks:*') and base topic handlers (e.g. 'task' or 'tasks')
     const colonIdx = topicKey.indexOf(':');
     if (colonIdx > 0) {
       const prefix = topicKey.slice(0, colonIdx);
@@ -92,6 +92,10 @@ export class EventBusClass {
       const wildPrefix = this._listeners.get(wildcardKey);
       if (wildPrefix) {
         wildPrefix.forEach(h => handlersToCall.add(h));
+      }
+      const baseTopic = this._listeners.get(prefix);
+      if (baseTopic) {
+        baseTopic.forEach(h => handlersToCall.add(h));
       }
     }
 

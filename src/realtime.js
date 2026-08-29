@@ -389,16 +389,16 @@ export class RealtimeClient {
     if (!event || typeof event !== 'object') return;
 
     if (typeof event.seq === 'number') {
+      if (this._lastSeq && event.seq <= this._lastSeq && event.type !== 'realtime:replayed') {
+        // Drop duplicate sequence delivery
+        return;
+      }
       this._lastSeq = Math.max(this._lastSeq, event.seq);
     }
 
-    // Pipe directly to EventBus
-    if (event.topic) {
-      EventBus.emit(event.topic, event);
-    }
-    if (event.event && event.event !== event.topic) {
-      EventBus.emit(event.event, event);
-    }
+    // Single unified dispatch to EventBus (EventBus automatically notifies wildcard and base prefix listeners)
+    const eventName = event.event || event.topic || 'realtime:event';
+    EventBus.emit(eventName, event);
 
     // Also emit generic real-time envelope
     EventBus.emit('realtime:event', event);
