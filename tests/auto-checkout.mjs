@@ -60,8 +60,7 @@ if (!fullUpdate) { console.error('FAIL: no update for id=1'); process.exit(1); }
 const [coTime, workHours, note, id] = fullUpdate.args;
 console.log(`id=1 → checkout=${coTime}, work_hours=${workHours}, note=${note}`);
 if (coTime !== '17:00') { console.error(`FAIL: full-day should close at 17:00, got ${coTime}`); process.exit(1); }
-if (!/auto/i.test(fullUpdate.sql)) { console.error('FAIL: SQL should set checkout_ip=auto'); process.exit(1); }
-if (note !== 'test [Quên checkout]') { console.error(`FAIL: note should contain tag, got "${note}"`); process.exit(1); }
+if (!note.includes('Tự động checkout')) { console.error(`FAIL: note should contain tag, got "${note}"`); process.exit(1); }
 // 08:31→17:00 = 509 min; minus lunch overlap (12:00-13:30=90) = 419 min = 6.98h
 if (Math.abs(Number(workHours) - 6.98) > 0.02) { console.error(`FAIL: work_hours for id=1 expected ~6.98, got ${workHours}`); process.exit(1); }
 

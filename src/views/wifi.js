@@ -1,24 +1,27 @@
 import { api } from '../api.js';
+import { EventBus } from '../event-bus.js';
 import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML } from '../utils.js';
 import { getDeviceLocation } from '../location.js?v=20260816-location-v1';
 import { renderGeoMap } from '../geo-map.js?v=20260817-geofence-soft-v1';
+import { icon } from '../icons.js';
 
 export async function renderWifi(el, me) {
+  el._cleanup = () => {};
   if (me.role !== 'admin') {
-    el.innerHTML = `<div class="empty-state"><div class="empty-icon">🔒</div><div class="empty-text">Chỉ Admin mới có quyền truy cập</div></div>`;
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">${icon('lock', 'lg')}</div><div class="empty-text">Chỉ Admin mới có quyền truy cập</div></div>`;
     return;
   }
 
   el.innerHTML = `
     <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;">
       <div>
-        <div class="page-title">📍 Địa điểm chấm công</div>
+        <div class="page-title">${icon('mapPin', 'lg')} <span>Địa điểm chấm công</span></div>
         <div class="page-sub">Geofence GPS là xác minh chính; Public IP chỉ là tín hiệu quản trị bổ sung.</div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <div id="gps-constraint-control"></div>
-        <button id="btn-check-ip" class="btn-secondary btn-sm">Kiểm tra IP hiện tại</button>
-        <button id="btn-add-location" class="btn-primary btn-sm">+ Thêm địa điểm</button>
+        <button id="btn-check-ip" class="btn-secondary btn-sm">${icon('wifi', 'xs')} <span>Kiểm tra IP hiện tại</span></button>
+        <button id="btn-add-location" class="btn-primary btn-sm">${icon('plus', 'xs')} <span>Thêm địa điểm</span></button>
       </div>
     </div>
     <div id="attendance-location-list" class="attendance-location-grid">${loadingHTML()}</div>
@@ -137,6 +140,11 @@ export async function renderWifi(el, me) {
       box.textContent = e.message || 'Không kiểm tra được IP';
     }
   });
+  el._cleanup = () => {};
+
+  EventBus.bindView(el, 'wifi', () => { loadLocations(); loadWifi(); });
+  EventBus.bindView(el, 'location_config', () => { loadLocations(); loadWifi(); loadGpsConstraint(); });
+
   loadLocations(); loadWifi(); loadGpsConstraint();
 }
 

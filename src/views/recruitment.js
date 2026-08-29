@@ -1,5 +1,7 @@
 import { api } from '../api.js';
-import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, DEPARTMENTS, noop, safeCb, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js';
+import { EventBus } from '../event-bus.js';
+import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, DEPARTMENTS, noop, safeCb, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination, isHcnsDepartment, sortVietnameseNames, compareVietnameseNames } from '../utils.js';
+import { icon } from '../icons.js';
 
 const STAGES = [
   { key: 'received',    label: 'Mới tiếp nhận', color: '#64748B', bg: '#F1F5F9' },
@@ -19,15 +21,15 @@ const SOURCES = ['LinkedIn','Facebook','Giới thiệu','Website','TopCV','Vietn
 const DEPT_LIST = DEPARTMENTS;
 
 export async function renderRecruitment(el, me) {
-  const isAdmin = me.role === 'admin' || me.role === 'manager';
+  const isAdmin = me.role === 'admin' || me.role === 'manager' || isHcnsDepartment(me.department);
 
   el.innerHTML = `
     <div class="page-header">
       <div class="page-header-left">
-        <div class="page-title">🎯 Tuyển dụng</div>
+        <div class="page-title">${icon('userPlus', 'lg')} <span>Tuyển dụng</span></div>
         <div class="page-sub">Quản lý ứng viên theo từng giai đoạn</div>
       </div>
-      ${isAdmin ? `<button id="btn-new-cand" class="btn-primary btn-sm">+ Thêm ứng viên</button>` : ''}
+      ${isAdmin ? `<button id="btn-new-cand" class="btn-primary btn-sm">${icon('plus', 'xs')} <span>Thêm ứng viên</span></button>` : ''}
     </div>
 
     <!-- Stats -->
@@ -40,7 +42,7 @@ export async function renderRecruitment(el, me) {
     </div>
 
     <div class="search-bar">
-      <span class="search-icon">🔍</span>
+      <span class="search-icon">${icon('search', 'sm')}</span>
       <input type="text" id="recruit-search" placeholder="Tìm tên, vị trí ứng tuyển..."/>
       <select id="recruit-dept-filter" style="max-width:220px;"><option value="">Tất cả phòng ban</option>${DEPT_LIST.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}</select>
     </div>
@@ -111,6 +113,7 @@ export async function renderRecruitment(el, me) {
       if (stageFilter) filtered = filtered.filter(c => c.stage === stageFilter);
       filtered = filterBySearch(filtered, searchFilter, ['name', 'position', 'email', 'phone']);
       filtered = filterByDepartment(filtered, document.getElementById('recruit-dept-filter')?.value || '', ['department']);
+      filtered = sortVietnameseNames(filtered, 'name');
       const pageData = paginateRows(filtered, currentPage);
       currentPage = pageData.page;
       if (!filtered.length) {
@@ -185,6 +188,12 @@ export async function renderRecruitment(el, me) {
       listEl.innerHTML = emptyHTML('⚠️', e.message);
     }
   }
+
+  el._cleanup = () => {};
+
+  EventBus.bindView(el, 'recruitment', () => loadCandidates());
+  EventBus.bindView(el, 'recruitment:*', () => loadCandidates());
+  EventBus.bindView(el, 'candidate:*', () => loadCandidates());
 
   loadCandidates();
 }

@@ -1,0 +1,11576 @@
+var __defProp = Object.defineProperty;
+var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
+
+// server.js
+var _migrated = false;
+var SCHEMA_VERSION = "2026-08-11-project-timeline-v1";
+var SEED_VERSION = "2026-08-13-add-phong-it-v1";
+var LEAVE_DOCUMENT_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/webp"];
+var LEAVE_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
+async function ensureLeavePolicySchema(env) {
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS leave_balances (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, leave_type_code TEXT NOT NULL,
+    balance_year INTEGER NOT NULL, available_days REAL NOT NULL DEFAULT 0,
+    updated_by INTEGER, updated_by_name TEXT, updated_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(user_id, leave_type_code, balance_year)
+  )`);
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS leave_balance_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, leave_type_code TEXT NOT NULL,
+    balance_year INTEGER NOT NULL, leave_request_id INTEGER, delta_days REAL NOT NULL,
+    entry_type TEXT NOT NULL, note TEXT, created_by INTEGER, created_by_name TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS leave_request_documents (
+    id TEXT PRIMARY KEY, leave_request_id INTEGER, owner_id INTEGER NOT NULL,
+    original_filename TEXT NOT NULL, content_type TEXT NOT NULL, byte_size INTEGER NOT NULL,
+    storage_key TEXT NOT NULL UNIQUE, required_label TEXT, uploaded_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  for (const [column, type] of Object.entries({
+    short_description: "TEXT",
+    policy_description: "TEXT",
+    notice_hours: "INTEGER",
+    required_documents: "TEXT",
+    requires_handover: "INTEGER DEFAULT 0",
+    approval_flow: "TEXT"
+  })) {
+    try {
+      await env.DB.exec(`ALTER TABLE leave_types ADD COLUMN ${column} ${type}`);
+    } catch (_) {
+    }
+  }
+  for (const [column, type] of Object.entries({
+    leave_session: "TEXT DEFAULT 'full'",
+    total_days: "REAL",
+    handover_user_id: "INTEGER",
+    handover_user_name: "TEXT",
+    approval_flow: "TEXT",
+    balance_reserved_days: "REAL DEFAULT 0"
+  })) {
+    try {
+      await env.DB.exec(`ALTER TABLE leave_requests ADD COLUMN ${column} ${type}`);
+    } catch (_) {
+    }
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_leave_balances_user_year ON leave_balances(user_id,balance_year,leave_type_code)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_leave_documents_request ON leave_request_documents(leave_request_id,owner_id)");
+  } catch (_) {
+  }
+}
+__name(ensureLeavePolicySchema, "ensureLeavePolicySchema");
+async function ensurePayrollLineChangeLog(env) {
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS payroll_line_change_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    payroll_id INTEGER NOT NULL,
+    line_key TEXT NOT NULL,
+    line_label TEXT NOT NULL,
+    before_value REAL NOT NULL,
+    after_value REAL NOT NULL,
+    change_note TEXT NOT NULL,
+    changed_by INTEGER NOT NULL,
+    changed_by_name TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_payroll_line_change_log_payroll_created ON payroll_line_change_log(payroll_id,created_at DESC)");
+}
+__name(ensurePayrollLineChangeLog, "ensurePayrollLineChangeLog");
+async function ensurePayrollAdjustmentPolicySchema(env) {
+  try {
+    await env.DB.exec("ALTER TABLE payroll_adjustments ADD COLUMN violation_date TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll_adjustments ADD COLUMN policy_month TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_payroll_adjustments_policy_date ON payroll_adjustments(policy_month,violation_date,employee_id)");
+  } catch (_) {
+  }
+}
+__name(ensurePayrollAdjustmentPolicySchema, "ensurePayrollAdjustmentPolicySchema");
+async function ensurePayrollAdjustmentDismissalSchema(env) {
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS payroll_adjustment_dismissals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    month TEXT NOT NULL,
+    source_ref TEXT NOT NULL UNIQUE,
+    dismissed_by INTEGER NOT NULL,
+    dismissed_by_name TEXT,
+    dismissed_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(month, source_ref)
+  )`);
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_payroll_adjustment_dismissals_month ON payroll_adjustment_dismissals(month,dismissed_at DESC)");
+  } catch (_) {
+  }
+}
+__name(ensurePayrollAdjustmentDismissalSchema, "ensurePayrollAdjustmentDismissalSchema");
+var VIETQR_BANKS_URL = "https://api.vietqr.io/v2/banks";
+var VIETQR_BANKS_TTL_MS = 24 * 60 * 60 * 1e3;
+var _vietqrBanksCache = { data: null, expiresAt: 0 };
+async function getVietqrBanks() {
+  if (_vietqrBanksCache.data && Date.now() < _vietqrBanksCache.expiresAt) {
+    return _vietqrBanksCache.data;
+  }
+  const response = await fetch(VIETQR_BANKS_URL, {
+    headers: { Accept: "application/json" },
+    cf: { cacheTtl: 3600, cacheEverything: true }
+  });
+  if (!response.ok) throw new Error(`VietQR responded ${response.status}`);
+  const payload = await response.json();
+  if (payload?.code !== "00" || !Array.isArray(payload.data)) {
+    throw new Error("VietQR returned an invalid bank directory");
+  }
+  const data = payload.data.filter((bank) => bank && bank.shortName && bank.name && bank.bin).map((bank) => ({
+    shortName: String(bank.shortName),
+    name: String(bank.name),
+    code: String(bank.code || ""),
+    bin: String(bank.bin),
+    logo: typeof bank.logo === "string" && bank.logo.startsWith("https://api.vietqr.io/") ? bank.logo : ""
+  })).sort((a, b) => a.shortName.localeCompare(b.shortName, "vi"));
+  _vietqrBanksCache = { data, expiresAt: Date.now() + VIETQR_BANKS_TTL_MS };
+  return data;
+}
+__name(getVietqrBanks, "getVietqrBanks");
+var VAPID_KEYS = {
+  publicKey: "BO1yCyvvHowbl4Vb5fsahzZH1_EScdsychTfuhOrzJOpra52gvz8csTMRYL4CVoztyNTohowAnymlVRuwbzQi0g",
+  privateJwk: {
+    kty: "EC",
+    crv: "P-256",
+    x: "7XILK-8ejBuXhVvl-xqHNkfX8RJx2zJyFN-6E6vMk6k",
+    y: "ra52gvz8csTMRYL4CVoztyNTohowAnymlVRuwbzQi0g",
+    d: "MwMdsfZHpo_HzYICfQz7q07q19y6B7qb2c9jeYwHDq8"
+  },
+  subject: "mailto:admin@netviet.tv"
+};
+async function ensurePushSchema(env) {
+  if (!env.DB) return;
+  try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      endpoint TEXT NOT NULL UNIQUE,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      user_agent TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      updated_at TEXT DEFAULT (datetime('now','localtime'))
+    )`).run();
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_push_sub_user ON push_subscriptions(user_id)").run();
+  } catch (err) {
+    console.error("ensurePushSchema error:", err);
+  }
+}
+__name(ensurePushSchema, "ensurePushSchema");
+function b64Url(buf) {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+__name(b64Url, "b64Url");
+function b64UrlToBytes(str) {
+  const pad = "=".repeat((4 - str.length % 4) % 4);
+  const base64 = (str + pad).replace(/\-/g, "+").replace(/_/g, "/");
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+__name(b64UrlToBytes, "b64UrlToBytes");
+async function signVapidJwt(aud) {
+  const enc = new TextEncoder();
+  const header = b64Url(enc.encode(JSON.stringify({ typ: "JWT", alg: "ES256" })));
+  const payload = b64Url(enc.encode(JSON.stringify({
+    aud,
+    exp: Math.floor(Date.now() / 1e3) + 12 * 3600,
+    sub: VAPID_KEYS.subject
+  })));
+  const unsigned = header + "." + payload;
+  const key = await crypto.subtle.importKey(
+    "jwk",
+    VAPID_KEYS.privateJwk,
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign(
+    { name: "ECDSA", hash: { name: "SHA-256" } },
+    key,
+    enc.encode(unsigned)
+  );
+  return unsigned + "." + b64Url(new Uint8Array(sig));
+}
+__name(signVapidJwt, "signVapidJwt");
+async function hkdfExtract(saltBytes, ikmBytes) {
+  const key = await crypto.subtle.importKey("raw", saltBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, ikmBytes));
+}
+__name(hkdfExtract, "hkdfExtract");
+async function hkdfExpand(prkBytes, infoBytes, length) {
+  const key = await crypto.subtle.importKey("raw", prkBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const infoWithCounter = new Uint8Array(infoBytes.length + 1);
+  infoWithCounter.set(infoBytes, 0);
+  infoWithCounter[infoBytes.length] = 1;
+  const okm = new Uint8Array(await crypto.subtle.sign("HMAC", key, infoWithCounter));
+  return okm.slice(0, length);
+}
+__name(hkdfExpand, "hkdfExpand");
+async function encryptWebPushPayload(subscriber, payloadObj) {
+  const enc = new TextEncoder();
+  const clientPubRaw = b64UrlToBytes(subscriber.p256dh);
+  const clientAuth = b64UrlToBytes(subscriber.auth);
+  const senderKeys = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  const senderPubRaw = await crypto.subtle.exportKey("raw", senderKeys.publicKey);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const importedClientPub = await crypto.subtle.importKey("raw", clientPubRaw, { name: "ECDH", namedCurve: "P-256" }, false, []);
+  const ecdhSecret = await crypto.subtle.deriveBits({ name: "ECDH", public: importedClientPub }, senderKeys.privateKey, 256);
+  const infoPrefix = enc.encode("WebPush: info\0");
+  const authInfo = new Uint8Array(infoPrefix.length + clientPubRaw.byteLength + senderPubRaw.byteLength);
+  authInfo.set(infoPrefix, 0);
+  authInfo.set(clientPubRaw, infoPrefix.length);
+  authInfo.set(new Uint8Array(senderPubRaw), infoPrefix.length + clientPubRaw.byteLength);
+  const prk = await hkdfExtract(clientAuth, new Uint8Array(ecdhSecret));
+  const ikm = await hkdfExpand(prk, authInfo, 32);
+  const prkSalt = await hkdfExtract(salt, ikm);
+  const cek = await hkdfExpand(prkSalt, enc.encode("Content-Encoding: aes128gcm\0"), 16);
+  const nonce = await hkdfExpand(prkSalt, enc.encode("Content-Encoding: nonce\0"), 12);
+  const payloadBytes = enc.encode(JSON.stringify(payloadObj));
+  const plaintext = new Uint8Array(payloadBytes.length + 1);
+  plaintext.set(payloadBytes, 0);
+  plaintext[payloadBytes.length] = 2;
+  const aesKey = await crypto.subtle.importKey("raw", cek, "AES-GCM", false, ["encrypt"]);
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, tagLength: 128 }, aesKey, plaintext);
+  const header = new Uint8Array(16 + 4 + 1 + 65);
+  header.set(salt, 0);
+  const view = new DataView(header.buffer);
+  view.setUint32(16, 4096, false);
+  header[20] = 65;
+  header.set(new Uint8Array(senderPubRaw), 21);
+  const body = new Uint8Array(header.length + ciphertext.byteLength);
+  body.set(header, 0);
+  body.set(new Uint8Array(ciphertext), header.length);
+  return body;
+}
+__name(encryptWebPushPayload, "encryptWebPushPayload");
+async function sendWebPushNotification(env, userIds, payloadObj) {
+  if (!env.DB) return;
+  const ids = (Array.isArray(userIds) ? userIds : [userIds]).map(Number).filter(Boolean);
+  if (!ids.length) return;
+  await ensurePushSchema(env);
+  const placeholders = ids.map(() => "?").join(",");
+  const { results: subscriptions = [] } = await env.DB.prepare(
+    `SELECT * FROM push_subscriptions WHERE user_id IN (${placeholders})`
+  ).bind(...ids).all();
+  console.log(`[WebPush] Found ${subscriptions.length} subscription(s) for userIds=[${ids.join(",")}]`);
+  if (!subscriptions.length) return;
+  const promises = subscriptions.map(async (sub) => {
+    try {
+      const endpointUrl = new URL(sub.endpoint);
+      const aud = endpointUrl.origin;
+      const jwt = await signVapidJwt(aud);
+      const body = await encryptWebPushPayload(sub, payloadObj);
+      console.log(`[WebPush] Sending to user_id=${sub.user_id}, endpoint=${sub.endpoint.slice(0, 60)}...`);
+      const res = await fetch(sub.endpoint, {
+        method: "POST",
+        headers: {
+          "Authorization": `vapid t=${jwt}, k=${VAPID_KEYS.publicKey}`,
+          "Content-Type": "application/octet-stream",
+          "Content-Encoding": "aes128gcm",
+          "TTL": "86400",
+          "Urgency": "high"
+        },
+        body
+      });
+      const resBody = await res.text().catch(() => "");
+      console.log(`[WebPush] Response: status=${res.status} ${res.statusText}, body=${resBody.slice(0, 200)}`);
+      if (res.status === 404 || res.status === 410) {
+        console.log(`[WebPush] Removing expired subscription for user_id=${sub.user_id}`);
+        await env.DB.prepare("DELETE FROM push_subscriptions WHERE endpoint=?").bind(sub.endpoint).run();
+      }
+    } catch (err) {
+      console.error("[WebPush] Push delivery error for endpoint:", sub.endpoint?.slice(0, 60), err?.message || err);
+    }
+  });
+  await Promise.allSettled(promises);
+}
+__name(sendWebPushNotification, "sendWebPushNotification");
+async function migrate(env) {
+  if (_migrated) return;
+  try {
+    await ensurePushSchema(env);
+  } catch (error) {
+    console.error("Push schema check failed", error);
+  }
+  try {
+    await ensureAttendanceOvertimeSchema(env);
+  } catch (error) {
+    console.error("Attendance schema check failed", error);
+  }
+  try {
+    await ensureAttendanceLocationSchema(env);
+  } catch (error) {
+    console.error("Attendance location schema check failed", error);
+  }
+  try {
+    await ensureProjectHandoverSchema(env);
+  } catch (error) {
+    console.error("Handover schema check failed", error);
+  }
+  try {
+    await ensureTTSAccounts(env);
+  } catch (error) {
+    console.error("TTS accounts check failed", error);
+  }
+  try {
+    await ensureWorkLocationStandardization(env);
+  } catch (error) {
+    console.error("Work location standardization check failed", error);
+  }
+  try {
+    await ensureLeaveBalancesMigration(env);
+  } catch (error) {
+    console.error("Leave balance migration failed", error);
+  }
+  try {
+    await ensureTaskActivityTimelineSchema(env);
+  } catch (error) {
+    console.error("Task timeline schema check failed", error);
+  }
+  try {
+    await ensureSubtaskSchema(env);
+  } catch (error) {
+    console.error("Subtask schema check failed", error);
+  }
+  try {
+    await ensureMyxteamTaskImportSchema(env);
+  } catch (error) {
+    console.error("MyXteam import schema check failed", error);
+  }
+  try {
+    await ensureChatInteractionSchema(env);
+  } catch (error) {
+    console.error("Chat interaction schema check failed", error);
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS dissolved_conversations (
+    conversation_id INTEGER PRIMARY KEY,
+    dissolved_by INTEGER NOT NULL,
+    dissolved_by_name TEXT,
+    dissolved_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (error) {
+    console.error("Dissolved conversation schema check failed", error);
+  }
+  try {
+    await ensureLeavePolicySchema(env);
+  } catch (error) {
+    console.error("Leave policy schema check failed", error);
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS payroll_change_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    payroll_id INTEGER NOT NULL,
+    changed_by INTEGER NOT NULL,
+    changed_by_name TEXT,
+    change_note TEXT NOT NULL,
+    before_data TEXT NOT NULL,
+    after_data TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_payroll_change_log_payroll_created ON payroll_change_log(payroll_id,created_at DESC)");
+  } catch (_) {
+  }
+  try {
+    await ensurePayrollLineChangeLog(env);
+  } catch (_) {
+  }
+  try {
+    await ensurePayrollAdjustmentPolicySchema(env);
+  } catch (error) {
+    console.error("Payroll adjustment policy schema check failed", error);
+  }
+  try {
+    await ensurePayrollAdjustmentDismissalSchema(env);
+  } catch (error) {
+    console.error("Payroll adjustment dismissal schema check failed", error);
+  }
+  try {
+    await normalizeDefaultTaskGroupNames(env);
+  } catch (error) {
+    console.error("Task group label repair failed", error);
+  }
+  try {
+    await env.DB.exec(`ALTER TABLE task_comments ADD COLUMN mentions TEXT`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS task_mention_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    task_id INTEGER NOT NULL,
+    comment_id INTEGER NOT NULL,
+    mentioned_by INTEGER NOT NULL,
+    mentioned_by_name TEXT,
+    task_title TEXT,
+    comment_snippet TEXT,
+    is_read INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  } catch (error) {
+    console.error("Task mention notification schema check failed", error);
+  }
+  try {
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_task_mention_notif_user_read ON task_mention_notifications(user_id,is_read,created_at DESC)").run();
+  } catch (_) {
+  }
+  try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS task_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    original_filename TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+    storage_key TEXT NOT NULL UNIQUE,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  } catch (error) {
+    console.error("Task attachment schema check failed", error);
+  }
+  try {
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_task_attachments_task ON task_attachments(task_id,created_at)").run();
+  } catch (_) {
+  }
+  try {
+    const row = await env.DB.prepare("SELECT setting_value FROM settings WHERE setting_key='schema_version'").first();
+    if (row?.setting_value === SCHEMA_VERSION) {
+      _migrated = true;
+      return;
+    }
+  } catch (_) {
+  }
+  const stmts = [
+    `CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_code TEXT UNIQUE NOT NULL,
+      full_name TEXT NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      role TEXT DEFAULT 'employee',
+      department TEXT,
+      position TEXT,
+      avatar_color TEXT DEFAULT '#4F46E5',
+      avatar_initials TEXT,
+      phone TEXT,
+      salary REAL DEFAULT 0,
+      bank_account TEXT,
+      bank_name TEXT,
+      is_active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      token TEXT UNIQUE NOT NULL,
+      expires_at INTEGER NOT NULL,
+      revoked INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS attendance (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      date TEXT NOT NULL,
+      checkin_time TEXT,
+      checkout_time TEXT,
+      checkin_ip TEXT,
+      checkout_ip TEXT,
+      status TEXT DEFAULT 'present',
+      work_hours REAL DEFAULT 0,
+      note TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS wifi_whitelist (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      wifi_name TEXT,
+      ip_range TEXT,
+      description TEXT,
+      is_active INTEGER DEFAULT 1
+    )`,
+    `CREATE TABLE IF NOT EXISTS tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      description TEXT,
+      assigned_to INTEGER,
+      assigned_by INTEGER,
+      department TEXT,
+      date TEXT,
+      due_date TEXT,
+      status TEXT DEFAULT 'todo',
+      priority TEXT DEFAULT 'normal',
+      label_color TEXT DEFAULT '#6366F1',
+      checkin_time TEXT,
+      checkout_time TEXT,
+      is_locked INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      updated_at TEXT DEFAULT (datetime('now','localtime'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS subtasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      is_done INTEGER DEFAULT 0,
+      assigned_to INTEGER,
+      due_date TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS task_followers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS task_comments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      content TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS task_activity (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      detail TEXT,
+      project_id INTEGER,
+      entity_type TEXT,
+      entity_id INTEGER,
+      entity_title TEXT,
+      assignee_id INTEGER,
+      assignee_name TEXT,
+      actor_name TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS invoices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      invoice_number TEXT UNIQUE NOT NULL,
+      user_id INTEGER NOT NULL,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      base_salary REAL DEFAULT 0,
+      bonus REAL DEFAULT 0,
+      allowance REAL DEFAULT 0,
+      deduction REAL DEFAULT 0,
+      tax REAL DEFAULT 0,
+      insurance REAL DEFAULT 0,
+      net_salary REAL DEFAULT 0,
+      work_days INTEGER DEFAULT 0,
+      absent_days INTEGER DEFAULT 0,
+      late_days INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'draft',
+      note TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS settings (setting_key TEXT PRIMARY KEY, setting_value TEXT)`,
+    `CREATE TABLE IF NOT EXISTS departments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT,
+      name TEXT NOT NULL, manager TEXT, manager_id INTEGER, description TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS employees (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, code TEXT,
+      name TEXT NOT NULL, department_id INTEGER, position TEXT,
+      start_date TEXT, birthday TEXT, status TEXT DEFAULT 'active',
+      salary REAL DEFAULT 0, phone TEXT, email TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS leave_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT,
+      employee_id INTEGER, type TEXT, start_date TEXT, end_date TEXT,
+      reason TEXT, status TEXT DEFAULT 'pending'
+    )`,
+    `CREATE TABLE IF NOT EXISTS candidates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, name TEXT,
+      position TEXT, department_id INTEGER, apply_date TEXT, source TEXT,
+      stage TEXT DEFAULT 'received', notes TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS payroll (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT,
+      employee_id INTEGER, month TEXT, base_salary REAL DEFAULT 0,
+      kpi_bonus REAL DEFAULT 0, allowance REAL DEFAULT 0,
+      deduction REAL DEFAULT 0, overtime_pay REAL DEFAULT 0, tax REAL DEFAULT 0, insurance REAL DEFAULT 0,
+      work_days REAL DEFAULT 0, standard_days REAL DEFAULT 0, note TEXT,
+      UNIQUE(user_id, employee_id, month)
+    )`,
+    `CREATE TABLE IF NOT EXISTS payroll_batches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      month TEXT UNIQUE NOT NULL,
+      status TEXT DEFAULT 'draft',
+      total_employees INTEGER DEFAULT 0,
+      complete_employees INTEGER DEFAULT 0,
+      missing_employees INTEGER DEFAULT 0,
+      estimated_total REAL DEFAULT 0,
+      created_by INTEGER,
+      created_by_name TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      updated_at TEXT DEFAULT (datetime('now','localtime'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS payroll_adjustments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id INTEGER NOT NULL,
+      payroll_id INTEGER,
+      month TEXT NOT NULL,
+      violation_date TEXT,
+      policy_month TEXT,
+      type TEXT NOT NULL,
+      source TEXT NOT NULL,
+      source_ref TEXT UNIQUE,
+      amount REAL DEFAULT 0,
+      score_delta REAL DEFAULT 0,
+      reason TEXT NOT NULL,
+      status TEXT DEFAULT 'suggested',
+      created_by INTEGER,
+      created_by_name TEXT,
+      approved_by INTEGER,
+      approved_by_name TEXT,
+      approved_at TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      updated_at TEXT DEFAULT (datetime('now','localtime'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS invoice_review_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      invoice_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      category TEXT NOT NULL,
+      message TEXT NOT NULL,
+      requested_amount REAL DEFAULT 0,
+      status TEXT DEFAULT 'open',
+      handled_by INTEGER,
+      handled_by_name TEXT,
+      handled_note TEXT,
+      handled_at TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      updated_at TEXT DEFAULT (datetime('now','localtime'))
+    )`
+  ];
+  for (const s of stmts) {
+    await env.DB.prepare(s).run();
+  }
+  try {
+    await env.DB.exec("ALTER TABLE sessions ADD COLUMN revoked INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS campaigns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT,
+    name TEXT NOT NULL,
+    type TEXT DEFAULT 'other',
+    status TEXT DEFAULT 'planning',
+    start_date TEXT,
+    end_date TEXT,
+    budget REAL DEFAULT 0,
+    spent REAL DEFAULT 0,
+    goal_reach INTEGER DEFAULT 0,
+    goal_leads INTEGER DEFAULT 0,
+    goal_conversions INTEGER DEFAULT 0,
+    owner_name TEXT,
+    description TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN employee_name TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN net_salary REAL DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN department TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN employee_code TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN data_status TEXT DEFAULT 'ready'");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN data_warnings TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN source_synced_at TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN overtime_pay REAL DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN approved_overtime_minutes INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN paid_leave_days REAL DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN absent_days REAL DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN late_days INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN late_minutes INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN early_leave_minutes INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN missing_checkinout_days INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN tax REAL DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN insurance REAL DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN work_days REAL DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN standard_days REAL DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll ADD COLUMN note TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN approved_overtime_minutes INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN overtime_pay REAL DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE candidates ADD COLUMN cv_storage_key TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE candidates ADD COLUMN cv_original_filename TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE candidates ADD COLUMN cv_content_type TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE candidates ADD COLUMN cv_byte_size INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS payroll_change_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    payroll_id INTEGER NOT NULL,
+    changed_by INTEGER NOT NULL,
+    changed_by_name TEXT,
+    change_note TEXT NOT NULL,
+    before_data TEXT NOT NULL,
+    after_data TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_payroll_change_log_payroll_created ON payroll_change_log(payroll_id,created_at DESC)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS payroll_adjustments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id INTEGER NOT NULL,
+    payroll_id INTEGER,
+    month TEXT NOT NULL,
+    violation_date TEXT,
+    policy_month TEXT,
+    type TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_ref TEXT UNIQUE,
+    amount REAL DEFAULT 0,
+    score_delta REAL DEFAULT 0,
+    reason TEXT NOT NULL,
+    status TEXT DEFAULT 'suggested',
+    created_by INTEGER,
+    created_by_name TEXT,
+    approved_by INTEGER,
+    approved_by_name TEXT,
+    approved_at TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_payroll_adjustments_month_employee ON payroll_adjustments(month,employee_id)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_payroll_adjustments_status ON payroll_adjustments(status)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll_adjustments ADD COLUMN violation_date TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE payroll_adjustments ADD COLUMN policy_month TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_payroll_adjustments_policy_date ON payroll_adjustments(policy_month,violation_date,employee_id)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS payroll_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    month TEXT UNIQUE NOT NULL,
+    status TEXT DEFAULT 'draft',
+    total_employees INTEGER DEFAULT 0,
+    complete_employees INTEGER DEFAULT 0,
+    missing_employees INTEGER DEFAULT 0,
+    estimated_total REAL DEFAULT 0,
+    created_by INTEGER,
+    created_by_name TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN work_type TEXT DEFAULT 'office'");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN shift TEXT DEFAULT 'full'");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN expected_start TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN expected_end TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN late_minutes INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN early_minutes INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN registered INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN auto_checkout INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS attendance_locations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, code TEXT, address TEXT,
+    latitude REAL NOT NULL, longitude REAL NOT NULL, radius_meters INTEGER NOT NULL DEFAULT 100,
+    max_accuracy_meters INTEGER NOT NULL DEFAULT 100, is_active INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now','localtime')), updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_attendance_locations_code ON attendance_locations(code) WHERE code IS NOT NULL");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkin_location_id INTEGER");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkout_location_id INTEGER");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkin_distance_meters REAL");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkout_distance_meters REAL");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkin_accuracy_meters REAL");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkout_accuracy_meters REAL");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkin_verification_method TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkout_verification_method TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkin_lat REAL");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkin_lng REAL");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkout_lat REAL");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkout_lng REAL");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkin_geofence_status TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkout_geofence_status TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkin_requires_review INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkin_review_status TEXT DEFAULT 'none'");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkin_reviewed_by INTEGER");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkin_review_note TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkin_reviewed_at TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkout_requires_review INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkout_review_status TEXT DEFAULT 'none'");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkout_reviewed_by INTEGER");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkout_review_note TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN checkout_reviewed_at TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.prepare("ALTER TABLE subtasks ADD COLUMN description TEXT").run();
+  } catch (_) {
+  }
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL DEFAULT 'direct',
+    name TEXT,
+    team_id INTEGER,
+    project_id INTEGER,
+    created_by INTEGER NOT NULL,
+    dissolved_at TEXT,
+    dissolved_by INTEGER,
+    dissolved_by_name TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  try {
+    await env.DB.exec("ALTER TABLE conversations ADD COLUMN team_id INTEGER");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE conversations ADD COLUMN project_id INTEGER");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE conversations ADD COLUMN dissolved_at TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE conversations ADD COLUMN dissolved_by INTEGER");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE conversations ADD COLUMN dissolved_by_name TEXT");
+  } catch (_) {
+  }
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS conversation_members (
+    conversation_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    role TEXT DEFAULT 'member',
+    last_read_message_id INTEGER DEFAULT 0,
+    notification_level TEXT DEFAULT 'all',
+    joined_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(conversation_id, user_id)
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL,
+    sender_id INTEGER NOT NULL,
+    content TEXT,
+    reply_to_id INTEGER,
+    thread_root_id INTEGER,
+    task_id INTEGER,
+    message_type TEXT NOT NULL DEFAULT 'text',
+    edited_at TEXT,
+    deleted_at TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  try {
+    await env.DB.exec("ALTER TABLE messages ADD COLUMN task_id INTEGER");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'text'");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE messages ADD COLUMN thread_root_id INTEGER");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE messages ADD COLUMN edited_at TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE messages ADD COLUMN deleted_at TEXT");
+  } catch (_) {
+  }
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS message_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    type TEXT NOT NULL DEFAULT 'file',
+    file_name TEXT NOT NULL,
+    file_size INTEGER,
+    mime_type TEXT,
+    storage_key TEXT NOT NULL,
+    width INTEGER,
+    height INTEGER,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS message_reactions (
+    message_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    emoji TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(message_id, user_id, emoji)
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS message_reads (
+    message_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    read_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(message_id, user_id)
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS message_mentions (
+    message_id INTEGER NOT NULL,
+    mentioned_user_id INTEGER NOT NULL,
+    mentioned_by INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(message_id, mentioned_user_id)
+  )`).run();
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_message_mentions_user ON message_mentions(mentioned_user_id,message_id DESC)");
+  } catch (_) {
+  }
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS pinned_messages (
+    conversation_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    pinned_by INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(conversation_id, message_id)
+  )`).run();
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_pinned_messages_conversation ON pinned_messages(conversation_id,created_at DESC)");
+  } catch (_) {
+  }
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS overtime_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    attendance_id INTEGER NOT NULL UNIQUE,
+    user_id INTEGER NOT NULL,
+    work_date TEXT NOT NULL,
+    shift_end_time TEXT NOT NULL,
+    checkout_time TEXT NOT NULL,
+    requested_minutes INTEGER NOT NULL,
+    approved_minutes INTEGER,
+    reason TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    reviewer_id INTEGER,
+    reviewer_name TEXT,
+    review_note TEXT,
+    reviewed_at TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_overtime_requests_status_date ON overtime_requests(status,work_date)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_overtime_requests_user_date ON overtime_requests(user_id,work_date)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS overtime_forms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    period_month TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    source TEXT NOT NULL DEFAULT 'employee',
+    source_batch_id INTEGER,
+    review_note TEXT,
+    reviewer_id INTEGER,
+    reviewer_name TEXT,
+    reviewed_at TEXT,
+    submitted_at TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS overtime_form_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    form_id INTEGER NOT NULL,
+    start_at TEXT NOT NULL,
+    end_at TEXT NOT NULL,
+    requested_minutes INTEGER NOT NULL,
+    approved_minutes INTEGER,
+    reason TEXT NOT NULL,
+    time_category TEXT NOT NULL DEFAULT 'workday',
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_overtime_forms_user_period ON overtime_forms(user_id,period_month)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_overtime_forms_status_period ON overtime_forms(status,period_month)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_overtime_form_items_form ON overtime_form_items(form_id)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS attendance_import_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_name TEXT NOT NULL,
+    period_month TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'preview',
+    created_by INTEGER NOT NULL,
+    created_by_name TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    committed_at TEXT
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS attendance_import_rows (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id INTEGER NOT NULL,
+    source_key TEXT NOT NULL,
+    employee_code TEXT NOT NULL,
+    work_date TEXT,
+    attendance_id INTEGER,
+    outcome TEXT NOT NULL,
+    detail TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(batch_id,source_key)
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE attendance ADD COLUMN source_batch_id INTEGER");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE users ADD COLUMN profile_pending INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_attendance_source_batch ON attendance(source_batch_id)");
+  } catch (_) {
+  }
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS company_holidays (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    holiday_date TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN standard_days INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN paid_leave_days INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN late_minutes INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN early_leave_minutes INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN missing_checkinout_days INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN approved_overtime_minutes INTEGER DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN overtime_pay REAL DEFAULT 0");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN locked_at TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN locked_by INTEGER");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN locked_by_name TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN payroll_id INTEGER");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN issued_at TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN issued_by INTEGER");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN issued_by_name TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN employee_confirmed_at TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN review_requested_at TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN review_resolved_at TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN review_status TEXT DEFAULT 'none'");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN review_reason TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE invoices ADD COLUMN review_note TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS invoice_review_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    category TEXT NOT NULL,
+    message TEXT NOT NULL,
+    requested_amount REAL DEFAULT 0,
+    status TEXT DEFAULT 'open',
+    handled_by INTEGER,
+    handled_by_name TEXT,
+    handled_note TEXT,
+    handled_at TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_invoice_review_invoice ON invoice_review_requests(invoice_id,status)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_invoices_payroll_id ON invoices(payroll_id)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE users ADD COLUMN employee_type TEXT DEFAULT 'NV'");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE users ADD COLUMN lifecycle_status TEXT DEFAULT 'Ch\u1EDD ti\u1EBFp nh\u1EADn'");
+    await env.DB.exec("UPDATE users SET lifecycle_status='Ch\xEDnh th\u1EE9c' WHERE lifecycle_status='Ch\u1EDD ti\u1EBFp nh\u1EADn'");
+  } catch (_) {
+  }
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS lifecycle_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    from_status TEXT,
+    to_status TEXT NOT NULL,
+    changed_by INTEGER,
+    changed_by_name TEXT,
+    reason TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  for (const [column, type] of Object.entries({
+    birth_date: "TEXT",
+    gender: "TEXT",
+    national_id: "TEXT",
+    home_address: "TEXT",
+    emergency_contact_name: "TEXT",
+    emergency_contact_phone: "TEXT",
+    direct_manager_id: "INTEGER",
+    work_location: "TEXT",
+    contract_type: "TEXT",
+    contract_start_date: "TEXT",
+    contract_end_date: "TEXT",
+    contract_signed_date: "TEXT",
+    official_date: "TEXT",
+    termination_date: "TEXT",
+    allowance: "REAL DEFAULT 0",
+    insurance_salary: "REAL DEFAULT 0",
+    bank_account_holder: "TEXT",
+    tax_code: "TEXT",
+    social_insurance_number: "TEXT",
+    insurance_hospital: "TEXT",
+    avatar_url: "TEXT",
+    national_id_document_url: "TEXT",
+    degree_document_url: "TEXT",
+    contract_document_url: "TEXT",
+    personnel_decision_url: "TEXT",
+    school_name: "TEXT",
+    hire_date: "TEXT",
+    probation_end_date: "TEXT",
+    dependent_count: "INTEGER DEFAULT 0",
+    national_id_expiry_date: "TEXT",
+    updated_at: "TEXT",
+    updated_by: "INTEGER"
+  })) {
+    try {
+      await env.DB.exec(`ALTER TABLE users ADD COLUMN ${column} ${type}`);
+    } catch (_) {
+    }
+  }
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS employee_documents (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    category TEXT NOT NULL,
+    title TEXT,
+    original_filename TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL DEFAULT 0,
+    storage_key TEXT NOT NULL UNIQUE,
+    expires_on TEXT,
+    uploaded_by INTEGER,
+    uploaded_by_name TEXT,
+    uploaded_at TEXT DEFAULT (datetime('now','localtime')),
+    deleted_at TEXT,
+    deleted_by INTEGER,
+    deleted_by_name TEXT
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS employee_profile_audit (
+    id TEXT PRIMARY KEY,
+    change_set_id TEXT NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    action TEXT NOT NULL,
+    field_group TEXT NOT NULL,
+    field_name TEXT NOT NULL,
+    old_value TEXT,
+    new_value TEXT,
+    changed_by INTEGER,
+    changed_by_name TEXT,
+    changed_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_employee_documents_user_category ON employee_documents(user_id,category,deleted_at,uploaded_at)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_employee_documents_expiry ON employee_documents(expires_on,deleted_at)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_employee_profile_audit_user_time ON employee_profile_audit(user_id,changed_at DESC)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_users_employee_directory ON users(is_active,lifecycle_status,department,position,contract_type)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_users_contract_dates ON users(contract_end_date,probation_end_date,national_id_expiry_date)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_users_full_name_nocase ON users(full_name COLLATE NOCASE)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_users_department_status ON users(department,lifecycle_status)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_users_contract_type ON users(contract_type)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_users_position ON users(position)");
+  } catch (_) {
+  }
+  try {
+    const { results: legacyDocumentUsers = [] } = await env.DB.prepare(
+      `SELECT id,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url
+       FROM users
+       WHERE trim(coalesce(national_id_document_url,''))<>'' OR trim(coalesce(degree_document_url,''))<>''
+          OR trim(coalesce(contract_document_url,''))<>'' OR trim(coalesce(personnel_decision_url,''))<>''`
+    ).all();
+    const legacyKinds = [
+      ["national_id_document_url", "national_id", "national_id", "CCCD"],
+      ["degree_document_url", "degree", "degree", "B\u1EB1ng c\u1EA5p, ch\u1EE9ng ch\u1EC9"],
+      ["contract_document_url", "contract", "labor_contract", "H\u1EE3p \u0111\u1ED3ng lao \u0111\u1ED9ng"],
+      ["personnel_decision_url", "decision", "other", "Quy\u1EBFt \u0111\u1ECBnh nh\xE2n s\u1EF1"]
+    ];
+    for (const user of legacyDocumentUsers) {
+      for (const [column, kind, category, title] of legacyKinds) {
+        if (!String(user[column] || "").trim()) continue;
+        const storageKey = `employees/${user.id}/${kind}`;
+        await env.DB.prepare(
+          `INSERT INTO employee_documents
+             (id,user_id,category,title,original_filename,content_type,byte_size,storage_key,uploaded_by_name)
+           SELECT ?,?,?,?,?,'application/octet-stream',0,?,'D\u1EEF li\u1EC7u legacy'
+           WHERE NOT EXISTS (SELECT 1 FROM employee_documents WHERE storage_key=?)`
+        ).bind(crypto.randomUUID(), user.id, category, title, kind, storageKey, storageKey).run();
+      }
+    }
+  } catch (_) {
+  }
+  for (const [column, type] of Object.entries({ current_approver: "TEXT", approval_level: "INTEGER DEFAULT 1", submitted_at: "TEXT" })) {
+    try {
+      await env.DB.exec(`ALTER TABLE leave_requests ADD COLUMN ${column} ${type}`);
+    } catch (_) {
+    }
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS leave_approval_history (id INTEGER PRIMARY KEY AUTOINCREMENT, leave_request_id INTEGER NOT NULL, approval_level INTEGER NOT NULL, actor_id INTEGER, actor_name TEXT, action TEXT NOT NULL, note TEXT, created_at TEXT DEFAULT (datetime('now','localtime')))`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS asset_handovers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    asset_name TEXT NOT NULL,
+    asset_type TEXT,
+    platform TEXT,
+    link TEXT,
+    credential_enc TEXT,
+    responsible_name TEXT,
+    mentor_id INTEGER,
+    mentor_name TEXT,
+    status TEXT DEFAULT 'active',
+    note TEXT,
+    confirmed_by INTEGER,
+    confirmed_at TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`ALTER TABLE asset_handovers ADD COLUMN expected_handover_date TEXT`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS asset_credential_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_id INTEGER NOT NULL,
+    viewed_by INTEGER,
+    viewed_by_name TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS leave_types (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    paid_policy TEXT DEFAULT 'paid',
+    deducts_annual_leave INTEGER DEFAULT 0,
+    requires_evidence INTEGER DEFAULT 0,
+    requires_bod_approval INTEGER DEFAULT 0,
+    max_days INTEGER,
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS invoice_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id INTEGER NOT NULL,
+    from_status TEXT,
+    to_status TEXT,
+    changed_by INTEGER,
+    changed_by_name TEXT,
+    note TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS task_workspaces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_by INTEGER,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS task_projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id INTEGER DEFAULT 1,
+    name TEXT NOT NULL,
+    code TEXT,
+    type TEXT DEFAULT 'project',
+    description TEXT,
+    department TEXT,
+    manager_id INTEGER,
+    status TEXT DEFAULT 'active',
+    start_date TEXT,
+    end_date TEXT,
+    created_by INTEGER,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS task_project_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    role TEXT DEFAULT 'member',
+    added_by INTEGER,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS task_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    position INTEGER DEFAULT 0,
+    color TEXT DEFAULT '#6366F1',
+    is_archived INTEGER DEFAULT 0,
+    created_by INTEGER,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS task_labels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id INTEGER DEFAULT 1,
+    project_id INTEGER,
+    name TEXT NOT NULL,
+    code TEXT,
+    color TEXT NOT NULL,
+    description TEXT,
+    is_active INTEGER DEFAULT 1,
+    created_by INTEGER,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE tasks ADD COLUMN workspace_id INTEGER DEFAULT 1");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE tasks ADD COLUMN team_project_id INTEGER");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE tasks ADD COLUMN group_id INTEGER");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE tasks ADD COLUMN label_id INTEGER");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE task_projects ADD COLUMN external_source TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE task_projects ADD COLUMN external_id TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE task_groups ADD COLUMN external_source TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE task_groups ADD COLUMN external_id TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE tasks ADD COLUMN external_source TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE tasks ADD COLUMN external_id TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE tasks ADD COLUMN external_metadata TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE tasks ADD COLUMN import_position INTEGER");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE tasks ADD COLUMN position REAL");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("INSERT INTO task_workspaces (id,name,description) SELECT 1,'Workspace NetViet HR','Default task workspace' WHERE NOT EXISTS (SELECT 1 FROM task_workspaces WHERE id=1)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("INSERT INTO task_labels (workspace_id,name,code,color,description,is_active) SELECT 1,'Mac dinh','default','#6366F1','Nhan mac dinh' ,1 WHERE NOT EXISTS (SELECT 1 FROM task_labels WHERE workspace_id=1 AND code='default' AND project_id IS NULL)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id,date)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_tasks_assigned_to ON tasks(assigned_to)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_tasks_status_due ON tasks(status,due_date)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(team_project_id)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_tasks_group ON tasks(group_id)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_tasks_label ON tasks(label_id)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_tasks_project_group_pos ON tasks(team_project_id,group_id,position)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_task_project_members_project_user ON task_project_members(project_id,user_id)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_task_groups_project_archived ON task_groups(project_id,is_archived,position)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_task_labels_project_active ON task_labels(project_id,is_active)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_task_projects_external ON task_projects(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_task_groups_external ON task_groups(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_external ON tasks(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_leave_requests_type ON leave_requests(type)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_departments_name_ci ON departments(lower(name))");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE departments ADD COLUMN manager_id INTEGER");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_departments_manager_id ON departments(manager_id)");
+  } catch (_) {
+  }
+  try {
+    await normalizeDepartmentData(env);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS eval_periods (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    month INTEGER NOT NULL,
+    year INTEGER NOT NULL,
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    created_by INTEGER,
+    created_by_name TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(month, year)
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS evaluations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    period_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    mentor_id INTEGER,
+    mentor_name TEXT,
+    department_head_id INTEGER,
+    department_head_name TEXT,
+    status TEXT DEFAULT 'DRAFT',
+    window_override INTEGER DEFAULT 0,
+    mentor_scores TEXT,
+    mentor_comments TEXT,
+    mentor_submitted_at TEXT,
+    department_scores TEXT,
+    department_comments TEXT,
+    department_submitted_at TEXT,
+    employee_confirmed_at TEXT,
+    employee_revision_reason TEXT,
+    employee_revision_evidence TEXT,
+    employee_revision_at TEXT,
+    ceo_revision_reason TEXT,
+    ceo_revision_at TEXT,
+    final_approved_score REAL,
+    final_approved_comment TEXT,
+    final_score_before_adjust REAL,
+    final_adjust_reason TEXT,
+    approved_by INTEGER,
+    approved_by_name TEXT,
+    approved_at TEXT,
+    hr_received_by INTEGER,
+    hr_received_by_name TEXT,
+    hr_received_at TEXT,
+    locked_by INTEGER,
+    locked_by_name TEXT,
+    locked_at TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(period_id, user_id)
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS evaluation_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    evaluation_id INTEGER NOT NULL,
+    from_status TEXT,
+    to_status TEXT NOT NULL,
+    changed_by INTEGER,
+    changed_by_name TEXT,
+    note TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS asset_handover_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    actor_id INTEGER,
+    actor_name TEXT,
+    detail TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE INDEX IF NOT EXISTS idx_asset_handover_history_asset_created ON asset_handover_history(asset_id, created_at DESC)`);
+  } catch (_) {
+  }
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS employee_kpi_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, month INTEGER NOT NULL, year INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'DRAFT', created_by INTEGER, created_by_name TEXT,
+    submitted_at TEXT, reviewed_by INTEGER, reviewed_by_name TEXT, reviewed_at TEXT, review_note TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')), updated_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(employee_id, month, year)
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS employee_kpi_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, plan_id INTEGER NOT NULL, criterion_code TEXT NOT NULL,
+    title TEXT NOT NULL, description TEXT, unit TEXT NOT NULL DEFAULT '\u0111\u01A1n v\u1ECB', target_value REAL NOT NULL,
+    actual_value REAL, actual_text TEXT, manual_score REAL, review_note TEXT, weight_percent REAL NOT NULL, evidence_url TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')), updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS evaluation_kpi_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, evaluation_id INTEGER NOT NULL, criterion_code TEXT NOT NULL,
+    achievement_percent REAL NOT NULL, automatic_score REAL NOT NULL, details_json TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime')), UNIQUE(evaluation_id, criterion_code)
+  )`).run();
+  try {
+    await env.DB.exec("ALTER TABLE employee_kpi_items ADD COLUMN affects_group1 INTEGER NOT NULL DEFAULT 1");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE employee_kpi_items ADD COLUMN actual_text TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE employee_kpi_items ADD COLUMN manual_score REAL");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE employee_kpi_items ADD COLUMN review_note TEXT");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("ALTER TABLE employee_kpi_items ADD COLUMN requires_evidence INTEGER NOT NULL DEFAULT 0");
+  } catch (_) {
+  }
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS kpi_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT,
+    created_by INTEGER, created_by_name TEXT, created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS kpi_template_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, template_id INTEGER NOT NULL, criterion_code TEXT NOT NULL,
+    title TEXT NOT NULL, description TEXT, unit TEXT NOT NULL DEFAULT '\u0111\u01A1n v\u1ECB', target_value REAL NOT NULL,
+    weight_percent REAL DEFAULT 0, affects_group1 INTEGER NOT NULL DEFAULT 1
+  )`).run();
+  try {
+    await env.DB.exec("ALTER TABLE kpi_template_items ADD COLUMN requires_evidence INTEGER NOT NULL DEFAULT 0");
+  } catch (_) {
+  }
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS employee_kpi_evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, kpi_item_id INTEGER NOT NULL, label TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
+    created_by INTEGER, created_by_name TEXT, created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_by INTEGER, updated_by_name TEXT, updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS employee_kpi_evidence_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, plan_id INTEGER NOT NULL, kpi_item_id INTEGER NOT NULL,
+    action TEXT NOT NULL, old_value_json TEXT, new_value_json TEXT,
+    changed_by INTEGER, changed_by_name TEXT, created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS employee_kpi_approval_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, plan_id INTEGER NOT NULL, employee_id INTEGER NOT NULL, month INTEGER NOT NULL, year INTEGER NOT NULL,
+    snapshot_json TEXT NOT NULL, approved_by INTEGER, approved_by_name TEXT, approved_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(plan_id)
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS employee_kpi_approval_snapshots_v2 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, plan_id INTEGER NOT NULL, employee_id INTEGER NOT NULL, month INTEGER NOT NULL, year INTEGER NOT NULL,
+    snapshot_json TEXT NOT NULL, approved_by INTEGER, approved_by_name TEXT, approved_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  try {
+    await env.DB.exec(`INSERT INTO employee_kpi_evidence (kpi_item_id,label,url,created_at,updated_at)
+    SELECT i.id,'Link b\u1EB1ng ch\u1EE9ng',i.evidence_url,i.created_at,i.updated_at FROM employee_kpi_items i
+    WHERE trim(coalesce(i.evidence_url,''))<>'' AND NOT EXISTS (SELECT 1 FROM employee_kpi_evidence e WHERE e.kpi_item_id=i.id)`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_employee_kpi_plans_period ON employee_kpi_plans(month,year,status)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_employee_kpi_plans_employee ON employee_kpi_plans(employee_id,year,month)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_employee_kpi_items_plan ON employee_kpi_items(plan_id,criterion_code)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_eval_kpi_snapshots_evaluation ON evaluation_kpi_snapshots(evaluation_id)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_kpi_evidence_item ON employee_kpi_evidence(kpi_item_id)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_kpi_evidence_audit_plan ON employee_kpi_evidence_audit(plan_id,created_at)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_kpi_snapshot_v2_plan ON employee_kpi_approval_snapshots_v2(plan_id,id DESC)");
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`ALTER TABLE eval_periods ADD COLUMN hr_note TEXT`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`ALTER TABLE eval_periods ADD COLUMN hr_note_by TEXT`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.prepare("INSERT OR REPLACE INTO settings (setting_key,setting_value) VALUES (?,?)").bind("schema_version", SCHEMA_VERSION).run();
+  } catch (_) {
+  }
+  _migrated = true;
+}
+__name(migrate, "migrate");
+async function ensureTTSAccounts(env) {
+  try {
+    await env.DB.prepare(`INSERT OR IGNORE INTO users (
+      employee_code, employee_type, full_name, email, password_hash, role, department, position,
+      avatar_color, avatar_initials, phone, is_active, lifecycle_status, work_location, hire_date,
+      must_change_password, profile_pending
+    ) VALUES 
+    (
+      'TTS-31', 'TTS', 'Nguy\u1EC5n Th\u1ECB Thu Ph\u01B0\u01A1ng', 'tts-31@pending.local',
+      'b6bc7b58510319a151d168ba3d5aecb3ac0a9708d06dd930f37fbc89b6cdc697',
+      'employee', 'Th\u1EF1c T\u1EADp Sinh', 'TTS', '#4F46E5', 'TP', '', 1, 'Th\u1EF1c t\u1EADp', 'HN', '2026-08-22', 1, 1
+    ),
+    (
+      'TTS-32', 'TTS', 'Kim \u0110\u1EE9c Long', 'tts-32@pending.local',
+      'b6bc7b58510319a151d168ba3d5aecb3ac0a9708d06dd930f37fbc89b6cdc697',
+      'employee', 'Th\u1EF1c T\u1EADp Sinh', 'TTS', '#0EA5E9', 'DL', '', 1, 'Th\u1EF1c t\u1EADp', 'HN', '2026-08-22', 1, 1
+    )`).run();
+  } catch (err) {
+    console.error("ensureTTSAccounts error:", err);
+  }
+}
+__name(ensureTTSAccounts, "ensureTTSAccounts");
+var VALID_WORK_LOCATIONS = ["HCM", "HN", "Phim tr\u01B0\u1EDDng Netviet"];
+function normalizeWorkLocation(loc, dept = "") {
+  const s = String(loc || "").trim();
+  const d = String(dept || "").trim().toLowerCase();
+  if (d.includes("gameshow")) return "Phim tr\u01B0\u1EDDng Netviet";
+  if (/phim trường/i.test(s)) return "Phim tr\u01B0\u1EDDng Netviet";
+  if (/^(hn|hà nội|ha noi)$/i.test(s)) return "HN";
+  if (/^(hcm|tphcm|tp\.hcm|tp hcm|hồ chí minh|ho chi minh|180|h)$/i.test(s) || s.includes("\u0110i\u1EC7n Bi\xEAn Ph\u1EE7") || s.includes("HCM")) return "HCM";
+  if (VALID_WORK_LOCATIONS.includes(s)) return s;
+  return s ? s : "HCM";
+}
+__name(normalizeWorkLocation, "normalizeWorkLocation");
+async function ensureWorkLocationStandardization(env) {
+  try {
+    await env.DB.prepare(
+      `UPDATE users SET work_location = 'Phim tr\u01B0\u1EDDng Netviet'
+       WHERE (department LIKE '%Gameshow%' OR department LIKE '%gameshow%')
+         AND (work_location != 'Phim tr\u01B0\u1EDDng Netviet' OR work_location IS NULL)`
+    ).run();
+    await env.DB.prepare(
+      `UPDATE users SET work_location = 'HCM'
+       WHERE (work_location LIKE '%\u0110i\u1EC7n Bi\xEAn Ph\u1EE7%' OR work_location IN ('TPHCM', 'tp.hcm', 'H', 'hcm', 'H\u1ED3 Ch\xED Minh', 'V\u0103n ph\xF2ng') OR work_location IS NULL OR work_location = '')
+         AND department NOT LIKE '%Gameshow%' AND department NOT LIKE '%gameshow%'`
+    ).run();
+    await env.DB.prepare(
+      `UPDATE users SET work_location = 'HN'
+       WHERE work_location IN ('H\xE0 N\u1ED9i', 'ha noi', 'hn')
+         AND department NOT LIKE '%Gameshow%' AND department NOT LIKE '%gameshow%'`
+    ).run();
+  } catch (err) {
+    console.error("ensureWorkLocationStandardization error:", err);
+  }
+}
+__name(ensureWorkLocationStandardization, "ensureWorkLocationStandardization");
+async function ensureLeaveBalancesMigration(env) {
+  try {
+    await env.DB.prepare(
+      `UPDATE leave_balances SET available_days = 0, updated_at = datetime('now','localtime')
+       WHERE leave_type_code = 'annual'
+         AND user_id IN (
+           SELECT id FROM users
+           WHERE employee_type = 'TTS'
+              OR contract_type = 'Th\u1EED vi\u1EC7c'
+              OR contract_type = 'Th\u1ECFa thu\u1EADn TTS'
+              OR lifecycle_status = 'Th\u1EED vi\u1EC7c'
+              OR lifecycle_status = 'Th\u1EF1c t\u1EADp'
+         )`
+    ).run();
+    const currentYear = (/* @__PURE__ */ new Date()).getFullYear();
+    const officialUsers = await env.DB.prepare(
+      `SELECT id FROM users
+       WHERE (employee_type IS NULL OR employee_type != 'TTS')
+         AND (contract_type IS NULL OR contract_type NOT IN ('Th\u1EED vi\u1EC7c', 'Th\u1ECFa thu\u1EADn TTS'))
+         AND (lifecycle_status IS NULL OR lifecycle_status NOT IN ('Th\u1EED vi\u1EC7c', 'Th\u1EF1c t\u1EADp', '\u0110\xE3 ngh\u1EC9'))
+         AND is_active = 1`
+    ).all().then((r) => r.results || []);
+    for (const u of officialUsers) {
+      await env.DB.prepare(
+        `INSERT OR IGNORE INTO leave_balances (user_id, leave_type_code, balance_year, available_days)
+         VALUES (?, 'annual', ?, 12)`
+      ).bind(u.id, currentYear).run();
+    }
+  } catch (err) {
+    console.error("ensureLeaveBalancesMigration error:", err);
+  }
+}
+__name(ensureLeaveBalancesMigration, "ensureLeaveBalancesMigration");
+async function ensureAttendanceOvertimeSchema(env) {
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS overtime_forms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,period_month TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',source TEXT NOT NULL DEFAULT 'employee',source_batch_id INTEGER,
+    review_note TEXT,reviewer_id INTEGER,reviewer_name TEXT,reviewed_at TEXT,submitted_at TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS overtime_form_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,form_id INTEGER NOT NULL,start_at TEXT NOT NULL,end_at TEXT NOT NULL,
+    requested_minutes INTEGER NOT NULL,approved_minutes INTEGER,reason TEXT NOT NULL,time_category TEXT NOT NULL DEFAULT 'workday',
+    created_at TEXT DEFAULT (datetime('now','localtime')),updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS attendance_import_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,source_name TEXT NOT NULL,period_month TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'preview',
+    created_by INTEGER NOT NULL,created_by_name TEXT,created_at TEXT DEFAULT (datetime('now','localtime')),committed_at TEXT
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS attendance_import_rows (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,batch_id INTEGER NOT NULL,source_key TEXT NOT NULL,employee_code TEXT NOT NULL,work_date TEXT,
+    attendance_id INTEGER,outcome TEXT NOT NULL,detail TEXT,created_at TEXT DEFAULT (datetime('now','localtime')),UNIQUE(batch_id,source_key)
+  )`);
+  } catch (_) {
+  }
+  for (const statement of [
+    "CREATE INDEX IF NOT EXISTS idx_overtime_forms_user_period ON overtime_forms(user_id,period_month)",
+    "CREATE INDEX IF NOT EXISTS idx_overtime_forms_status_period ON overtime_forms(status,period_month)",
+    "CREATE INDEX IF NOT EXISTS idx_overtime_form_items_form ON overtime_form_items(form_id)",
+    "ALTER TABLE attendance ADD COLUMN source_batch_id INTEGER",
+    "ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN profile_pending INTEGER DEFAULT 0",
+    "CREATE INDEX IF NOT EXISTS idx_attendance_source_batch ON attendance(source_batch_id)"
+  ]) {
+    try {
+      await env.DB.exec(statement);
+    } catch (_) {
+    }
+  }
+}
+__name(ensureAttendanceOvertimeSchema, "ensureAttendanceOvertimeSchema");
+var STANDARD_DEPARTMENTS = [
+  "Ban Gi\xE1m \u0110\u1ED1c",
+  "Ph\xF2ng HCNS",
+  "Ph\xF2ng Kinh Doanh",
+  "Ph\xF2ng Marketing",
+  "Ph\xF2ng Bi\xEAn T\u1EADp",
+  "Ph\xF2ng S\u1EA3n Xu\u1EA5t Phim",
+  "Ph\xF2ng Gameshow",
+  "Ph\xF2ng K\u1EBF To\xE1n",
+  "Ph\xF2ng IT"
+];
+function deptNormKey(s) {
+  return String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/gi, "d").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+__name(deptNormKey, "deptNormKey");
+var DEPT_ALIASES = {
+  "Ban Gi\xE1m \u0110\u1ED1c": ["ban giam doc", "bgd", "giam doc", "ban lanh dao"],
+  "Ph\xF2ng HCNS": ["hcns", "phong hcns", "nhan su", "phong nhan su", "hanh chinh nhan su", "hr"],
+  "Ph\xF2ng Kinh Doanh": ["kinh doanh", "phong kinh doanh", "sale", "sales", "phong sale", "account sales", "account", "business development"],
+  "Ph\xF2ng Marketing": ["marketing", "phong marketing", "content marketing", "seo sem", "social media", "design", "performance", "pr events", "pr & events", "truyen thong", "digital ads", "ads", "quang cao"],
+  "Ph\xF2ng Bi\xEAn T\u1EADp": ["bien tap", "phong bien tap", "noi dung"],
+  "Ph\xF2ng S\u1EA3n Xu\u1EA5t Phim": ["san xuat phim", "phong san xuat phim", "production", "san xuat"],
+  "Ph\xF2ng Gameshow": ["gameshow", "phong gameshow", "game show"],
+  "Ph\xF2ng K\u1EBF To\xE1n": ["ke toan", "phong ke toan", "accounting", "tai chinh ke toan"]
+};
+var DEPT_LOOKUP = (() => {
+  const m = {};
+  for (const std of STANDARD_DEPARTMENTS) m[deptNormKey(std)] = std;
+  for (const [std, aliases] of Object.entries(DEPT_ALIASES)) {
+    for (const a of aliases) m[deptNormKey(a)] = std;
+  }
+  return m;
+})();
+function normalizeDeptName(name) {
+  if (!name) return name;
+  const cleaned = String(name).trim().replace(/\s+/g, " ");
+  const std = DEPT_LOOKUP[deptNormKey(cleaned)];
+  return std || cleaned;
+}
+__name(normalizeDeptName, "normalizeDeptName");
+function deptUniqueKey(name) {
+  return deptNormKey(normalizeDeptName(name || ""));
+}
+__name(deptUniqueKey, "deptUniqueKey");
+async function findDepartmentDuplicate(env, name, excludeId = null) {
+  const key = deptUniqueKey(name);
+  const { results } = await env.DB.prepare("SELECT id,name FROM departments").all();
+  return (results || []).find(
+    (d) => deptUniqueKey(d.name) === key && (excludeId === null || Number(d.id) !== Number(excludeId))
+  ) || null;
+}
+__name(findDepartmentDuplicate, "findDepartmentDuplicate");
+var DEPT_CODE = {
+  "Ban Gi\xE1m \u0110\u1ED1c": "BGD",
+  "Ph\xF2ng HCNS": "HCNS",
+  "Ph\xF2ng Kinh Doanh": "KD",
+  "Ph\xF2ng Marketing": "MKT",
+  "Ph\xF2ng Bi\xEAn T\u1EADp": "BT",
+  "Ph\xF2ng S\u1EA3n Xu\u1EA5t Phim": "SXF",
+  "Ph\xF2ng Gameshow": "GSH",
+  "Ph\xF2ng K\u1EBF To\xE1n": "KT",
+  "Ph\xF2ng IT": "IT"
+};
+function employeeTypeCode(t) {
+  return t === "TTS" ? "TTS" : "NV";
+}
+__name(employeeTypeCode, "employeeTypeCode");
+async function nextEmployeeCode(env, type, department) {
+  const typeCode = employeeTypeCode(type);
+  const deptStd = normalizeDeptName(department || "");
+  const deptCode = DEPT_CODE[deptStd] || "KHAC";
+  const prefix = `${typeCode}-${deptCode}-`;
+  const { results } = await env.DB.prepare(
+    "SELECT employee_code FROM users WHERE employee_code LIKE ?"
+  ).bind(prefix + "%").all();
+  let maxSeq = 0;
+  for (const row of results) {
+    const m = /^\d{3,}$/.exec(String(row.employee_code || "").slice(prefix.length));
+    if (m) maxSeq = Math.max(maxSeq, parseInt(m[0], 10));
+  }
+  return prefix + String(maxSeq + 1).padStart(3, "0");
+}
+__name(nextEmployeeCode, "nextEmployeeCode");
+var _deptsNormalized = false;
+async function normalizeDepartmentData(env) {
+  if (_deptsNormalized) return;
+  _deptsNormalized = true;
+  const { results: userDepts } = await env.DB.prepare(
+    "SELECT DISTINCT department FROM users WHERE department IS NOT NULL AND department != ''"
+  ).all();
+  for (const row of userDepts) {
+    const std = normalizeDeptName(row.department);
+    if (std !== row.department) {
+      await env.DB.prepare("UPDATE users SET department=? WHERE department=?").bind(std, row.department).run();
+    }
+  }
+  const { results: depts } = await env.DB.prepare("SELECT id, name FROM departments").all();
+  const seen = /* @__PURE__ */ new Map();
+  for (const d of depts) {
+    const std = normalizeDeptName(d.name);
+    if (std !== d.name) {
+      await env.DB.prepare("UPDATE departments SET name=? WHERE id=?").bind(std, d.id).run();
+    }
+    if (!seen.has(std) || d.id < seen.get(std)) seen.set(std, Math.min(d.id, seen.get(std) ?? d.id));
+  }
+  for (const [std, keepId] of seen.entries()) {
+    const dupIds = depts.filter((d) => normalizeDeptName(d.name) === std && d.id !== keepId).map((d) => d.id);
+    for (const dupId of dupIds) {
+      await env.DB.prepare("UPDATE employees SET department_id=? WHERE department_id=?").bind(keepId, dupId).run();
+      await env.DB.prepare("DELETE FROM departments WHERE id=?").bind(dupId).run();
+    }
+  }
+}
+__name(normalizeDepartmentData, "normalizeDepartmentData");
+async function hashPassword(password) {
+  const enc = new TextEncoder().encode(password);
+  const buf = await crypto.subtle.digest("SHA-256", enc);
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+__name(hashPassword, "hashPassword");
+function validatePasswordPolicy(password) {
+  if (typeof password !== "string" || password.length < 8 || password.length > 20) return "M\u1EADt kh\u1EA9u ph\u1EA3i c\xF3 t\u1EEB 8 \u0111\u1EBFn 20 k\xFD t\u1EF1";
+  if (!/[A-Z]/.test(password)) return "M\u1EADt kh\u1EA9u ph\u1EA3i c\xF3 \xEDt nh\u1EA5t 1 ch\u1EEF in hoa";
+  if (!/[a-z]/.test(password)) return "M\u1EADt kh\u1EA9u ph\u1EA3i c\xF3 \xEDt nh\u1EA5t 1 ch\u1EEF th\u01B0\u1EDDng";
+  if (!/[0-9]/.test(password)) return "M\u1EADt kh\u1EA9u ph\u1EA3i c\xF3 \xEDt nh\u1EA5t 1 ch\u1EEF s\u1ED1";
+  if (!/[^A-Za-z0-9\s]/.test(password)) return "M\u1EADt kh\u1EA9u ph\u1EA3i c\xF3 \xEDt nh\u1EA5t 1 k\xFD t\u1EF1 \u0111\u1EB7c bi\u1EC7t";
+  if (/\s/.test(password)) return "M\u1EADt kh\u1EA9u kh\xF4ng \u0111\u01B0\u1EE3c ch\u1EE9a kho\u1EA3ng tr\u1EAFng";
+  return null;
+}
+__name(validatePasswordPolicy, "validatePasswordPolicy");
+function genToken() {
+  const arr = new Uint8Array(32);
+  crypto.getRandomValues(arr);
+  return Array.from(arr).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+__name(genToken, "genToken");
+function nameInitials(name) {
+  return (name || "?").split(" ").filter(Boolean).map((w) => w[0]).slice(-2).join("").toUpperCase();
+}
+__name(nameInitials, "nameInitials");
+function isHrOrBod(u) {
+  return !!u && (u.role === "admin" || normalizeDeptName(u.department) === "Ph\xF2ng HCNS" || normalizeDeptName(u.department) === "Ban Gi\xE1m \u0110\u1ED1c");
+}
+__name(isHrOrBod, "isHrOrBod");
+function isHcns(u) {
+  return !!u && (u.role === "admin" || normalizeDeptName(u.department) === "Ph\xF2ng HCNS");
+}
+__name(isHcns, "isHcns");
+function isBgd(u) {
+  return !!u && (u.role === "admin" || normalizeDeptName(u.department) === "Ban Gi\xE1m \u0110\u1ED1c");
+}
+__name(isBgd, "isBgd");
+var LIFECYCLE_STATUSES = ["Ch\u1EDD ti\u1EBFp nh\u1EADn", "Th\u1EF1c t\u1EADp", "Th\u1EED vi\u1EC7c", "C\u1ED9ng t\xE1c vi\xEAn", "Ch\xEDnh th\u1EE9c", "\u0110\xE3 ngh\u1EC9"];
+var USER_DOCUMENTS = {
+  avatar: { column: "avatar_url", label: "\u1EA2nh ch\xE2n dung", maxBytes: 5 * 1024 * 1024, types: ["image/jpeg", "image/png", "image/webp"] },
+  national_id: { column: "national_id_document_url", label: "CCCD", maxBytes: 10 * 1024 * 1024, types: ["application/pdf", "image/jpeg", "image/png", "image/webp"] },
+  degree: { column: "degree_document_url", label: "B\u1EB1ng c\u1EA5p", maxBytes: 10 * 1024 * 1024, types: ["application/pdf", "image/jpeg", "image/png", "image/webp"] },
+  contract: { column: "contract_document_url", label: "H\u1EE3p \u0111\u1ED3ng", maxBytes: 10 * 1024 * 1024, types: ["application/pdf", "image/jpeg", "image/png", "image/webp"] },
+  decision: { column: "personnel_decision_url", label: "Quy\u1EBFt \u0111\u1ECBnh nh\xE2n s\u1EF1", maxBytes: 10 * 1024 * 1024, types: ["application/pdf", "image/jpeg", "image/png", "image/webp"] }
+};
+var LEGACY_DOCUMENT_CATEGORIES = {
+  national_id: "national_id",
+  degree: "degree",
+  contract: "labor_contract",
+  decision: "other"
+};
+function userDocumentKey(userId, kind) {
+  return `employees/${userId}/${kind}`;
+}
+__name(userDocumentKey, "userDocumentKey");
+function userDocumentRoute(userId, kind) {
+  return `/api/users/${userId}/documents/${kind}`;
+}
+__name(userDocumentRoute, "userDocumentRoute");
+var EMPLOYEE_DOCUMENT_CATEGORIES = {
+  cv: "CV \u1EE9ng vi\xEAn",
+  national_id: "CCCD",
+  social_insurance: "S\u1ED5 BHXH/VSSID",
+  labor_contract: "H\u1EE3p \u0111\u1ED3ng lao \u0111\u1ED9ng",
+  contract_appendix: "Ph\u1EE5 l\u1EE5c h\u1EE3p \u0111\u1ED3ng",
+  degree: "B\u1EB1ng c\u1EA5p, ch\u1EE9ng ch\u1EC9",
+  onboarding_decision: "Quy\u1EBFt \u0111\u1ECBnh ti\u1EBFp nh\u1EADn",
+  transfer_decision: "Quy\u1EBFt \u0111\u1ECBnh \u0111i\u1EC1u chuy\u1EC3n",
+  salary_decision: "Quy\u1EBFt \u0111\u1ECBnh t\u0103ng l\u01B0\u01A1ng",
+  termination_decision: "Quy\u1EBFt \u0111\u1ECBnh th\xF4i vi\u1EC7c",
+  internship_agreement: "Th\u1ECFa thu\u1EADn TTS",
+  other: "H\u1ED3 s\u01A1 kh\xE1c"
+};
+var EMPLOYEE_DOCUMENT_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/webp"];
+var EMPLOYEE_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
+var EMPLOYEE_CONTRACT_TYPES = ["Th\u1EED vi\u1EC7c", "H\u0110CT", "CTV", "Th\u1ECFa thu\u1EADn TTS", "Ch\xEDnh th\u1EE9c", "C\u1ED9ng t\xE1c vi\xEAn", "Th\u1EF1c t\u1EADp sinh", "Kh\xE1c"];
+var EMPLOYEE_PROFILE_FIELDS = {
+  personal: ["full_name", "email", "phone", "birth_date", "gender", "national_id", "national_id_expiry_date", "home_address", "school_name", "emergency_contact_name", "emergency_contact_phone"],
+  employment: ["employee_type", "position", "department", "direct_manager_id", "work_location"],
+  contract: ["contract_type", "hire_date", "contract_start_date", "contract_end_date", "contract_signed_date", "probation_end_date", "official_date", "termination_date"],
+  compensation: ["salary", "allowance", "insurance_salary", "dependent_count", "bank_account", "bank_name", "bank_account_holder", "tax_code", "social_insurance_number", "insurance_hospital"]
+};
+var EMPLOYEE_PROFILE_FIELD_GROUP = Object.fromEntries(
+  Object.entries(EMPLOYEE_PROFILE_FIELDS).flatMap(([group, fields]) => fields.map((field) => [field, group]))
+);
+var EMPLOYEE_PROFILE_ALLOWED_FIELDS = new Set(Object.keys(EMPLOYEE_PROFILE_FIELD_GROUP));
+var EMPLOYEE_PROFILE_PROTECTED_FIELDS = /* @__PURE__ */ new Set([
+  ...EMPLOYEE_PROFILE_FIELDS.contract,
+  ...EMPLOYEE_PROFILE_FIELDS.compensation
+]);
+var EMPLOYEE_TIMELINE_FIELDS = /* @__PURE__ */ new Set([
+  "department",
+  "position",
+  "salary",
+  "allowance",
+  "contract_type",
+  "contract_start_date",
+  "contract_end_date",
+  "probation_end_date",
+  "official_date",
+  "termination_date"
+]);
+function employeeDocumentContentMatches(contentType, buffer) {
+  const bytes = new Uint8Array(buffer);
+  if (contentType === "application/pdf") return bytes.length >= 5 && String.fromCharCode(...bytes.slice(0, 5)) === "%PDF-";
+  if (contentType === "image/jpeg") return bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
+  if (contentType === "image/png") return bytes.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((value, index) => bytes[index] === value);
+  if (contentType === "image/webp") {
+    return bytes.length >= 12 && String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" && String.fromCharCode(...bytes.slice(8, 12)) === "WEBP";
+  }
+  return false;
+}
+__name(employeeDocumentContentMatches, "employeeDocumentContentMatches");
+function employeeCanAccess(target, me, hasHrScope, isManager) {
+  if (hasHrScope || Number(target.id) === Number(me.id)) return true;
+  return !!isManager && target.department === me.department;
+}
+__name(employeeCanAccess, "employeeCanAccess");
+function employeeProfilePermissions(target, me, hasHrScope, isManager) {
+  const self = Number(target.id) === Number(me.id);
+  const sameDepartmentManager = !!isManager && !hasHrScope && target.department === me.department;
+  return {
+    can_view: hasHrScope || self || sameDepartmentManager,
+    can_edit_basic: hasHrScope || self || sameDepartmentManager,
+    can_edit_personal: hasHrScope || self,
+    can_edit_employment: hasHrScope || self || sameDepartmentManager,
+    can_edit_contract: hasHrScope,
+    can_edit_compensation: hasHrScope,
+    can_manage_documents: hasHrScope,
+    can_manage_avatar: hasHrScope || self,
+    can_view_documents: hasHrScope || self,
+    can_view_audit: hasHrScope,
+    can_export: hasHrScope
+  };
+}
+__name(employeeProfilePermissions, "employeeProfilePermissions");
+function normalizeEmployeeProfileValue(field, value) {
+  if (["salary", "allowance", "insurance_salary"].includes(field)) {
+    const number = Number(value || 0);
+    return Number.isFinite(number) && number >= 0 ? number : NaN;
+  }
+  if (field === "dependent_count") {
+    const number = Number(value || 0);
+    return Number.isInteger(number) && number >= 0 ? number : NaN;
+  }
+  if (field === "direct_manager_id") return value ? Number(value) : null;
+  if (field === "department") return normalizeDeptName(String(value || ""));
+  if (field === "employee_type") return employeeTypeCode(value);
+  if (field === "work_location") return normalizeWorkLocation(value);
+  if (field.endsWith("_date") || field === "hire_date" || field === "national_id_expiry_date") return value || null;
+  return typeof value === "string" ? value.trim() : value;
+}
+__name(normalizeEmployeeProfileValue, "normalizeEmployeeProfileValue");
+function validateEmployeeProfile(profile, changedFields = []) {
+  const changed = new Set(changedFields);
+  if (!String(profile.full_name || "").trim() || !String(profile.email || "").trim() || !String(profile.department || "").trim()) {
+    return "H\u1ECD t\xEAn, email v\xE0 ph\xF2ng ban l\xE0 b\u1EAFt bu\u1ED9c";
+  }
+  const requiredFields = ["full_name", "email", "phone", "birth_date", "national_id", "home_address", "position", "department", "direct_manager_id", "work_location", "contract_type", "hire_date"];
+  if (requiredFields.some((field) => changed.has(field) && !String(profile[field] ?? "").trim())) return "Kh\xF4ng \u0111\u01B0\u1EE3c \u0111\u1EC3 tr\u1ED1ng tr\u01B0\u1EDDng b\u1EAFt bu\u1ED9c";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(profile.email || ""))) return "Email kh\xF4ng h\u1EE3p l\u1EC7";
+  if (changed.has("phone") && !/^\+?\d{8,15}$/.test(String(profile.phone || ""))) return "S\u1ED1 \u0111i\u1EC7n tho\u1EA1i ph\u1EA3i g\u1ED3m 8 \u0111\u1EBFn 15 ch\u1EEF s\u1ED1";
+  if (changed.has("national_id") && !/^\d{9}(\d{3})?$/.test(String(profile.national_id || ""))) return "S\u1ED1 CCCD/CMND ph\u1EA3i g\u1ED3m 9 ho\u1EB7c 12 ch\u1EEF s\u1ED1";
+  if (!Number.isInteger(Number(profile.dependent_count || 0)) || Number(profile.dependent_count || 0) < 0) return "S\u1ED1 ng\u01B0\u1EDDi ph\u1EE5 thu\u1ED9c kh\xF4ng h\u1EE3p l\u1EC7";
+  if (profile.direct_manager_id && Number(profile.direct_manager_id) === Number(profile.id)) return "Qu\u1EA3n l\xFD tr\u1EF1c ti\u1EBFp kh\xF4ng th\u1EC3 l\xE0 ch\xEDnh nh\xE2n vi\xEAn";
+  if (changed.has("contract_type") && profile.contract_type && !EMPLOYEE_CONTRACT_TYPES.includes(profile.contract_type)) return "Lo\u1EA1i h\u1EE3p \u0111\u1ED3ng kh\xF4ng h\u1EE3p l\u1EC7";
+  for (const field of changed) {
+    if ((field.endsWith("_date") || field === "hire_date") && profile[field] && !/^\d{4}-\d{2}-\d{2}$/.test(String(profile[field]))) {
+      return "Ng\xE0y th\xE1ng ph\u1EA3i c\xF3 \u0111\u1ECBnh d\u1EA1ng YYYY-MM-DD";
+    }
+  }
+  const orderedPairs = [
+    ["hire_date", "probation_end_date", "Ng\xE0y k\u1EBFt th\xFAc th\u1EED vi\u1EC7c ph\u1EA3i sau ng\xE0y v\xE0o l\xE0m"],
+    ["hire_date", "official_date", "Ng\xE0y ch\xEDnh th\u1EE9c ph\u1EA3i sau ng\xE0y v\xE0o l\xE0m"],
+    ["contract_start_date", "contract_end_date", "Ng\xE0y h\u1EBFt h\u1EA1n h\u1EE3p \u0111\u1ED3ng ph\u1EA3i sau ng\xE0y b\u1EAFt \u0111\u1EA7u"],
+    ["hire_date", "termination_date", "Ng\xE0y ngh\u1EC9 vi\u1EC7c ph\u1EA3i sau ng\xE0y v\xE0o l\xE0m"]
+  ];
+  for (const [start, end, message] of orderedPairs) {
+    if ((changed.has(start) || changed.has(end)) && profile[start] && profile[end] && String(profile[end]) < String(profile[start])) return message;
+  }
+  if (changed.has("termination_date") && profile.termination_date && profile.lifecycle_status !== "\u0110\xE3 ngh\u1EC9") return "Ch\u1EC9 nh\u1EADp ng\xE0y ngh\u1EC9 vi\u1EC7c khi tr\u1EA1ng th\xE1i l\xE0 \u0110\xE3 ngh\u1EC9";
+  return null;
+}
+__name(validateEmployeeProfile, "validateEmployeeProfile");
+function employeeAuditStatement(env, { userId, changeSetId, action, group, field, oldValue, newValue, actor }) {
+  return env.DB.prepare(
+    `INSERT INTO employee_profile_audit
+       (id,change_set_id,user_id,action,field_group,field_name,old_value,new_value,changed_by,changed_by_name)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`
+  ).bind(
+    crypto.randomUUID(),
+    changeSetId,
+    userId,
+    action,
+    group,
+    field,
+    oldValue === void 0 || oldValue === null ? null : String(oldValue),
+    newValue === void 0 || newValue === null ? null : String(newValue),
+    actor?.id || null,
+    actor?.full_name || ""
+  );
+}
+__name(employeeAuditStatement, "employeeAuditStatement");
+function employeeDocumentKey(userId, documentId) {
+  return `employees/${userId}/documents/${documentId}`;
+}
+__name(employeeDocumentKey, "employeeDocumentKey");
+function safeDownloadName(value, fallback = "document") {
+  const cleaned = String(value || fallback).replace(/[\r\n"\\]/g, "_").slice(0, 180);
+  return cleaned || fallback;
+}
+__name(safeDownloadName, "safeDownloadName");
+function xmlEscape(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&apos;"
+  })[character]);
+}
+__name(xmlEscape, "xmlEscape");
+var VIETNAMESE_SEARCH_REPLACEMENTS = [
+  ["a", "\xE0\xE1\u1EA1\u1EA3\xE3\xE2\u1EA7\u1EA5\u1EAD\u1EA9\u1EAB\u0103\u1EB1\u1EAF\u1EB7\u1EB3\u1EB5"],
+  ["e", "\xE8\xE9\u1EB9\u1EBB\u1EBD\xEA\u1EC1\u1EBF\u1EC7\u1EC3\u1EC5"],
+  ["i", "\xEC\xED\u1ECB\u1EC9\u0129"],
+  ["o", "\xF2\xF3\u1ECD\u1ECF\xF5\xF4\u1ED3\u1ED1\u1ED9\u1ED5\u1ED7\u01A1\u1EDD\u1EDB\u1EE3\u1EDF\u1EE1"],
+  ["u", "\xF9\xFA\u1EE5\u1EE7\u0169\u01B0\u1EEB\u1EE9\u1EF1\u1EED\u1EEF"],
+  ["y", "\u1EF3\xFD\u1EF5\u1EF7\u1EF9"],
+  ["d", "\u0111\u0110"]
+];
+function normalizeVietnameseSearch(value) {
+  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/đ/g, "d").trim();
+}
+__name(normalizeVietnameseSearch, "normalizeVietnameseSearch");
+function vietnameseSearchSql(column) {
+  let expression = `COALESCE(${column},'')`;
+  for (const [replacement, chars] of VIETNAMESE_SEARCH_REPLACEMENTS) {
+    for (const char of chars) expression = `REPLACE(${expression},'${char}','${replacement}')`;
+  }
+  return `LOWER(${expression})`;
+}
+__name(vietnameseSearchSql, "vietnameseSearchSql");
+function buildEmployeeDirectoryFilter(url, me, hasHrScope) {
+  const conditions = [];
+  const binds = [];
+  if (!hasHrScope) {
+    conditions.push("u.department=?");
+    binds.push(me.department || "");
+  }
+  const search = normalizeVietnameseSearch(url.searchParams.get("search"));
+  if (search) {
+    const value = `%${search}%`;
+    conditions.push(`(${["u.full_name", "u.employee_code", "u.email", "u.department", "u.position"].map(vietnameseSearchSql).map((column) => `${column} LIKE ?`).join(" OR ")})`);
+    binds.push(value, value, value, value, value);
+  }
+  const filters = [
+    ["department", "u.department"],
+    ["status", "u.lifecycle_status"],
+    ["work_location", "u.work_location"],
+    ["location", "u.work_location"],
+    ["contract_type", "u.contract_type"],
+    ["position", "u.position"]
+  ];
+  for (const [param, column] of filters) {
+    const value = String(url.searchParams.get(param) || "").trim();
+    if (!value) continue;
+    conditions.push(`${column}=?`);
+    binds.push(value);
+  }
+  return { where: conditions.length ? ` WHERE ${conditions.join(" AND ")}` : "", binds };
+}
+__name(buildEmployeeDirectoryFilter, "buildEmployeeDirectoryFilter");
+async function buildEmployeeAlerts(env, windowDays = 30) {
+  const { results: employees = [] } = await env.DB.prepare(
+    `SELECT id,employee_code,employee_type,full_name,department,probation_end_date,contract_end_date,national_id_expiry_date
+     FROM users WHERE is_active=1 AND coalesce(lifecycle_status,'')<>'\u0110\xE3 ngh\u1EC9' ORDER BY full_name`
+  ).all();
+  const { results: documents = [] } = await env.DB.prepare(
+    `SELECT user_id,category,expires_on FROM employee_documents WHERE deleted_at IS NULL`
+  ).all();
+  const documentsByUser = /* @__PURE__ */ new Map();
+  for (const document of documents) {
+    if (!documentsByUser.has(Number(document.user_id))) documentsByUser.set(Number(document.user_id), []);
+    documentsByUser.get(Number(document.user_id)).push(document);
+  }
+  const today = /* @__PURE__ */ new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  const daysUntil = /* @__PURE__ */ __name((date) => {
+    if (!date) return null;
+    const parsed = /* @__PURE__ */ new Date(`${date}T00:00:00Z`);
+    return Number.isFinite(parsed.getTime()) ? Math.ceil((parsed.getTime() - today.getTime()) / 864e5) : null;
+  }, "daysUntil");
+  const alerts = [];
+  const dateFields = [
+    ["probation_end_date", "probation_due", "S\u1EAFp h\u1EBFt th\u1EED vi\u1EC7c", "employment"],
+    ["contract_end_date", "contract_due", "S\u1EAFp h\u1EBFt h\u1EA1n h\u1EE3p \u0111\u1ED3ng", "employment"],
+    ["national_id_expiry_date", "national_id_due", "CCCD s\u1EAFp h\u1EBFt h\u1EA1n", "overview"]
+  ];
+  for (const employee of employees) {
+    for (const [field, type, label, tab] of dateFields) {
+      const remaining = daysUntil(employee[field]);
+      if (remaining === null || remaining > windowDays) continue;
+      alerts.push({
+        id: `${type}-${employee.id}`,
+        type,
+        module: "employee_profile",
+        module_label: "H\u1ED3 s\u01A1 nh\xE2n vi\xEAn",
+        severity: remaining < 0 ? "danger" : remaining <= 7 ? "warning" : "info",
+        employee_id: employee.id,
+        employee_code: employee.employee_code,
+        employee_name: employee.full_name,
+        department: employee.department,
+        due_date: employee[field],
+        days_until: remaining,
+        occurred_on: employee[field],
+        title: label,
+        message: remaining < 0 ? `${label} \u0111\xE3 qu\xE1 h\u1EA1n ${Math.abs(remaining)} ng\xE0y` : `${label} c\xF2n ${remaining} ng\xE0y`,
+        action_url: `#/users/${employee.id}/${tab}`,
+        action_label: "M\u1EDF h\u1ED3 s\u01A1"
+      });
+    }
+    const employeeDocuments = documentsByUser.get(Number(employee.id)) || [];
+    const categories = new Set(employeeDocuments.map((document) => document.category));
+    const required = employee.employee_type === "TTS" ? [["cv", "CV \u1EE9ng vi\xEAn"], ["national_id", "CCCD"], ["internship_agreement", "Th\u1ECFa thu\u1EADn TTS"]] : [["cv", "CV \u1EE9ng vi\xEAn"], ["national_id", "CCCD"], ["labor_contract", "H\u1EE3p \u0111\u1ED3ng lao \u0111\u1ED9ng"]];
+    const missing = required.filter(([category]) => {
+      if (employee.employee_type === "TTS" && category === "internship_agreement" && categories.has("labor_contract")) return false;
+      return !categories.has(category);
+    }).map(([, label]) => label);
+    if (missing.length) {
+      alerts.push({
+        id: `missing-documents-${employee.id}`,
+        type: "missing_documents",
+        module: "employee_profile",
+        module_label: "H\u1ED3 s\u01A1 nh\xE2n vi\xEAn",
+        severity: "warning",
+        employee_id: employee.id,
+        employee_code: employee.employee_code,
+        employee_name: employee.full_name,
+        department: employee.department,
+        missing,
+        title: "H\u1ED3 s\u01A1 c\xF2n thi\u1EBFu",
+        message: `Thi\u1EBFu h\u1ED3 s\u01A1: ${missing.join(", ")}`,
+        action_url: `#/users/${employee.id}/documents`,
+        action_label: "B\u1ED5 sung t\xE0i li\u1EC7u"
+      });
+    }
+    for (const document of employeeDocuments) {
+      const remaining = daysUntil(document.expires_on);
+      if (remaining === null || remaining > windowDays) continue;
+      alerts.push({
+        id: `document-due-${employee.id}-${document.category}`,
+        type: "document_due",
+        module: "employee_profile",
+        module_label: "H\u1ED3 s\u01A1 nh\xE2n vi\xEAn",
+        severity: remaining < 0 ? "danger" : remaining <= 7 ? "warning" : "info",
+        employee_id: employee.id,
+        employee_code: employee.employee_code,
+        employee_name: employee.full_name,
+        department: employee.department,
+        due_date: document.expires_on,
+        days_until: remaining,
+        occurred_on: document.expires_on,
+        title: "T\xE0i li\u1EC7u s\u1EAFp h\u1EBFt h\u1EA1n",
+        message: `${EMPLOYEE_DOCUMENT_CATEGORIES[document.category] || "T\xE0i li\u1EC7u"} ${remaining < 0 ? `\u0111\xE3 qu\xE1 h\u1EA1n ${Math.abs(remaining)} ng\xE0y` : `c\xF2n ${remaining} ng\xE0y`}`,
+        action_url: `#/users/${employee.id}/documents`,
+        action_label: "Xem t\xE0i li\u1EC7u"
+      });
+    }
+  }
+  return alerts;
+}
+__name(buildEmployeeAlerts, "buildEmployeeAlerts");
+async function buildAttendanceNotifications(env, me, { windowDays = 30, isAdmin = false, isHcnsScope = false } = {}) {
+  const conditions = [`date(a.date) >= date('now','localtime',?)`];
+  const binds = [`-${windowDays - 1} day`];
+  if (!isAdmin && !isHcnsScope && me.role === "manager") {
+    conditions.push("u.department=?");
+    binds.push(me.department || "");
+  } else if (!isAdmin && !isHcnsScope) {
+    conditions.push("a.user_id=?");
+    binds.push(me.id);
+  }
+  const { results: rows = [] } = await env.DB.prepare(
+    `SELECT a.*,u.full_name,u.employee_code,u.department,
+       (SELECT o.status FROM overtime_requests o WHERE o.attendance_id=a.id LIMIT 1) AS overtime_status,
+       CASE WHEN EXISTS (
+         SELECT 1 FROM leave_requests lr
+         WHERE lr.status='approved'
+           AND (lr.employee_id=a.user_id OR CAST(lr.user_id AS TEXT)=CAST(a.user_id AS TEXT))
+           AND date(a.date) BETWEEN date(lr.start_date) AND date(lr.end_date)
+       ) THEN 1 ELSE 0 END AS has_approved_leave
+     FROM attendance a JOIN users u ON u.id=a.user_id
+     WHERE ${conditions.join(" AND ")}
+     ORDER BY a.date DESC,a.id DESC`
+  ).bind(...binds).all();
+  const notifications = [];
+  for (const row of rows) {
+    const base = {
+      module: "attendance",
+      module_label: "Ch\u1EA5m c\xF4ng",
+      employee_id: row.user_id,
+      employee_code: row.employee_code,
+      employee_name: row.full_name,
+      department: row.department,
+      occurred_on: row.date,
+      action_url: `#/attendance/${row.date}/${row.user_id}`,
+      action_label: "Xem ch\u1EA5m c\xF4ng",
+      attendance_id: row.id
+    };
+    if (Number(row.late_minutes || 0) > 0) {
+      notifications.push({
+        ...base,
+        id: `attendance-late-${row.id}`,
+        type: "attendance_late",
+        severity: "warning",
+        title: "\u0110i l\xE0m mu\u1ED9n",
+        message: `${row.full_name} check-in mu\u1ED9n ${Number(row.late_minutes)} ph\xFAt l\xFAc ${row.checkin_time || "ch\u01B0a r\xF5"}`
+      });
+    }
+    if (Number(row.early_minutes || 0) > 0) {
+      notifications.push({
+        ...base,
+        id: `attendance-early-${row.id}`,
+        type: "attendance_early",
+        severity: "warning",
+        title: "\u0110i v\u1EC1 s\u1EDBm",
+        message: `${row.full_name} v\u1EC1 s\u1EDBm ${Number(row.early_minutes)} ph\xFAt l\xFAc ${row.checkout_time || "ch\u01B0a r\xF5"}`
+      });
+    }
+    if (row.status === "absent" && !Number(row.has_approved_leave) && !String(row.note || "").trim()) {
+      notifications.push({
+        ...base,
+        id: `attendance-unexcused-absence-${row.id}`,
+        type: "attendance_unexcused_absence",
+        severity: "danger",
+        title: "V\u1EAFng kh\xF4ng c\xF3 l\xFD do",
+        message: `${row.full_name} \u0111\u01B0\u1EE3c ghi nh\u1EADn v\u1EAFng nh\u01B0ng ch\u01B0a c\xF3 l\xFD do ho\u1EB7c \u0111\u01A1n ngh\u1EC9 \u0111\u01B0\u1EE3c duy\u1EC7t`
+      });
+    }
+  }
+  return notifications;
+}
+__name(buildAttendanceNotifications, "buildAttendanceNotifications");
+var EVAL_CRITERIA_MAX = {
+  HS01: 15,
+  HS02: 10,
+  HS03: 10,
+  HS04: 10,
+  HS05: 10,
+  HS06: 5,
+  VH01: 7,
+  VH02: 6,
+  VH03: 6,
+  VH04: 6,
+  SK01: 5,
+  SK02: 4,
+  SK03: 3,
+  SK04: 3
+};
+var EVAL_COMMENT_REQUIRED_RATIO = 0.6;
+var EVAL_CODES = Object.keys(EVAL_CRITERIA_MAX);
+var MANUAL_EVAL_CODES = EVAL_CODES.filter((code) => !code.startsWith("HS"));
+function evalValidatePartial(scores, comments) {
+  for (const code of MANUAL_EVAL_CODES) {
+    const v = (scores || {})[code];
+    if (v === void 0 || v === null || v === "") continue;
+    const n = Number(v);
+    const max = EVAL_CRITERIA_MAX[code];
+    if (!Number.isFinite(n) || n < 0 || n > max) return `\u0110i\u1EC3m ${code} kh\xF4ng h\u1EE3p l\u1EC7 (0\u2013${max})`;
+    if (n < max * EVAL_COMMENT_REQUIRED_RATIO && !String((comments || {})[code] || "").trim()) {
+      return `C\u1EA7n nh\u1EADn x\xE9t khi \u0111i\u1EC3m ${code} th\u1EA5p h\u01A1n m\u1EE9c c\u1EA5u h\xECnh`;
+    }
+  }
+  return null;
+}
+__name(evalValidatePartial, "evalValidatePartial");
+function evalValidateComplete(scores, comments) {
+  for (const code of MANUAL_EVAL_CODES) {
+    const v = (scores || {})[code];
+    if (v === void 0 || v === null || v === "") return `Vui l\xF2ng ch\u1EA5m \u0111i\u1EC3m \u0111\u1EA7y \u0111\u1EE7 14 ti\xEAu ch\xED (c\xF2n thi\u1EBFu ${code})`;
+  }
+  return evalValidatePartial(scores, comments);
+}
+__name(evalValidateComplete, "evalValidateComplete");
+function todayStr() {
+  return (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+}
+__name(todayStr, "todayStr");
+async function saveMessageMentions(env, { conversationId, messageId, mentionedBy, mentionIds }) {
+  const requestedIds = [...new Set((Array.isArray(mentionIds) ? mentionIds : []).map(Number).filter((id) => Number.isInteger(id) && id > 0 && id !== mentionedBy))].slice(0, 25);
+  if (!requestedIds.length) return [];
+  const placeholders = requestedIds.map(() => "?").join(",");
+  const { results = [] } = await env.DB.prepare(
+    `SELECT user_id FROM conversation_members WHERE conversation_id = ? AND user_id IN (${placeholders})`
+  ).bind(conversationId, ...requestedIds).all();
+  const validIds = results.map((row) => Number(row.user_id));
+  for (const userId of validIds) {
+    await env.DB.prepare(
+      "INSERT OR IGNORE INTO message_mentions (message_id, mentioned_user_id, mentioned_by) VALUES (?, ?, ?)"
+    ).bind(messageId, userId, mentionedBy).run();
+  }
+  return validIds;
+}
+__name(saveMessageMentions, "saveMessageMentions");
+async function chatMember(env, conversationId, userId) {
+  const baseSql = `SELECT cm.role,c.type FROM conversation_members cm JOIN conversations c ON c.id=cm.conversation_id
+      WHERE cm.conversation_id=? AND cm.user_id=?`;
+  try {
+    return await env.DB.prepare(
+      `${baseSql} AND NOT EXISTS (SELECT 1 FROM dissolved_conversations dc WHERE dc.conversation_id=c.id)`
+    ).bind(conversationId, userId).first();
+  } catch (error) {
+    console.error("Conversation dissolve membership filter unavailable; using legacy membership check", error);
+    return await env.DB.prepare(baseSql).bind(conversationId, userId).first();
+  }
+}
+__name(chatMember, "chatMember");
+async function saveAllMention(env, { conversationId, messageId, mentionedBy, requested, content }) {
+  if (!requested) return false;
+  const member = await chatMember(env, conversationId, mentionedBy);
+  if (!member || member.type === "direct" || !/(^|\s)@all\b/i.test(String(content || ""))) {
+    throw new Error("@all ch\u1EC9 d\xF9ng \u0111\u01B0\u1EE3c trong nh\xF3m");
+  }
+  await env.DB.prepare("INSERT OR IGNORE INTO message_all_mentions (message_id,mentioned_by) VALUES (?,?)").bind(messageId, mentionedBy).run();
+  return true;
+}
+__name(saveAllMention, "saveAllMention");
+async function hydrateChatMessages(env, messageRows, viewerId) {
+  const ids = messageRows.map((row) => Number(row.id)).filter(Boolean);
+  if (!ids.length) return messageRows;
+  const placeholders = ids.map(() => "?").join(",");
+  const [attachmentsResult, reactionsResult, mentionsResult, allMentionsResult, pollsResult, optionsResult, eventsResult, attendeeResult, readersResult] = await Promise.all([
+    env.DB.prepare(`SELECT * FROM message_attachments WHERE message_id IN (${placeholders}) ORDER BY id`).bind(...ids).all(),
+    env.DB.prepare(`SELECT mr.message_id,mr.emoji,mr.user_id,u.full_name AS user_name FROM message_reactions mr JOIN users u ON u.id=mr.user_id WHERE mr.message_id IN (${placeholders})`).bind(...ids).all(),
+    env.DB.prepare(`SELECT mm.message_id,mm.mentioned_user_id AS user_id,u.full_name FROM message_mentions mm JOIN users u ON u.id=mm.mentioned_user_id WHERE mm.message_id IN (${placeholders})`).bind(...ids).all(),
+    env.DB.prepare(`SELECT message_id FROM message_all_mentions WHERE message_id IN (${placeholders})`).bind(...ids).all(),
+    env.DB.prepare(`SELECT * FROM chat_polls WHERE message_id IN (${placeholders})`).bind(...ids).all(),
+    env.DB.prepare(`SELECT o.id,o.message_id,o.option_text,o.position,COUNT(v.user_id) AS vote_count
+                      FROM chat_poll_options o LEFT JOIN chat_poll_votes v ON v.option_id=o.id
+                     WHERE o.message_id IN (${placeholders}) GROUP BY o.id ORDER BY o.position,o.id`).bind(...ids).all(),
+    env.DB.prepare(`SELECT e.*,COUNT(a.user_id) AS attendee_count,
+                      SUM(CASE WHEN a.response='going' THEN 1 ELSE 0 END) AS going_count
+                      FROM chat_events e LEFT JOIN chat_event_attendees a ON a.message_id=e.message_id
+                     WHERE e.message_id IN (${placeholders}) GROUP BY e.message_id`).bind(...ids).all(),
+    env.DB.prepare(`SELECT message_id,response FROM chat_event_attendees WHERE user_id=? AND message_id IN (${placeholders})`).bind(viewerId, ...ids).all(),
+    env.DB.prepare(`SELECT m.id AS message_id,cm.user_id,u.full_name,u.avatar_url
+                      FROM messages m
+                      JOIN conversation_members cm ON cm.conversation_id=m.conversation_id
+                      JOIN users u ON u.id=cm.user_id
+                     WHERE m.id IN (${placeholders})
+                       AND cm.user_id != m.sender_id
+                       AND COALESCE(cm.last_read_message_id,0) >= m.id`).bind(...ids).all()
+  ]);
+  const mapBy = /* @__PURE__ */ __name((rows, key) => rows.reduce((map, row) => {
+    (map[row[key]] ||= []).push(row);
+    return map;
+  }, {}), "mapBy");
+  const attachments = mapBy(attachmentsResult.results || [], "message_id");
+  const reactions = mapBy(reactionsResult.results || [], "message_id");
+  const mentions = mapBy(mentionsResult.results || [], "message_id");
+  const allMentionIds = new Set((allMentionsResult.results || []).map((row) => Number(row.message_id)));
+  const pollByMessage = Object.fromEntries((pollsResult.results || []).map((row) => [row.message_id, { ...row, options: [] }]));
+  for (const option of optionsResult.results || []) if (pollByMessage[option.message_id]) pollByMessage[option.message_id].options.push(option);
+  const eventByMessage = Object.fromEntries((eventsResult.results || []).map((row) => [row.message_id, row]));
+  const responseByEvent = Object.fromEntries((attendeeResult.results || []).map((row) => [row.message_id, row.response]));
+  const readers = mapBy(readersResult.results || [], "message_id");
+  for (const poll of Object.values(pollByMessage)) {
+    const optionIds = poll.options.map((option) => option.id);
+    if (!optionIds.length) {
+      poll.voted_option_ids = [];
+      continue;
+    }
+    const own = await env.DB.prepare(`SELECT option_id FROM chat_poll_votes WHERE user_id=? AND option_id IN (${optionIds.map(() => "?").join(",")})`).bind(viewerId, ...optionIds).all();
+    poll.voted_option_ids = (own.results || []).map((row) => row.option_id);
+  }
+  return messageRows.map((row) => ({
+    ...row,
+    attachments: attachments[row.id] || [],
+    reactions: reactions[row.id] || [],
+    mentions: mentions[row.id] || [],
+    mention_all: allMentionIds.has(Number(row.id)),
+    read_by: readers[row.id] || [],
+    poll: pollByMessage[row.id] || null,
+    event: eventByMessage[row.id] ? { ...eventByMessage[row.id], my_response: responseByEvent[row.id] || null } : null
+  }));
+}
+__name(hydrateChatMessages, "hydrateChatMessages");
+async function getChatMessage(env, messageId, viewerId) {
+  const row = await env.DB.prepare(
+    `SELECT m.*,u.full_name AS sender_name,u.employee_code AS sender_code,u.avatar_url AS sender_avatar,
+       EXISTS(SELECT 1 FROM pinned_messages pm WHERE pm.message_id=m.id) AS is_pinned
+       FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.id=?`
+  ).bind(messageId).first();
+  return row ? (await hydrateChatMessages(env, [row], viewerId))[0] : null;
+}
+__name(getChatMessage, "getChatMessage");
+async function broadcastChatUpdate(env, conversationId, payload) {
+  if (!env.CHAT_ROOM) return;
+  try {
+    const stub = env.CHAT_ROOM.get(env.CHAT_ROOM.idFromName(String(conversationId)));
+    await stub.fetch("https://chat-room.internal/broadcast", { method: "POST", body: JSON.stringify(payload) });
+  } catch (error) {
+    console.warn("Chat broadcast failed", error?.message || error);
+  }
+}
+__name(broadcastChatUpdate, "broadcastChatUpdate");
+async function broadcastAppEvent(env, topicOrEvent, eventOrPayload = {}, payloadObj = {}, options = {}) {
+  const syncHubBinding = env?.SYNC_HUB || env?.APP_SYNC_HUB;
+  if (!syncHubBinding) {
+    return { ok: false, error: "SYNC_HUB binding not available" };
+  }
+  let envelope;
+  if (typeof topicOrEvent === "object" && topicOrEvent !== null) {
+    envelope = {
+      id: topicOrEvent.id || `evt_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      seq: topicOrEvent.seq || 0,
+      topic: String(topicOrEvent.topic || "system"),
+      event: String(topicOrEvent.event || topicOrEvent.topic || "update"),
+      payload: topicOrEvent.payload !== void 0 ? topicOrEvent.payload : {},
+      actorId: topicOrEvent.actorId !== void 0 && topicOrEvent.actorId !== null ? Number(topicOrEvent.actorId) : null,
+      ...Array.isArray(topicOrEvent.targetUserIds) && topicOrEvent.targetUserIds.length ? {
+        targetUserIds: topicOrEvent.targetUserIds.map(Number).filter((id) => Number.isInteger(id) && id > 0)
+      } : {},
+      timestamp: topicOrEvent.timestamp || (/* @__PURE__ */ new Date()).toISOString()
+    };
+  } else {
+    const topic = String(topicOrEvent);
+    let eventName, payload, opts;
+    if (typeof eventOrPayload === "string") {
+      eventName = eventOrPayload;
+      payload = payloadObj || {};
+      opts = options || {};
+    } else {
+      eventName = options?.event || topic;
+      payload = eventOrPayload || {};
+      opts = payloadObj || {};
+    }
+    const eventId = opts.id || `evt_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const timestamp = opts.timestamp || (/* @__PURE__ */ new Date()).toISOString();
+    const actorId = opts.actorId !== void 0 && opts.actorId !== null ? Number(opts.actorId) : opts.actor_id !== void 0 && opts.actor_id !== null ? Number(opts.actor_id) : null;
+    const targetUserIds = Array.isArray(opts.targetUserIds || opts.target_user_ids) ? (opts.targetUserIds || opts.target_user_ids).map(Number).filter((id) => Number.isInteger(id) && id > 0) : void 0;
+    envelope = {
+      id: eventId,
+      seq: opts.seq || 0,
+      topic,
+      event: String(eventName),
+      payload,
+      actorId,
+      actor_id: actorId,
+      ...targetUserIds && targetUserIds.length ? { targetUserIds, target_user_ids: targetUserIds } : {},
+      timestamp
+    };
+  }
+  try {
+    const hubId = syncHubBinding.idFromName("global");
+    const hubStub = syncHubBinding.get(hubId);
+    if (typeof hubStub.broadcast === "function") {
+      return await hubStub.broadcast(envelope);
+    }
+    const response = await hubStub.fetch("https://sync-hub.internal/broadcast", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(envelope)
+    });
+    if (!response.ok) {
+      console.warn(`[broadcastAppEvent] AppSyncHub returned HTTP ${response.status} for ${envelope.topic}:${envelope.event}`);
+      return { ok: false, status: response.status };
+    }
+    return await response.json().catch(() => ({ ok: true, id: envelope.id }));
+  } catch (error) {
+    console.warn(`[broadcastAppEvent] Broadcast failed for ${envelope?.topic}:${envelope?.event}:`, error?.message || error);
+    return { ok: false, error: error?.message || String(error) };
+  }
+}
+__name(broadcastAppEvent, "broadcastAppEvent");
+var CHAT_EMOJI_FALLBACK = ["\u{1F600}", "\u{1F601}", "\u{1F602}", "\u{1F923}", "\u{1F60A}", "\u{1F60D}", "\u{1F618}", "\u{1F60E}", "\u{1F914}", "\u{1F62D}", "\u{1F621}", "\u{1F44D}", "\u{1F44E}", "\u2764\uFE0F", "\u{1F389}", "\u2705", "\u{1F525}", "\u{1F44F}", "\u{1F64F}", "\u{1F440}"];
+var _chatEmojiCache = { expiresAt: 0, emojis: CHAT_EMOJI_FALLBACK };
+async function getChatEmojis() {
+  if (_chatEmojiCache.expiresAt > Date.now()) return _chatEmojiCache.emojis;
+  try {
+    const response = await fetch("https://emojihub.yurace.pro/api/all", { cf: { cacheTtl: 86400, cacheEverything: true } });
+    const data = await response.json();
+    const emojis = [...new Set((Array.isArray(data) ? data : []).map((item) => String(item.htmlCode?.[0] || "").replace(/&#x([0-9a-f]+);|&#(\d+);/gi, (_, hex, decimal) => String.fromCodePoint(parseInt(hex || decimal, hex ? 16 : 10)))).filter(Boolean))].slice(0, 400);
+    if (emojis.length) _chatEmojiCache = { expiresAt: Date.now() + 24 * 60 * 60 * 1e3, emojis };
+  } catch (_) {
+    _chatEmojiCache = { expiresAt: Date.now() + 5 * 60 * 1e3, emojis: CHAT_EMOJI_FALLBACK };
+  }
+  return _chatEmojiCache.emojis;
+}
+__name(getChatEmojis, "getChatEmojis");
+async function ensureTaskActivityTimelineSchema(env) {
+  for (const [column, type] of Object.entries({
+    project_id: "INTEGER",
+    entity_type: "TEXT",
+    entity_id: "INTEGER",
+    entity_title: "TEXT",
+    assignee_id: "INTEGER",
+    assignee_name: "TEXT",
+    actor_name: "TEXT"
+  })) {
+    try {
+      await env.DB.exec(`ALTER TABLE task_activity ADD COLUMN ${column} ${type}`);
+    } catch (_) {
+    }
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_task_activity_project_created ON task_activity(project_id,created_at DESC,id DESC)");
+  } catch (_) {
+  }
+}
+__name(ensureTaskActivityTimelineSchema, "ensureTaskActivityTimelineSchema");
+async function ensureSubtaskSchema(env) {
+  try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS subtasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      is_done INTEGER DEFAULT 0,
+      assigned_to INTEGER,
+      due_date TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    )`).run();
+  } catch (error) {
+    console.error("Subtask schema check failed (create)", error);
+  }
+  try {
+    await env.DB.prepare("ALTER TABLE subtasks ADD COLUMN description TEXT").run();
+  } catch (_) {
+  }
+}
+__name(ensureSubtaskSchema, "ensureSubtaskSchema");
+async function ensureChatInteractionSchema(env) {
+  try {
+    await env.DB.exec("ALTER TABLE messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'text'");
+  } catch (_) {
+  }
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS message_all_mentions (
+    message_id INTEGER PRIMARY KEY,
+    mentioned_by INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS chat_polls (
+    message_id INTEGER PRIMARY KEY,
+    question TEXT NOT NULL,
+    allows_multiple INTEGER NOT NULL DEFAULT 1,
+    is_closed INTEGER NOT NULL DEFAULT 0,
+    closed_by INTEGER,
+    closed_at TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS chat_poll_options (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    option_text TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0
+  )`);
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS chat_poll_votes (
+    option_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(option_id,user_id)
+  )`);
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS chat_events (
+    message_id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    start_at TEXT NOT NULL,
+    end_at TEXT,
+    description TEXT,
+    location TEXT,
+    meeting_url TEXT,
+    cancelled_at TEXT,
+    cancelled_by INTEGER,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS chat_event_attendees (
+    message_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    response TEXT NOT NULL DEFAULT 'invited',
+    responded_at TEXT,
+    UNIQUE(message_id,user_id)
+  )`);
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS dissolved_conversations (
+    conversation_id INTEGER PRIMARY KEY,
+    dissolved_by INTEGER NOT NULL,
+    dissolved_by_name TEXT,
+    dissolved_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  for (const statement of [
+    "CREATE INDEX IF NOT EXISTS idx_chat_poll_options_message ON chat_poll_options(message_id,position,id)",
+    "CREATE INDEX IF NOT EXISTS idx_chat_poll_votes_option ON chat_poll_votes(option_id,user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_chat_event_attendees_user ON chat_event_attendees(user_id,message_id)"
+  ]) {
+    try {
+      await env.DB.exec(statement);
+    } catch (_) {
+    }
+  }
+  for (const [column, type] of Object.entries({
+    dissolved_at: "TEXT",
+    dissolved_by: "INTEGER",
+    dissolved_by_name: "TEXT"
+  })) {
+    try {
+      await env.DB.exec(`ALTER TABLE conversations ADD COLUMN ${column} ${type}`);
+    } catch (_) {
+    }
+  }
+}
+__name(ensureChatInteractionSchema, "ensureChatInteractionSchema");
+async function attachChatAttachments(env, messageRows) {
+  const ids = messageRows.map((row) => Number(row.id)).filter(Boolean);
+  if (!ids.length) return messageRows;
+  const placeholders = ids.map(() => "?").join(",");
+  const { results = [] } = await env.DB.prepare(
+    `SELECT * FROM message_attachments WHERE message_id IN (${placeholders}) ORDER BY id ASC`
+  ).bind(...ids).all();
+  const byMessage = {};
+  for (const attachment of results) (byMessage[attachment.message_id] ||= []).push(attachment);
+  return messageRows.map((row) => ({ ...row, attachments: byMessage[row.id] || [] }));
+}
+__name(attachChatAttachments, "attachChatAttachments");
+function nowStr() {
+  return (/* @__PURE__ */ new Date()).toISOString().slice(0, 19).replace("T", " ");
+}
+__name(nowStr, "nowStr");
+async function recordAssetHistory(env, assetId, action, actor, detail = "") {
+  await env.DB.prepare(
+    "INSERT INTO asset_handover_history (asset_id,action,actor_id,actor_name,detail) VALUES (?,?,?,?,?)"
+  ).bind(assetId, action, actor?.id || null, actor?.full_name || "", detail || "").run();
+}
+__name(recordAssetHistory, "recordAssetHistory");
+function safeParseJSON(str) {
+  if (!str) return null;
+  try {
+    return JSON.parse(str);
+  } catch (_) {
+    return null;
+  }
+}
+__name(safeParseJSON, "safeParseJSON");
+async function nextInvoiceNumber(env, year, month) {
+  const row = await env.DB.prepare(
+    "SELECT invoice_number FROM invoices WHERE year=? AND month=? AND invoice_number LIKE ? ORDER BY invoice_number DESC LIMIT 1"
+  ).bind(year, month, `HD-${year}${String(month).padStart(2, "0")}-%`).first();
+  const lastSeq = Number(String(row?.invoice_number || "").split("-").pop() || 0);
+  const count = await env.DB.prepare("SELECT COUNT(*) as cnt FROM invoices WHERE year=? AND month=?").bind(year, month).first();
+  const seq = String(Math.max(lastSeq, Number(count?.cnt || 0)) + 1).padStart(3, "0");
+  return "HD-" + year + String(month).padStart(2, "0") + "-" + seq;
+}
+__name(nextInvoiceNumber, "nextInvoiceNumber");
+function prevMonthStr(month) {
+  const [year, mm] = String(month || "").split("-").map(Number);
+  if (!year || !mm) return "";
+  const d = new Date(Date.UTC(year, mm - 2, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+__name(prevMonthStr, "prevMonthStr");
+function payrollAdjustmentType(source, amount, scoreDelta) {
+  if (amount > 0 && source !== "attendance") return "bonus";
+  if (amount > 0 && source === "attendance") return "penalty";
+  if (scoreDelta > 0) return "score_bonus";
+  if (scoreDelta < 0) return "score_penalty";
+  return "alert";
+}
+__name(payrollAdjustmentType, "payrollAdjustmentType");
+var PENALTY_POLICY_EFFECTIVE_MONTH = "2026-08";
+var PENALTY_POLICY_RESET_CONFIRMATION = "RESET_PENALTY_POLICY_2026_08";
+async function getPenaltyPolicyResetPreview(env) {
+  const { results: adjustments = [] } = await env.DB.prepare(
+    `SELECT pa.*,p.id AS payroll_exists,p.deduction AS payroll_deduction,p.base_salary,p.kpi_bonus,p.allowance,p.net_salary
+       FROM payroll_adjustments pa
+       LEFT JOIN payroll p ON p.id=pa.payroll_id
+      WHERE pa.type IN ('penalty','score_penalty')
+      ORDER BY pa.month,pa.id`
+  ).all();
+  const refundsByPayroll = /* @__PURE__ */ new Map();
+  let penaltyRows = 0;
+  let scorePenaltyRows = 0;
+  let penaltyAmount = 0;
+  let scoreDelta = 0;
+  let unlinkedApprovedPenaltyRows = 0;
+  for (const adjustment of adjustments) {
+    if (adjustment.type === "penalty") {
+      penaltyRows++;
+      penaltyAmount += Number(adjustment.amount || 0);
+      if (adjustment.status === "approved" && adjustment.payroll_id) {
+        const current = refundsByPayroll.get(Number(adjustment.payroll_id)) || { payroll: adjustment, amount: 0, adjustmentIds: [] };
+        current.amount += Number(adjustment.amount || 0);
+        current.adjustmentIds.push(Number(adjustment.id));
+        refundsByPayroll.set(Number(adjustment.payroll_id), current);
+      } else if (adjustment.status === "approved") {
+        unlinkedApprovedPenaltyRows++;
+      }
+    } else {
+      scorePenaltyRows++;
+      scoreDelta += Number(adjustment.score_delta || 0);
+    }
+  }
+  const payrollRefunds = [...refundsByPayroll.values()];
+  const conflicts = payrollRefunds.filter((item) => !item.payroll.payroll_exists || Number(item.payroll.payroll_deduction || 0) < item.amount).map((item) => ({ payroll_id: item.payroll.payroll_id, month: item.payroll.month, deduction: Number(item.payroll.payroll_deduction || 0), refund_amount: item.amount }));
+  return {
+    adjustments,
+    payrollRefunds,
+    conflicts,
+    summary: {
+      adjustment_count: adjustments.length,
+      penalty_rows: penaltyRows,
+      score_penalty_rows: scorePenaltyRows,
+      total_penalty_amount: penaltyAmount,
+      total_score_delta: scoreDelta,
+      payroll_rows_to_refund: payrollRefunds.length,
+      total_payroll_refund: payrollRefunds.reduce((sum, item) => sum + item.amount, 0),
+      unlinked_approved_penalty_rows: unlinkedApprovedPenaltyRows
+    }
+  };
+}
+__name(getPenaltyPolicyResetPreview, "getPenaltyPolicyResetPreview");
+async function resetPenaltyPolicyAdjustments(env, actor) {
+  const preview = await getPenaltyPolicyResetPreview(env);
+  if (preview.conflicts.length) {
+    const error = new Error("Kh\xF4ng th\u1EC3 ho\xE0n ph\u1EA1t v\xEC deduction hi\u1EC7n t\u1EA1i kh\xF4ng kh\u1EDBp c\xE1c row ph\u1EA1t \u0111\xE3 duy\u1EC7t");
+    error.conflicts = preview.conflicts;
+    throw error;
+  }
+  const statements = [];
+  for (const item of preview.payrollRefunds) {
+    const payroll = item.payroll;
+    const before = {
+      deduction: Number(payroll.payroll_deduction || 0),
+      net_salary: Number(payroll.net_salary || 0)
+    };
+    const nextDeduction = before.deduction - item.amount;
+    const nextNet = Number(payroll.base_salary || 0) + Number(payroll.kpi_bonus || 0) + Number(payroll.allowance || 0) - nextDeduction;
+    const after = { ...before, deduction: nextDeduction, net_salary: nextNet };
+    statements.push(
+      env.DB.prepare("UPDATE payroll SET deduction=?,net_salary=? WHERE id=?").bind(nextDeduction, nextNet, payroll.payroll_id),
+      env.DB.prepare("INSERT INTO payroll_change_log (payroll_id,changed_by,changed_by_name,change_note,before_data,after_data) VALUES (?,?,?,?,?,?)").bind(payroll.payroll_id, actor.id, actor.full_name || "", `Ho\xE0n ${item.amount.toLocaleString("vi-VN")}\u0111 do thay quy \u0111\u1ECBnh ph\u1EA1t t\u1EEB ${PENALTY_POLICY_EFFECTIVE_MONTH}`, JSON.stringify(before), JSON.stringify(after))
+    );
+  }
+  statements.push(env.DB.prepare("DELETE FROM payroll_adjustments WHERE type IN ('penalty','score_penalty')"));
+  if (statements.length) await env.DB.batch(statements);
+  return preview.summary;
+}
+__name(resetPenaltyPolicyAdjustments, "resetPenaltyPolicyAdjustments");
+async function buildPayrollAdjustmentSuggestions(env, month) {
+  const suggestions = [];
+  const { results: payrollRows = [] } = await env.DB.prepare(
+    "SELECT id,employee_id,employee_name,employee_code,department FROM payroll WHERE month=?"
+  ).bind(month).all();
+  const payrollByEmployee = new Map(payrollRows.map((p) => [Number(p.employee_id), p]));
+  function pushSuggestion(row) {
+    const payroll = payrollByEmployee.get(Number(row.employee_id));
+    suggestions.push({
+      payroll_id: payroll?.id || null,
+      employee_id: Number(row.employee_id),
+      employee_name: row.employee_name || payroll?.employee_name || "",
+      employee_code: row.employee_code || payroll?.employee_code || "",
+      department: row.department || payroll?.department || "",
+      month,
+      violation_date: row.violation_date || row.date || null,
+      policy_month: row.policy_month || month,
+      type: row.type || payrollAdjustmentType(row.source, Number(row.amount || 0), Number(row.score_delta || 0)),
+      source: row.source,
+      source_ref: row.source_ref,
+      amount: Number(row.amount || 0),
+      score_delta: Number(row.score_delta || 0),
+      reason: row.reason,
+      can_apply: !(Number(row.amount || 0) > 0 && !payroll?.id)
+    });
+  }
+  __name(pushSuggestion, "pushSuggestion");
+  const { results: evals = [] } = await env.DB.prepare(
+    `SELECT e.id AS evaluation_id, e.user_id AS employee_id, e.final_approved_score,
+            u.full_name AS employee_name, u.employee_code, u.department
+       FROM evaluations e
+       JOIN eval_periods p ON e.period_id=p.id
+       JOIN users u ON e.user_id=u.id
+      WHERE e.status='LOCKED'
+        AND printf('%04d-%02d', p.year, p.month)=?
+        AND e.final_approved_score IS NOT NULL`
+  ).bind(month).all();
+  for (const ev of evals) {
+    const score = Number(ev.final_approved_score || 0);
+    if (score >= 90) {
+      pushSuggestion({ ...ev, source: "evaluation", source_ref: `eval-score:${ev.evaluation_id}`, amount: 1e6, score_delta: 0, reason: `Diem danh gia ${score}: de xuat thuong 1.000.000d (co the dieu chinh toi 2.000.000d).` });
+    } else if (score >= 80) {
+      pushSuggestion({ ...ev, source: "evaluation", source_ref: `eval-score:${ev.evaluation_id}`, amount: 5e5, score_delta: 0, reason: `Diem danh gia ${score}: de xuat thuong 500.000d.` });
+    }
+  }
+  const prevMonth = prevMonthStr(month);
+  if (prevMonth) {
+    const { results: lowRows = [] } = await env.DB.prepare(
+      `SELECT cur.user_id AS employee_id, cur.final_approved_score AS current_score, prev.final_approved_score AS previous_score,
+              u.full_name AS employee_name, u.employee_code, u.department
+         FROM evaluations cur
+         JOIN eval_periods cp ON cur.period_id=cp.id
+         JOIN evaluations prev ON prev.user_id=cur.user_id
+         JOIN eval_periods pp ON prev.period_id=pp.id
+         JOIN users u ON u.id=cur.user_id
+        WHERE cur.status='LOCKED' AND prev.status='LOCKED'
+          AND printf('%04d-%02d', cp.year, cp.month)=?
+          AND printf('%04d-%02d', pp.year, pp.month)=?
+          AND cur.final_approved_score < 50 AND prev.final_approved_score < 50`
+    ).bind(month, prevMonth).all();
+    for (const row of lowRows) {
+      pushSuggestion({ ...row, source: "evaluation", source_ref: `eval-low-2mo:${row.employee_id}:${month}`, amount: 0, score_delta: 0, reason: `Diem yeu 2 thang lien tiep (${prevMonth}: ${row.previous_score}, ${month}: ${row.current_score}) - can HR/BGD xem xet.` });
+    }
+  }
+  const policyIsActive = month >= PENALTY_POLICY_EFFECTIVE_MONTH;
+  const { results: attendanceRows = [] } = policyIsActive ? await env.DB.prepare(
+    `SELECT a.id AS attendance_id, a.user_id AS employee_id, a.date, a.late_minutes, a.checkin_time, a.checkout_time,
+            u.full_name AS employee_name, u.employee_code, u.department
+       FROM attendance a JOIN users u ON a.user_id=u.id
+      WHERE a.date LIKE ? ORDER BY a.user_id,a.date,a.id`
+  ).bind(`${month}-%`).all() : { results: [] };
+  const lateCountByEmployee = /* @__PURE__ */ new Map();
+  for (const a of attendanceRows) {
+    const late = Number(a.late_minutes || 0);
+    if (late > 0) {
+      const lateCount = (lateCountByEmployee.get(Number(a.employee_id)) || 0) + 1;
+      lateCountByEmployee.set(Number(a.employee_id), lateCount);
+      if (lateCount >= 3) {
+        pushSuggestion({ ...a, violation_date: a.date, policy_month: month, source: "attendance", source_ref: `att-late:${a.attendance_id}`, amount: 2e4, score_delta: 0, reason: `\u0110i tr\u1EC5 l\u1EA7n th\u1EE9 ${lateCount} trong ${month}: ph\u1EA1t 20.000\u0111 theo quy \u0111\u1ECBnh.` });
+      }
+    }
+    if (a.date < vnTodayStr() && (!a.checkin_time || !a.checkout_time)) {
+      pushSuggestion({ ...a, violation_date: a.date, policy_month: month, source: "attendance", source_ref: `att-missing:${a.attendance_id}`, amount: 5e4, score_delta: 0, reason: "Thi\u1EBFu check-in/out: ph\u1EA1t 50.000\u0111." });
+    }
+  }
+  const { results: taskRows = [] } = policyIsActive ? await env.DB.prepare(
+    `SELECT t.assigned_to AS employee_id, COUNT(*) AS late_count,
+            u.full_name AS employee_name, u.employee_code, u.department
+       FROM tasks t JOIN users u ON t.assigned_to=u.id
+      WHERE t.due_date LIKE ?
+        AND date(t.due_date) < date('now','localtime')
+        AND t.status NOT IN ('done','cancelled')
+      GROUP BY t.assigned_to
+     HAVING COUNT(*) >= 3`
+  ).bind(`${month}-%`).all() : { results: [] };
+  for (const row of taskRows) {
+    pushSuggestion({ ...row, source: "tasks", source_ref: `task-deadline:${row.employee_id}:${month}`, amount: 0, score_delta: -5, reason: `Tre deadline ${row.late_count} lan trong thang: de xuat tru 5 diem theo chinh sach.` });
+  }
+  const { results: approved = [] } = await env.DB.prepare(
+    `SELECT pa.*, u.full_name AS employee_name, u.employee_code, u.department
+       FROM payroll_adjustments pa
+       LEFT JOIN users u ON u.id=pa.employee_id
+      WHERE pa.month=? AND pa.status='approved'
+      ORDER BY pa.approved_at DESC, pa.id DESC`
+  ).bind(month).all();
+  const approvedRefs = new Set(approved.map((a) => a.source_ref).filter(Boolean));
+  const { results: dismissed = [] } = await env.DB.prepare(
+    "SELECT source_ref FROM payroll_adjustment_dismissals WHERE month=?"
+  ).bind(month).all();
+  const dismissedRefs = new Set(dismissed.map((row) => row.source_ref));
+  return {
+    suggestions: suggestions.filter((s) => !approvedRefs.has(s.source_ref) && !dismissedRefs.has(s.source_ref)),
+    approved
+  };
+}
+__name(buildPayrollAdjustmentSuggestions, "buildPayrollAdjustmentSuggestions");
+function vnParts() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(/* @__PURE__ */ new Date()).reduce((m, p) => (m[p.type] = p.value, m), {});
+  return parts;
+}
+__name(vnParts, "vnParts");
+function vnTodayStr() {
+  const p = vnParts();
+  return `${p.year}-${p.month}-${p.day}`;
+}
+__name(vnTodayStr, "vnTodayStr");
+function vnTimeStr() {
+  const p = vnParts();
+  return `${p.hour}:${p.minute}`;
+}
+__name(vnTimeStr, "vnTimeStr");
+function vnDateTimeStr() {
+  return `${vnTodayStr()} ${vnTimeStr()}:00`;
+}
+__name(vnDateTimeStr, "vnDateTimeStr");
+async function getCredKey(env) {
+  const enc = new TextEncoder().encode("asset-cred-key:" + (env.APP_ID || "default-app"));
+  const digest = await crypto.subtle.digest("SHA-256", enc);
+  return crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+__name(getCredKey, "getCredKey");
+async function encryptCred(env, plain) {
+  if (!plain) return null;
+  const key = await getCredKey(env);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const cipherBuf = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plain));
+  const combined = new Uint8Array(iv.length + cipherBuf.byteLength);
+  combined.set(iv, 0);
+  combined.set(new Uint8Array(cipherBuf), iv.length);
+  return btoa(String.fromCharCode(...combined));
+}
+__name(encryptCred, "encryptCred");
+async function decryptCred(env, b64) {
+  if (!b64) return "";
+  try {
+    const combined = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const iv = combined.slice(0, 12);
+    const data = combined.slice(12);
+    const key = await getCredKey(env);
+    const plainBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, data);
+    return new TextDecoder().decode(plainBuf);
+  } catch (e) {
+    return "";
+  }
+}
+__name(decryptCred, "decryptCred");
+var ATT_STANDARD_SHIFTS = {
+  morning: { start: "08:30", lateAfter: "08:45", end: "12:00" },
+  afternoon: { start: "13:30", lateAfter: "13:45", end: "17:00" },
+  full: { start: "08:30", lateAfter: "08:45", end: "17:00" }
+};
+var ATT_EARLY_CHECKOUT_TOLERANCE_MINUTES = 10;
+function attToMinutes(t) {
+  if (!t) return null;
+  const [h, m] = String(t).split(":").map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  return h * 60 + m;
+}
+__name(attToMinutes, "attToMinutes");
+function normalizeOvertimeItems(items, periodMonth, { allowFuture = false } = {}) {
+  if (!/^\d{4}-\d{2}$/.test(String(periodMonth || ""))) return { error: "Th\xE1ng l\xE0m th\xEAm kh\xF4ng h\u1EE3p l\u1EC7" };
+  if (!Array.isArray(items) || !items.length || items.length > 31) return { error: "Form c\u1EA7n t\u1EEB 1 \u0111\u1EBFn 31 d\xF2ng l\xE0m th\xEAm" };
+  const now = Date.now();
+  const seen = /* @__PURE__ */ new Set();
+  const normalized = [];
+  const todayLocal = /* @__PURE__ */ new Date();
+  const todayDateStr = `${todayLocal.getFullYear()}-${String(todayLocal.getMonth() + 1).padStart(2, "0")}-${String(todayLocal.getDate()).padStart(2, "0")}`;
+  const todayDate = /* @__PURE__ */ new Date(todayDateStr + "T00:00:00");
+  for (const raw of items) {
+    const startAt = String(raw?.start_at || "");
+    const endAt = String(raw?.end_at || "");
+    const reason = String(raw?.reason || "").trim();
+    const category = ["workday", "rest_day", "holiday"].includes(raw?.time_category) ? raw.time_category : "workday";
+    const start = new Date(startAt);
+    const end = new Date(endAt);
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(startAt) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(endAt) || Number.isNaN(start.valueOf()) || Number.isNaN(end.valueOf())) return { error: "M\u1ED7i d\xF2ng OT ph\u1EA3i c\xF3 ng\xE0y gi\u1EDD b\u1EAFt \u0111\u1EA7u v\xE0 k\u1EBFt th\xFAc h\u1EE3p l\u1EC7" };
+    if (!startAt.startsWith(`${periodMonth}-`)) return { error: "Ng\xE0y b\u1EAFt \u0111\u1EA7u OT ph\u1EA3i thu\u1ED9c \u0111\xFAng th\xE1ng c\u1EE7a form" };
+    if (end <= start || end.valueOf() - start.valueOf() > 24 * 60 * 60 * 1e3) return { error: "Th\u1EDDi gian OT ph\u1EA3i l\u1EDBn h\u01A1n 0 v\xE0 kh\xF4ng qu\xE1 24 gi\u1EDD" };
+    if (!allowFuture && (/* @__PURE__ */ new Date(startAt.slice(0, 10) + "T00:00:00")).valueOf() > todayDate.valueOf()) return { error: "Kh\xF4ng th\u1EC3 khai b\xE1o OT trong t\u01B0\u01A1ng lai" };
+    if (!reason || reason.length > 1e3) return { error: "L\xFD do OT l\xE0 b\u1EAFt bu\u1ED9c v\xE0 t\u1ED1i \u0111a 1000 k\xFD t\u1EF1" };
+    const key = `${startAt}|${endAt}`;
+    if (seen.has(key)) return { error: "Kh\xF4ng \u0111\u01B0\u1EE3c nh\u1EADp hai d\xF2ng OT tr\xF9ng th\u1EDDi gian" };
+    seen.add(key);
+    normalized.push({ start_at: startAt, end_at: endAt, requested_minutes: Math.round((end - start) / 6e4), reason, time_category: category });
+  }
+  return { items: normalized };
+}
+__name(normalizeOvertimeItems, "normalizeOvertimeItems");
+async function applyCalendarOvertimeCategories(env, items) {
+  return Promise.all(items.map(async (item) => {
+    const workDate = item.start_at.slice(0, 10);
+    const holiday = await env.DB.prepare("SELECT id FROM company_holidays WHERE holiday_date=? AND is_active=1").bind(workDate).first();
+    const weekday = (/* @__PURE__ */ new Date(`${workDate}T00:00:00`)).getDay();
+    return { ...item, time_category: holiday ? "holiday" : weekday === 0 || weekday === 6 ? "rest_day" : item.time_category };
+  }));
+}
+__name(applyCalendarOvertimeCategories, "applyCalendarOvertimeCategories");
+async function ensureProjectHandoverSchema(env) {
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS asset_handovers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, asset_name TEXT NOT NULL,
+    asset_type TEXT, platform TEXT, link TEXT, credential_enc TEXT, responsible_name TEXT,
+    mentor_id INTEGER, mentor_name TEXT, status TEXT DEFAULT 'active', note TEXT,
+    confirmed_by INTEGER, confirmed_at TEXT, expected_handover_date TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')), updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS asset_credential_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id INTEGER NOT NULL, viewed_by INTEGER,
+    viewed_by_name TEXT, created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS asset_handover_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id INTEGER NOT NULL, action TEXT NOT NULL,
+    actor_id INTEGER, actor_name TEXT, detail TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  } catch (_) {
+  }
+  try {
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_asset_handover_history_asset_created ON asset_handover_history(asset_id, created_at DESC)");
+  } catch (_) {
+  }
+}
+__name(ensureProjectHandoverSchema, "ensureProjectHandoverSchema");
+async function d1WriteWithRetry(operation, attempts = 3) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (!/Network connection lost|connection reset|timed out/i.test(String(error?.message || "")) || attempt === attempts - 1) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+__name(d1WriteWithRetry, "d1WriteWithRetry");
+function attCountBusinessDays(year, month) {
+  const daysInMonth = new Date(year, month, 0).getDate();
+  let count = 0;
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dow = new Date(year, month - 1, d).getDay();
+    if (dow !== 0 && dow !== 6) count++;
+  }
+  return count;
+}
+__name(attCountBusinessDays, "attCountBusinessDays");
+function attIsoDate(year, month, day) {
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+__name(attIsoDate, "attIsoDate");
+function attCountBusinessDaysBetween(startDate, endDate) {
+  const start = /* @__PURE__ */ new Date(`${startDate}T00:00:00`);
+  const end = /* @__PURE__ */ new Date(`${endDate}T00:00:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return 0;
+  let count = 0;
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) count++;
+  }
+  return count;
+}
+__name(attCountBusinessDaysBetween, "attCountBusinessDaysBetween");
+async function isAttendanceWorkingDay(env, dateStr, employee = null) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr || ""))) return false;
+  const d = /* @__PURE__ */ new Date(`${dateStr}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return false;
+  const holiday = await env.DB.prepare("SELECT id FROM company_holidays WHERE holiday_date=? AND is_active=1").bind(dateStr).first();
+  if (holiday) return false;
+  const dow = d.getDay();
+  if (dow === 0 || dow === 6) return false;
+  return true;
+}
+__name(isAttendanceWorkingDay, "isAttendanceWorkingDay");
+async function attBusinessDaysBetweenAsync(env, startDate, endDate) {
+  const start = /* @__PURE__ */ new Date(`${startDate}T00:00:00`);
+  const end = /* @__PURE__ */ new Date(`${endDate}T00:00:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return 0;
+  let count = 0;
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const iso = attIsoDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
+    if (await isAttendanceWorkingDay(env, iso)) count++;
+  }
+  return count;
+}
+__name(attBusinessDaysBetweenAsync, "attBusinessDaysBetweenAsync");
+async function buildMonthlyWorkSummary(env, userId, month, year) {
+  const mm = String(month).padStart(2, "0");
+  const { results = [] } = await env.DB.prepare(
+    "SELECT * FROM attendance WHERE user_id=? AND strftime('%m',date)=? AND strftime('%Y',date)=?"
+  ).bind(userId, mm, String(year)).all();
+  let fullDays = 0;
+  let halfDays = 0;
+  let incompleteDays = 0;
+  let lateMinutes = 0;
+  let earlyLeaveMinutes = 0;
+  let absentDays = 0;
+  let lateDays = 0;
+  for (const r of results) {
+    if (r.status === "cancelled" || r.status === "rejected") continue;
+    if (r.status === "absent") {
+      absentDays++;
+      continue;
+    }
+    const hasIn = !!r.checkin_time;
+    const hasOut = !!r.checkout_time;
+    if (!hasIn || !hasOut) {
+      incompleteDays++;
+      continue;
+    }
+    if (r.shift === "morning" || r.shift === "afternoon") halfDays++;
+    else fullDays++;
+    const late = Number(r.late_minutes || 0);
+    const early = Number(r.early_minutes || 0);
+    lateMinutes += late;
+    earlyLeaveMinutes += early;
+    if (late > 0) lateDays++;
+  }
+  let paidLeaveDays = 0;
+  const monthStart = attIsoDate(year, month, 1);
+  const monthEnd = attIsoDate(year, month, new Date(year, month, 0).getDate());
+  try {
+    const { results: leaves = [] } = await env.DB.prepare(
+      `SELECT lr.start_date, lr.end_date
+         FROM leave_requests lr
+         LEFT JOIN leave_types lt ON lr.type=lt.code
+        WHERE (CAST(lr.user_id AS TEXT)=CAST(? AS TEXT) OR lr.employee_id=?)
+          AND lr.status='approved'
+          AND COALESCE(lt.paid_policy,'paid')='paid'
+          AND date(lr.start_date) <= date(?)
+          AND date(lr.end_date) >= date(?)`
+    ).bind(userId, userId, monthEnd, monthStart).all();
+    for (const lr of leaves) {
+      const start = String(lr.start_date || "") > monthStart ? String(lr.start_date || "") : monthStart;
+      const end = String(lr.end_date || "") < monthEnd ? String(lr.end_date || "") : monthEnd;
+      paidLeaveDays += attCountBusinessDaysBetween(start, end);
+    }
+  } catch (_) {
+    paidLeaveDays = 0;
+  }
+  const standardWorkDays = attCountBusinessDays(year, month);
+  const actualWorkDays = fullDays + halfDays * 0.5;
+  const overtime = await buildMonthlyOvertimeSummary(env, userId, month, year);
+  return {
+    standardWorkDays,
+    actualWorkDays,
+    fullDays,
+    halfDays,
+    incompleteDays,
+    absentDays,
+    lateDays,
+    paidLeaveDays,
+    lateMinutes,
+    earlyLeaveMinutes,
+    approvedOvertimeMinutes: overtime.approvedOvertimeMinutes,
+    approvedOvertimeHours: overtime.approvedOvertimeHours
+  };
+}
+__name(buildMonthlyWorkSummary, "buildMonthlyWorkSummary");
+var KPI_GROUP1_CODES = ["HS01", "HS02", "HS03", "HS04", "HS05", "HS06"];
+var KPI_GROUP1_MAX = { HS01: 15, HS02: 10, HS03: 10, HS04: 10, HS05: 10, HS06: 5 };
+function kpiScoreForPercent(percent, maxScore) {
+  if (percent >= 110) return maxScore;
+  if (percent >= 100) return Math.round(maxScore * 0.9 * 10) / 10;
+  if (percent >= 80) return Math.round(maxScore * 0.75 * 10) / 10;
+  if (percent >= 60) return Math.round(maxScore * 0.5 * 10) / 10;
+  if (percent > 0) return Math.round(maxScore * 0.25 * 10) / 10;
+  return 0;
+}
+__name(kpiScoreForPercent, "kpiScoreForPercent");
+function validateKpiItems(items) {
+  if (!Array.isArray(items) || !items.length) return "C\u1EA7n khai b\xE1o KPI cho 6 ti\xEAu ch\xED Nh\xF3m 1";
+  for (const code of KPI_GROUP1_CODES) {
+    const rows = items.filter((x) => x.criterion_code === code && Number(x.affects_group1) !== 0);
+    const totalWeight = rows.reduce((s, x) => s + Number(x.weight_percent || 0), 0);
+    if (!rows.length || Math.abs(totalWeight - 100) > 0.01) return `Ti\xEAu ch\xED ${code} ph\u1EA3i c\xF3 t\u1ED5ng tr\u1ECDng s\u1ED1 b\u1EB1ng 100%`;
+  }
+  for (const x of items) {
+    const scored = Number(x.affects_group1) !== 0;
+    const textUnit = String(x.unit || "").toLowerCase() === "text";
+    if (!KPI_GROUP1_CODES.includes(x.criterion_code) && scored || !String(x.title || "").trim() || !textUnit && Number(x.target_value) <= 0 || scored && Number(x.weight_percent) <= 0) return "D\u1EEF li\u1EC7u KPI kh\xF4ng h\u1EE3p l\u1EC7";
+  }
+  return null;
+}
+__name(validateKpiItems, "validateKpiItems");
+function normalizeEvidence(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = /* @__PURE__ */ new Set();
+  return value.map((row) => ({ label: String(row?.label || "").trim().slice(0, 160), url: String(row?.url || "").trim() })).filter((row) => row.url).filter((row) => {
+    try {
+      const u = new URL(row.url);
+      if (!/^https?:$/.test(u.protocol) || seen.has(u.href)) return false;
+      seen.add(u.href);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  });
+}
+__name(normalizeEvidence, "normalizeEvidence");
+async function attachKpiEvidence(env, items) {
+  for (const item of items || []) {
+    const { results = [] } = await env.DB.prepare("SELECT id,label,url,created_by,created_by_name,created_at,updated_by,updated_by_name,updated_at FROM employee_kpi_evidence WHERE kpi_item_id=? ORDER BY id").bind(item.id).all();
+    item.evidence = results;
+    if (!results.length && String(item.evidence_url || "").trim()) item.evidence = [{ id: `legacy-${item.id}`, label: "Link b\u1EB1ng ch\u1EE9ng", url: item.evidence_url }];
+  }
+  return items;
+}
+__name(attachKpiEvidence, "attachKpiEvidence");
+async function replaceKpiEvidence(env, plan, item, evidence, me, action = "replace") {
+  const normalized = normalizeEvidence(evidence);
+  if (Array.isArray(evidence) && evidence.filter((x) => x?.url).length !== normalized.length) throw new Error("M\u1ED7i link b\u1EB1ng ch\u1EE9ng ph\u1EA3i l\xE0 URL http ho\u1EB7c https h\u1EE3p l\u1EC7");
+  const { results: oldRows = [] } = await env.DB.prepare("SELECT label,url FROM employee_kpi_evidence WHERE kpi_item_id=? ORDER BY id").bind(item.id).all();
+  const oldValue = JSON.stringify(oldRows);
+  const newValue = JSON.stringify(normalized);
+  if (oldValue === newValue) return false;
+  await env.DB.prepare("DELETE FROM employee_kpi_evidence WHERE kpi_item_id=?").bind(item.id).run();
+  for (const link of normalized) await env.DB.prepare("INSERT INTO employee_kpi_evidence (kpi_item_id,label,url,created_by,created_by_name,updated_by,updated_by_name) VALUES (?,?,?,?,?,?,?)").bind(item.id, link.label, link.url, me.id, me.full_name || "", me.id, me.full_name || "").run();
+  await env.DB.prepare("INSERT INTO employee_kpi_evidence_audit (plan_id,kpi_item_id,action,old_value_json,new_value_json,changed_by,changed_by_name) VALUES (?,?,?,?,?,?,?)").bind(plan.id, item.id, action, oldValue, newValue, me.id, me.full_name || "").run();
+  return true;
+}
+__name(replaceKpiEvidence, "replaceKpiEvidence");
+function group1Total(items) {
+  return KPI_GROUP1_CODES.reduce((sum, code) => {
+    const rows = items.filter((item) => item.criterion_code === code && Number(item.affects_group1) !== 0);
+    if (rows.some((item) => String(item.unit || "").toLowerCase() === "text")) return sum + rows.reduce((n, item) => n + Number(item.manual_score || 0), 0);
+    const pct = rows.reduce((n, item) => n + Number(item.actual_value || 0) / Number(item.target_value || 1) * Number(item.weight_percent || 0), 0);
+    return sum + kpiScoreForPercent(pct, KPI_GROUP1_MAX[code]);
+  }, 0);
+}
+__name(group1Total, "group1Total");
+async function createEvaluationKpiSnapshot(env, evaluationId, employeeId, month, year) {
+  const plan = await env.DB.prepare("SELECT * FROM employee_kpi_plans WHERE employee_id=? AND month=? AND year=? AND status=?").bind(employeeId, month, year, "APPROVED").first();
+  if (!plan) return { error: "Nh\xE2n vi\xEAn ch\u01B0a c\xF3 KPI th\xE1ng \u0111\u01B0\u1EE3c HCNS duy\u1EC7t" };
+  const { results: items = [] } = await env.DB.prepare("SELECT * FROM employee_kpi_items WHERE plan_id=? ORDER BY criterion_code,id").bind(plan.id).all();
+  const invalid = validateKpiItems(items);
+  if (invalid) return { error: invalid };
+  if (items.filter((x) => Number(x.affects_group1) !== 0).some((x) => String(x.unit).toLowerCase() === "text" ? !String(x.actual_text || "").trim() || x.manual_score === null : x.actual_value === null || x.actual_value === void 0)) return { error: "KPI t\xEDnh \u0111i\u1EC3m ch\u01B0a c\xF3 k\u1EBFt qu\u1EA3 ho\u1EB7c \u0111i\u1EC3m HCNS \u0111\u1EA7y \u0111\u1EE7" };
+  const snapshots = [];
+  for (const code of KPI_GROUP1_CODES) {
+    const rows = items.filter((x) => x.criterion_code === code);
+    const textRows = rows.filter((x) => String(x.unit).toLowerCase() === "text");
+    const pct = textRows.length ? 0 : rows.reduce((sum, x) => sum + Number(x.actual_value) / Number(x.target_value) * Number(x.weight_percent), 0) / 100 * 100;
+    const score = textRows.length ? textRows.reduce((sum, x) => sum + Number(x.manual_score || 0), 0) : kpiScoreForPercent(pct, KPI_GROUP1_MAX[code]);
+    snapshots.push({ code, achievement_percent: Math.round(pct * 100) / 100, automatic_score: score, details: rows });
+  }
+  for (const s of snapshots) await env.DB.prepare(
+    "INSERT OR REPLACE INTO evaluation_kpi_snapshots (evaluation_id,criterion_code,achievement_percent,automatic_score,details_json) VALUES (?,?,?,?,?)"
+  ).bind(evaluationId, s.code, s.achievement_percent, s.automatic_score, JSON.stringify(s.details)).run();
+  return { snapshots, total: snapshots.reduce((sum, s) => sum + s.automatic_score, 0) };
+}
+__name(createEvaluationKpiSnapshot, "createEvaluationKpiSnapshot");
+var edgeRateBuckets = /* @__PURE__ */ new Map();
+function clientIp(request) {
+  return (request.headers.get("CF-Connecting-IP") || request.headers.get("X-Forwarded-For") || "unknown").split(",")[0].trim();
+}
+__name(clientIp, "clientIp");
+function rateLimit(request, scope, limit, windowMs) {
+  const now = Date.now();
+  const key = `${scope}:${clientIp(request)}`;
+  const bucket = edgeRateBuckets.get(key);
+  if (!bucket || now >= bucket.resetAt) {
+    edgeRateBuckets.set(key, { count: 1, resetAt: now + windowMs });
+    return null;
+  }
+  bucket.count += 1;
+  if (bucket.count <= limit) return null;
+  return Math.max(1, Math.ceil((bucket.resetAt - now) / 1e3));
+}
+__name(rateLimit, "rateLimit");
+async function buildMonthlyOvertimeSummary(env, userId, month, year, baseSalary = 0) {
+  const mm = String(month).padStart(2, "0");
+  const { results: legacyResults = [] } = await env.DB.prepare(
+    "SELECT work_date, COALESCE(approved_minutes, requested_minutes, 0) AS approved_minutes FROM overtime_requests WHERE (user_id=? OR CAST(user_id AS TEXT)=CAST(? AS TEXT)) AND status='approved' AND strftime('%m',work_date)=? AND strftime('%Y',work_date)=?"
+  ).bind(userId, userId, mm, String(year)).all();
+  const { results: formResults = [] } = await env.DB.prepare(
+    `SELECT substr(i.start_at,1,10) AS work_date,
+            COALESCE(NULLIF(i.approved_minutes, 0), i.requested_minutes, 0) AS approved_minutes,
+            i.time_category
+       FROM overtime_form_items i JOIN overtime_forms f ON f.id=i.form_id
+      WHERE (f.user_id=? OR CAST(f.user_id AS TEXT)=CAST(? AS TEXT))
+        AND f.status IN ('approved','partially_approved')
+        AND strftime('%m',substr(i.start_at,1,10))=? AND strftime('%Y',substr(i.start_at,1,10))=?`
+  ).bind(userId, userId, mm, String(year)).all();
+  const { results: holidays = [] } = await env.DB.prepare(
+    "SELECT holiday_date FROM company_holidays WHERE is_active=1 AND strftime('%m',holiday_date)=? AND strftime('%Y',holiday_date)=?"
+  ).bind(mm, String(year)).all();
+  const holidayDates = new Set(holidays.map((h) => h.holiday_date));
+  const standardDays = attCountBusinessDays(year, month) || 1;
+  const hourlyRate = Number(baseSalary || 0) / standardDays / 8;
+  let approvedMinutes = 0;
+  let overtimePay = 0;
+  for (const item of [...legacyResults, ...formResults]) {
+    const minutes = Math.max(0, Number(item.approved_minutes || 0));
+    const day = (/* @__PURE__ */ new Date(`${item.work_date}T00:00:00`)).getDay();
+    const multiplier = item.time_category === "holiday" || holidayDates.has(item.work_date) ? 3 : item.time_category === "rest_day" || day === 0 || day === 6 ? 2 : 1.5;
+    approvedMinutes += minutes;
+    overtimePay += minutes / 60 * hourlyRate * multiplier;
+  }
+  return { approvedOvertimeMinutes: approvedMinutes, approvedOvertimeHours: approvedMinutes / 60, overtimePay: Math.round(overtimePay) };
+}
+__name(buildMonthlyOvertimeSummary, "buildMonthlyOvertimeSummary");
+async function refreshInvoiceOvertime(env, userId, month, year, actor = null) {
+  const mm = String(month).padStart(2, "0");
+  const monthKey = `${year}-${mm}`;
+  const user = await env.DB.prepare("SELECT salary FROM users WHERE id=?").bind(userId).first();
+  const baseSalary = Number(user?.salary || 0);
+  const ot = await buildMonthlyOvertimeSummary(env, userId, month, year, baseSalary);
+  const invoice = await env.DB.prepare("SELECT * FROM invoices WHERE user_id=? AND month=? AND year=? ORDER BY id DESC LIMIT 1").bind(userId, month, year).first();
+  if (invoice) {
+    const net = Number(invoice.base_salary || baseSalary) + Number(invoice.bonus || 0) + Number(invoice.allowance || 0) + ot.overtimePay - Number(invoice.deduction || 0) - Number(invoice.tax || 0) - Number(invoice.insurance || 0);
+    await env.DB.prepare("UPDATE invoices SET approved_overtime_minutes=?,overtime_pay=?,net_salary=? WHERE id=?").bind(ot.approvedOvertimeMinutes, ot.overtimePay, net, invoice.id).run();
+    if (actor) await env.DB.prepare("INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)").bind(invoice.id, invoice.status, invoice.status, actor.id, actor.full_name || "", `Overtime approval recalculated: ${ot.approvedOvertimeHours.toFixed(2)}h`).run();
+  }
+  const payroll = await env.DB.prepare("SELECT * FROM payroll WHERE employee_id=? AND month=? LIMIT 1").bind(userId, monthKey).first();
+  if (payroll) {
+    const pNet = Number(payroll.base_salary || baseSalary) + Number(payroll.kpi_bonus || 0) + Number(payroll.allowance || 0) + ot.overtimePay - Number(payroll.deduction || 0) - Number(payroll.tax || 0) - Number(payroll.insurance || 0);
+    await env.DB.prepare("UPDATE payroll SET approved_overtime_minutes=?,overtime_pay=?,net_salary=? WHERE id=?").bind(ot.approvedOvertimeMinutes, ot.overtimePay, pNet, payroll.id).run();
+  }
+  return ot;
+}
+__name(refreshInvoiceOvertime, "refreshInvoiceOvertime");
+function attShiftBounds(workType, shift, expectedStart, expectedEnd) {
+  const std = ATT_STANDARD_SHIFTS[shift] || ATT_STANDARD_SHIFTS.full;
+  if (workType === "business") {
+    const start = expectedStart || std.start;
+    const end = expectedEnd || std.end;
+    return { start, lateAfter: start, end };
+  }
+  return std;
+}
+__name(attShiftBounds, "attShiftBounds");
+function attTimeIsValid(value) {
+  const minutes = attToMinutes(value);
+  return minutes !== null && minutes >= 0 && minutes < 24 * 60 && /^\d{2}:\d{2}$/.test(String(value || ""));
+}
+__name(attTimeIsValid, "attTimeIsValid");
+function attEarlyCheckoutMinutes(bounds, checkoutTime) {
+  const end = attToMinutes(bounds.end);
+  const checkout = attToMinutes(checkoutTime);
+  if (end === null || checkout === null) return 0;
+  return Math.max(0, end - checkout - ATT_EARLY_CHECKOUT_TOLERANCE_MINUTES);
+}
+__name(attEarlyCheckoutMinutes, "attEarlyCheckoutMinutes");
+function attManualTimingMetrics(record, checkinTime, checkoutTime) {
+  const bounds = attShiftBounds(record.work_type || "office", record.shift || "full", record.expected_start, record.expected_end);
+  const checkinMinutes = attToMinutes(checkinTime);
+  const checkoutMinutes = attToMinutes(checkoutTime);
+  const lateMinutes = checkinMinutes === null ? 0 : Math.max(0, checkinMinutes - attToMinutes(bounds.lateAfter));
+  const earlyMinutes = checkoutMinutes === null ? 0 : attEarlyCheckoutMinutes(bounds, checkoutTime);
+  let workedMinutes = checkinMinutes === null || checkoutMinutes === null ? 0 : Math.max(0, checkoutMinutes - checkinMinutes);
+  if (checkinMinutes !== null && checkoutMinutes !== null && (record.work_type || "office") !== "business" && (record.shift || "full") === "full") {
+    const lunchStart = 12 * 60, lunchEnd = 13 * 60 + 30;
+    workedMinutes -= Math.max(0, Math.min(checkoutMinutes, lunchEnd) - Math.max(checkinMinutes, lunchStart));
+  }
+  return { bounds, lateMinutes, earlyMinutes, workHours: Math.max(0, workedMinutes) / 60 };
+}
+__name(attManualTimingMetrics, "attManualTimingMetrics");
+async function runAutoCheckout(env) {
+  const today = vnTodayStr();
+  const rows = await env.DB.prepare(
+    `SELECT * FROM attendance
+      WHERE checkin_time IS NOT NULL
+        AND checkout_time IS NULL
+        AND date < ?
+        AND status NOT IN ('absent','cancelled','rejected','leave')`
+  ).bind(today).all().then((r) => r.results || []);
+  let closed = 0;
+  for (const record of rows) {
+    const shift = record.shift || "full";
+    const workType = record.work_type || "office";
+    const bounds = attShiftBounds(workType, shift, record.expected_start, record.expected_end);
+    const endMin = attToMinutes(bounds.end) ?? (shift === "morning" ? 12 * 60 : 17 * 60);
+    const ciMin = attToMinutes(record.checkin_time) ?? attToMinutes(bounds.start);
+    let workMinutes = Math.max(0, endMin - ciMin);
+    if (workType !== "business" && shift === "full") {
+      const lunchStart = 12 * 60, lunchEnd = 13 * 60 + 30;
+      const overlap = Math.max(0, Math.min(endMin, lunchEnd) - Math.max(ciMin, lunchStart));
+      workMinutes -= overlap;
+    }
+    const workHours = Math.max(0, workMinutes) / 60;
+    const note = [record.note, "qu\xEAn checkout"].filter(Boolean).join(" - ").trim();
+    await env.DB.prepare(
+      `UPDATE attendance
+          SET checkout_time=?, checkout_ip='auto', work_hours=?, auto_checkout=1, status='ontime', early_minutes=0, note=?
+        WHERE id=?`
+    ).bind(bounds.end, Number(workHours.toFixed(2)), note, record.id).run();
+    closed++;
+  }
+  return { closed, today };
+}
+__name(runAutoCheckout, "runAutoCheckout");
+async function handleScheduled(_event, env) {
+  try {
+    const result = await runAutoCheckout(env);
+    console.log("auto-checkout completed", JSON.stringify(result));
+    return result;
+  } catch (error) {
+    console.error("auto-checkout failed", String(error?.message || error), error?.stack);
+    return { error: String(error?.message || error) };
+  }
+}
+__name(handleScheduled, "handleScheduled");
+function clientIpFromRequest(request) {
+  const forwarded = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Forwarded-For") || request.headers.get("X-Real-IP") || "";
+  return String(forwarded).split(",")[0].trim() || "127.0.0.1";
+}
+__name(clientIpFromRequest, "clientIpFromRequest");
+function ipv6ToBigInt(value) {
+  let input = String(value || "").trim().toLowerCase();
+  if (!input || input.includes("%")) return null;
+  if (input.includes(".")) return null;
+  const halves = input.split("::");
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(":") : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  if (left.length + right.length > 8 || halves.length === 1 && left.length !== 8) return null;
+  const groups = halves.length === 2 ? [...left, ...Array(8 - left.length - right.length).fill("0"), ...right] : left;
+  if (groups.length !== 8 || groups.some((group) => !/^[0-9a-f]{1,4}$/.test(group))) return null;
+  return groups.reduce((result, group) => (result << 16n) + BigInt(`0x${group}`), 0n);
+}
+__name(ipv6ToBigInt, "ipv6ToBigInt");
+function ipMatchesRule(ip, rule) {
+  const r = String(rule || "").trim();
+  if (!ip || !r) return false;
+  if (r === "*") return true;
+  if (r.includes("/")) {
+    const [base, bitsRaw] = r.split("/");
+    const bits = parseInt(bitsRaw, 10);
+    const ipV6 = ipv6ToBigInt(ip);
+    const baseV6 = ipv6ToBigInt(base);
+    if (ipV6 != null || baseV6 != null) {
+      if (ipV6 == null || baseV6 == null || bits < 0 || bits > 128) return false;
+      const mask2 = bits === 0 ? 0n : (1n << BigInt(bits)) - 1n << BigInt(128 - bits);
+      return (ipV6 & mask2) === (baseV6 & mask2);
+    }
+    const toInt = /* @__PURE__ */ __name((v) => {
+      const parts = String(v).split(".").map(Number);
+      if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+      return parts.reduce((n, part) => (n << 8) + part >>> 0, 0);
+    }, "toInt");
+    const ipInt = toInt(ip), baseInt = toInt(base);
+    if (ipInt == null || baseInt == null || bits < 0 || bits > 32) return false;
+    const mask = bits === 0 ? 0 : 4294967295 << 32 - bits >>> 0;
+    return (ipInt & mask) === (baseInt & mask);
+  }
+  return ip === r || ip.startsWith(r.endsWith(".") ? r : r + ".");
+}
+__name(ipMatchesRule, "ipMatchesRule");
+function isPrivateNetworkRule(rule) {
+  const value = String(rule || "").trim().toLowerCase();
+  const base = value.split("/")[0];
+  return base === "localhost" || base === "::1" || base.startsWith("10.") || base.startsWith("127.") || base.startsWith("192.168.") || base.startsWith("169.254.") || /^172\.(1[6-9]|2\d|3[0-1])\./.test(base) || base.startsWith("fc") || base.startsWith("fd") || base.startsWith("fe80:");
+}
+__name(isPrivateNetworkRule, "isPrivateNetworkRule");
+async function currentIpInfo(env, request) {
+  const ip = clientIpFromRequest(request);
+  const { results = [] } = await env.DB.prepare(
+    "SELECT * FROM wifi_whitelist WHERE is_active=1 ORDER BY id"
+  ).all();
+  const matchedNetwork = results.find((w) => String(w.ip_range || "").split(",").some((rule) => ipMatchesRule(ip, rule)));
+  return {
+    ip,
+    matched: !!matchedNetwork,
+    matchedNetwork: matchedNetwork ? {
+      id: matchedNetwork.id,
+      wifi_name: matchedNetwork.wifi_name,
+      ip_range: matchedNetwork.ip_range
+    } : null,
+    warning: "Chua xac dinh duong truyen su dung IP tinh hay IP dong. Neu IP thay doi, viec cham cong tai van phong co the bi gian doan."
+  };
+}
+__name(currentIpInfo, "currentIpInfo");
+function geoDistanceMeters(lat1, lng1, lat2, lng2) {
+  const r = 6371e3, toRad = /* @__PURE__ */ __name((value) => Number(value) * Math.PI / 180, "toRad");
+  const dLat = toRad(lat2 - lat1), dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return r * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+__name(geoDistanceMeters, "geoDistanceMeters");
+function geofenceDecision(distanceMeters, radiusMeters) {
+  const distance = Number(distanceMeters);
+  const radius = Number(radiusMeters);
+  if (!Number.isFinite(distance) || !Number.isFinite(radius) || radius <= 0) return { inside: false, outside_meters: null };
+  const inside = distance <= radius;
+  return { inside, outside_meters: Math.max(0, distance - radius) };
+}
+__name(geofenceDecision, "geofenceDecision");
+async function ensureAttendanceLocationSchema(env) {
+  try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS attendance_locations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, code TEXT, address TEXT,
+      latitude REAL NOT NULL, longitude REAL NOT NULL, radius_meters INTEGER NOT NULL DEFAULT 100,
+      max_accuracy_meters INTEGER NOT NULL DEFAULT 100, is_active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )`).run();
+  } catch (error) {
+    console.error("Unable to create attendance_locations schema", error);
+    return false;
+  }
+  try {
+    await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_attendance_locations_code ON attendance_locations(code) WHERE code IS NOT NULL");
+  } catch (_) {
+  }
+  try {
+    await env.DB.prepare(`INSERT INTO attendance_locations
+      (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active)
+      SELECT ?,?,?,?,?,?,?,1
+       WHERE NOT EXISTS (SELECT 1 FROM attendance_locations WHERE code=? OR name=?)`).bind("V\u0103n ph\xF2ng HCM", "NETVIET-HCM", "TP. H\u1ED3 Ch\xED Minh", 10.762538, 106.682336, 100, 100, "NETVIET-HCM", "V\u0103n ph\xF2ng HCM").run();
+    await env.DB.prepare(`INSERT INTO attendance_locations
+      (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active)
+      SELECT ?,?,?,?,?,?,?,1
+       WHERE NOT EXISTS (SELECT 1 FROM attendance_locations WHERE code=? OR name=?)`).bind("V\u0103n ph\xF2ng H\xE0 N\u1ED9i", "NETVIET-HN", "H\xE0 N\u1ED9i", 21.018472, 105.793595, 100, 100, "NETVIET-HN", "V\u0103n ph\xF2ng H\xE0 N\u1ED9i").run();
+    await env.DB.prepare(`INSERT INTO attendance_locations
+      (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active)
+      SELECT ?,?,?,?,?,?,?,1
+       WHERE NOT EXISTS (SELECT 1 FROM attendance_locations WHERE code=? OR name=?)`).bind("Phim Tr\u01B0\u1EDDng NetVietTv", "NETVIET-Q9", "76 D12, Khu \u0111\xF4 th\u1ECB m\u1EDBi \u0110\xF4ng T\u0103ng Long, Long Ph\u01B0\u1EDBc, H\u1ED3 Ch\xED Minh 70000", 10.8142, 106.8195, 200, 150, "NETVIET-Q9", "Phim Tr\u01B0\u1EDDng NetVietTv").run();
+    await env.DB.prepare(`UPDATE attendance_locations
+      SET name=?, address=?, latitude=?, longitude=?, radius_meters=?, is_active=1
+      WHERE code=? OR name LIKE '%Phim tr\u01B0\u1EDDng%' OR name LIKE '%Phim Tr\u01B0\u1EDDng%'`).bind("Phim Tr\u01B0\u1EDDng NetVietTv", "76 D12, Khu \u0111\xF4 th\u1ECB m\u1EDBi \u0110\xF4ng T\u0103ng Long, Long Ph\u01B0\u1EDBc, H\u1ED3 Ch\xED Minh 70000", 10.8142, 106.8195, 200, "NETVIET-Q9").run();
+  } catch (error) {
+    console.error("Unable to seed attendance locations", error);
+  }
+  for (const column of ["checkin_location_id INTEGER", "checkout_location_id INTEGER", "checkin_distance_meters REAL", "checkout_distance_meters REAL", "checkin_accuracy_meters REAL", "checkout_accuracy_meters REAL", "checkin_verification_method TEXT", "checkout_verification_method TEXT", "checkin_lat REAL", "checkin_lng REAL", "checkout_lat REAL", "checkout_lng REAL", "checkin_geofence_status TEXT", "checkout_geofence_status TEXT", "checkin_requires_review INTEGER DEFAULT 0", "checkin_review_status TEXT DEFAULT 'none'", "checkin_reviewed_by INTEGER", "checkin_review_note TEXT", "checkin_reviewed_at TEXT", "checkout_requires_review INTEGER DEFAULT 0", "checkout_review_status TEXT DEFAULT 'none'", "checkout_reviewed_by INTEGER", "checkout_review_note TEXT", "checkout_reviewed_at TEXT"]) {
+    try {
+      await env.DB.exec(`ALTER TABLE attendance ADD COLUMN ${column}`);
+    } catch (_) {
+    }
+  }
+  return true;
+}
+__name(ensureAttendanceLocationSchema, "ensureAttendanceLocationSchema");
+async function isGpsConstraintEnabled(env) {
+  try {
+    const row = await env.DB.prepare("SELECT setting_value FROM settings WHERE setting_key='attendance_gps_constraint'").first();
+    return String(row?.setting_value ?? "1") !== "0";
+  } catch (_) {
+    return true;
+  }
+}
+__name(isGpsConstraintEnabled, "isGpsConstraintEnabled");
+async function verifyAttendanceGeofence(env, payload = {}) {
+  if (!await ensureAttendanceLocationSchema(env)) {
+    return { status: "unavailable", reason: "Ch\u01B0a th\u1EC3 kh\u1EDFi t\u1EA1o d\u1EEF li\u1EC7u \u0111\u1ECBa \u0111i\u1EC3m ch\u1EA5m c\xF4ng" };
+  }
+  const latitude = Number(payload.latitude), longitude = Number(payload.longitude);
+  const rawAccuracy = payload.accuracy === void 0 || payload.accuracy === null || payload.accuracy === "" ? null : Number(payload.accuracy);
+  const accuracy = rawAccuracy === null ? 0 : rawAccuracy;
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return { status: "unavailable", reason: "Ch\u01B0a nh\u1EADn \u0111\u01B0\u1EE3c v\u1ECB tr\xED GPS h\u1EE3p l\u1EC7" };
+  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return { status: "invalid", reason: "T\u1ECDa \u0111\u1ED9 GPS ngo\xE0i ph\u1EA1m vi h\u1EE3p l\u1EC7" };
+  if (!Number.isFinite(accuracy) || accuracy < 0) return { status: "invalid", reason: "\u0110\u1ED9 ch\xEDnh x\xE1c GPS kh\xF4ng h\u1EE3p l\u1EC7" };
+  const { results: locations = [] } = await env.DB.prepare("SELECT * FROM attendance_locations WHERE is_active=1").all();
+  if (!locations.length) return { status: "not_configured", reason: "Ch\u01B0a c\u1EA5u h\xECnh \u0111\u1ECBa \u0111i\u1EC3m GPS" };
+  const ranked = locations.map((location2) => ({ ...location2, distance_meters: geoDistanceMeters(latitude, longitude, location2.latitude, location2.longitude) })).sort((a, b) => a.distance_meters - b.distance_meters);
+  const location = ranked[0];
+  const radius = Number(location.radius_meters || 100), maxAccuracy = Number(location.max_accuracy_meters || 100);
+  const decision = geofenceDecision(location.distance_meters, radius);
+  const base = { location, accuracy_meters: accuracy, distance_meters: location.distance_meters, inside_geofence: decision.inside, outside_meters: decision.outside_meters };
+  if (accuracy > maxAccuracy || decision.inside && location.distance_meters + accuracy > radius) return { status: "retry", ...base, reason: "V\u1ECB tr\xED \u0111ang \u1EDF s\xE1t bi\xEAn ho\u1EB7c \u0111\u1ED9 ch\xEDnh x\xE1c GPS ch\u01B0a \u0111\u1EE7" };
+  if (decision.inside) return { status: "verified", ...base };
+  return { status: "outside", ...base, reason: "B\u1EA1n \u1EDF ngo\xE0i khu v\u1EF1c ch\u1EA5m c\xF4ng" };
+}
+__name(verifyAttendanceGeofence, "verifyAttendanceGeofence");
+function taskLabelColor(status, priority, provided) {
+  if (provided) return provided;
+  if (priority === "urgent") return "#EF4444";
+  if (priority === "high") return "#F59E0B";
+  if (status === "done") return "#10B981";
+  if (status === "review") return "#8B5CF6";
+  if (status === "in-progress") return "#3B82F6";
+  if (status === "cancelled") return "#64748B";
+  return "#6366F1";
+}
+__name(taskLabelColor, "taskLabelColor");
+function isTaskAdmin(u) {
+  return isHcns(u);
+}
+__name(isTaskAdmin, "isTaskAdmin");
+function intOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
+}
+__name(intOrNull, "intOrNull");
+async function canUseTaskProject(env, projectId, me) {
+  if (!projectId) return true;
+  if (isTaskAdmin(me)) return true;
+  const row = await env.DB.prepare(
+    `SELECT p.id
+       FROM task_projects p
+       LEFT JOIN task_project_members m ON m.project_id=p.id AND m.user_id=?
+      WHERE p.id=? AND (p.manager_id=? OR m.id IS NOT NULL)`
+  ).bind(me.id, projectId, me.id).first();
+  return !!row;
+}
+__name(canUseTaskProject, "canUseTaskProject");
+async function taskActivityAssignee(env, userId) {
+  const id = intOrNull(userId);
+  if (!id) return { id: null, name: null };
+  const user = await env.DB.prepare("SELECT id,full_name FROM users WHERE id=?").bind(id).first();
+  return { id, name: user?.full_name || null };
+}
+__name(taskActivityAssignee, "taskActivityAssignee");
+async function recordTaskActivity(env, {
+  taskId,
+  projectId,
+  user,
+  action,
+  entityType,
+  entityId,
+  entityTitle,
+  assigneeId = null,
+  assigneeName = null,
+  detail = null
+}) {
+  await env.DB.prepare(
+    `INSERT INTO task_activity
+      (task_id,user_id,action,detail,project_id,entity_type,entity_id,entity_title,assignee_id,assignee_name,actor_name)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(
+    taskId,
+    user.id,
+    action,
+    detail,
+    intOrNull(projectId),
+    entityType,
+    intOrNull(entityId),
+    String(entityTitle || "").trim() || null,
+    intOrNull(assigneeId),
+    assigneeName || null,
+    user.full_name || null
+  ).run();
+}
+__name(recordTaskActivity, "recordTaskActivity");
+async function resolveTaskLabel(env, labelId, projectId) {
+  if (!labelId) return null;
+  return await env.DB.prepare(
+    `SELECT * FROM task_labels
+      WHERE id=? AND is_active=1 AND (project_id IS NULL OR project_id=?)
+      LIMIT 1`
+  ).bind(labelId, projectId || 0).first();
+}
+__name(resolveTaskLabel, "resolveTaskLabel");
+async function ensureDefaultTaskGroup(env, projectId, userId = null) {
+  const existing = await env.DB.prepare(
+    "SELECT * FROM task_groups WHERE project_id=? AND is_archived=0 ORDER BY position,id LIMIT 1"
+  ).bind(projectId).first();
+  if (existing) return existing;
+  const r = await env.DB.prepare(
+    "INSERT INTO task_groups (project_id,name,position,color,created_by) VALUES (?,?,?,?,?)"
+  ).bind(projectId, "C\xF4ng vi\u1EC7c chung", 0, "#6366F1", userId).run();
+  return await env.DB.prepare("SELECT * FROM task_groups WHERE id=?").bind(r.meta.last_row_id).first();
+}
+__name(ensureDefaultTaskGroup, "ensureDefaultTaskGroup");
+async function ensureMyxteamTaskImportSchema(env) {
+  const statements = [
+    "ALTER TABLE task_projects ADD COLUMN external_source TEXT",
+    "ALTER TABLE task_projects ADD COLUMN external_id TEXT",
+    "ALTER TABLE task_groups ADD COLUMN external_source TEXT",
+    "ALTER TABLE task_groups ADD COLUMN external_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN external_source TEXT",
+    "ALTER TABLE tasks ADD COLUMN external_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN external_metadata TEXT",
+    "ALTER TABLE tasks ADD COLUMN import_position INTEGER",
+    "ALTER TABLE tasks ADD COLUMN position REAL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_projects_external ON task_projects(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_groups_external ON task_groups(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_external ON tasks(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL"
+  ];
+  for (const sql of statements) {
+    try {
+      await env.DB.exec(sql);
+    } catch (_) {
+    }
+  }
+}
+__name(ensureMyxteamTaskImportSchema, "ensureMyxteamTaskImportSchema");
+function myxteamExternalId(value) {
+  return String(value ?? "").trim().slice(0, 120);
+}
+__name(myxteamExternalId, "myxteamExternalId");
+function myxteamDateRange(value) {
+  const text = String(value || "");
+  const match = text.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?(?:\s*-\s*(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?)?/);
+  const namedDate = text.match(/ngày\s+(\d{1,2})\s+tháng\s+(\d{1,2})\s+năm\s+(\d{4})/i);
+  if (!match && !namedDate) return { date: null, dueDate: null };
+  const iso = /* @__PURE__ */ __name((day, month, year) => {
+    const fullYear = Number(year) < 100 ? 2e3 + Number(year) : Number(year);
+    const date2 = new Date(Date.UTC(fullYear, Number(month) - 1, Number(day)));
+    if (date2.getUTCFullYear() !== fullYear || date2.getUTCMonth() !== Number(month) - 1 || date2.getUTCDate() !== Number(day)) return null;
+    return `${String(fullYear).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  }, "iso");
+  if (namedDate) {
+    const date2 = iso(namedDate[1], namedDate[2], namedDate[3]);
+    return { date: date2, dueDate: date2 };
+  }
+  if (!match[3] && !match[4]) return { date: null, dueDate: null };
+  const defaultYear = (/* @__PURE__ */ new Date()).getUTCFullYear();
+  const firstYear = match[3] || defaultYear;
+  const date = iso(match[1], match[2], firstYear);
+  const dueDate = match[4] ? iso(match[4], match[5], match[6] || firstYear) : date;
+  return { date, dueDate };
+}
+__name(myxteamDateRange, "myxteamDateRange");
+function myxteamPersonKey(value) {
+  return normalizeVietnameseSearch(String(value || "").replace(/\(deleted\)/ig, "").replace(/\s+/g, " ").trim());
+}
+__name(myxteamPersonKey, "myxteamPersonKey");
+async function importMyxteamProject(env, me, payload) {
+  await ensureMyxteamTaskImportSchema(env);
+  const source = "myxteam";
+  const externalId = myxteamExternalId(payload?.id);
+  const name = String(payload?.name || payload?.title || "").trim().slice(0, 500);
+  const department = String(payload?.team || "MyXteam").trim().slice(0, 255) || "MyXteam";
+  const sourceGroups = Array.isArray(payload?.groups) ? payload.groups.slice(0, 500) : [];
+  if (!externalId || !name) throw new Error("Project MyXteam thi\u1EBFu ID ho\u1EB7c t\xEAn");
+  const projectInsert = await env.DB.prepare(
+    `INSERT OR IGNORE INTO task_projects
+      (workspace_id,name,code,type,description,department,manager_id,status,created_by,external_source,external_id)
+     VALUES (1,?,?,?,?,?,?,?, ?,?,?)`
+  ).bind(
+    name,
+    "",
+    "project",
+    `D\u1EEF li\u1EC7u \u0111\u01B0\u1EE3c nh\u1EADp an to\xE0n t\u1EEB MyXteam (Project ${externalId}).`,
+    department,
+    me.id,
+    "active",
+    me.id,
+    source,
+    externalId
+  ).run();
+  const project = await env.DB.prepare(
+    "SELECT id FROM task_projects WHERE external_source=? AND external_id=? LIMIT 1"
+  ).bind(source, externalId).first();
+  if (!project) throw new Error("Kh\xF4ng th\u1EC3 t\u1EA1o ho\u1EB7c nh\u1EADn di\u1EC7n Project \u0111\xE3 nh\u1EADp");
+  const memberExists = await env.DB.prepare(
+    "SELECT id FROM task_project_members WHERE project_id=? AND user_id=? LIMIT 1"
+  ).bind(project.id, me.id).first();
+  if (!memberExists) {
+    await env.DB.prepare("INSERT INTO task_project_members (project_id,user_id,role,added_by) VALUES (?,?,?,?)").bind(project.id, me.id, "owner", me.id).run();
+  }
+  let createdGroups = 0;
+  for (let index = 0; index < sourceGroups.length; index += 1) {
+    const group = sourceGroups[index] || {};
+    const groupExternalId = myxteamExternalId(group.externalId || `${externalId}:group:${index}`);
+    const groupName = String(group.name || `Nh\xF3m c\xF4ng vi\u1EC7c ${index + 1}`).trim().slice(0, 500);
+    const result = await env.DB.prepare(
+      `INSERT OR IGNORE INTO task_groups
+        (project_id,name,position,color,is_archived,created_by,external_source,external_id)
+       VALUES (?,?,?,?,0,?,?,?)`
+    ).bind(project.id, groupName, index, "#EEF2FF", me.id, source, groupExternalId).run();
+    createdGroups += Number(result?.meta?.changes || 0);
+  }
+  const { results: importedGroups = [] } = await env.DB.prepare(
+    "SELECT id,external_id FROM task_groups WHERE project_id=? AND external_source=?"
+  ).bind(project.id, source).all();
+  const groupIds = new Map(importedGroups.map((group) => [String(group.external_id), Number(group.id)]));
+  const { results: activeUsers = [] } = await env.DB.prepare(
+    "SELECT id,full_name FROM users WHERE COALESCE(is_active,1)=1"
+  ).all();
+  const usersByName = /* @__PURE__ */ new Map();
+  for (const user of activeUsers) {
+    const key = myxteamPersonKey(user.full_name);
+    if (key && !usersByName.has(key)) usersByName.set(key, user);
+  }
+  const taskStatements = [];
+  const taskBackfillStatements = [];
+  const matchedMemberIds = /* @__PURE__ */ new Set([Number(me.id)]);
+  const unmatchedNames = /* @__PURE__ */ new Set();
+  let suppliedTasks = 0;
+  for (let groupIndex = 0; groupIndex < sourceGroups.length; groupIndex += 1) {
+    const sourceGroup = sourceGroups[groupIndex] || {};
+    const groupExternalId = myxteamExternalId(sourceGroup.externalId || `${externalId}:group:${groupIndex}`);
+    const groupId = groupIds.get(groupExternalId);
+    if (!groupId) continue;
+    const sourceTasks = Array.isArray(sourceGroup.tasks) ? sourceGroup.tasks.slice(0, 2e3) : [];
+    for (let taskIndex = 0; taskIndex < sourceTasks.length; taskIndex += 1) {
+      const task = sourceTasks[taskIndex] || {};
+      const taskExternalId = myxteamExternalId(task.externalId || `${groupExternalId}:task:${taskIndex}`);
+      const title = String(task.name || "").trim().slice(0, 1e3);
+      if (!taskExternalId || !title) continue;
+      suppliedTasks += 1;
+      const assigneeNames = Array.isArray(task.assignees) ? task.assignees.map(String) : [];
+      let assigneeId = null;
+      for (const assigneeName of assigneeNames) {
+        const key = myxteamPersonKey(assigneeName);
+        if (!key || key === "netviet tv" || /deleted/i.test(assigneeName)) continue;
+        const user = usersByName.get(key);
+        if (user) {
+          matchedMemberIds.add(Number(user.id));
+          if (!assigneeId) assigneeId = Number(user.id);
+        } else {
+          unmatchedNames.add(String(assigneeName).trim());
+        }
+      }
+      const range = myxteamDateRange(task.text);
+      const metadata = JSON.stringify({
+        source: "MyXteam",
+        project_id: externalId,
+        group_id: groupExternalId,
+        pinned: !!task.pinned,
+        source_text: String(task.text || "").slice(0, 4e3),
+        assignees: assigneeNames.slice(0, 50)
+      });
+      taskStatements.push(env.DB.prepare(
+        `INSERT OR IGNORE INTO tasks
+          (title,description,assigned_to,assigned_by,department,date,due_date,status,priority,label_color,
+           workspace_id,team_project_id,group_id,external_source,external_id,external_metadata,import_position)
+         VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)`
+      ).bind(
+        title,
+        "",
+        assigneeId,
+        me.id,
+        department,
+        range.date,
+        range.dueDate,
+        task.done ? "done" : "todo",
+        "normal",
+        task.done ? "#10B981" : "#6366F1",
+        project.id,
+        groupId,
+        source,
+        taskExternalId,
+        metadata,
+        taskIndex
+      ));
+      if (range.date || range.dueDate) {
+        taskBackfillStatements.push(env.DB.prepare(
+          `UPDATE tasks SET date=COALESCE(date,?),due_date=COALESCE(due_date,?)
+            WHERE external_source=? AND external_id=?`
+        ).bind(range.date, range.dueDate, source, taskExternalId));
+      }
+    }
+  }
+  let createdTasks = 0;
+  for (let offset = 0; offset < taskStatements.length; offset += 50) {
+    const results = await env.DB.batch(taskStatements.slice(offset, offset + 50));
+    createdTasks += results.reduce((sum, result) => sum + Number(result?.meta?.changes || 0), 0);
+  }
+  for (let offset = 0; offset < taskBackfillStatements.length; offset += 50) {
+    await env.DB.batch(taskBackfillStatements.slice(offset, offset + 50));
+  }
+  for (const userId of matchedMemberIds) {
+    const exists = await env.DB.prepare(
+      "SELECT id FROM task_project_members WHERE project_id=? AND user_id=? LIMIT 1"
+    ).bind(project.id, userId).first();
+    if (!exists) {
+      await env.DB.prepare("INSERT INTO task_project_members (project_id,user_id,role,added_by) VALUES (?,?,?,?)").bind(project.id, userId, userId === Number(me.id) ? "owner" : "member", me.id).run();
+    }
+  }
+  await env.DB.prepare("UPDATE task_projects SET updated_at=datetime('now','localtime') WHERE id=?").bind(project.id).run();
+  return {
+    project_id: project.id,
+    project_created: Number(projectInsert?.meta?.changes || 0),
+    groups_created: createdGroups,
+    tasks_created: createdTasks,
+    tasks_skipped: Math.max(0, suppliedTasks - createdTasks),
+    matched_members: matchedMemberIds.size,
+    unmatched_assignees: [...unmatchedNames].filter(Boolean).slice(0, 100)
+  };
+}
+__name(importMyxteamProject, "importMyxteamProject");
+async function normalizeDefaultTaskGroupNames(env) {
+  await env.DB.prepare(
+    "UPDATE task_groups SET name='C\xF4ng vi\u1EC7c chung' WHERE lower(trim(name))='cong viec chung'"
+  ).run();
+}
+__name(normalizeDefaultTaskGroupNames, "normalizeDefaultTaskGroupNames");
+async function canUseTaskGroup(env, groupId, projectId, me) {
+  if (!groupId) return true;
+  const group = await env.DB.prepare("SELECT * FROM task_groups WHERE id=? AND project_id=? AND is_archived=0").bind(groupId, projectId || 0).first();
+  if (!group) return false;
+  return canUseTaskProject(env, group.project_id, me);
+}
+__name(canUseTaskGroup, "canUseTaskGroup");
+async function seedLeaveTypes(env) {
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS leave_types (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    paid_policy TEXT DEFAULT 'paid',
+    deducts_annual_leave INTEGER DEFAULT 0,
+    requires_evidence INTEGER DEFAULT 0,
+    requires_bod_approval INTEGER DEFAULT 0,
+    max_days INTEGER,
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`).run();
+  const rows = [
+    ["annual", "Ph\xE9p n\u0103m", "paid", 1, 0, 0, null, 1],
+    ["sick", "Ngh\u1EC9 \u1ED1m", "paid", 0, 1, 0, null, 1],
+    ["personal", "Ngh\u1EC9 vi\u1EC7c ri\xEAng", "unpaid", 0, 0, 0, null, 1],
+    ["maternity", "Ngh\u1EC9 thai s\u1EA3n", "paid", 0, 1, 1, null, 1],
+    ["unpaid", "Nghi khong huong luong", "unpaid", 0, 0, 1, null, 1],
+    ["personal_paid", "Nghi viec rieng huong luong", "paid", 0, 0, 0, null, 1],
+    ["compensatory", "Nghi bu", "paid", 0, 0, 0, null, 1],
+    ["other", "Kh\xE1c", "configurable", 0, 0, 0, null, 1]
+  ];
+  await env.DB.batch(rows.map((r) => env.DB.prepare(
+    "INSERT OR IGNORE INTO leave_types (code,name,paid_policy,deducts_annual_leave,requires_evidence,requires_bod_approval,max_days,is_active) VALUES (?,?,?,?,?,?,?,?)"
+  ).bind(...r)));
+}
+__name(seedLeaveTypes, "seedLeaveTypes");
+function leavePolicyFor(type) {
+  const flow = String(type?.approval_flow || "").trim();
+  if (flow) return flow;
+  return type?.requires_bod_approval ? "manager_hr_bgd" : "manager_hr";
+}
+__name(leavePolicyFor, "leavePolicyFor");
+function leavePaidLabel(policy) {
+  return policy === "unpaid" ? "Kh\xF4ng h\u01B0\u1EDFng l\u01B0\u01A1ng" : policy === "configurable" ? "Theo ch\u1EBF \u0111\u1ED9" : "C\xF3 h\u01B0\u1EDFng l\u01B0\u01A1ng";
+}
+__name(leavePaidLabel, "leavePaidLabel");
+function leaveDaysForSession(startDate, endDate, session) {
+  const businessDays = attCountBusinessDaysBetween(startDate, endDate);
+  if (!businessDays) return 0;
+  return session === "morning" || session === "afternoon" ? 0.5 : businessDays;
+}
+__name(leaveDaysForSession, "leaveDaysForSession");
+function leaveBalanceType(type) {
+  return type?.deducts_annual_leave ? "annual" : type?.code === "compensatory" ? "compensatory" : null;
+}
+__name(leaveBalanceType, "leaveBalanceType");
+async function getLeaveBalance(env, userId, leaveTypeCode, year) {
+  const row = await env.DB.prepare(
+    "SELECT available_days FROM leave_balances WHERE user_id=? AND leave_type_code=? AND balance_year=?"
+  ).bind(userId, leaveTypeCode, year).first();
+  if (row !== null && row !== void 0 && row.available_days !== null) {
+    return Number(row.available_days);
+  }
+  if (leaveTypeCode === "annual") {
+    const user = await env.DB.prepare("SELECT employee_type, lifecycle_status, contract_type FROM users WHERE id=?").bind(userId).first();
+    const isOfficial = user && user.employee_type !== "TTS" && user.lifecycle_status !== "Th\u1EED vi\u1EC7c" && user.contract_type !== "Th\u1EED vi\u1EC7c" && user.contract_type !== "Th\u1ECFa thu\u1EADn TTS";
+    return isOfficial ? 12 : 0;
+  }
+  return 0;
+}
+__name(getLeaveBalance, "getLeaveBalance");
+function canManageLeaveRequest(me, request) {
+  if (isHrOrBod(me)) return true;
+  return me?.role === "manager" && !!request?.department && me.department === request.department;
+}
+__name(canManageLeaveRequest, "canManageLeaveRequest");
+function canAdvanceLeaveApproval(me, request) {
+  if (me?.role === "admin") return true;
+  if (Number(request.approval_level || 1) === 1) return me?.role === "manager" && me.department === request.department;
+  if (Number(request.approval_level) === 2) return isHcns(me);
+  if (Number(request.approval_level) === 3) return isBgd(me);
+  return false;
+}
+__name(canAdvanceLeaveApproval, "canAdvanceLeaveApproval");
+async function seedDepartments(env) {
+  const rows = STANDARD_DEPARTMENTS.map((name) => [name, ""]);
+  await env.DB.batch(rows.map(([name, description]) => env.DB.prepare(
+    "INSERT OR IGNORE INTO departments (user_id,name,manager,description) VALUES (?,?,?,?)"
+  ).bind(1, name, "", description)));
+}
+__name(seedDepartments, "seedDepartments");
+var _seeded = false;
+async function seedIfNeeded(env) {
+  if (_seeded) return;
+  try {
+    const row = await env.DB.prepare("SELECT setting_value FROM settings WHERE setting_key='seed_version'").first();
+    const admin = await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND is_active=1 LIMIT 1").first();
+    if (row?.setting_value === SEED_VERSION && admin?.id) {
+      _seeded = true;
+      return;
+    }
+  } catch (_) {
+  }
+  const adminHash = await hashPassword("Admin@123");
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO users (employee_code,full_name,email,password_hash,role,department,position,avatar_color,avatar_initials,phone,salary,is_active) VALUES (?,?,?,?,?,?,?,?,?,?,?,1)"
+  ).bind("ADMIN001", "Qu\u1EA3n Tr\u1ECB Vi\xEAn", "admin@company.com", adminHash, "admin", "Ban Gi\xE1m \u0110\u1ED1c", "Gi\xE1m \u0111\u1ED1c", "#4F46E5", "QT", "0900000000", 5e7).run();
+  const wifiCount = await env.DB.prepare("SELECT COUNT(*) as cnt FROM wifi_whitelist").first();
+  if (!wifiCount || wifiCount.cnt === 0) {
+    await env.DB.prepare(
+      "INSERT INTO wifi_whitelist (wifi_name,ip_range,description,is_active) VALUES (?,?,?,1)"
+    ).bind("Office WiFi Test", "192.168.1", "M\u1EA1ng n\u1ED9i b\u1ED9 v\u0103n ph\xF2ng (test)").run();
+  }
+  await env.DB.prepare(
+    "UPDATE wifi_whitelist SET wifi_name=?, ip_range=?, description=? WHERE wifi_name='Office WiFi Test' AND ip_range='192.168.1'"
+  ).bind("NetViet Office IPv4", "42.118.136.186", "Public IPv4 van phong NetViet").run();
+  await seedLeaveTypes(env);
+  await seedDepartments(env);
+  const defaults = [
+    ["company_name", "NEXRALL MARKETING"],
+    ["company_address", "123 Nguy\u1EC5n Hu\u1EC7, Q.1, TP.HCM"],
+    ["company_phone", "028 1234 5678"],
+    ["company_email", "info@nexrall.com"],
+    ["work_start", "08:30"],
+    ["work_end", "17:00"],
+    ["late_threshold", "15"],
+    ["work_days", "1,2,3,4,5,6"],
+    ["attendance_gps_constraint", "1"]
+  ];
+  await env.DB.batch(defaults.map(
+    ([k, v]) => env.DB.prepare("INSERT OR IGNORE INTO settings (setting_key,setting_value) VALUES (?,?)").bind(k, v)
+  ));
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (setting_key,setting_value) VALUES (?,?)").bind("seed_version", SEED_VERSION).run();
+  _seeded = true;
+}
+__name(seedIfNeeded, "seedIfNeeded");
+function extractHrToken(request, env = {}) {
+  const isHex64 = /* @__PURE__ */ __name((s) => /^[0-9a-f]{64}$/i.test((s || "").trim()), "isHex64");
+  const xat = (request.headers.get("X-Auth-Token") || "").trim();
+  if (xat) return { token: isHex64(xat) ? xat.toLowerCase() : null, hasAuthHint: true };
+  try {
+    if (env.ALLOW_QUERY_TOKEN === "1") {
+      const sp = new URL(request.url).searchParams;
+      const qt = (sp.get("token") || sp.get("useToken") || "").trim();
+      if (qt) return { token: isHex64(qt) ? qt.toLowerCase() : null, hasAuthHint: true };
+    }
+  } catch (_) {
+  }
+  const auth = (request.headers.get("Authorization") || "").trim();
+  if (auth) {
+    const s1 = auth.match(/^Bearer\s+([0-9a-f]{64})\s*$/i);
+    if (s1) return { token: s1[1].toLowerCase(), hasAuthHint: true };
+    const parts = auth.split(/[^0-9a-fA-F]+/);
+    for (const part of parts) {
+      if (part.length === 64 && isHex64(part)) {
+        return { token: part.toLowerCase(), hasAuthHint: true };
+      }
+    }
+    if (isHex64(auth)) return { token: auth.toLowerCase(), hasAuthHint: true };
+  }
+  const cookie = request.headers.get("Cookie") || "";
+  const cm = cookie.match(/hr_token=([0-9a-f]{64})/i);
+  if (cm) return { token: cm[1].toLowerCase(), hasAuthHint: true };
+  return { token: null, hasAuthHint: false };
+}
+__name(extractHrToken, "extractHrToken");
+async function getSessionFromToken(token, env) {
+  if (!token || !/^[0-9a-f]{64}$/i.test(token)) return null;
+  try {
+    const row = await env.DB.prepare(
+      "SELECT s.*, u.id as uid, u.full_name, u.email, u.role, u.department, u.position, u.avatar_color, u.avatar_initials, u.avatar_url, u.work_location, u.employee_code, u.salary, u.phone, u.bank_account, u.bank_name, u.is_active, u.lifecycle_status, u.must_change_password FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.token=? AND s.revoked=0 AND CAST(s.expires_at AS INTEGER) > CAST(strftime('%s','now') AS INTEGER)"
+    ).bind(token).first();
+    return row;
+  } catch (e) {
+    console.error("getSession error:", e.message);
+    return null;
+  }
+}
+__name(getSessionFromToken, "getSessionFromToken");
+async function resolveSession(request, env) {
+  const { token, hasAuthHint } = extractHrToken(request, env);
+  if (!hasAuthHint) return { session: null, explicitBadToken: false };
+  if (token) {
+    const session = await getSessionFromToken(token, env);
+    if (session) return { session, explicitBadToken: false };
+  }
+  return { session: null, explicitBadToken: true };
+}
+__name(resolveSession, "resolveSession");
+async function handle(request, env) {
+  const url = new URL(request.url);
+  const path = url.pathname;
+  const json = /* @__PURE__ */ __name((data, status = 200, extraHeaders = {}) => new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store, max-age=0",
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+      "Referrer-Policy": "no-referrer",
+      "Permissions-Policy": "camera=(), microphone=(), geolocation=(self)",
+      ...extraHeaders
+    }
+  }), "json");
+  if (request.method === "OPTIONS") return new Response(null, { status: 204 });
+  try {
+    await migrate(env);
+    try {
+      await seedIfNeeded(env);
+    } catch (error) {
+      console.error("Seed check failed", error);
+    }
+  } catch (e) {
+    console.error("DB init failed", e);
+    return json({ error: "Kh\xF4ng th\u1EC3 kh\u1EDFi t\u1EA1o d\u1EEF li\u1EC7u, vui l\xF2ng th\u1EED l\u1EA1i sau" }, 500);
+  }
+  if (path === "/api/get-ip") {
+    return json(await currentIpInfo(env, request));
+  }
+  if (path === "/api/realtime/ws" || path === "/api/realtime/events" || path === "/api/realtime/stats") {
+    const hubBinding = env?.SYNC_HUB || env?.APP_SYNC_HUB;
+    if (!hubBinding) return json({ error: "AppSyncHub ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh" }, 503);
+    const doId = hubBinding.idFromName("global");
+    const stub = hubBinding.get(doId);
+    return stub.fetch(request);
+  }
+  if (path === "/api/debug-auth") return json({ error: "Kh\xF4ng t\xECm th\u1EA5y" }, 404);
+  if (url.pathname === "/api/auth/login" && request.method === "POST") {
+    const retryAfter = rateLimit(request, "login", 10, 60 * 1e3);
+    if (retryAfter) return json({ error: "Th\u1EED l\u1EA1i sau \xEDt ph\xFAt", code: "RATE_LIMITED" }, 429, { "Retry-After": String(retryAfter) });
+    const b = await request.json().catch(() => ({}));
+    const { login, password } = b;
+    if (!login || !password) return json({ error: "Vui l\xF2ng nh\u1EADp \u0111\u1EA7y \u0111\u1EE7 th\xF4ng tin" }, 400);
+    const user = await env.DB.prepare(
+      "SELECT * FROM users WHERE (email=? OR employee_code=?) AND is_active=1"
+    ).bind(login, login).first();
+    if (!user) return json({ error: "T\xE0i kho\u1EA3n kh\xF4ng t\u1ED3n t\u1EA1i ho\u1EB7c \u0111\xE3 b\u1ECB kh\xF3a" }, 401);
+    const hash = await hashPassword(password);
+    if (hash !== user.password_hash) return json({ error: "M\u1EADt kh\u1EA9u kh\xF4ng \u0111\xFAng" }, 401);
+    const token = genToken();
+    const expiresAt = Math.floor(Date.now() / 1e3) + 8 * 3600;
+    await env.DB.prepare("INSERT INTO sessions (user_id,token,expires_at,revoked) VALUES (?,?,?,0)").bind(user.id, token, expiresAt).run();
+    const userData = {
+      id: user.id,
+      full_name: user.full_name,
+      email: user.email,
+      role: user.role,
+      department: user.department,
+      position: user.position,
+      avatar_color: user.avatar_color,
+      avatar_initials: user.avatar_initials,
+      avatar_url: user.avatar_url,
+      employee_code: user.employee_code,
+      work_location: user.work_location,
+      salary: user.salary,
+      phone: user.phone,
+      bank_account: user.bank_account,
+      bank_name: user.bank_name,
+      lifecycle_status: user.lifecycle_status,
+      must_change_password: !!user.must_change_password
+    };
+    return new Response(JSON.stringify({ token, user: userData }), {
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store, max-age=0",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "no-referrer",
+        "Set-Cookie": `hr_token=${token}; Path=/; HttpOnly; Secure; Max-Age=28800; SameSite=Lax`
+      }
+    });
+  }
+  if (path === "/api/auth/logout" && request.method === "POST") {
+    const { token } = extractHrToken(request, env);
+    let bodyToken = null;
+    try {
+      const bd = await request.clone().json();
+      bodyToken = bd.token || null;
+    } catch (_) {
+    }
+    const revokeToken = token || (bodyToken && /^[0-9a-f]{64}$/i.test(bodyToken) ? bodyToken.toLowerCase() : null);
+    if (revokeToken) {
+      await env.DB.prepare("UPDATE sessions SET revoked=1 WHERE token=?").bind(revokeToken).run();
+      await env.DB.prepare("DELETE FROM sessions WHERE token=?").bind(revokeToken).run();
+    }
+    return new Response(JSON.stringify({ ok: true }), {
+      headers: {
+        "Content-Type": "application/json",
+        "Set-Cookie": "hr_token=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax"
+      }
+    });
+  }
+  if (url.pathname === "/api/auth/me" && request.method === "GET") {
+    const { session, explicitBadToken } = await resolveSession(request, env);
+    if (!session) return json({ error: "Ch\u01B0a \u0111\u0103ng nh\u1EADp", code: "UNAUTHORIZED" }, 401);
+    const userId = session.uid ?? session.id;
+    return json({
+      user: {
+        id: userId,
+        full_name: session.full_name,
+        email: session.email,
+        role: session.role,
+        department: session.department,
+        position: session.position,
+        avatar_color: session.avatar_color,
+        avatar_initials: session.avatar_initials,
+        avatar_url: session.avatar_url,
+        employee_code: session.employee_code,
+        work_location: session.work_location,
+        salary: session.salary,
+        phone: session.phone,
+        bank_account: session.bank_account,
+        bank_name: session.bank_name,
+        is_active: session.is_active,
+        lifecycle_status: session.lifecycle_status,
+        must_change_password: !!session.must_change_password
+      }
+    });
+  }
+  if (path === "/api/auth/change-password" && (request.method === "PUT" || request.method === "POST")) {
+    const retryAfter = rateLimit(request, "change-password", 5, 15 * 60 * 1e3);
+    if (retryAfter) return json({ error: "Th\u1EED l\u1EA1i sau \xEDt ph\xFAt", code: "RATE_LIMITED" }, 429, { "Retry-After": String(retryAfter) });
+    const { session: cpSession, explicitBadToken: cpBad } = await resolveSession(request, env);
+    let cpUser = cpSession ? { id: cpSession.uid ?? cpSession.id } : null;
+    if (!cpUser) return json({ error: "Ch\u01B0a \u0111\u0103ng nh\u1EADp" }, 401);
+    const b = await request.json().catch(() => ({}));
+    const { old_password, new_password } = b;
+    if (!old_password || !new_password) return json({ error: "Thi\u1EBFu th\xF4ng tin" }, 400);
+    const passwordError = validatePasswordPolicy(new_password);
+    if (passwordError) return json({ error: passwordError }, 400);
+    const user = await env.DB.prepare("SELECT * FROM users WHERE id=?").bind(cpUser.id).first();
+    if (!user) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y t\xE0i kho\u1EA3n" }, 404);
+    const oldHash = await hashPassword(old_password);
+    if (oldHash !== user.password_hash) return json({ error: "M\u1EADt kh\u1EA9u c\u0169 kh\xF4ng \u0111\xFAng" }, 400);
+    const newHash = await hashPassword(new_password);
+    await env.DB.prepare("UPDATE users SET password_hash=?,must_change_password=0 WHERE id=?").bind(newHash, cpUser.id).run();
+    return json({ ok: true });
+  }
+  const { session: mainSession, explicitBadToken: mainBad } = await resolveSession(request, env);
+  let me = null;
+  if (mainSession) {
+    me = {
+      id: mainSession.uid,
+      full_name: mainSession.full_name,
+      email: mainSession.email,
+      role: mainSession.role,
+      department: mainSession.department,
+      position: mainSession.position,
+      avatar_color: mainSession.avatar_color,
+      avatar_initials: mainSession.avatar_initials,
+      avatar_url: mainSession.avatar_url,
+      employee_code: mainSession.employee_code,
+      work_location: mainSession.work_location,
+      salary: mainSession.salary,
+      phone: mainSession.phone,
+      bank_account: mainSession.bank_account,
+      bank_name: mainSession.bank_name,
+      is_active: mainSession.is_active,
+      lifecycle_status: mainSession.lifecycle_status,
+      must_change_password: !!mainSession.must_change_password
+    };
+  }
+  if (!me) {
+    return json({ error: "Ch\u01B0a \u0111\u0103ng nh\u1EADp ho\u1EB7c phi\xEAn h\u1EBFt h\u1EA1n", code: "UNAUTHORIZED" }, 401);
+  }
+  const isAdmin = me.role === "admin";
+  const isManager = me.role === "manager" || isAdmin || isHcns(me);
+  const isAttendanceHcns = normalizeDeptName(me.department) === "Ph\xF2ng HCNS";
+  const isAttendanceAdmin = isManager || isAttendanceHcns;
+  if (path === "/api/integrations/vietqr/banks" && request.method === "GET") {
+    if (!isManager) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    try {
+      const banks = await getVietqrBanks();
+      return json({ banks, source: "VietQR", cached_until: new Date(_vietqrBanksCache.expiresAt).toISOString() });
+    } catch (error) {
+      console.error("VietQR bank directory unavailable", error);
+      return json({ error: "Ch\u01B0a t\u1EA3i \u0111\u01B0\u1EE3c danh s\xE1ch ng\xE2n h\xE0ng. B\u1EA1n v\u1EABn c\xF3 th\u1EC3 nh\u1EADp th\u1EE7 c\xF4ng." }, 503);
+    }
+  }
+  if (me.must_change_password) {
+    return json({ error: "B\u1EA1n ph\u1EA3i \u0111\u1ED5i m\u1EADt kh\u1EA9u t\u1EA1m tr\u01B0\u1EDBc khi ti\u1EBFp t\u1EE5c", code: "PASSWORD_CHANGE_REQUIRED" }, 403);
+  }
+  if (path === "/api/dashboard/admin" && request.method === "GET") {
+    if (!isAdmin) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const today = vnTodayStr();
+    const [year, month] = today.slice(0, 7).split("-").map(Number);
+    const [peopleRow, attendanceRow, taskRow, taskDepartments, approvalRow, kpiRow, recruitmentRow, campaignRow, campaignItems, alerts] = await Promise.all([
+      env.DB.prepare(`SELECT COUNT(*) active, SUM(CASE WHEN employee_type='TTS' THEN 1 ELSE 0 END) interns, SUM(CASE WHEN lower(coalesce(lifecycle_status,'')) LIKE '%th\u1EED vi\u1EC7c%' THEN 1 ELSE 0 END) probation, SUM(CASE WHEN hire_date LIKE ? THEN 1 ELSE 0 END) new_hires_month FROM users WHERE is_active=1`).bind(`${today.slice(0, 7)}-%`).first(),
+      env.DB.prepare(`SELECT COUNT(DISTINCT u.id) eligible, COUNT(DISTINCT CASE WHEN a.checkin_time IS NOT NULL THEN u.id END) checked_in, COUNT(DISTINCT CASE WHEN coalesce(a.late_minutes,0)>0 THEN u.id END) late, COUNT(DISTINCT CASE WHEN l.id IS NOT NULL THEN u.id END) approved_leave, COUNT(DISTINCT CASE WHEN a.checkin_time IS NULL AND l.id IS NULL THEN u.id END) not_checked_in FROM users u LEFT JOIN attendance a ON a.user_id=u.id AND a.date=? LEFT JOIN leave_requests l ON l.employee_id=u.id AND l.status='approved' AND date(l.start_date)<=date(?) AND date(l.end_date)>=date(?) WHERE u.is_active=1`).bind(today, today, today).first(),
+      env.DB.prepare(`SELECT COUNT(*) open, SUM(CASE WHEN status='todo' THEN 1 ELSE 0 END) todo, SUM(CASE WHEN status='in_progress' THEN 1 ELSE 0 END) in_progress, SUM(CASE WHEN status='review' THEN 1 ELSE 0 END) review, SUM(CASE WHEN due_date<? AND status NOT IN ('done','cancelled') THEN 1 ELSE 0 END) overdue, SUM(CASE WHEN date(updated_at)>=date(?,'-6 day') AND status='done' THEN 1 ELSE 0 END) done_last_7_days FROM tasks`).bind(today, today).first(),
+      env.DB.prepare(`SELECT coalesce(u.department,t.department,'Ch\u01B0a ph\xE2n ph\xF2ng') department, COUNT(*) count FROM tasks t LEFT JOIN users u ON u.id=t.assigned_to WHERE t.due_date<? AND t.status NOT IN ('done','cancelled') GROUP BY coalesce(u.department,t.department,'Ch\u01B0a ph\xE2n ph\xF2ng') ORDER BY count DESC LIMIT 3`).bind(today).all(),
+      env.DB.prepare(`SELECT (SELECT COUNT(*) FROM leave_requests WHERE status='pending') leave_count, (SELECT COUNT(*) FROM overtime_requests WHERE status='pending') overtime_count, (SELECT COUNT(*) FROM employee_kpi_plans WHERE month=? AND year=? AND status='SUBMITTED') kpi_count`).bind(month, year).first(),
+      env.DB.prepare(`SELECT COUNT(*) eligible_employees, SUM(CASE WHEN p.id IS NOT NULL THEN 1 ELSE 0 END) with_plan, SUM(CASE WHEN p.status='DRAFT' THEN 1 ELSE 0 END) draft, SUM(CASE WHEN p.status='SUBMITTED' THEN 1 ELSE 0 END) submitted, SUM(CASE WHEN p.status='APPROVED' THEN 1 ELSE 0 END) approved, SUM(CASE WHEN p.status='RETURNED' THEN 1 ELSE 0 END) returned FROM users u LEFT JOIN employee_kpi_plans p ON p.employee_id=u.id AND p.month=? AND p.year=? WHERE u.is_active=1`).bind(month, year).first(),
+      env.DB.prepare(`SELECT SUM(CASE WHEN stage NOT IN ('hired','rejected') THEN 1 ELSE 0 END) active, SUM(CASE WHEN stage='received' THEN 1 ELSE 0 END) received, SUM(CASE WHEN stage='screening' THEN 1 ELSE 0 END) screening, SUM(CASE WHEN stage IN ('interview1','interview2') THEN 1 ELSE 0 END) interview, SUM(CASE WHEN stage='offer' THEN 1 ELSE 0 END) offer, SUM(CASE WHEN stage='hired' AND apply_date LIKE ? THEN 1 ELSE 0 END) hired_this_month FROM candidates`).bind(`${today.slice(0, 7)}-%`).first(),
+      env.DB.prepare(`SELECT COUNT(*) active, COALESCE(SUM(budget),0) budget, COALESCE(SUM(spent),0) spent FROM campaigns WHERE status='active'`).first(),
+      env.DB.prepare(`SELECT id,name,budget,spent,goal_leads,goal_conversions FROM campaigns WHERE status='active' ORDER BY CASE WHEN budget>0 THEN spent*1.0/budget ELSE 0 END DESC,id DESC LIMIT 3`).all(),
+      buildEmployeeAlerts(env, 30)
+    ]);
+    const people = { active: Number(peopleRow?.active || 0), interns: Number(peopleRow?.interns || 0), probation: Number(peopleRow?.probation || 0), new_hires_month: Number(peopleRow?.new_hires_month || 0) };
+    const attendance = { date: today, eligible: Number(attendanceRow?.eligible || 0), checked_in: Number(attendanceRow?.checked_in || 0), late: Number(attendanceRow?.late || 0), approved_leave: Number(attendanceRow?.approved_leave || 0), not_checked_in: Number(attendanceRow?.not_checked_in || 0) };
+    attendance.checkin_rate = attendance.eligible ? Number((attendance.checked_in / attendance.eligible * 100).toFixed(1)) : 0;
+    const tasks = { open: Number(taskRow?.open || 0), todo: Number(taskRow?.todo || 0), in_progress: Number(taskRow?.in_progress || 0), review: Number(taskRow?.review || 0), overdue: Number(taskRow?.overdue || 0), done_last_7_days: Number(taskRow?.done_last_7_days || 0), overdue_by_department: taskDepartments.results || [] };
+    const approvals = { leave: Number(approvalRow?.leave_count || 0), overtime: Number(approvalRow?.overtime_count || 0), kpi: Number(approvalRow?.kpi_count || 0) };
+    approvals.total = approvals.leave + approvals.overtime + approvals.kpi;
+    const kpi = { month, year, eligible_employees: Number(kpiRow?.eligible_employees || 0), with_plan: Number(kpiRow?.with_plan || 0), draft: Number(kpiRow?.draft || 0), submitted: Number(kpiRow?.submitted || 0), approved: Number(kpiRow?.approved || 0), returned: Number(kpiRow?.returned || 0) };
+    kpi.without_plan = Math.max(0, kpi.eligible_employees - kpi.with_plan);
+    kpi.coverage_percent = kpi.eligible_employees ? Number((kpi.with_plan / kpi.eligible_employees * 100).toFixed(1)) : 0;
+    const employee_alerts = { total: alerts.length, critical: alerts.filter((a) => a.severity === "danger").length, warning: alerts.filter((a) => a.severity === "warning").length };
+    const recruitment = Object.fromEntries(Object.entries(recruitmentRow || {}).map(([key, value]) => [key, Number(value || 0)]));
+    const campaigns = { active: Number(campaignRow?.active || 0), budget: Number(campaignRow?.budget || 0), spent: Number(campaignRow?.spent || 0), items: (campaignItems.results || []).map((item) => ({ ...item, budget: Number(item.budget || 0), spent: Number(item.spent || 0) })) };
+    campaigns.spent_percent = campaigns.budget ? Number((campaigns.spent / campaigns.budget * 100).toFixed(1)) : null;
+    const action_items = [...alerts.filter((a) => a.severity === "danger" || a.severity === "warning").map((a) => ({ severity: a.severity, title: `${a.title}: ${a.employee_name}`, detail: a.message, action_url: a.action_url, action_label: a.action_label })), ...approvals.leave ? [{ severity: "warning", title: `${approvals.leave} \u0111\u01A1n ngh\u1EC9 ph\xE9p ch\u1EDD duy\u1EC7t`, detail: "C\u1EA7n x\u1EED l\xFD \u0111\u01A1n ngh\u1EC9 ph\xE9p \u0111ang ch\u1EDD.", action_url: "#/leave", action_label: "X\u1EED l\xFD" }] : [], ...approvals.kpi ? [{ severity: "warning", title: `${approvals.kpi} KPI ch\u1EDD review`, detail: "Nh\xE2n vi\xEAn \u0111\xE3 g\u1EEDi KPI \u0111\u1EC3 ph\xEA duy\u1EC7t.", action_url: "#/kpis", action_label: "Review" }] : [], ...tasks.overdue ? [{ severity: "warning", title: `${tasks.overdue} vi\u1EC7c qu\xE1 h\u1EA1n`, detail: "Theo d\xF5i v\xE0 c\u1EADp nh\u1EADt ti\u1EBFn \u0111\u1ED9 c\xE1c c\xF4ng vi\u1EC7c qu\xE1 h\u1EA1n.", action_url: "#/tasks", action_label: "Xem c\xF4ng vi\u1EC7c" }] : []].slice(0, 8);
+    const insights = [];
+    if (attendance.not_checked_in >= 3) insights.push({ severity: "warning", text: `${attendance.not_checked_in} nh\xE2n s\u1EF1 ch\u01B0a check-in v\xE0 kh\xF4ng c\xF3 \u0111\u01A1n ngh\u1EC9 \u0111\u01B0\u1EE3c duy\u1EC7t.` });
+    if (tasks.overdue) {
+      const top = tasks.overdue_by_department[0];
+      if (top && Number(top.count) / tasks.overdue >= 0.4) insights.push({ severity: "warning", text: `${top.department} chi\u1EBFm ${Math.round(Number(top.count) / tasks.overdue * 100)}% s\u1ED1 vi\u1EC7c qu\xE1 h\u1EA1n.` });
+    }
+    if (kpi.without_plan) insights.push({ severity: "info", text: `${kpi.without_plan}/${kpi.eligible_employees} nh\xE2n s\u1EF1 ch\u01B0a \u0111\u01B0\u1EE3c thi\u1EBFt l\u1EADp KPI th\xE1ng ${month}.` });
+    if (!insights.length) insights.push({ severity: "success", text: "H\xF4m nay ch\u01B0a ph\xE1t hi\u1EC7n v\u1EA5n \u0111\u1EC1 v\u1EADn h\xE0nh c\u1EA7n \u01B0u ti\xEAn." });
+    return json({ generated_at: `${today} ${vnTimeStr()}`, people, attendance, tasks, approvals, employee_alerts, kpi, recruitment, campaigns, action_items, insights });
+  }
+  const DB_ADMIN_TABLES = {
+    // Core HR tables (previously restricted)
+    users: { label: "Nh\xE2n vi\xEAn", hidden: ["password_hash", "temp_password", "reset_token"], readonly: ["id", "created_at"] },
+    attendance: { label: "Ch\u1EA5m c\xF4ng", readonly: ["id", "created_at"] },
+    overtime_requests: { label: "T\u0103ng ca", readonly: ["id", "created_at", "updated_at"] },
+    leave_requests: { label: "Ngh\u1EC9 ph\xE9p", readonly: ["id", "created_at", "updated_at"] },
+    leave_balances: { label: "Qu\u1EF9 ngh\u1EC9 ph\xE9p", readonly: ["id", "updated_at"] },
+    leave_balance_ledger: { label: "L\u1ECBch s\u1EED qu\u1EF9 ngh\u1EC9", readonly: ["id", "created_at"] },
+    payroll: { label: "B\u1EA3ng l\u01B0\u01A1ng", readonly: ["id", "created_at", "updated_at"] },
+    payroll_lines: { label: "Chi ti\u1EBFt l\u01B0\u01A1ng", readonly: ["id"] },
+    payroll_line_change_log: { label: "Audit thay \u0111\u1ED5i l\u01B0\u01A1ng", readonly: ["id", "created_at"] },
+    evaluations: { label: "\u0110\xE1nh gi\xE1 hi\u1EC7u su\u1EA5t", readonly: ["id", "created_at", "updated_at"] },
+    evaluation_steps: { label: "B\u01B0\u1EDBc \u0111\xE1nh gi\xE1", readonly: ["id", "created_at"] },
+    kpi_entries: { label: "KPI", readonly: ["id", "created_at"] },
+    kpi_evidence: { label: "Evidence KPI", readonly: ["id", "uploaded_at"] },
+    // Existing safe tables
+    wifi_whitelist: { label: "M\u1EA1ng \u0111\u01B0\u1EE3c ph\xE9p ch\u1EA5m c\xF4ng", readonly: ["id"] },
+    tasks: { label: "Tasks", readonly: ["id", "created_at", "updated_at"] },
+    subtasks: { label: "Subtasks", readonly: ["id", "created_at"] },
+    task_comments: { label: "Task Comments", readonly: ["id", "created_at"] },
+    task_followers: { label: "Task Followers", readonly: ["id"] },
+    task_activity: { label: "Task Activity", readonly: ["id", "created_at"] },
+    settings: { label: "Settings", readonly: [] },
+    departments: { label: "Departments", readonly: ["id"] },
+    leave_types: { label: "Leave Types", readonly: ["id", "created_at", "updated_at"] },
+    candidates: { label: "Candidates", readonly: ["id"] },
+    campaigns: { label: "Campaigns", readonly: ["id"] },
+    asset_handovers: { label: "Asset Handovers", hidden: ["credential_encrypted", "credential_iv"], readonly: ["id", "created_at", "updated_at"] },
+    asset_credential_log: { label: "Asset Credential Log", readonly: ["id", "viewed_at"] },
+    // Additional system tables
+    sessions: { label: "Phi\xEAn \u0111\u0103ng nh\u1EADp", readonly: ["id", "created_at"] },
+    notifications: { label: "Th\xF4ng b\xE1o", readonly: ["id", "created_at"] },
+    audit_logs: { label: "Audit Logs", readonly: ["id", "created_at"] },
+    leave_request_documents: { label: "Documents ngh\u1EC9 ph\xE9p", readonly: ["id", "uploaded_at"] }
+  };
+  const dbAdminTableMatch = path.match(/^\/api\/db-admin\/tables\/([A-Za-z0-9_]+)$/);
+  const dbAdminRowMatch = path.match(/^\/api\/db-admin\/tables\/([A-Za-z0-9_]+)\/([^/]+)$/);
+  const dbAdminMeta = /* @__PURE__ */ __name(async (table) => {
+    const cfg = DB_ADMIN_TABLES[table];
+    if (!cfg) return null;
+    const hidden = new Set(cfg.hidden || []);
+    const readonly = new Set(cfg.readonly || []);
+    const { results = [] } = await env.DB.prepare(`PRAGMA table_info("${table}")`).all();
+    const columns = results.filter((c) => !hidden.has(c.name)).map((c) => ({
+      name: c.name,
+      type: c.type || "TEXT",
+      notnull: !!c.notnull,
+      pk: !!c.pk,
+      editable: !c.pk && !readonly.has(c.name)
+    }));
+    const pk = columns.find((c) => c.pk)?.name || results.find((c) => c.pk)?.name || "id";
+    const textColumns = columns.filter((c) => String(c.type || "").toUpperCase().includes("TEXT")).map((c) => c.name);
+    return { name: table, label: cfg.label, pk, columns, textColumns };
+  }, "dbAdminMeta");
+  const dbAdminWriteColumns = /* @__PURE__ */ __name((meta, body) => meta.columns.filter((c) => c.editable && Object.prototype.hasOwnProperty.call(body, c.name)).map((c) => c.name), "dbAdminWriteColumns");
+  const dbAdminValue = /* @__PURE__ */ __name((v) => v === "" ? null : v, "dbAdminValue");
+  if (path === "/api/db-admin/tables" && request.method === "GET") {
+    if (!isAdmin) return json({ error: "Khong co quyen" }, 403);
+    const tables = [];
+    for (const table of Object.keys(DB_ADMIN_TABLES)) {
+      const meta = await dbAdminMeta(table).catch(() => null);
+      if (meta && meta.columns.length) tables.push(meta);
+    }
+    return json({ tables });
+  }
+  if (dbAdminTableMatch && request.method === "GET") {
+    if (!isAdmin) return json({ error: "Khong co quyen" }, 403);
+    const table = dbAdminTableMatch[1];
+    const meta = await dbAdminMeta(table);
+    if (!meta) return json({ error: "Bang khong duoc phep quan tri" }, 404);
+    const search = String(url.searchParams.get("search") || "").trim();
+    const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "10", 10) || 10, 1), 100);
+    const offset = Math.max(parseInt(url.searchParams.get("offset") || "0", 10) || 0, 0);
+    let where = "";
+    let binds = [];
+    if (search && meta.textColumns.length) {
+      where = " WHERE " + meta.textColumns.map((c) => `"${c}" LIKE ?`).join(" OR ");
+      binds = meta.textColumns.map(() => `%${search}%`);
+    }
+    const selectCols = meta.columns.map((c) => `"${c.name}"`).join(",");
+    const countRow = await env.DB.prepare(`SELECT COUNT(*) AS total FROM "${table}"${where}`).bind(...binds).first();
+    const { results = [] } = await env.DB.prepare(`SELECT ${selectCols} FROM "${table}"${where} ORDER BY "${meta.pk}" DESC LIMIT ? OFFSET ?`).bind(...binds, limit, offset).all();
+    return json({ table: meta, rows: results, total: countRow?.total || 0, limit, offset });
+  }
+  if (dbAdminTableMatch && request.method === "POST") {
+    if (!isAdmin) return json({ error: "Khong co quyen" }, 403);
+    const table = dbAdminTableMatch[1];
+    const meta = await dbAdminMeta(table);
+    if (!meta) return json({ error: "Bang khong duoc phep quan tri" }, 404);
+    const body = await request.json().catch(() => ({}));
+    const cols = dbAdminWriteColumns(meta, body);
+    if (!cols.length) return json({ error: "Khong co cot hop le de them" }, 400);
+    const placeholders = cols.map(() => "?").join(",");
+    const r = await env.DB.prepare(`INSERT INTO "${table}" (${cols.map((c) => `"${c}"`).join(",")}) VALUES (${placeholders})`).bind(...cols.map((c) => dbAdminValue(body[c]))).run();
+    return json({ ok: true, id: r.meta?.last_row_id || null });
+  }
+  if (dbAdminRowMatch && request.method === "PUT") {
+    if (!isAdmin) return json({ error: "Khong co quyen" }, 403);
+    const table = dbAdminRowMatch[1];
+    const meta = await dbAdminMeta(table);
+    if (!meta) return json({ error: "Bang khong duoc phep quan tri" }, 404);
+    const body = await request.json().catch(() => ({}));
+    const cols = dbAdminWriteColumns(meta, body);
+    if (!cols.length) return json({ error: "Khong co cot hop le de cap nhat" }, 400);
+    await env.DB.prepare(`UPDATE "${table}" SET ${cols.map((c) => `"${c}"=?`).join(",")} WHERE "${meta.pk}"=?`).bind(...cols.map((c) => dbAdminValue(body[c])), decodeURIComponent(dbAdminRowMatch[2])).run();
+    return json({ ok: true });
+  }
+  if (dbAdminRowMatch && request.method === "DELETE") {
+    if (!isAdmin) return json({ error: "Khong co quyen" }, 403);
+    const table = dbAdminRowMatch[1];
+    const meta = await dbAdminMeta(table);
+    if (!meta) return json({ error: "Bang khong duoc phep quan tri" }, 404);
+    await env.DB.prepare(`DELETE FROM "${table}" WHERE "${meta.pk}"=?`).bind(decodeURIComponent(dbAdminRowMatch[2])).run();
+    return json({ ok: true });
+  }
+  if (path === "/api/users/directory" && request.method === "GET") {
+    if (!isManager) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    await ensureWorkLocationStandardization(env).catch(() => {
+    });
+    const hasHrScope = isAdmin || isHcns(me);
+    const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+    const pageSize = Math.min(100, Math.max(5, parseInt(url.searchParams.get("page_size") || "20", 10)));
+    const { where, binds } = buildEmployeeDirectoryFilter(url, me, hasHrScope);
+    const totalRow = await env.DB.prepare(`SELECT COUNT(*) AS total FROM users u${where}`).bind(...binds).first();
+    const { results: users = [] } = await env.DB.prepare(
+      `SELECT u.id,u.employee_code,u.employee_type,u.full_name,u.email,u.department,u.position,
+              u.avatar_color,u.avatar_initials,u.avatar_url,u.is_active,u.lifecycle_status,
+              u.work_location,u.contract_type,u.contract_end_date,u.probation_end_date,u.national_id_expiry_date
+       FROM users u${where}
+       ORDER BY u.full_name COLLATE NOCASE,u.id
+       LIMIT ? OFFSET ?`
+    ).bind(...binds, pageSize, (page - 1) * pageSize).all();
+    const scopeWhere = hasHrScope ? "" : " WHERE department=?";
+    const scopeBinds = hasHrScope ? [] : [me.department || ""];
+    const [departments, positions, workLocations, statuses] = await Promise.all([
+      env.DB.prepare(`SELECT DISTINCT department AS value FROM users${scopeWhere} ORDER BY department`).bind(...scopeBinds).all(),
+      env.DB.prepare(`SELECT DISTINCT position AS value FROM users${scopeWhere} ORDER BY position`).bind(...scopeBinds).all(),
+      env.DB.prepare(`SELECT DISTINCT work_location AS value FROM users${scopeWhere} ORDER BY work_location`).bind(...scopeBinds).all(),
+      env.DB.prepare(`SELECT DISTINCT lifecycle_status AS value FROM users${scopeWhere} ORDER BY lifecycle_status`).bind(...scopeBinds).all()
+    ]);
+    const values = /* @__PURE__ */ __name((result) => (result.results || []).map((row) => row.value).filter(Boolean), "values");
+    return json({
+      users,
+      pagination: { page, page_size: pageSize, total: Number(totalRow?.total || 0), pages: Math.max(1, Math.ceil(Number(totalRow?.total || 0) / pageSize)) },
+      filter_options: {
+        departments: values(departments),
+        positions: values(positions),
+        work_locations: Array.from(/* @__PURE__ */ new Set([...VALID_WORK_LOCATIONS, ...values(workLocations)])).filter(Boolean),
+        statuses: values(statuses)
+      }
+    });
+  }
+  if (path === "/api/users/export.xls" && request.method === "GET") {
+    const hasHrScope = isAdmin || isHcns(me);
+    if (!hasHrScope) return json({ error: "Ch\u1EC9 HCNS ho\u1EB7c Admin \u0111\u01B0\u1EE3c xu\u1EA5t d\u1EEF li\u1EC7u" }, 403);
+    const { where, binds } = buildEmployeeDirectoryFilter(url, me, true);
+    const { results: rows = [] } = await env.DB.prepare(
+      `SELECT u.employee_code,u.full_name,u.employee_type,u.email,u.phone,u.department,u.position,
+              u.lifecycle_status,u.contract_type,u.hire_date,u.contract_end_date,u.salary,u.allowance,
+              u.insurance_salary,u.dependent_count,u.bank_account,u.bank_name,u.social_insurance_number
+       FROM users u${where} ORDER BY u.full_name COLLATE NOCASE`
+    ).bind(...binds).all();
+    const columns = [
+      ["M\xE3 nh\xE2n vi\xEAn", "employee_code"],
+      ["H\u1ECD v\xE0 t\xEAn", "full_name"],
+      ["Lo\u1EA1i nh\xE2n s\u1EF1", "employee_type"],
+      ["Email", "email"],
+      ["S\u1ED1 \u0111i\u1EC7n tho\u1EA1i", "phone"],
+      ["Ph\xF2ng ban", "department"],
+      ["V\u1ECB tr\xED", "position"],
+      ["Tr\u1EA1ng th\xE1i", "lifecycle_status"],
+      ["Lo\u1EA1i h\u1EE3p \u0111\u1ED3ng", "contract_type"],
+      ["Ng\xE0y v\xE0o l\xE0m", "hire_date"],
+      ["H\u1EBFt h\u1EA1n h\u1EE3p \u0111\u1ED3ng", "contract_end_date"],
+      ["L\u01B0\u01A1ng c\u01A1 b\u1EA3n", "salary"],
+      ["Ph\u1EE5 c\u1EA5p", "allowance"],
+      ["L\u01B0\u01A1ng \u0111\xF3ng BHXH", "insurance_salary"],
+      ["Ng\u01B0\u1EDDi ph\u1EE5 thu\u1ED9c", "dependent_count"],
+      ["S\u1ED1 t\xE0i kho\u1EA3n", "bank_account"],
+      ["Ng\xE2n h\xE0ng", "bank_name"],
+      ["S\u1ED1 BHXH", "social_insurance_number"]
+    ];
+    const cell = /* @__PURE__ */ __name((value) => `<Cell><Data ss:Type="${typeof value === "number" ? "Number" : "String"}">${xmlEscape(value ?? "")}</Data></Cell>`, "cell");
+    const workbook = `<?xml version="1.0" encoding="UTF-8"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+ <Styles><Style ss:ID="Header"><Font ss:Bold="1"/><Interior ss:Color="#FDE9E4" ss:Pattern="Solid"/></Style></Styles>
+ <Worksheet ss:Name="Nh\xE2n vi\xEAn"><Table>
+  <Row>${columns.map(([label]) => `<Cell ss:StyleID="Header"><Data ss:Type="String">${xmlEscape(label)}</Data></Cell>`).join("")}</Row>
+  ${rows.map((row) => `<Row>${columns.map(([, key]) => cell(row[key])).join("")}</Row>`).join("")}
+ </Table></Worksheet>
+</Workbook>`;
+    const date = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10).replace(/-/g, "");
+    return new Response(workbook, {
+      headers: {
+        "Content-Type": "application/vnd.ms-excel; charset=utf-8",
+        "Content-Disposition": `attachment; filename="danh-sach-nhan-vien-${date}.xls"`,
+        "Cache-Control": "private, no-store, max-age=0",
+        "X-Content-Type-Options": "nosniff"
+      }
+    });
+  }
+  if (path === "/api/users/alerts" && request.method === "GET") {
+    const hasHrScope = isAdmin || isHcns(me);
+    if (!hasHrScope) return json({ error: "Ch\u1EC9 HCNS ho\u1EB7c Admin \u0111\u01B0\u1EE3c xem c\u1EA3nh b\xE1o" }, 403);
+    const windowDays = Math.min(90, Math.max(1, parseInt(url.searchParams.get("window") || "30", 10)));
+    const { results: employees = [] } = await env.DB.prepare(
+      `SELECT id,employee_code,employee_type,full_name,department,probation_end_date,contract_end_date,national_id_expiry_date
+       FROM users WHERE is_active=1 AND coalesce(lifecycle_status,'')<>'\u0110\xE3 ngh\u1EC9' ORDER BY full_name`
+    ).all();
+    const { results: documents = [] } = await env.DB.prepare(
+      `SELECT user_id,category,expires_on FROM employee_documents WHERE deleted_at IS NULL`
+    ).all();
+    const documentsByUser = /* @__PURE__ */ new Map();
+    for (const document of documents) {
+      if (!documentsByUser.has(Number(document.user_id))) documentsByUser.set(Number(document.user_id), []);
+      documentsByUser.get(Number(document.user_id)).push(document);
+    }
+    const today = /* @__PURE__ */ new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const daysUntil = /* @__PURE__ */ __name((date) => {
+      if (!date) return null;
+      const parsed = /* @__PURE__ */ new Date(`${date}T00:00:00Z`);
+      return Number.isFinite(parsed.getTime()) ? Math.ceil((parsed.getTime() - today.getTime()) / 864e5) : null;
+    }, "daysUntil");
+    const alerts = [];
+    const dateFields = [
+      ["probation_end_date", "probation_due", "S\u1EAFp h\u1EBFt th\u1EED vi\u1EC7c"],
+      ["contract_end_date", "contract_due", "S\u1EAFp h\u1EBFt h\u1EA1n h\u1EE3p \u0111\u1ED3ng"],
+      ["national_id_expiry_date", "national_id_due", "CCCD s\u1EAFp h\u1EBFt h\u1EA1n"]
+    ];
+    for (const employee of employees) {
+      for (const [field, type, label] of dateFields) {
+        const remaining = daysUntil(employee[field]);
+        if (remaining === null || remaining > windowDays) continue;
+        alerts.push({
+          id: `${type}-${employee.id}`,
+          type,
+          severity: remaining < 0 ? "danger" : remaining <= 7 ? "warning" : "info",
+          employee_id: employee.id,
+          employee_code: employee.employee_code,
+          employee_name: employee.full_name,
+          department: employee.department,
+          due_date: employee[field],
+          days_until: remaining,
+          message: remaining < 0 ? `${label} \u0111\xE3 qu\xE1 h\u1EA1n ${Math.abs(remaining)} ng\xE0y` : `${label} c\xF2n ${remaining} ng\xE0y`
+        });
+      }
+      const employeeDocuments = documentsByUser.get(Number(employee.id)) || [];
+      const categories = new Set(employeeDocuments.map((document) => document.category));
+      const required = employee.employee_type === "TTS" ? [["cv", "CV \u1EE9ng vi\xEAn"], ["national_id", "CCCD"], ["internship_agreement", "Th\u1ECFa thu\u1EADn TTS"]] : [["cv", "CV \u1EE9ng vi\xEAn"], ["national_id", "CCCD"], ["labor_contract", "H\u1EE3p \u0111\u1ED3ng lao \u0111\u1ED9ng"]];
+      const missing = required.filter(([category]) => {
+        if (employee.employee_type === "TTS" && category === "internship_agreement" && categories.has("labor_contract")) return false;
+        return !categories.has(category);
+      }).map(([, label]) => label);
+      if (missing.length) {
+        alerts.push({
+          id: `missing-documents-${employee.id}`,
+          type: "missing_documents",
+          severity: "warning",
+          employee_id: employee.id,
+          employee_code: employee.employee_code,
+          employee_name: employee.full_name,
+          department: employee.department,
+          missing,
+          message: `Thi\u1EBFu h\u1ED3 s\u01A1: ${missing.join(", ")}`
+        });
+      }
+      for (const document of employeeDocuments) {
+        const remaining = daysUntil(document.expires_on);
+        if (remaining === null || remaining > windowDays) continue;
+        alerts.push({
+          id: `document-due-${employee.id}-${document.category}`,
+          type: "document_due",
+          severity: remaining < 0 ? "danger" : remaining <= 7 ? "warning" : "info",
+          employee_id: employee.id,
+          employee_code: employee.employee_code,
+          employee_name: employee.full_name,
+          department: employee.department,
+          due_date: document.expires_on,
+          days_until: remaining,
+          message: `${EMPLOYEE_DOCUMENT_CATEGORIES[document.category] || "T\xE0i li\u1EC7u"} ${remaining < 0 ? `\u0111\xE3 qu\xE1 h\u1EA1n ${Math.abs(remaining)} ng\xE0y` : `c\xF2n ${remaining} ng\xE0y`}`
+        });
+      }
+    }
+    alerts.sort((a, b) => (a.days_until ?? 9999) - (b.days_until ?? 9999) || a.employee_name.localeCompare(b.employee_name, "vi"));
+    return json({
+      alerts,
+      total: alerts.length,
+      summary: alerts.reduce((summary, alert) => {
+        summary[alert.type] = (summary[alert.type] || 0) + 1;
+        return summary;
+      }, {}),
+      window_days: windowDays
+    });
+  }
+  if (path === "/api/notifications/push-vapid-public-key" && request.method === "GET") {
+    return json({ public_key: VAPID_KEYS.publicKey });
+  }
+  if (path === "/api/notifications/push-subscribe" && request.method === "POST") {
+    try {
+      await ensurePushSchema(env);
+      const b = await request.json().catch(() => ({}));
+      const endpoint = String(b.endpoint || "").trim();
+      const p256dh = String(b.p256dh || "").trim();
+      const auth = String(b.auth || "").trim();
+      const user_agent = String(b.user_agent || "").slice(0, 500);
+      if (!endpoint || !p256dh || !auth) {
+        return json({ error: "Th\xF4ng tin Push Subscription kh\xF4ng h\u1EE3p l\u1EC7 (thi\u1EBFu endpoint ho\u1EB7c keys)" }, 400);
+      }
+      try {
+        await env.DB.prepare(
+          `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent, updated_at)
+           VALUES (?, ?, ?, ?, ?, datetime('now','localtime'))
+           ON CONFLICT(endpoint) DO UPDATE SET
+             user_id=excluded.user_id,
+             p256dh=excluded.p256dh,
+             auth=excluded.auth,
+             user_agent=excluded.user_agent,
+             updated_at=datetime('now','localtime')`
+        ).bind(me.id, endpoint, p256dh, auth, user_agent).run();
+      } catch (upsertErr) {
+        await env.DB.prepare("DELETE FROM push_subscriptions WHERE endpoint=?").bind(endpoint).run();
+        await env.DB.prepare(
+          `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent, updated_at)
+           VALUES (?, ?, ?, ?, ?, datetime('now','localtime'))`
+        ).bind(me.id, endpoint, p256dh, auth, user_agent).run();
+      }
+      return json({ ok: true });
+    } catch (err) {
+      console.error("Push subscribe error:", err);
+      return json({ error: "Kh\xF4ng th\u1EC3 l\u01B0u th\xF4ng tin th\xF4ng b\xE1o: " + (err?.message || err) }, 500);
+    }
+  }
+  if (path === "/api/notifications/push-unsubscribe" && request.method === "POST") {
+    try {
+      await ensurePushSchema(env);
+      const b = await request.json().catch(() => ({}));
+      const endpoint = String(b.endpoint || "").trim();
+      if (endpoint) {
+        await env.DB.prepare("DELETE FROM push_subscriptions WHERE endpoint=? AND user_id=?").bind(endpoint, me.id).run();
+      } else {
+        await env.DB.prepare("DELETE FROM push_subscriptions WHERE user_id=?").bind(me.id).run();
+      }
+      return json({ ok: true });
+    } catch (err) {
+      return json({ error: "L\u1ED7i h\u1EE7y \u0111\u0103ng k\xFD push: " + (err?.message || err) }, 500);
+    }
+  }
+  if (path === "/api/notifications/test-push" && request.method === "POST") {
+    try {
+      await ensurePushSchema(env);
+      await sendWebPushNotification(env, [me.id], {
+        title: "\u{1F514} NetViet HR - PWA",
+        body: `Xin ch\xE0o ${me.full_name || "b\u1EA1n"}! Th\xF4ng b\xE1o \u0111\u1EA9y l\xEAn m\xE0n h\xECnh kh\xF3a \u0111\xE3 ho\u1EA1t \u0111\u1ED9ng th\xE0nh c\xF4ng \u{1F680}`,
+        icon: me.avatar_url || "/icon-192.png",
+        badge: "/icon-192.png",
+        url: "/#/notifications",
+        tag: "test-push-notification"
+      });
+      return json({ ok: true, message: "\u0110\xE3 g\u1EEDi th\xF4ng b\xE1o th\u1EED nghi\u1EC7m \u0111\u1EBFn thi\u1EBFt b\u1ECB c\u1EE7a b\u1EA1n" });
+    } catch (err) {
+      return json({ error: "L\u1ED7i g\u1EEDi test push: " + (err?.message || err) }, 500);
+    }
+  }
+  if (path === "/api/notifications/task-mentions/unread-count" && request.method === "GET") {
+    const totalRow = await env.DB.prepare("SELECT COUNT(*) AS cnt FROM task_mention_notifications WHERE user_id=? AND is_read=0").bind(me.id).first();
+    const { results: projectRows = [] } = await env.DB.prepare(
+      `SELECT t.team_project_id AS project_id, COUNT(*) AS cnt
+       FROM task_mention_notifications tmn
+       JOIN tasks t ON t.id = tmn.task_id
+       WHERE tmn.user_id = ? AND tmn.is_read = 0
+       GROUP BY t.team_project_id`
+    ).bind(me.id).all();
+    const by_project = {};
+    for (const r of projectRows) {
+      if (r.project_id) by_project[String(r.project_id)] = Number(r.cnt || 0);
+    }
+    return json({
+      count: Number(totalRow?.cnt || 0),
+      by_project
+    });
+  }
+  if (path === "/api/notifications/task-mentions" && request.method === "GET") {
+    const { results = [] } = await env.DB.prepare(
+      `SELECT tmn.*, t.team_project_id AS project_id, t.title AS task_title
+       FROM task_mention_notifications tmn
+       LEFT JOIN tasks t ON t.id = tmn.task_id
+       WHERE tmn.user_id=? ORDER BY tmn.created_at DESC LIMIT 100`
+    ).bind(me.id).all();
+    return json({ notifications: results });
+  }
+  const mentionReadMatch = path.match(/^\/api\/notifications\/task-mentions\/(\d+)\/read$/);
+  if (mentionReadMatch && request.method === "PATCH") {
+    const notifId = parseInt(mentionReadMatch[1]);
+    await env.DB.prepare("UPDATE task_mention_notifications SET is_read=1 WHERE id=? AND user_id=?").bind(notifId, me.id).run();
+    await broadcastAppEvent(env, "notifications", "notification:read", {
+      id: notifId,
+      user_id: me.id
+    }, { actorId: me.id, targetUserIds: [me.id] });
+    return json({ ok: true });
+  }
+  if (path === "/api/notifications" && request.method === "GET") {
+    await runAutoCheckout(env).catch(() => {
+    });
+    const windowDays = Math.min(90, Math.max(1, parseInt(url.searchParams.get("window") || "30", 10)));
+    const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+    const pageSize = Math.min(100, Math.max(10, parseInt(url.searchParams.get("page_size") || "25", 10)));
+    const hasHrScope = isAdmin || isHcns(me);
+    const notifications = [
+      ...hasHrScope ? await buildEmployeeAlerts(env, windowDays) : [],
+      ...await buildAttendanceNotifications(env, me, {
+        windowDays,
+        isAdmin,
+        isHcnsScope: isAttendanceHcns
+      })
+    ];
+    const moduleFilter = String(url.searchParams.get("module") || "").trim();
+    const typeFilter = String(url.searchParams.get("type") || "").trim();
+    const severityFilter = String(url.searchParams.get("severity") || "").trim();
+    const search = String(url.searchParams.get("search") || "").trim().toLocaleLowerCase("vi");
+    const filtered = notifications.filter((notification) => {
+      if (moduleFilter && notification.module !== moduleFilter) return false;
+      if (typeFilter && notification.type !== typeFilter) return false;
+      if (severityFilter && notification.severity !== severityFilter) return false;
+      if (search) {
+        const haystack = [
+          notification.title,
+          notification.message,
+          notification.employee_name,
+          notification.employee_code,
+          notification.department,
+          notification.module_label
+        ].join(" ").toLocaleLowerCase("vi");
+        if (!haystack.includes(search)) return false;
+      }
+      return true;
+    });
+    const severityRank = { danger: 0, warning: 1, info: 2 };
+    filtered.sort(
+      (a, b) => (severityRank[a.severity] ?? 9) - (severityRank[b.severity] ?? 9) || String(b.occurred_on || b.due_date || "").localeCompare(String(a.occurred_on || a.due_date || "")) || String(a.employee_name || "").localeCompare(String(b.employee_name || ""), "vi")
+    );
+    const total = filtered.length;
+    const paginated = filtered.slice((page - 1) * pageSize, page * pageSize);
+    const values = /* @__PURE__ */ __name((key) => [...new Set(notifications.map((item) => item[key]).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), "vi")), "values");
+    return json({
+      notifications: paginated,
+      total,
+      active_total: notifications.length,
+      pagination: { page, page_size: pageSize, total, pages: Math.max(1, Math.ceil(total / pageSize)) },
+      summary: {
+        danger: notifications.filter((item) => item.severity === "danger").length,
+        warning: notifications.filter((item) => item.severity === "warning").length,
+        info: notifications.filter((item) => item.severity === "info").length,
+        employee_profile: notifications.filter((item) => item.module === "employee_profile").length,
+        attendance: notifications.filter((item) => item.module === "attendance").length
+      },
+      filter_options: {
+        modules: values("module").map((value) => ({
+          value,
+          label: notifications.find((item) => item.module === value)?.module_label || value
+        })),
+        types: values("type"),
+        severities: values("severity")
+      },
+      window_days: windowDays
+    });
+  }
+  const employeeProfileMatch = path.match(/^\/api\/users\/(\d+)\/profile$/);
+  if (employeeProfileMatch) {
+    const userId = parseInt(employeeProfileMatch[1], 10);
+    const target = await env.DB.prepare("SELECT * FROM users WHERE id=?").bind(userId).first();
+    if (!target) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y nh\xE2n vi\xEAn" }, 404);
+    const hasHrScope = isAdmin || isHcns(me);
+    const permissions = employeeProfilePermissions(target, me, hasHrScope, isManager);
+    if (!permissions.can_view) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n xem h\u1ED3 s\u01A1" }, 403);
+    if (request.method === "GET") {
+      const profile = { ...target };
+      delete profile.password_hash;
+      const isSelf = Number(me.id) === userId;
+      if (!hasHrScope && !isSelf) {
+        for (const field of [...EMPLOYEE_PROFILE_FIELDS.contract, ...EMPLOYEE_PROFILE_FIELDS.compensation]) delete profile[field];
+        for (const field of ["birth_date", "gender", "national_id", "national_id_expiry_date", "home_address", "school_name", "emergency_contact_name", "emergency_contact_phone"]) {
+          delete profile[field];
+        }
+        delete profile.tax_code;
+        delete profile.social_insurance_number;
+        delete profile.national_id_document_url;
+        delete profile.degree_document_url;
+        delete profile.contract_document_url;
+        delete profile.personnel_decision_url;
+      }
+      let completion = null;
+      if (permissions.can_view_documents) {
+        const requiredFields = [
+          "full_name",
+          "email",
+          "phone",
+          "birth_date",
+          "national_id",
+          "home_address",
+          "position",
+          "department",
+          "direct_manager_id",
+          "work_location",
+          "contract_type",
+          "hire_date"
+        ];
+        const requiredDocuments = target.employee_type === "TTS" ? ["cv", "national_id", "internship_agreement"] : ["cv", "national_id", "labor_contract"];
+        const { results: documentRows = [] } = await env.DB.prepare(
+          "SELECT DISTINCT category FROM employee_documents WHERE user_id=? AND deleted_at IS NULL"
+        ).bind(userId).all();
+        const categories = new Set(documentRows.map((row) => row.category));
+        const completedFields = requiredFields.filter((field) => String(target[field] ?? "").trim()).length;
+        const completedDocuments = requiredDocuments.filter((category) => {
+          if (target.employee_type === "TTS" && category === "internship_agreement" && categories.has("labor_contract")) return true;
+          return categories.has(category);
+        }).length;
+        completion = {
+          percent: Math.round((completedFields + completedDocuments) / (requiredFields.length + requiredDocuments.length) * 100),
+          completed_fields: completedFields,
+          required_fields: requiredFields.length,
+          completed_documents: completedDocuments,
+          required_documents: requiredDocuments.length
+        };
+      }
+      return json({
+        user: profile,
+        permissions,
+        completion,
+        metadata: {
+          document_categories: EMPLOYEE_DOCUMENT_CATEGORIES,
+          contract_types: target.contract_type && !EMPLOYEE_CONTRACT_TYPES.includes(target.contract_type) ? [...EMPLOYEE_CONTRACT_TYPES, target.contract_type] : EMPLOYEE_CONTRACT_TYPES,
+          lifecycle_statuses: LIFECYCLE_STATUSES
+        }
+      });
+    }
+    if (request.method !== "PATCH") return json({ error: "Ph\u01B0\u01A1ng th\u1EE9c kh\xF4ng \u0111\u01B0\u1EE3c h\u1ED7 tr\u1EE3" }, 405);
+    if (!permissions.can_edit_basic) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n s\u1EEDa h\u1ED3 s\u01A1" }, 403);
+    const input = await request.json().catch(() => ({}));
+    const changes = {};
+    for (const [field, rawValue] of Object.entries(input)) {
+      if (!EMPLOYEE_PROFILE_ALLOWED_FIELDS.has(field)) continue;
+      const group = EMPLOYEE_PROFILE_FIELD_GROUP[field];
+      if (group === "personal" && !permissions.can_edit_personal) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n s\u1EEDa th\xF4ng tin c\xE1 nh\xE2n" }, 403);
+      if (group === "employment" && !permissions.can_edit_employment) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n s\u1EEDa th\xF4ng tin c\xF4ng vi\u1EC7c" }, 403);
+      if ((EMPLOYEE_PROFILE_PROTECTED_FIELDS.has(field) || field === "employee_type") && !hasHrScope) {
+        return json({ error: "Ch\u1EC9 HCNS ho\u1EB7c Admin \u0111\u01B0\u1EE3c s\u1EEDa h\u1EE3p \u0111\u1ED3ng, l\u01B0\u01A1ng, ng\xE2n h\xE0ng v\xE0 BHXH" }, 403);
+      }
+      changes[field] = normalizeEmployeeProfileValue(field, rawValue);
+      if (typeof changes[field] === "number" && !Number.isFinite(changes[field])) return json({ error: `Gi\xE1 tr\u1ECB ${field} kh\xF4ng h\u1EE3p l\u1EC7` }, 400);
+    }
+    if (!Object.keys(changes).length) return json({ ok: true, unchanged: true });
+    const merged = { ...target, ...changes };
+    if (merged.employee_type !== "TTS" && merged.school_name) {
+      changes.school_name = "";
+      merged.school_name = "";
+    }
+    const actualChanges = Object.entries(changes).filter(([field, value]) => String(target[field] ?? "") !== String(value ?? ""));
+    if (!actualChanges.length) return json({ ok: true, unchanged: true });
+    const validationError = validateEmployeeProfile(merged, actualChanges.map(([field]) => field));
+    if (validationError) return json({ error: validationError }, 400);
+    if (changes.email && changes.email !== target.email) {
+      const duplicate = await env.DB.prepare("SELECT id FROM users WHERE lower(email)=lower(?) AND id<>? LIMIT 1").bind(changes.email, userId).first();
+      if (duplicate) return json({ error: "Email \u0111\xE3 t\u1ED3n t\u1EA1i" }, 409);
+    }
+    if (merged.direct_manager_id) {
+      const manager = await env.DB.prepare("SELECT id FROM users WHERE id=? AND is_active=1").bind(merged.direct_manager_id).first();
+      if (!manager) return json({ error: "Qu\u1EA3n l\xFD tr\u1EF1c ti\u1EBFp kh\xF4ng t\u1ED3n t\u1EA1i ho\u1EB7c \u0111\xE3 kh\xF3a" }, 400);
+    }
+    const changeSetId = crypto.randomUUID();
+    const assignments = actualChanges.map(([field]) => `${field}=?`).join(",");
+    const statements = [
+      env.DB.prepare(`UPDATE users SET ${assignments},updated_at=datetime('now','localtime'),updated_by=? WHERE id=?`).bind(...actualChanges.map(([, value]) => value), me.id, userId),
+      ...actualChanges.map(([field, value]) => employeeAuditStatement(env, {
+        userId,
+        changeSetId,
+        action: "update",
+        group: EMPLOYEE_PROFILE_FIELD_GROUP[field] || "profile",
+        field,
+        oldValue: target[field],
+        newValue: value,
+        actor: me
+      }))
+    ];
+    await env.DB.batch(statements);
+    await broadcastAppEvent(env, "users", "user:profile_updated", {
+      id: userId,
+      changed_fields: actualChanges.map(([field]) => field)
+    }, { actorId: me.id });
+    return json({ ok: true, change_set_id: changeSetId, changed_fields: actualChanges.map(([field]) => field) });
+  }
+  const userDeleteMatch = path.match(/^\/api\/users\/(\d+)$/);
+  if (userDeleteMatch && request.method === "DELETE") {
+    if (!(isAdmin || isHcns(me))) return json({ error: "Ch\u1EC9 HCNS ho\u1EB7c Admin m\u1EDBi c\xF3 quy\u1EC1n x\xF3a t\xE0i kho\u1EA3n nh\xE2n vi\xEAn" }, 403);
+    const userId = parseInt(userDeleteMatch[1], 10);
+    if (Number(me.id) === userId) return json({ error: "Kh\xF4ng th\u1EC3 t\u1EF1 x\xF3a t\xE0i kho\u1EA3n c\u1EE7a ch\xEDnh m\xECnh" }, 400);
+    const target = await env.DB.prepare("SELECT id, full_name, employee_code FROM users WHERE id=?").bind(userId).first();
+    if (!target) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y t\xE0i kho\u1EA3n nh\xE2n vi\xEAn" }, 404);
+    try {
+      await env.DB.prepare("DELETE FROM users WHERE id=?").bind(userId).run();
+      try {
+        await env.DB.prepare("DELETE FROM sessions WHERE user_id=?").bind(userId).run();
+      } catch (_) {
+      }
+      try {
+        await env.DB.prepare("DELETE FROM attendance WHERE user_id=?").bind(userId).run();
+      } catch (_) {
+      }
+      try {
+        await env.DB.prepare("DELETE FROM employee_documents WHERE user_id=?").bind(userId).run();
+      } catch (_) {
+      }
+      try {
+        await env.DB.prepare("DELETE FROM employee_profile_audit WHERE user_id=?").bind(userId).run();
+      } catch (_) {
+      }
+      try {
+        await env.DB.prepare("DELETE FROM task_mention_notifications WHERE user_id=?").bind(userId).run();
+      } catch (_) {
+      }
+      try {
+        await env.DB.prepare("DELETE FROM leave_requests WHERE user_id=? OR employee_id=?").bind(userId, userId).run();
+      } catch (_) {
+      }
+      try {
+        await env.DB.prepare("DELETE FROM leave_balances WHERE user_id=? OR employee_id=?").bind(userId, userId).run();
+      } catch (_) {
+      }
+      try {
+        await env.DB.prepare("DELETE FROM conversation_members WHERE user_id=?").bind(userId).run();
+      } catch (_) {
+      }
+      await broadcastAppEvent(env, "users", "user:deleted", {
+        id: userId,
+        employee_code: target.employee_code,
+        full_name: target.full_name
+      }, { actorId: me.id });
+      return json({ ok: true, message: `\u0110\xE3 x\xF3a t\xE0i kho\u1EA3n nh\xE2n vi\xEAn ${target.full_name}` });
+    } catch (err) {
+      return json({ error: err?.message || "Kh\xF4ng th\u1EC3 x\xF3a t\xE0i kho\u1EA3n nh\xE2n vi\xEAn" }, 500);
+    }
+  }
+  const employeeAuditMatch = path.match(/^\/api\/users\/(\d+)\/audit$/);
+  if (employeeAuditMatch && request.method === "GET") {
+    const hasHrScope = isAdmin || isHcns(me);
+    if (!hasHrScope) return json({ error: "Ch\u1EC9 HCNS ho\u1EB7c Admin \u0111\u01B0\u1EE3c xem nh\u1EADt k\xFD" }, 403);
+    const userId = parseInt(employeeAuditMatch[1], 10);
+    const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+    const pageSize = Math.min(100, Math.max(10, parseInt(url.searchParams.get("page_size") || "30", 10)));
+    const total = await env.DB.prepare("SELECT COUNT(*) AS total FROM employee_profile_audit WHERE user_id=?").bind(userId).first();
+    const { results: audit = [] } = await env.DB.prepare(
+      `SELECT * FROM employee_profile_audit WHERE user_id=? ORDER BY changed_at DESC,id DESC LIMIT ? OFFSET ?`
+    ).bind(userId, pageSize, (page - 1) * pageSize).all();
+    return json({ audit, pagination: { page, page_size: pageSize, total: Number(total?.total || 0) } });
+  }
+  const employeeTimelineMatch = path.match(/^\/api\/users\/(\d+)\/timeline$/);
+  if (employeeTimelineMatch && request.method === "GET") {
+    const userId = parseInt(employeeTimelineMatch[1], 10);
+    const target = await env.DB.prepare("SELECT * FROM users WHERE id=?").bind(userId).first();
+    if (!target) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y nh\xE2n vi\xEAn" }, 404);
+    const hasHrScope = isAdmin || isHcns(me);
+    if (!employeeCanAccess(target, me, hasHrScope, isManager)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n xem h\u1ED3 s\u01A1" }, 403);
+    const events = [];
+    const datedFields = [
+      ["hire_date", "onboarding", "Ng\xE0y v\xE0o l\xE0m"],
+      ["probation_end_date", "probation", "K\u1EBFt th\xFAc th\u1EED vi\u1EC7c"],
+      ["official_date", "official", "Chuy\u1EC3n ch\xEDnh th\u1EE9c"],
+      ["termination_date", "termination", "Ngh\u1EC9 vi\u1EC7c"]
+    ];
+    for (const [field, type, title] of datedFields) {
+      if (target[field]) events.push({ id: `${field}-${userId}`, type, title, event_date: target[field], source: "profile" });
+    }
+    const { results: lifecycle = [] } = await env.DB.prepare(
+      `SELECT id,from_status,to_status,changed_by_name,reason,
+              created_at AS event_date
+       FROM lifecycle_history WHERE user_id=? ORDER BY id`
+    ).bind(userId).all();
+    for (const row of lifecycle) events.push({
+      id: `lifecycle-${row.id}`,
+      type: "lifecycle",
+      title: `Chuy\u1EC3n tr\u1EA1ng th\xE1i sang ${row.to_status}`,
+      description: row.reason || "",
+      actor_name: row.changed_by_name || "",
+      event_date: row.event_date,
+      source: "lifecycle"
+    });
+    const auditFields = [...EMPLOYEE_TIMELINE_FIELDS].filter((field) => hasHrScope || !["salary", "allowance"].includes(field));
+    if (auditFields.length) {
+      const placeholders = auditFields.map(() => "?").join(",");
+      const { results: auditEvents = [] } = await env.DB.prepare(
+        `SELECT id,field_name,old_value,new_value,changed_by_name,changed_at
+         FROM employee_profile_audit WHERE user_id=? AND field_name IN (${placeholders}) ORDER BY changed_at`
+      ).bind(userId, ...auditFields).all();
+      for (const row of auditEvents) events.push({
+        id: `audit-${row.id}`,
+        type: row.field_name === "department" ? "transfer" : row.field_name === "salary" ? "salary" : "profile_change",
+        title: row.field_name === "department" ? "\u0110i\u1EC1u chuy\u1EC3n ph\xF2ng ban" : row.field_name === "salary" ? "\u0110i\u1EC1u ch\u1EC9nh l\u01B0\u01A1ng" : `C\u1EADp nh\u1EADt ${row.field_name}`,
+        description: `${row.old_value || "Ch\u01B0a c\xF3"} \u2192 ${row.new_value || "Ch\u01B0a c\xF3"}`,
+        actor_name: row.changed_by_name || "",
+        event_date: row.changed_at,
+        source: "audit"
+      });
+    }
+    const { results: documentEvents = [] } = await env.DB.prepare(
+      `SELECT id,category,title,uploaded_by_name,uploaded_at,deleted_at,deleted_by_name
+       FROM employee_documents WHERE user_id=? ORDER BY uploaded_at`
+    ).bind(userId).all();
+    for (const document of documentEvents) {
+      events.push({
+        id: `document-upload-${document.id}`,
+        type: "document",
+        title: `Th\xEAm ${EMPLOYEE_DOCUMENT_CATEGORIES[document.category] || document.title || "t\xE0i li\u1EC7u"}`,
+        actor_name: document.uploaded_by_name || "",
+        event_date: document.uploaded_at,
+        source: "document"
+      });
+      if (document.deleted_at) events.push({
+        id: `document-delete-${document.id}`,
+        type: "document_deleted",
+        title: `X\xF3a ${EMPLOYEE_DOCUMENT_CATEGORIES[document.category] || document.title || "t\xE0i li\u1EC7u"}`,
+        actor_name: document.deleted_by_name || "",
+        event_date: document.deleted_at,
+        source: "document"
+      });
+    }
+    events.sort((a, b) => String(b.event_date || "").localeCompare(String(a.event_date || "")));
+    return json({ timeline: events });
+  }
+  const employeeDocumentsMatch = path.match(/^\/api\/users\/(\d+)\/documents$/);
+  if (employeeDocumentsMatch) {
+    const userId = parseInt(employeeDocumentsMatch[1], 10);
+    const target = await env.DB.prepare("SELECT id,department FROM users WHERE id=?").bind(userId).first();
+    if (!target) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y nh\xE2n vi\xEAn" }, 404);
+    const hasHrScope = isAdmin || isHcns(me);
+    const canView = hasHrScope || Number(me.id) === userId;
+    if (request.method === "GET") {
+      if (!canView) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n xem t\xE0i li\u1EC7u" }, 403);
+      const { results: documents = [] } = await env.DB.prepare(
+        `SELECT id,user_id,category,title,original_filename,content_type,byte_size,expires_on,
+                uploaded_by,uploaded_by_name,uploaded_at
+         FROM employee_documents WHERE user_id=? AND deleted_at IS NULL ORDER BY uploaded_at DESC`
+      ).bind(userId).all();
+      return json({
+        documents: documents.map((document) => ({
+          ...document,
+          category_label: EMPLOYEE_DOCUMENT_CATEGORIES[document.category] || document.category,
+          preview_url: `/api/users/${userId}/documents/${document.id}?disposition=inline`,
+          download_url: `/api/users/${userId}/documents/${document.id}?disposition=attachment`
+        })),
+        categories: EMPLOYEE_DOCUMENT_CATEGORIES,
+        can_manage: hasHrScope
+      });
+    }
+    if (request.method !== "POST") return json({ error: "Ph\u01B0\u01A1ng th\u1EE9c kh\xF4ng \u0111\u01B0\u1EE3c h\u1ED7 tr\u1EE3" }, 405);
+    if (!hasHrScope) return json({ error: "Ch\u1EC9 HCNS ho\u1EB7c Admin \u0111\u01B0\u1EE3c th\xEAm t\xE0i li\u1EC7u" }, 403);
+    if (!env.HR_DOCUMENTS) return json({ error: "L\u01B0u tr\u1EEF h\u1ED3 s\u01A1 ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh" }, 503);
+    const retryAfter = rateLimit(request, "employee-document-upload", 30, 10 * 60 * 1e3);
+    if (retryAfter) return json({ error: "Th\u1EED l\u1EA1i sau \xEDt ph\xFAt", code: "RATE_LIMITED" }, 429, { "Retry-After": String(retryAfter) });
+    const form = await request.formData().catch(() => null);
+    const file = form?.get("file");
+    const category = String(form?.get("category") || "");
+    const title = String(form?.get("title") || "").trim().slice(0, 160);
+    const expiresOn = String(form?.get("expires_on") || "").trim() || null;
+    if (!Object.prototype.hasOwnProperty.call(EMPLOYEE_DOCUMENT_CATEGORIES, category)) return json({ error: "Danh m\u1EE5c t\xE0i li\u1EC7u kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    if (!file || typeof file.stream !== "function") return json({ error: "Vui l\xF2ng ch\u1ECDn t\u1EC7p \u0111\u1EC3 t\u1EA3i l\xEAn" }, 400);
+    const contentType = String(file.type || "").toLowerCase();
+    if (!EMPLOYEE_DOCUMENT_TYPES.includes(contentType)) return json({ error: "Ch\u1EC9 nh\u1EADn PDF, JPG, PNG ho\u1EB7c WebP" }, 400);
+    if (!Number.isFinite(file.size) || file.size < 1 || file.size > EMPLOYEE_DOCUMENT_MAX_BYTES) return json({ error: "T\u1EC7p v\u01B0\u1EE3t gi\u1EDBi h\u1EA1n 10 MB" }, 400);
+    if (expiresOn && !/^\d{4}-\d{2}-\d{2}$/.test(expiresOn)) return json({ error: "Ng\xE0y h\u1EBFt h\u1EA1n kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    const fileBuffer = await file.arrayBuffer();
+    if (!employeeDocumentContentMatches(contentType, fileBuffer)) return json({ error: "N\u1ED9i dung t\u1EC7p kh\xF4ng kh\u1EDBp v\u1EDBi \u0111\u1ECBnh d\u1EA1ng \u0111\xE3 khai b\xE1o" }, 400);
+    const documentId = crypto.randomUUID();
+    const storageKey = employeeDocumentKey(userId, documentId);
+    await env.HR_DOCUMENTS.put(storageKey, fileBuffer, {
+      httpMetadata: { contentType, cacheControl: "private, no-store" },
+      customMetadata: { uploaded_by: String(me.id), uploaded_at: (/* @__PURE__ */ new Date()).toISOString(), category }
+    });
+    try {
+      await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO employee_documents
+             (id,user_id,category,title,original_filename,content_type,byte_size,storage_key,expires_on,uploaded_by,uploaded_by_name)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+        ).bind(documentId, userId, category, title, safeDownloadName(file.name), contentType, file.size, storageKey, expiresOn, me.id, me.full_name || ""),
+        employeeAuditStatement(env, {
+          userId,
+          changeSetId: crypto.randomUUID(),
+          action: "document_upload",
+          group: "documents",
+          field: category,
+          oldValue: null,
+          newValue: file.name,
+          actor: me
+        })
+      ]);
+    } catch (error) {
+      await env.HR_DOCUMENTS.delete(storageKey).catch(() => {
+      });
+      throw error;
+    }
+    return json({ ok: true, id: documentId });
+  }
+  const employeeDocumentMatch = path.match(/^\/api\/users\/(\d+)\/documents\/([0-9a-fA-F-]{36})$/);
+  if (employeeDocumentMatch) {
+    const userId = parseInt(employeeDocumentMatch[1], 10);
+    const documentId = employeeDocumentMatch[2];
+    const document = await env.DB.prepare(
+      `SELECT d.*,u.department FROM employee_documents d JOIN users u ON u.id=d.user_id
+       WHERE d.id=? AND d.user_id=?`
+    ).bind(documentId, userId).first();
+    if (!document || document.deleted_at) return json({ error: "T\xE0i li\u1EC7u kh\xF4ng t\u1ED3n t\u1EA1i" }, 404);
+    const hasHrScope = isAdmin || isHcns(me);
+    const canView = hasHrScope || Number(me.id) === userId;
+    if (!canView) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n xem t\xE0i li\u1EC7u" }, 403);
+    if (!env.HR_DOCUMENTS) return json({ error: "L\u01B0u tr\u1EEF h\u1ED3 s\u01A1 ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh" }, 503);
+    if (request.method === "GET") {
+      const object = await env.HR_DOCUMENTS.get(document.storage_key);
+      if (!object) return json({ error: "T\u1EC7p kh\xF4ng t\u1ED3n t\u1EA1i tr\xEAn kho l\u01B0u tr\u1EEF" }, 404);
+      const disposition = url.searchParams.get("disposition") === "attachment" ? "attachment" : "inline";
+      const filename = safeDownloadName(document.original_filename);
+      return new Response(object.body, {
+        headers: {
+          "Content-Type": (document.content_type && document.content_type !== "application/octet-stream" ? document.content_type : object.httpMetadata?.contentType) || "application/octet-stream",
+          "Content-Disposition": `${disposition}; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+          "Cache-Control": "private, no-store, max-age=0",
+          "X-Content-Type-Options": "nosniff",
+          "Referrer-Policy": "no-referrer"
+        }
+      });
+    }
+    if (request.method !== "DELETE") return json({ error: "Ph\u01B0\u01A1ng th\u1EE9c kh\xF4ng \u0111\u01B0\u1EE3c h\u1ED7 tr\u1EE3" }, 405);
+    if (!hasHrScope) return json({ error: "Ch\u1EC9 HCNS ho\u1EB7c Admin \u0111\u01B0\u1EE3c x\xF3a t\xE0i li\u1EC7u" }, 403);
+    await env.HR_DOCUMENTS.delete(document.storage_key);
+    const changeSetId = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE employee_documents
+         SET deleted_at=datetime('now','localtime'),deleted_by=?,deleted_by_name=?
+         WHERE id=? AND deleted_at IS NULL`
+      ).bind(me.id, me.full_name || "", documentId),
+      employeeAuditStatement(env, {
+        userId,
+        changeSetId,
+        action: "document_delete",
+        group: "documents",
+        field: document.category,
+        oldValue: document.original_filename,
+        newValue: null,
+        actor: me
+      })
+    ]);
+    return json({ ok: true });
+  }
+  if (path === "/api/users" && request.method === "GET") {
+    if (!isManager) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const hasHrScope = isAdmin || isHcns(me);
+    const baseFields = hasHrScope ? "id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at,birth_date,gender,national_id,national_id_expiry_date,home_address,school_name,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,hire_date,contract_start_date,contract_end_date,contract_signed_date,probation_end_date,official_date,termination_date,allowance,insurance_salary,dependent_count,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url,updated_at,updated_by" : "id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,is_active,lifecycle_status,created_at,direct_manager_id,work_location,avatar_url";
+    const stmt = env.DB.prepare(`SELECT ${baseFields} FROM users${hasHrScope ? "" : " WHERE department=?"} ORDER BY id`);
+    const { results } = hasHrScope ? await stmt.all() : await stmt.bind(me.department).all();
+    return json({ users: results });
+  }
+  if (path === "/api/users" && request.method === "POST") {
+    if (!(isAdmin || isHcns(me))) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const b = await request.json();
+    const fullName = String(b.full_name || "").trim();
+    if (!fullName) {
+      return json({ error: "Vui l\xF2ng nh\u1EADp h\u1ECD v\xE0 t\xEAn nh\xE2n vi\xEAn" }, 400);
+    }
+    let code = String(b.employee_code || "").trim().toUpperCase();
+    const isTts = code.startsWith("TTS") || b.employee_type === "TTS";
+    const empType = isTts ? "TTS" : employeeTypeCode(b.employee_type || "NV");
+    const dept = normalizeDeptName(b.department || (isTts ? "Th\u1EF1c T\u1EADp Sinh" : "Ph\xF2ng Marketing"));
+    if (code) {
+      const existing = await env.DB.prepare("SELECT id FROM users WHERE UPPER(employee_code)=?").bind(code).first();
+      if (existing) return json({ error: `M\xE3 nh\xE2n vi\xEAn "${code}" \u0111\xE3 t\u1ED3n t\u1EA1i` }, 400);
+    } else {
+      code = await nextEmployeeCode(env, empType, dept);
+    }
+    const email = String(b.email || "").trim() || `${code.toLowerCase().replace(/[^a-z0-9]/g, "")}@pending.local`;
+    const pw = b.password || "Pass@123";
+    const hash = await hashPassword(pw);
+    const ini = b.avatar_initials || nameInitials(fullName);
+    const today = vnTodayStr();
+    const position = b.position || (isTts ? "TTS" : "Nh\xE2n vi\xEAn");
+    const contractType = b.contract_type || (isTts ? "Th\u1ECFa thu\u1EADn TTS" : "Th\u1EED vi\u1EC7c");
+    const hireDate = b.hire_date || today;
+    const directManagerId = b.direct_manager_id ? parseInt(b.direct_manager_id) : me.id || null;
+    try {
+      const r = await env.DB.prepare(
+        "INSERT INTO users (employee_code,employee_type,full_name,email,password_hash,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,birth_date,gender,national_id,home_address,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,contract_start_date,contract_end_date,contract_signed_date,official_date,termination_date,allowance,insurance_salary,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url,lifecycle_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+      ).bind(
+        code,
+        empType,
+        fullName,
+        email,
+        hash,
+        b.role || "employee",
+        dept,
+        position,
+        b.avatar_color || avatarColor(fullName),
+        ini,
+        b.phone || "",
+        b.salary || 0,
+        b.bank_account || "",
+        b.bank_name || "",
+        b.birth_date || null,
+        b.gender || "",
+        b.national_id || "",
+        b.home_address || "",
+        b.emergency_contact_name || "",
+        b.emergency_contact_phone || "",
+        directManagerId,
+        normalizeWorkLocation(b.work_location, dept),
+        contractType,
+        b.contract_start_date || null,
+        b.contract_end_date || null,
+        b.contract_signed_date || null,
+        b.official_date || null,
+        b.termination_date || null,
+        b.allowance || 0,
+        b.insurance_salary || 0,
+        b.bank_account_holder || "",
+        b.tax_code || "",
+        b.social_insurance_number || "",
+        b.insurance_hospital || "",
+        b.avatar_url || "",
+        b.national_id_document_url || "",
+        b.degree_document_url || "",
+        b.contract_document_url || "",
+        b.personnel_decision_url || "",
+        b.lifecycle_status || (isTts ? "Th\u1EF1c t\u1EADp" : "Ch\xEDnh th\u1EE9c")
+      ).run();
+      const newUserId = r.meta.last_row_id;
+      await broadcastAppEvent(env, "users", "user:created", {
+        id: newUserId,
+        employee_code: code,
+        employee_type: empType,
+        full_name: fullName,
+        email,
+        department: dept,
+        position,
+        role: b.role || "employee",
+        lifecycle_status: b.lifecycle_status || (isTts ? "Th\u1EF1c t\u1EADp" : "Ch\xEDnh th\u1EE9c")
+      }, { actorId: me.id });
+      return json({ ok: true, id: newUserId, employee_code: code });
+    } catch (e) {
+      if (e.message && e.message.includes("UNIQUE") && e.message.includes("email")) {
+        return json({ error: "Email \u0111\xE3 t\u1ED3n t\u1EA1i" }, 400);
+      }
+      if (e.message && e.message.includes("UNIQUE") && e.message.includes("employee_code")) {
+        return json({ error: "M\xE3 nh\xE2n vi\xEAn \u0111\xE3 t\u1ED3n t\u1EA1i" }, 400);
+      }
+      return json({ error: e.message || "L\u1ED7i t\u1EA1o nh\xE2n vi\xEAn" }, 500);
+    }
+  }
+  if (path === "/api/attendance-imports/preview" && request.method === "POST") {
+    if (!(isAdmin || isHcns(me))) return json({ error: "Ch\u1EC9 HCNS ho\u1EB7c Admin \u0111\u01B0\u1EE3c nh\u1EADp ch\u1EA5m c\xF4ng l\u1ECBch s\u1EED" }, 403);
+    const b = await request.json().catch(() => ({}));
+    const periodMonth = String(b.period_month || "");
+    const employees = Array.isArray(b.employees) ? b.employees : [];
+    if (!/^\d{4}-\d{2}$/.test(periodMonth) || !employees.length || employees.length > 500) return json({ error: "D\u1EEF li\u1EC7u l\xF4 nh\u1EADp kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    const preview = [];
+    for (const employee of employees) {
+      const code = String(employee.employee_code || "").trim();
+      const name = String(employee.full_name || "").trim();
+      const values = Object.entries(employee.days || employee.attendance || {});
+      const invalidDays = values.filter(([day, value]) => !/^\d{1,2}$/.test(day) || ![0, 0.5, 1].includes(Number(value)));
+      const user = code ? await env.DB.prepare("SELECT id,full_name,is_active FROM users WHERE employee_code=?").bind(code).first() : null;
+      preview.push({ employee_code: code, full_name: name, account: user ? "existing" : "create", attendance_entries: values.length, errors: [
+        ...!/^[A-Za-z0-9-]{2,50}$/.test(code) ? ["M\xE3 NV kh\xF4ng h\u1EE3p l\u1EC7"] : [],
+        ...!name ? ["Thi\u1EBFu h\u1ECD t\xEAn"] : [],
+        ...invalidDays.length ? [`C\xF3 ${invalidDays.length} \xF4 ng\xE0y c\xF4ng kh\xF4ng h\u1EE3p l\u1EC7`] : []
+      ] });
+    }
+    return json({ period_month: periodMonth, preview, valid: preview.every((row) => !row.errors.length) });
+  }
+  if (path === "/api/attendance-imports/commit" && request.method === "POST") {
+    if (!(isAdmin || isHcns(me))) return json({ error: "Ch\u1EC9 HCNS ho\u1EB7c Admin \u0111\u01B0\u1EE3c nh\u1EADp ch\u1EA5m c\xF4ng l\u1ECBch s\u1EED" }, 403);
+    const b = await request.json().catch(() => ({}));
+    const periodMonth = String(b.period_month || "");
+    const employees = Array.isArray(b.employees) ? b.employees : [];
+    if (!/^\d{4}-\d{2}$/.test(periodMonth) || !employees.length || employees.length > 500) return json({ error: "D\u1EEF li\u1EC7u l\xF4 nh\u1EADp kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    const sourceName = String(b.source_name || `B\u1EA3ng ch\u1EA5m c\xF4ng ${periodMonth}`).trim().slice(0, 160) || `B\u1EA3ng ch\u1EA5m c\xF4ng ${periodMonth}`;
+    const validation = [];
+    const codes = /* @__PURE__ */ new Set();
+    for (const employee of employees) {
+      const code = String(employee.employee_code || "").trim();
+      const name = String(employee.full_name || "").trim();
+      const values = Object.entries(employee.days || employee.attendance || {});
+      if (!/^[A-Za-z0-9-]{2,50}$/.test(code) || !name || codes.has(code) || values.some(([day, value]) => !/^\d{1,2}$/.test(day) || ![0, 0.5, 1].includes(Number(value)))) validation.push(code || name || "(tr\u1ED1ng)");
+      codes.add(code);
+    }
+    if (validation.length) return json({ error: "L\xF4 nh\u1EADp c\xF3 d\xF2ng nh\xE2n s\u1EF1 ho\u1EB7c ng\xE0y c\xF4ng kh\xF4ng h\u1EE3p l\u1EC7", invalid_rows: validation }, 400);
+    const batchResult = await d1WriteWithRetry(() => env.DB.prepare("INSERT INTO attendance_import_batches (source_name,period_month,status,created_by,created_by_name) VALUES (?,?,?,?,?)").bind(sourceName, periodMonth, "committing", me.id, me.full_name || "").run());
+    const batchId = batchResult.meta.last_row_id;
+    const report = { batch_id: batchId, created_accounts: [], imported_attendance: 0, conflicts: [], overtime_forms: [], overtime_exceptions: [] };
+    const userByCode = /* @__PURE__ */ new Map();
+    try {
+      for (const employee of employees) {
+        const code = String(employee.employee_code).trim();
+        let user = await d1WriteWithRetry(() => env.DB.prepare("SELECT id,employee_code FROM users WHERE employee_code=?").bind(code).first());
+        if (!user) {
+          const rawNote = String(employee.note || "");
+          const inactive = /nghi/i.test(rawNote.normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+          const type = String(employee.employee_type || employee.position || "").trim().toLowerCase() === "tts" ? "TTS" : "NV";
+          const r = await d1WriteWithRetry(async () => env.DB.prepare(
+            "INSERT INTO users (employee_code,employee_type,full_name,email,password_hash,role,department,position,avatar_color,avatar_initials,phone,is_active,lifecycle_status,work_location,hire_date,must_change_password,profile_pending) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+          ).bind(code, type, String(employee.full_name).trim(), `${code.toLowerCase()}@pending.local`, await hashPassword("Pass@123"), "employee", normalizeDeptName(employee.department || ""), String(employee.position || ""), "#4F46E5", nameInitials(employee.full_name), "", inactive ? 0 : 1, inactive ? "\u0110\xE3 ngh\u1EC9" : type === "TTS" ? "Th\u1EF1c t\u1EADp" : "Ch\u1EDD ti\u1EBFp nh\u1EADn", String(employee.work_location || ""), `${periodMonth}-01`, 1, 1).run());
+          user = { id: r.meta.last_row_id, employee_code: code };
+          report.created_accounts.push({ employee_code: code, user_id: user.id, login: code });
+        }
+        userByCode.set(code, user);
+        for (const [rawDay, rawValue] of Object.entries(employee.days || employee.attendance || {})) {
+          const day = String(rawDay).padStart(2, "0");
+          const workDate = `${periodMonth}-${day}`;
+          const sourceKey = `${code}:${workDate}`;
+          const existing = await d1WriteWithRetry(() => env.DB.prepare("SELECT id FROM attendance WHERE user_id=? AND date=? ORDER BY id LIMIT 1").bind(user.id, workDate).first());
+          if (existing) {
+            report.conflicts.push({ employee_code: code, work_date: workDate, reason: "\u0110\xE3 c\xF3 ch\u1EA5m c\xF4ng" });
+            await d1WriteWithRetry(() => env.DB.prepare("INSERT INTO attendance_import_rows (batch_id,source_key,employee_code,work_date,attendance_id,outcome,detail) VALUES (?,?,?,?,?,?,?)").bind(batchId, sourceKey, code, workDate, existing.id, "conflict", "\u0110\xE3 c\xF3 ch\u1EA5m c\xF4ng").run());
+            continue;
+          }
+          const unit = Number(rawValue);
+          const config = unit === 1 ? ["full", "08:30", "17:00", 8.5, "present"] : unit === 0.5 ? ["morning", "08:30", "12:00", 3.5, "present"] : ["full", null, null, 0, "absent"];
+          const inserted = await d1WriteWithRetry(() => env.DB.prepare("INSERT INTO attendance (user_id,date,checkin_time,checkout_time,status,work_hours,note,work_type,shift,registered,source_batch_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)").bind(user.id, workDate, config[1], config[2], config[4], config[3], `Nh\u1EADp l\u1ECBch s\u1EED t\u1EEB ${sourceName}`, "office", config[0], 1, batchId).run());
+          await d1WriteWithRetry(() => env.DB.prepare("INSERT INTO attendance_import_rows (batch_id,source_key,employee_code,work_date,attendance_id,outcome,detail) VALUES (?,?,?,?,?,?,?)").bind(batchId, sourceKey, code, workDate, inserted.meta.last_row_id, "imported", null).run());
+          report.imported_attendance += 1;
+        }
+      }
+      for (const rawForm of Array.isArray(b.overtime_forms) ? b.overtime_forms : []) {
+        const code = String(rawForm.employee_code || "").trim();
+        const user = userByCode.get(code);
+        const validated = normalizeOvertimeItems(rawForm.items, periodMonth, { allowFuture: true });
+        const reportedHours = rawForm.reported_hours === void 0 || rawForm.reported_hours === "" ? null : Number(rawForm.reported_hours);
+        const computedHours = validated.items ? validated.items.reduce((sum, item) => sum + item.requested_minutes, 0) / 60 : null;
+        if (!user || validated.error || reportedHours !== null && (!Number.isFinite(reportedHours) || Math.abs(reportedHours - computedHours) > 0.01)) {
+          report.overtime_exceptions.push({ employee_code: code, reason: validated.error || "T\u1ED5ng gi\u1EDD khai b\xE1o kh\xF4ng kh\u1EDBp m\u1ED1c th\u1EDDi gian", reported_hours: reportedHours, computed_hours: computedHours });
+          continue;
+        }
+        const duplicate = await env.DB.prepare("SELECT id FROM overtime_forms WHERE user_id=? AND period_month=? AND source='attendance_import' LIMIT 1").bind(user.id, periodMonth).first();
+        if (duplicate) {
+          report.overtime_exceptions.push({ employee_code: code, reason: "\u0110\xE3 c\xF3 form OT l\u1ECBch s\u1EED cho th\xE1ng n\xE0y" });
+          continue;
+        }
+        const form = await env.DB.prepare("INSERT INTO overtime_forms (user_id,period_month,status,source,source_batch_id,submitted_at) VALUES (?,?,'pending','attendance_import',?,datetime('now','localtime'))").bind(user.id, periodMonth, batchId).run();
+        const items = await applyCalendarOvertimeCategories(env, validated.items);
+        await env.DB.batch(items.map((item) => env.DB.prepare("INSERT INTO overtime_form_items (form_id,start_at,end_at,requested_minutes,reason,time_category) VALUES (?,?,?,?,?,?)").bind(form.meta.last_row_id, item.start_at, item.end_at, item.requested_minutes, item.reason, item.time_category)));
+        report.overtime_forms.push({ employee_code: code, form_id: form.meta.last_row_id });
+      }
+      await d1WriteWithRetry(() => env.DB.prepare("UPDATE attendance_import_batches SET status='committed',committed_at=datetime('now','localtime') WHERE id=?").bind(batchId).run());
+    } catch (error) {
+      await env.DB.prepare("UPDATE attendance_import_batches SET status='failed' WHERE id=?").bind(batchId).run().catch(() => {
+      });
+      throw error;
+    }
+    return json({ ok: true, ...report });
+  }
+  const userDocumentMatch = path.match(/^\/api\/users\/(\d+)\/documents\/(avatar|national_id|degree|contract|decision)$/);
+  if (userDocumentMatch) {
+    const uid = parseInt(userDocumentMatch[1], 10);
+    const kind = userDocumentMatch[2];
+    const config = USER_DOCUMENTS[kind];
+    const hasHrScope = isAdmin || isHcns(me);
+    const target = await env.DB.prepare("SELECT * FROM users WHERE id=?").bind(uid).first();
+    if (!target) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y nh\xE2n vi\xEAn" }, 404);
+    if (!env.HR_DOCUMENTS) return json({ error: "L\u01B0u tr\u1EEF h\u1ED3 s\u01A1 ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh" }, 503);
+    if (request.method === "GET") {
+      const canReadAvatar = kind === "avatar";
+      const canReadSensitive = hasHrScope || me.id === uid;
+      if (kind === "avatar" ? !canReadAvatar : !canReadSensitive && me.id !== uid) {
+        return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n xem h\u1ED3 s\u01A1 n\xE0y" }, 403);
+      }
+      const object = await env.HR_DOCUMENTS.get(userDocumentKey(uid, kind));
+      if (!object) return json({ error: "T\u1EC7p kh\xF4ng t\u1ED3n t\u1EA1i" }, 404);
+      const disposition = kind === "avatar" ? "inline" : "attachment";
+      return new Response(object.body, {
+        headers: {
+          "Content-Type": object.httpMetadata?.contentType || "application/octet-stream",
+          "Content-Disposition": `${disposition}; filename="${kind}"`,
+          "Cache-Control": "private, no-store, max-age=0",
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "DENY",
+          "Referrer-Policy": "no-referrer"
+        }
+      });
+    }
+    const canUpload = hasHrScope || kind === "avatar" && me.id === uid;
+    if (!canUpload) return json({ error: "Ch\u1EC9 HCNS ho\u1EB7c qu\u1EA3n tr\u1ECB vi\xEAn \u0111\u01B0\u1EE3c t\u1EA3i h\u1ED3 s\u01A1 l\xEAn" }, 403);
+    if (request.method === "DELETE") {
+      if (!hasHrScope) return json({ error: "Ch\u1EC9 HCNS ho\u1EB7c qu\u1EA3n tr\u1ECB vi\xEAn \u0111\u01B0\u1EE3c x\xF3a avatar" }, 403);
+      await env.HR_DOCUMENTS.delete(userDocumentKey(uid, kind));
+      const changeSetId2 = crypto.randomUUID();
+      const statements2 = [
+        env.DB.prepare(`UPDATE users SET ${config.column}='',updated_at=datetime('now','localtime'),updated_by=? WHERE id=?`).bind(me.id, uid),
+        employeeAuditStatement(env, {
+          userId: uid,
+          changeSetId: changeSetId2,
+          action: "legacy_document_delete",
+          group: "documents",
+          field: kind,
+          oldValue: config.label,
+          newValue: null,
+          actor: me
+        })
+      ];
+      if (kind !== "avatar") {
+        statements2.push(
+          env.DB.prepare(
+            `UPDATE employee_documents
+             SET deleted_at=datetime('now','localtime'),deleted_by=?,deleted_by_name=?
+             WHERE storage_key=? AND deleted_at IS NULL`
+          ).bind(me.id, me.full_name || "", userDocumentKey(uid, kind))
+        );
+      }
+      await env.DB.batch(statements2);
+      return json({ ok: true });
+    }
+    if (request.method !== "POST") return json({ error: "Ph\u01B0\u01A1ng th\u1EE9c kh\xF4ng \u0111\u01B0\u1EE3c h\u1ED7 tr\u1EE3" }, 405);
+    const retryAfter = rateLimit(request, "employee-document-upload", 20, 10 * 60 * 1e3);
+    if (retryAfter) return json({ error: "Th\u1EED l\u1EA1i sau \xEDt ph\xFAt", code: "RATE_LIMITED" }, 429, { "Retry-After": String(retryAfter) });
+    const form = await request.formData().catch(() => null);
+    const file = form?.get("file");
+    if (!file || typeof file.stream !== "function") return json({ error: "Vui l\xF2ng ch\u1ECDn t\u1EC7p \u0111\u1EC3 t\u1EA3i l\xEAn" }, 400);
+    const contentType = String(file.type || "").toLowerCase();
+    if (!config.types.includes(contentType)) return json({ error: `${config.label} ch\u1EC9 nh\u1EADn PDF, JPG, PNG ho\u1EB7c WebP` }, 400);
+    if (!Number.isFinite(file.size) || file.size < 1 || file.size > config.maxBytes) {
+      return json({ error: `${config.label} v\u01B0\u1EE3t gi\u1EDBi h\u1EA1n ${config.maxBytes / 1024 / 1024} MB` }, 400);
+    }
+    const fileBuffer = await file.arrayBuffer();
+    if (!employeeDocumentContentMatches(contentType, fileBuffer)) return json({ error: "N\u1ED9i dung t\u1EC7p kh\xF4ng kh\u1EDBp v\u1EDBi \u0111\u1ECBnh d\u1EA1ng \u0111\xE3 khai b\xE1o" }, 400);
+    await env.HR_DOCUMENTS.put(userDocumentKey(uid, kind), fileBuffer, {
+      httpMetadata: { contentType, cacheControl: "private, no-store" },
+      customMetadata: { uploaded_by: String(me.id), uploaded_at: (/* @__PURE__ */ new Date()).toISOString() }
+    });
+    const url2 = userDocumentRoute(uid, kind);
+    const changeSetId = crypto.randomUUID();
+    const statements = [
+      env.DB.prepare(`UPDATE users SET ${config.column}=?,updated_at=datetime('now','localtime'),updated_by=? WHERE id=?`).bind(url2, me.id, uid),
+      employeeAuditStatement(env, {
+        userId: uid,
+        changeSetId,
+        action: "legacy_document_upload",
+        group: "documents",
+        field: kind,
+        oldValue: target[config.column] || null,
+        newValue: String(file.name || config.label),
+        actor: me
+      })
+    ];
+    if (kind !== "avatar") {
+      statements.push(
+        env.DB.prepare(
+          `INSERT INTO employee_documents
+             (id,user_id,category,title,original_filename,content_type,byte_size,storage_key,uploaded_by,uploaded_by_name)
+           VALUES (?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(storage_key) DO UPDATE SET
+             category=excluded.category,title=excluded.title,original_filename=excluded.original_filename,
+             content_type=excluded.content_type,byte_size=excluded.byte_size,uploaded_by=excluded.uploaded_by,
+             uploaded_by_name=excluded.uploaded_by_name,uploaded_at=datetime('now','localtime'),
+             deleted_at=NULL,deleted_by=NULL,deleted_by_name=NULL`
+        ).bind(
+          crypto.randomUUID(),
+          uid,
+          LEGACY_DOCUMENT_CATEGORIES[kind],
+          config.label,
+          String(file.name || kind),
+          contentType,
+          file.size,
+          userDocumentKey(uid, kind),
+          me.id,
+          me.full_name || ""
+        )
+      );
+    }
+    await env.DB.batch(statements);
+    return json({ ok: true, url: url2, label: config.label });
+  }
+  const userMatch = path.match(/^\/api\/users\/(\d+)$/);
+  if (userMatch) {
+    const uid = parseInt(userMatch[1]);
+    if (request.method === "GET") {
+      const target = await env.DB.prepare("SELECT id,department FROM users WHERE id=?").bind(uid).first();
+      if (!target) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y" }, 404);
+      if (!isManager && me.id !== uid) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      if (isManager && !isAdmin && !isHcns(me) && me.id !== uid && target.department !== me.department) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      const row = await env.DB.prepare(
+        "SELECT id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at,birth_date,gender,national_id,national_id_expiry_date,home_address,school_name,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,hire_date,contract_start_date,contract_end_date,contract_signed_date,probation_end_date,official_date,termination_date,allowance,insurance_salary,dependent_count,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url,updated_at,updated_by FROM users WHERE id=?"
+      ).bind(uid).first();
+      if (!row) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y" }, 404);
+      return json({ user: row });
+    }
+    if (request.method === "PUT") {
+      const target = await env.DB.prepare("SELECT * FROM users WHERE id=?").bind(uid).first();
+      if (!target) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y" }, 404);
+      const input = await request.json().catch(() => ({}));
+      const hasHrScope = isAdmin || isHcns(me);
+      const managesDepartment = isManager && !hasHrScope && target.department === me.department;
+      if (!hasHrScope && me.id !== uid && !managesDepartment) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      const protectedFields = ["role", "employee_type", "salary", "bank_account", "bank_name", "is_active", "lifecycle_status", "allowance", "insurance_salary", "dependent_count", "bank_account_holder", "tax_code", "social_insurance_number", "insurance_hospital", "contract_type", "hire_date", "contract_start_date", "contract_end_date", "contract_signed_date", "probation_end_date", "official_date", "termination_date", "reset_password", "password_hash"];
+      if (!hasHrScope && protectedFields.some((k) => Object.prototype.hasOwnProperty.call(input, k))) return json({ error: "Kh\xF4ng \u0111\u01B0\u1EE3c thay \u0111\u1ED5i tr\u01B0\u1EDDng b\u1EA3o m\u1EADt ho\u1EB7c l\u01B0\u01A1ng" }, 403);
+      const b = { ...target, ...input };
+      const legacyTrackedFields = [
+        "full_name",
+        "email",
+        "department",
+        "position",
+        "phone",
+        "birth_date",
+        "gender",
+        "national_id",
+        "home_address",
+        "emergency_contact_name",
+        "emergency_contact_phone",
+        "direct_manager_id",
+        "work_location",
+        "contract_type",
+        "contract_start_date",
+        "contract_end_date",
+        "contract_signed_date",
+        "official_date",
+        "termination_date",
+        "salary",
+        "allowance",
+        "insurance_salary",
+        "bank_account",
+        "bank_name",
+        "bank_account_holder",
+        "tax_code",
+        "social_insurance_number",
+        "insurance_hospital"
+      ];
+      const legacyChanges = legacyTrackedFields.filter((field) => Object.prototype.hasOwnProperty.call(input, field)).filter((field) => String(target[field] ?? "") !== String(b[field] ?? "")).map((field) => [field, b[field]]);
+      const validationError = validateEmployeeProfile(b, legacyChanges.map(([field]) => field));
+      if (validationError) return json({ error: validationError }, 400);
+      if (legacyChanges.some(([field]) => field === "email")) {
+        const duplicate = await env.DB.prepare("SELECT id FROM users WHERE lower(email)=lower(?) AND id<>? LIMIT 1").bind(b.email, uid).first();
+        if (duplicate) return json({ error: "Email \u0111\xE3 t\u1ED3n t\u1EA1i" }, 409);
+      }
+      if (legacyChanges.some(([field]) => field === "direct_manager_id") && b.direct_manager_id) {
+        const manager = await env.DB.prepare("SELECT id FROM users WHERE id=? AND is_active=1").bind(b.direct_manager_id).first();
+        if (!manager) return json({ error: "Qu\u1EA3n l\xFD tr\u1EF1c ti\u1EBFp kh\xF4ng t\u1ED3n t\u1EA1i ho\u1EB7c \u0111\xE3 kh\xF3a" }, 400);
+      }
+      const ini = b.avatar_initials || nameInitials(b.full_name || "");
+      let extraSql = "";
+      let extraBinds = [];
+      const passwordWasReset = b.reset_password === true && isAdmin;
+      if (passwordWasReset) {
+        const newHash = await hashPassword("Pass@123");
+        extraSql = ", password_hash=?, must_change_password=1";
+        extraBinds = [newHash];
+      }
+      const binds = [b.full_name, b.email, b.role || "employee", normalizeDeptName(b.department || ""), b.position || "", b.avatar_color || "#4F46E5", ini, b.phone || "", b.salary || 0, b.bank_account || "", b.bank_name || "", b.is_active ?? 1, b.birth_date || null, b.gender || "", b.national_id || "", b.home_address || "", b.emergency_contact_name || "", b.emergency_contact_phone || "", b.direct_manager_id || null, b.work_location || "", b.contract_type || "", b.contract_start_date || null, b.contract_end_date || null, b.contract_signed_date || null, b.official_date || null, b.termination_date || null, b.allowance || 0, b.insurance_salary || 0, b.bank_account_holder || "", b.tax_code || "", b.social_insurance_number || "", b.insurance_hospital || "", b.avatar_url || "", b.national_id_document_url || "", b.degree_document_url || "", b.contract_document_url || "", b.personnel_decision_url || "", ...extraBinds, me.id, uid];
+      const changeSetId = crypto.randomUUID();
+      await env.DB.batch([
+        env.DB.prepare(
+          `UPDATE users SET full_name=?,email=?,role=?,department=?,position=?,avatar_color=?,avatar_initials=?,phone=?,salary=?,bank_account=?,bank_name=?,is_active=?,birth_date=?,gender=?,national_id=?,home_address=?,emergency_contact_name=?,emergency_contact_phone=?,direct_manager_id=?,work_location=?,contract_type=?,contract_start_date=?,contract_end_date=?,contract_signed_date=?,official_date=?,termination_date=?,allowance=?,insurance_salary=?,bank_account_holder=?,tax_code=?,social_insurance_number=?,insurance_hospital=?,avatar_url=?,national_id_document_url=?,degree_document_url=?,contract_document_url=?,personnel_decision_url=?${extraSql},updated_at=datetime('now','localtime'),updated_by=? WHERE id=?`
+        ).bind(...binds),
+        ...legacyChanges.map(([field, value]) => employeeAuditStatement(env, {
+          userId: uid,
+          changeSetId,
+          action: "legacy_update",
+          group: EMPLOYEE_PROFILE_FIELD_GROUP[field] || "profile",
+          field,
+          oldValue: target[field],
+          newValue: value,
+          actor: me
+        })),
+        ...passwordWasReset ? [
+          env.DB.prepare("UPDATE sessions SET revoked=1 WHERE user_id=? AND revoked=0").bind(uid),
+          employeeAuditStatement(env, {
+            userId: uid,
+            changeSetId,
+            action: "password_reset",
+            group: "security",
+            field: "password_hash",
+            oldValue: null,
+            newValue: "Administrator reset password",
+            actor: me
+          })
+        ] : []
+      ]);
+      await broadcastAppEvent(env, "users", "user:updated", {
+        id: uid,
+        full_name: b.full_name,
+        department: b.department,
+        position: b.position,
+        role: b.role,
+        is_active: b.is_active
+      }, { actorId: me.id });
+      return json({ ok: true, change_set_id: changeSetId });
+    }
+    if (request.method === "DELETE") {
+      if (!isAdmin) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      if (uid === me.id) return json({ error: "Kh\xF4ng th\u1EC3 x\xF3a t\xE0i kho\u1EA3n \u0111ang d\xF9ng" }, 400);
+      return json({ error: "Kh\xF4ng h\u1ED7 tr\u1EE3 x\xF3a nh\xE2n vi\xEAn. H\xE3y chuy\u1EC3n tr\u1EA1ng th\xE1i sang \u0110\xE3 ngh\u1EC9 ho\u1EB7c kh\xF3a t\xE0i kho\u1EA3n.", code: "HARD_DELETE_DISABLED" }, 409);
+    }
+  }
+  if (path === "/api/users/basic" && request.method === "GET") {
+    const { results } = await env.DB.prepare(
+      "SELECT id, full_name, department, position, lifecycle_status, is_active FROM users WHERE is_active=1 ORDER BY full_name"
+    ).all();
+    return json({ users: results });
+  }
+  const lifecycleMatch = path.match(/^\/api\/users\/(\d+)\/lifecycle$/);
+  if (lifecycleMatch && request.method === "PUT") {
+    if (!isHrOrBod(me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS lifecycle_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      from_status TEXT,
+      to_status TEXT NOT NULL,
+      changed_by INTEGER,
+      changed_by_name TEXT,
+      reason TEXT,
+      changed_at TEXT DEFAULT (datetime('now','localtime'))
+    )`).run();
+    const luid = parseInt(lifecycleMatch[1]);
+    const b = await request.json().catch(() => ({}));
+    const newStatus = String(b.status || "");
+    const reason = String(b.reason || "").trim();
+    if (!LIFECYCLE_STATUSES.includes(newStatus)) return json({ error: "Tr\u1EA1ng th\xE1i kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    if (!reason) return json({ error: "Vui l\xF2ng nh\u1EADp l\xFD do" }, 400);
+    const target = await env.DB.prepare("SELECT id, lifecycle_status FROM users WHERE id=?").bind(luid).first();
+    if (!target) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y nh\xE2n vi\xEAn" }, 404);
+    const fromStatus = target.lifecycle_status || "Ch\xEDnh th\u1EE9c";
+    const changeSetId = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare("UPDATE users SET lifecycle_status=? WHERE id=?").bind(newStatus, luid),
+      env.DB.prepare("INSERT INTO lifecycle_history (user_id,from_status,to_status,changed_by,changed_by_name,reason) VALUES (?,?,?,?,?,?)").bind(luid, fromStatus, newStatus, me.id, me.full_name, reason),
+      employeeAuditStatement(env, {
+        userId: luid,
+        changeSetId,
+        action: "lifecycle",
+        group: "employment",
+        field: "lifecycle_status",
+        oldValue: fromStatus,
+        newValue: newStatus,
+        actor: me
+      })
+    ]);
+    await broadcastAppEvent(env, "users", "user:lifecycle_changed", {
+      id: luid,
+      from_status: fromStatus,
+      to_status: newStatus,
+      reason
+    }, { actorId: me.id });
+    return json({ ok: true });
+  }
+  if (path === "/api/assets" && request.method === "GET") {
+    let rowsResult;
+    if (isHrOrBod(me)) {
+      rowsResult = await env.DB.prepare(
+        `SELECT a.*, u.full_name as owner_name, u.employee_code as owner_code,
+                u.department as owner_department, u.employee_type as owner_employee_type,
+                u.lifecycle_status as owner_lifecycle_status
+         FROM asset_handovers a LEFT JOIN users u ON a.user_id=u.id ORDER BY a.updated_at DESC`
+      ).all();
+    } else {
+      rowsResult = await env.DB.prepare(
+        `SELECT a.*, u.full_name as owner_name, u.employee_code as owner_code,
+                u.department as owner_department, u.employee_type as owner_employee_type,
+                u.lifecycle_status as owner_lifecycle_status
+         FROM asset_handovers a LEFT JOIN users u ON a.user_id=u.id
+         WHERE a.user_id=? OR a.mentor_id=?
+         ORDER BY a.updated_at DESC`
+      ).bind(me.id, me.id).all();
+    }
+    const assets = rowsResult.results.map((r) => {
+      const { credential_enc, ...rest } = r;
+      return { ...rest, has_credential: !!credential_enc };
+    });
+    return json({ assets });
+  }
+  if (path === "/api/assets" && request.method === "POST") {
+    const b = await request.json().catch(() => ({}));
+    const assetName = String(b.asset_name || "").trim();
+    if (!assetName) return json({ error: "T\xEAn t\xE0i s\u1EA3n l\xE0 b\u1EAFt bu\u1ED9c" }, 400);
+    let ownerUserId = me.id;
+    if (b.user_id && parseInt(b.user_id) !== me.id) {
+      if (isHrOrBod(me)) {
+        ownerUserId = parseInt(b.user_id);
+      } else if (me.role === "manager") {
+        const target = await env.DB.prepare("SELECT department FROM users WHERE id=?").bind(parseInt(b.user_id)).first();
+        if (!target || target.department !== me.department) return json({ error: "Ch\u1EC9 c\xF3 th\u1EC3 khai b\xE1o h\u1ED9 nh\xE2n s\u1EF1 thu\u1ED9c ph\xF2ng ban c\u1EE7a b\u1EA1n" }, 403);
+        ownerUserId = parseInt(b.user_id);
+      } else {
+        return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n khai b\xE1o h\u1ED9 nh\xE2n s\u1EF1 kh\xE1c" }, 403);
+      }
+    }
+    const owner = await env.DB.prepare("SELECT employee_type FROM users WHERE id=?").bind(ownerUserId).first();
+    const mentorId = b.mentor_id ? parseInt(b.mentor_id) : null;
+    if (owner?.employee_type === "TTS" && !mentorId) return json({ error: "TTS ph\u1EA3i ch\u1ECDn Mentor \u0111\u1EC3 x\xE1c nh\u1EADn b\xE0n giao" }, 400);
+    if (mentorId === ownerUserId) return json({ error: "Mentor kh\xF4ng th\u1EC3 l\xE0 ng\u01B0\u1EDDi b\xE0n giao" }, 400);
+    const credEnc = b.credential ? await encryptCred(env, String(b.credential)) : null;
+    if (owner?.employee_type === "TTS" && !credEnc) return json({ error: "TTS ph\u1EA3i nh\u1EADp email/t\xE0i kho\u1EA3n v\xE0 m\u1EADt kh\u1EA9u b\xE0n giao" }, 400);
+    const status = owner?.employee_type === "TTS" && !isHrOrBod(me) ? "pending_review" : ["active", "pending_review", "needs_update"].includes(b.status) ? b.status : "active";
+    const expectedDate = b.expected_handover_date ? String(b.expected_handover_date) : null;
+    const r = await env.DB.prepare(
+      `INSERT INTO asset_handovers (user_id,asset_name,asset_type,platform,link,credential_enc,responsible_name,mentor_id,mentor_name,status,note,expected_handover_date)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).bind(ownerUserId, assetName, b.asset_type || "", b.platform || "", b.link || "", credEnc, b.responsible_name || me.full_name, mentorId, b.mentor_name || "", status, b.note || "", expectedDate).run();
+    await recordAssetHistory(env, r.meta.last_row_id, "created", me, "T\u1EA1o b\xE0n giao d\u1EF1 \xE1n/t\xE0i kho\u1EA3n");
+    if (credEnc) await recordAssetHistory(env, r.meta.last_row_id, "credential_set", me, "\u0110\xE3 l\u01B0u th\xF4ng tin \u0111\u0103ng nh\u1EADp \u0111\u01B0\u1EE3c m\xE3 h\xF3a");
+    return json({ ok: true, id: r.meta.last_row_id });
+  }
+  const revealMatch = path.match(/^\/api\/assets\/(\d+)\/reveal-credential$/);
+  if (revealMatch && request.method === "POST") {
+    const aid = parseInt(revealMatch[1]);
+    const asset = await env.DB.prepare(
+      `SELECT a.*, u.department as owner_department FROM asset_handovers a LEFT JOIN users u ON a.user_id=u.id WHERE a.id=?`
+    ).bind(aid).first();
+    if (!asset) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y" }, 404);
+    const allowed = asset.user_id === me.id || asset.mentor_id === me.id || isHrOrBod(me);
+    if (!allowed) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    if (!asset.credential_enc) return json({ credential: "" });
+    const plain = await decryptCred(env, asset.credential_enc);
+    await env.DB.prepare("INSERT INTO asset_credential_log (asset_id,viewed_by,viewed_by_name) VALUES (?,?,?)").bind(aid, me.id, me.full_name).run();
+    await recordAssetHistory(env, aid, "credential_viewed", me, "\u0110\xE3 xem th\xF4ng tin \u0111\u0103ng nh\u1EADp");
+    return json({ credential: plain });
+  }
+  const assetHistoryMatch = path.match(/^\/api\/assets\/(\d+)\/history$/);
+  if (assetHistoryMatch && request.method === "GET") {
+    const aid = parseInt(assetHistoryMatch[1]);
+    const asset = await env.DB.prepare(
+      `SELECT a.*, u.department as owner_department FROM asset_handovers a LEFT JOIN users u ON a.user_id=u.id WHERE a.id=?`
+    ).bind(aid).first();
+    if (!asset) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y" }, 404);
+    if (!(asset.user_id === me.id || asset.mentor_id === me.id || isHrOrBod(me))) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const history = await env.DB.prepare(
+      "SELECT id,action,actor_id,actor_name,detail,created_at FROM asset_handover_history WHERE asset_id=? ORDER BY id DESC"
+    ).bind(aid).all();
+    return json({ history: history.results || [] });
+  }
+  const assetMatch = path.match(/^\/api\/assets\/(\d+)$/);
+  if (assetMatch) {
+    const aid = parseInt(assetMatch[1]);
+    const asset = await env.DB.prepare(
+      `SELECT a.*, u.department as owner_department FROM asset_handovers a LEFT JOIN users u ON a.user_id=u.id WHERE a.id=?`
+    ).bind(aid).first();
+    if (!asset) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y" }, 404);
+    const isOwner = asset.user_id === me.id;
+    const isMentor = asset.mentor_id === me.id;
+    const isHr = isHrOrBod(me);
+    const isDeptMgr = false;
+    if (request.method === "PUT") {
+      if (!isOwner && !isMentor && !isHr) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      const b = await request.json().catch(() => ({}));
+      if (isMentor && !isOwner && !isHr) {
+        if (!["confirmed", "needs_update"].includes(b.status)) return json({ error: "Mentor ch\u1EC9 c\xF3 th\u1EC3 x\xE1c nh\u1EADn ho\u1EB7c y\xEAu c\u1EA7u b\u1ED5 sung" }, 403);
+        if (b.status === "needs_update" && !String(b.note || "").trim()) return json({ error: "Vui l\xF2ng n\xEAu n\u1ED9i dung c\u1EA7n b\u1ED5 sung" }, 400);
+        await env.DB.prepare(
+          `UPDATE asset_handovers SET status=?, confirmed_by=?, confirmed_at=?, note=COALESCE(?,note), updated_at=? WHERE id=?`
+        ).bind(b.status, b.status === "confirmed" ? me.id : asset.confirmed_by, b.status === "confirmed" ? nowStr() : asset.confirmed_at, b.note ?? null, nowStr(), aid).run();
+        await recordAssetHistory(env, aid, b.status === "confirmed" ? "mentor_confirmed" : "mentor_requested_update", me, b.note || "");
+        return json({ ok: true });
+      }
+      if (isOwner && !isHr && ["confirmed", "handed_over"].includes(asset.status)) {
+        return json({ error: "B\xE0n giao \u0111\xE3 \u0111\u01B0\u1EE3c x\xE1c nh\u1EADn, ch\u1EC9 HCNS/Ban gi\xE1m \u0111\u1ED1c m\u1EDBi c\xF3 th\u1EC3 ch\u1EC9nh s\u1EEDa" }, 403);
+      }
+      const allowedStatuses = isHr ? ["active", "pending_review", "needs_update", "confirmed", "handed_over"] : ["pending_review", "needs_update"];
+      const newStatus = allowedStatuses.includes(b.status) ? b.status : asset.status;
+      const credEnc = b.credential !== void 0 ? b.credential ? await encryptCred(env, String(b.credential)) : null : asset.credential_enc;
+      const isNewlyConfirmed = newStatus === "confirmed" && asset.status !== "confirmed";
+      const expectedDate = b.expected_handover_date !== void 0 ? b.expected_handover_date || null : asset.expected_handover_date;
+      await env.DB.prepare(
+        `UPDATE asset_handovers SET asset_name=?,asset_type=?,platform=?,link=?,credential_enc=?,responsible_name=?,mentor_id=?,mentor_name=?,status=?,note=?,
+          confirmed_by=?, confirmed_at=?, expected_handover_date=?, updated_at=? WHERE id=?`
+      ).bind(
+        b.asset_name ?? asset.asset_name,
+        b.asset_type ?? asset.asset_type,
+        b.platform ?? asset.platform,
+        b.link ?? asset.link,
+        credEnc,
+        b.responsible_name ?? asset.responsible_name,
+        b.mentor_id !== void 0 ? b.mentor_id || null : asset.mentor_id,
+        b.mentor_name ?? asset.mentor_name,
+        newStatus,
+        b.note ?? asset.note,
+        isNewlyConfirmed ? me.id : asset.confirmed_by,
+        isNewlyConfirmed ? nowStr() : asset.confirmed_at,
+        expectedDate,
+        nowStr(),
+        aid
+      ).run();
+      await recordAssetHistory(env, aid, "updated", me, newStatus === "pending_review" && asset.status === "needs_update" ? "\u0110\xE3 c\u1EADp nh\u1EADt v\xE0 g\u1EEDi l\u1EA1i Mentor x\xE1c nh\u1EADn" : "\u0110\xE3 c\u1EADp nh\u1EADt th\xF4ng tin b\xE0n giao");
+      if (b.credential !== void 0) await recordAssetHistory(env, aid, "credential_changed", me, "\u0110\xE3 thay \u0111\u1ED5i th\xF4ng tin \u0111\u0103ng nh\u1EADp \u0111\u01B0\u1EE3c m\xE3 h\xF3a");
+      return json({ ok: true });
+    }
+    if (request.method === "DELETE") {
+      if (!isHr) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      await env.DB.batch([
+        env.DB.prepare("DELETE FROM asset_handovers WHERE id=?").bind(aid),
+        env.DB.prepare("DELETE FROM asset_credential_log WHERE asset_id=?").bind(aid)
+      ]);
+      return json({ ok: true });
+    }
+  }
+  if (path === "/api/attendance" && request.method === "GET") {
+    await runAutoCheckout(env).catch(() => {
+    });
+    const userId = url.searchParams.get("userId");
+    const month = url.searchParams.get("month");
+    const year = url.searchParams.get("year");
+    const date = url.searchParams.get("date");
+    let q = `SELECT a.*, u.full_name, u.employee_code, u.department,
+      (SELECT status FROM overtime_requests o WHERE o.attendance_id=a.id) AS overtime_status,
+      (SELECT approved_minutes FROM overtime_requests o WHERE o.attendance_id=a.id) AS approved_overtime_minutes,
+      (SELECT review_note FROM overtime_requests o WHERE o.attendance_id=a.id) AS overtime_review_note
+      FROM attendance a JOIN users u ON a.user_id=u.id WHERE 1=1`;
+    const binds = [];
+    if (!isAttendanceAdmin) {
+      q += " AND a.user_id=?";
+      binds.push(me.id);
+    } else if (me.role === "manager" && !isAdmin && !isAttendanceHcns) {
+      q += " AND u.department=?";
+      binds.push(me.department);
+    } else if (userId) {
+      q += " AND a.user_id=?";
+      binds.push(parseInt(userId));
+    }
+    if (date) {
+      q += " AND a.date=?";
+      binds.push(date);
+    } else if (month && year) {
+      q += " AND strftime('%m',a.date)=? AND strftime('%Y',a.date)=?";
+      binds.push(String(month).padStart(2, "0"), String(year));
+    } else if (month) {
+      q += " AND a.date LIKE ?";
+      binds.push("%-" + String(month).padStart(2, "0") + "-%");
+    }
+    q += " ORDER BY a.date DESC";
+    const stmt = env.DB.prepare(q);
+    const { results } = await (binds.length ? stmt.bind(...binds) : stmt).all();
+    return json({ attendance: results });
+  }
+  if (path === "/api/attendance/employees" && request.method === "GET") {
+    if (!isAttendanceAdmin) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const date = String(url.searchParams.get("date") || "");
+    const month = parseInt(url.searchParams.get("month"));
+    const year = parseInt(url.searchParams.get("year"));
+    let from = String(url.searchParams.get("from") || "");
+    let to = String(url.searchParams.get("to") || "");
+    if (date) {
+      from = date;
+      to = date;
+    } else if (!from || !to) {
+      const now = /* @__PURE__ */ new Date();
+      const resolvedYear = year || now.getFullYear();
+      const resolvedMonth = month || now.getMonth() + 1;
+      if (resolvedMonth < 1 || resolvedMonth > 12) return json({ error: "Th\xE1ng kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+      from = attIsoDate(resolvedYear, resolvedMonth, 1);
+      to = attIsoDate(resolvedYear, resolvedMonth, new Date(resolvedYear, resolvedMonth, 0).getDate());
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return json({ error: "Kho\u1EA3ng ng\xE0y kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    let q = `SELECT u.id AS user_id,u.full_name,u.employee_code,u.department,u.position,u.work_location,
+      COUNT(a.id) AS record_count,
+      COALESCE(SUM(CASE WHEN a.checkin_time IS NOT NULL AND a.checkout_time IS NOT NULL AND a.status NOT IN ('absent','cancelled','rejected') THEN CASE WHEN a.shift IN ('morning','afternoon') THEN 0.5 ELSE 1 END ELSE 0 END),0) AS actual_work_days,
+      COALESCE(SUM(CASE WHEN a.checkin_time IS NOT NULL AND a.checkout_time IS NOT NULL AND a.status NOT IN ('absent','cancelled','rejected') THEN a.work_hours ELSE 0 END),0) AS total_work_hours,
+      COALESCE(SUM(CASE WHEN COALESCE(a.late_minutes,0)>0 THEN 1 ELSE 0 END),0) AS late_days,
+      COALESCE(SUM(CASE WHEN COALESCE(a.late_minutes,0)>0 THEN a.late_minutes ELSE 0 END),0) AS late_minutes,
+      COALESCE(SUM(CASE WHEN a.status NOT IN ('absent','leave','cancelled','rejected') AND a.checkin_time IS NULL THEN 1 ELSE 0 END),0) AS missing_checkin_days,
+      COALESCE(SUM(CASE WHEN a.status NOT IN ('absent','leave','cancelled','rejected') AND a.checkin_time IS NOT NULL AND a.checkout_time IS NULL THEN 1 ELSE 0 END),0) AS missing_checkout_days
+      FROM users u LEFT JOIN attendance a ON a.user_id=u.id AND a.date BETWEEN ? AND ?
+      WHERE (u.is_active=1 OR a.id IS NOT NULL)`;
+    const binds = [from, to];
+    if (me.role === "manager" && !isAdmin && !isAttendanceHcns) {
+      q += " AND u.department=?";
+      binds.push(me.department);
+    }
+    q += " GROUP BY u.id ORDER BY u.full_name COLLATE NOCASE";
+    const { results = [] } = await env.DB.prepare(q).bind(...binds).all();
+    const today = vnTodayStr();
+    const attendanceRateTo = from.slice(0, 7) === today.slice(0, 7) ? today < to ? today : to : to;
+    const standardWorkDays = await attBusinessDaysBetweenAsync(env, from, to);
+    const expectedWorkDaysToDate = await attBusinessDaysBetweenAsync(env, from, attendanceRateTo);
+    const employees = results.map((row) => {
+      const missingDays = Number(row.missing_checkin_days || 0) + Number(row.missing_checkout_days || 0);
+      const actualWorkDays = Number(row.actual_work_days || 0);
+      return {
+        ...row,
+        // Vẫn giữ tổng số ngày công chuẩn của tháng cho cột "Ngày công"
+        standard_work_days: standardWorkDays,
+        // Số ngày lẽ ra phải làm tính tới hiện tại
+        expected_work_days_to_date: expectedWorkDaysToDate,
+        // Chuyên cần chỉ tính tới hiện tại
+        attendance_rate: expectedWorkDaysToDate ? Number((actualWorkDays / expectedWorkDaysToDate * 100).toFixed(1)) : 0,
+        period_status: !Number(row.record_count) ? "no_data" : missingDays ? "incomplete" : Number(row.late_days) ? "late" : "complete"
+      };
+    });
+    return json({ period: { from, to }, employees });
+  }
+  if (path === "/api/attendance/my-compliance" && request.method === "GET") {
+    const requestedMonth = String(url.searchParams.get("month") || "").trim();
+    const month = /^\d{4}-\d{2}$/.test(requestedMonth) ? requestedMonth : vnTodayStr().slice(0, 7);
+    const todayHcm = vnTodayStr();
+    const { results = [] } = await env.DB.prepare(
+      `SELECT
+        COALESCE(SUM(CASE WHEN COALESCE(late_minutes,0) > 0 THEN 1 ELSE 0 END),0) AS late_count,
+        COALESCE(SUM(CASE
+          WHEN date < ?
+           AND status NOT IN ('absent','leave','cancelled','rejected')
+           AND (checkin_time IS NULL OR checkout_time IS NULL)
+          THEN 1 ELSE 0 END),0) AS missing_checkinout_count
+       FROM attendance
+       WHERE user_id=? AND date LIKE ?`
+    ).bind(todayHcm, me.id, `${month}-%`).all();
+    const row = results[0] || {};
+    const lateCount = Number(row.late_count || 0);
+    const missingCount = Number(row.missing_checkinout_count || 0);
+    const policyActive = month >= PENALTY_POLICY_EFFECTIVE_MONTH;
+    return json({
+      month,
+      policy_active: policyActive,
+      late_count: lateCount,
+      missing_checkinout_count: missingCount,
+      late_free_remaining: policyActive ? Math.max(0, 2 - lateCount) : null,
+      late_penalty_count: policyActive ? Math.max(0, lateCount - 2) : 0,
+      late_penalty_amount: policyActive ? Math.max(0, lateCount - 2) * 2e4 : 0,
+      missing_penalty_amount: policyActive ? missingCount * 5e4 : 0,
+      policy: {
+        effective_month: PENALTY_POLICY_EFFECTIVE_MONTH,
+        late_free_times: 2,
+        late_penalty_from: 3,
+        late_penalty_amount: 2e4,
+        missing_checkinout_penalty_amount: 5e4
+      }
+    });
+  }
+  if (path === "/api/attendance/today" && request.method === "GET") {
+    const today = vnTodayStr();
+    await env.DB.prepare(
+      "UPDATE attendance SET status='registered' WHERE date=? AND registered=1 AND checkin_time IS NULL AND status='present'"
+    ).bind(today).run();
+    let rows;
+    if (isManager) {
+      const scope = !isAdmin && !isAttendanceHcns ? " AND u.department=?" : "";
+      const stmt = env.DB.prepare(
+        `SELECT a.*, u.full_name, u.employee_code, u.department FROM attendance a JOIN users u ON a.user_id=u.id WHERE a.date=?${scope} ORDER BY a.checkin_time`
+      );
+      const r = scope ? await stmt.bind(today, me.department).all() : await stmt.bind(today).all();
+      rows = r.results;
+    } else {
+      const r = await env.DB.prepare(
+        "SELECT a.*, u.full_name, u.employee_code, u.department FROM attendance a JOIN users u ON a.user_id=u.id WHERE a.user_id=? AND a.date=?"
+      ).bind(me.id, today).all();
+      rows = r.results;
+    }
+    return json({ attendance: rows, today });
+  }
+  if (path === "/api/attendance/register" && request.method === "POST") {
+    const b = await request.json().catch(() => ({}));
+    const workType = ["office", "wfh", "business"].includes(b.work_type) ? b.work_type : "office";
+    const shift = ["morning", "afternoon", "full"].includes(b.shift) ? b.shift : "full";
+    if (workType === "business" && (!b.expected_start || !b.expected_end)) {
+      return json({ error: "Vui l\xF2ng nh\u1EADp gi\u1EDD b\u1EAFt \u0111\u1EA7u v\xE0 k\u1EBFt th\xFAc d\u1EF1 ki\u1EBFn cho chuy\u1EBFn c\xF4ng t\xE1c" }, 400);
+    }
+    const today = vnTodayStr();
+    const existing = await env.DB.prepare("SELECT * FROM attendance WHERE user_id=? AND date=?").bind(me.id, today).first();
+    if (existing && existing.checkin_time) {
+      return json({ error: "\u0110\xE3 check-in h\xF4m nay, kh\xF4ng th\u1EC3 thay \u0111\u1ED5i \u0111\u0103ng k\xFD" }, 400);
+    }
+    const expectedStart = workType === "business" ? b.expected_start : null;
+    const expectedEnd = workType === "business" ? b.expected_end : null;
+    const note = b.note || "";
+    if (existing) {
+      await env.DB.prepare(
+        "UPDATE attendance SET work_type=?,shift=?,expected_start=?,expected_end=?,registered=1,status=CASE WHEN checkin_time IS NULL THEN 'registered' ELSE status END,note=? WHERE id=?"
+      ).bind(workType, shift, expectedStart, expectedEnd, note, existing.id).run();
+    } else {
+      await env.DB.prepare(
+        "INSERT INTO attendance (user_id,date,work_type,shift,expected_start,expected_end,registered,status,note) VALUES (?,?,?,?,?,?,1,'registered',?)"
+      ).bind(me.id, today, workType, shift, expectedStart, expectedEnd, note).run();
+    }
+    await broadcastAppEvent(env, "attendance", "attendance:registered", {
+      user_id: me.id,
+      user_name: me.full_name,
+      employee_code: me.employee_code,
+      department: me.department,
+      date: today,
+      work_type: workType,
+      shift,
+      status: "registered"
+    }, { actorId: me.id });
+    return json({ ok: true });
+  }
+  if (path === "/api/attendance/checkin" && request.method === "POST") {
+    const b = await request.json().catch(() => ({}));
+    const today = vnTodayStr();
+    let existing = await env.DB.prepare("SELECT * FROM attendance WHERE user_id=? AND date=?").bind(me.id, today).first();
+    if (existing && existing.checkin_time) return json({ ok: true, status: existing.status, time: existing.checkin_time, late_minutes: existing.late_minutes || 0, already: true });
+    if (!existing) {
+      await env.DB.prepare(
+        "INSERT INTO attendance (user_id,date,work_type,shift,registered,note) VALUES (?,?,?,?,1,?)"
+      ).bind(me.id, today, "office", "full", b.note || "").run();
+      existing = await env.DB.prepare("SELECT * FROM attendance WHERE user_id=? AND date=?").bind(me.id, today).first();
+    }
+    const workType = existing.work_type || "office";
+    if (b.latitude !== void 0 || b.longitude !== void 0 || b.accuracy !== void 0) {
+      const lat = Number(b.latitude), lng = Number(b.longitude);
+      const acc = b.accuracy === void 0 || b.accuracy === null || b.accuracy === "" ? null : Number(b.accuracy);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) return json({ error: "T\u1ECDa \u0111\u1ED9 GPS kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+      if (acc !== null && (!Number.isFinite(acc) || acc < 0)) return json({ error: "\u0110\u1ED9 ch\xEDnh x\xE1c GPS kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    }
+    const ipInfo = await currentIpInfo(env, request);
+    const geo = await verifyAttendanceGeofence(env, b);
+    const gpsConstraintEnabled = await isGpsConstraintEnabled(env);
+    if (geo.status === "invalid") return json({ error: geo.reason || "T\u1ECDa \u0111\u1ED9 GPS kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    if (gpsConstraintEnabled && workType === "office") {
+      if (geo.status === "unavailable") return json({ error: geo.reason || "Ch\u01B0a nh\u1EADn \u0111\u01B0\u1EE3c v\u1ECB tr\xED GPS h\u1EE3p l\u1EC7", geofence: geo }, 403);
+      if (geo.status === "not_configured" && !ipInfo.matched) return json({ error: `IP hien tai (${ipInfo.ip}) khong nam trong whitelist van phong`, ip: ipInfo.ip, matched: false, warning: ipInfo.warning }, 403);
+    }
+    const timeStr = vnTimeStr();
+    const bounds = attShiftBounds(workType, existing.shift || "full", existing.expected_start, existing.expected_end);
+    const lateMinutes = Math.max(0, attToMinutes(timeStr) - attToMinutes(bounds.lateAfter));
+    const status = lateMinutes > 0 ? "late" : "present";
+    const geoLat = Number.isFinite(Number(b.latitude)) ? Number(b.latitude) : null;
+    const geoLng = Number.isFinite(Number(b.longitude)) ? Number(b.longitude) : null;
+    const isOffice = workType === "office";
+    const geofenceStatus = isOffice ? geo.status === "verified" ? "inside" : geo.status === "outside" ? "outside" : geo.status === "retry" ? geo.inside_geofence ? "inside" : "outside" : null : null;
+    const requiresReview = isOffice && (geo.status === "outside" || geo.status === "retry");
+    const reviewStatus = requiresReview ? "pending" : "none";
+    await env.DB.prepare("UPDATE attendance SET checkin_time=?,checkin_ip=?,status=?,late_minutes=?,checkin_location_id=?,checkin_distance_meters=?,checkin_accuracy_meters=?,checkin_verification_method=?,checkin_lat=?,checkin_lng=?,checkin_geofence_status=?,checkin_requires_review=?,checkin_review_status=?,note=? WHERE id=?").bind(timeStr, ipInfo.ip, status, lateMinutes, geo.location?.id || null, geo.location?.distance_meters || null, geo.accuracy_meters || null, geo.status === "verified" ? "geofence" : geo.location?.id ? "geofence" : ipInfo.matched ? "ip" : null, geoLat, geoLng, geofenceStatus, requiresReview ? 1 : 0, reviewStatus, b.note || existing.note || "", existing.id).run();
+    await broadcastAppEvent(env, "attendance", "attendance:checkin", {
+      id: existing.id,
+      user_id: me.id,
+      user_name: me.full_name,
+      employee_code: me.employee_code,
+      department: me.department,
+      date: today,
+      checkin_time: timeStr,
+      status,
+      late_minutes: lateMinutes,
+      geofence_status: geofenceStatus,
+      requires_review: requiresReview
+    }, { actorId: me.id });
+    return json({ ok: true, status, time: timeStr, late_minutes: lateMinutes, geofence: geo, gps_constraint_enabled: gpsConstraintEnabled, distance_meters: geo.location?.distance_meters ?? null, inside_geofence: geo.inside_geofence ?? null, geofence_status: geofenceStatus, requires_location_review: requiresReview, location_review_status: reviewStatus });
+  }
+  if (path === "/api/attendance/checkout" && request.method === "POST") {
+    const b = await request.json().catch(() => ({}));
+    const today = vnTodayStr();
+    let record = await env.DB.prepare("SELECT * FROM attendance WHERE user_id=? AND date=?").bind(me.id, today).first();
+    if (!record || !record.checkin_time) {
+      const ipInfo2 = await currentIpInfo(env, request);
+      const gpsConstraintEnabled2 = await isGpsConstraintEnabled(env);
+      if (gpsConstraintEnabled2 && (!record || (record.work_type || "office") === "office")) {
+        if (!ipInfo2.matched) return json({ error: `IP hien tai (${ipInfo2.ip}) khong nam trong whitelist van phong`, ip: ipInfo2.ip, matched: false, warning: ipInfo2.warning }, 403);
+      }
+      const ciTime = vnTimeStr();
+      if (!record) {
+        await env.DB.prepare(
+          "INSERT INTO attendance (user_id,date,work_type,shift,registered,checkin_time,checkin_ip,status) VALUES (?,?,?,?,1,?,?,?)"
+        ).bind(me.id, today, "office", "full", ciTime, ipInfo2.ip, "present").run();
+      } else {
+        await env.DB.prepare("UPDATE attendance SET checkin_time=?,checkin_ip=?,status=? WHERE id=?").bind(ciTime, ipInfo2.ip, "present", record.id).run();
+      }
+      record = await env.DB.prepare("SELECT * FROM attendance WHERE user_id=? AND date=?").bind(me.id, today).first();
+    }
+    if (record.checkout_time) return json({ ok: true, time: record.checkout_time, work_hours: record.work_hours, early_minutes: record.early_minutes || 0, already: true });
+    const ipInfo = await currentIpInfo(env, request);
+    const workType = record.work_type || "office";
+    if (b.latitude !== void 0 || b.longitude !== void 0 || b.accuracy !== void 0) {
+      const lat = Number(b.latitude), lng = Number(b.longitude);
+      const acc = b.accuracy === void 0 || b.accuracy === null || b.accuracy === "" ? null : Number(b.accuracy);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) return json({ error: "T\u1ECDa \u0111\u1ED9 GPS kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+      if (acc !== null && (!Number.isFinite(acc) || acc < 0)) return json({ error: "\u0110\u1ED9 ch\xEDnh x\xE1c GPS kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    }
+    const geo = await verifyAttendanceGeofence(env, b);
+    const gpsConstraintEnabled = await isGpsConstraintEnabled(env);
+    if (geo.status === "invalid") return json({ error: geo.reason || "T\u1ECDa \u0111\u1ED9 GPS kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    if (gpsConstraintEnabled && workType === "office") {
+      if (geo.status === "unavailable") return json({ error: geo.reason || "Ch\u01B0a nh\u1EADn \u0111\u01B0\u1EE3c v\u1ECB tr\xED GPS h\u1EE3p l\u1EC7", geofence: geo }, 403);
+      if (geo.status === "not_configured" && !ipInfo.matched) return json({ error: `IP hien tai (${ipInfo.ip}) khong nam trong whitelist van phong`, ip: ipInfo.ip, matched: false, warning: ipInfo.warning }, 403);
+    }
+    const timeStr = vnTimeStr();
+    const shift = record.shift || "full";
+    const bounds = attShiftBounds(workType, shift, record.expected_start, record.expected_end);
+    const ciMin = attToMinutes(record.checkin_time) ?? attToMinutes(bounds.start);
+    const coMin = attToMinutes(timeStr);
+    const earlyMinutes = attEarlyCheckoutMinutes(bounds, timeStr);
+    let workMinutes = Math.max(0, coMin - ciMin);
+    if (workType !== "business" && shift === "full") {
+      const lunchStart = 12 * 60, lunchEnd = 13 * 60 + 30;
+      const overlap = Math.max(0, Math.min(coMin, lunchEnd) - Math.max(ciMin, lunchStart));
+      workMinutes -= overlap;
+    }
+    const workHours = Math.max(0, workMinutes) / 60;
+    const geoLat = Number.isFinite(Number(b.latitude)) ? Number(b.latitude) : null;
+    const geoLng = Number.isFinite(Number(b.longitude)) ? Number(b.longitude) : null;
+    const isOffice = workType === "office";
+    const geofenceStatus = isOffice ? geo.status === "verified" ? "inside" : geo.status === "outside" ? "outside" : geo.status === "retry" ? geo.inside_geofence ? "inside" : "outside" : null : null;
+    const requiresReview = isOffice && (geo.status === "outside" || geo.status === "retry");
+    const reviewStatus = requiresReview ? "pending" : "none";
+    await env.DB.prepare("UPDATE attendance SET checkout_time=?,checkout_ip=?,work_hours=?,early_minutes=?,checkout_location_id=?,checkout_distance_meters=?,checkout_accuracy_meters=?,checkout_verification_method=?,checkout_lat=?,checkout_lng=?,checkout_geofence_status=?,checkout_requires_review=?,checkout_review_status=? WHERE id=?").bind(timeStr, ipInfo.ip, workHours, earlyMinutes, geo.location?.id || null, geo.location?.distance_meters || null, geo.accuracy_meters || null, geo.status === "verified" ? "geofence" : geo.location?.id ? "geofence" : ipInfo.matched ? "ip" : null, geoLat, geoLng, geofenceStatus, requiresReview ? 1 : 0, reviewStatus, record.id).run();
+    await broadcastAppEvent(env, "attendance", "attendance:checkout", {
+      id: record.id,
+      user_id: me.id,
+      user_name: me.full_name,
+      employee_code: me.employee_code,
+      department: me.department,
+      date: today,
+      checkout_time: timeStr,
+      work_hours: workHours,
+      early_minutes: earlyMinutes,
+      status: record.status
+    }, { actorId: me.id });
+    return json({ ok: true, attendance_id: record.id, time: timeStr, work_hours: workHours, early_minutes: earlyMinutes, geofence: geo, gps_constraint_enabled: gpsConstraintEnabled, distance_meters: geo.location?.distance_meters ?? null, inside_geofence: geo.inside_geofence ?? null, geofence_status: geofenceStatus, requires_location_review: requiresReview, location_review_status: reviewStatus });
+  }
+  if (path === "/api/attendance/checkin-points" && request.method === "GET") {
+    await ensureAttendanceLocationSchema(env);
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(url.searchParams.get("date") || "")) ? String(url.searchParams.get("date")) : vnTodayStr();
+    const officeIdParam = parseInt(url.searchParams.get("office_id"), 10);
+    let office = null;
+    if (Number.isInteger(officeIdParam)) {
+      office = await env.DB.prepare("SELECT * FROM attendance_locations WHERE id=? AND is_active=1").bind(officeIdParam).first();
+    }
+    if (!office) {
+      const mine = await env.DB.prepare("SELECT checkin_location_id, checkin_lat, checkin_lng FROM attendance WHERE user_id=? AND date=?").bind(me.id, date).first();
+      if (mine?.checkin_location_id) office = await env.DB.prepare("SELECT * FROM attendance_locations WHERE id=?").bind(mine.checkin_location_id).first();
+      if (!office && Number.isFinite(Number(mine?.checkin_lat)) && Number.isFinite(Number(mine?.checkin_lng))) {
+        const { results: nearestCandidates = [] } = await env.DB.prepare("SELECT * FROM attendance_locations WHERE is_active=1").all();
+        office = nearestCandidates.map((location) => ({ ...location, distance_meters: geoDistanceMeters(Number(mine.checkin_lat), Number(mine.checkin_lng), location.latitude, location.longitude) })).sort((a, b) => a.distance_meters - b.distance_meters)[0] || null;
+      }
+    }
+    if (!office) {
+      const topOffice = await env.DB.prepare("SELECT checkin_location_id AS id, COUNT(*) AS cnt FROM attendance WHERE date=? AND checkin_location_id IS NOT NULL GROUP BY checkin_location_id ORDER BY cnt DESC LIMIT 1").bind(date).first();
+      if (topOffice?.id) office = await env.DB.prepare("SELECT * FROM attendance_locations WHERE id=?").bind(topOffice.id).first();
+    }
+    if (!office) {
+      const { results: fallbackOffices = [] } = await env.DB.prepare("SELECT * FROM attendance_locations WHERE is_active=1 ORDER BY id LIMIT 1").all();
+      office = fallbackOffices[0] || null;
+    }
+    const viewerScope = isAdmin || isAttendanceHcns ? "company" : me.role === "manager" ? "department" : "self";
+    if (!office) return json({ date, office: null, viewer: { can_view_all_markers: viewerScope === "company", scope: viewerScope }, markers: [], reason: "Ch\u01B0a c\u1EA5u h\xECnh \u0111\u1ECBa \u0111i\u1EC3m ch\u1EA5m c\xF4ng" });
+    let q = `SELECT a.user_id, a.checkin_time, a.checkin_lat, a.checkin_lng, a.checkin_accuracy_meters, a.checkin_location_id, a.checkin_distance_meters, a.checkin_requires_review, a.checkin_review_status, u.full_name, u.employee_code, u.department
+      FROM attendance a JOIN users u ON u.id=a.user_id
+      WHERE a.date=? AND a.checkin_lat IS NOT NULL AND a.checkin_lng IS NOT NULL`;
+    const binds = [date];
+    if (viewerScope === "self") {
+      q += " AND a.user_id=?";
+      binds.push(me.id);
+    } else if (viewerScope === "department") {
+      q += " AND u.department=?";
+      binds.push(me.department);
+    }
+    q += " ORDER BY a.checkin_time ASC, a.id ASC";
+    const { results: gpsRows = [] } = await env.DB.prepare(q).bind(...binds).all();
+    const radius = Number(office.radius_meters || 100);
+    const markers = gpsRows.map((row) => {
+      const lat = Number(row.checkin_lat), lng = Number(row.checkin_lng);
+      const decision = geofenceDecision(geoDistanceMeters(lat, lng, office.latitude, office.longitude), radius);
+      return {
+        employee_id: row.user_id,
+        employee_name: row.full_name,
+        employee_code: row.employee_code || null,
+        department: row.department || null,
+        checkin_time: row.checkin_time || null,
+        latitude: lat,
+        longitude: lng,
+        checkin_accuracy_meters: row.checkin_accuracy_meters ?? null,
+        office_location_id: row.checkin_location_id ?? null,
+        distance_m: Math.round(geoDistanceMeters(lat, lng, office.latitude, office.longitude)),
+        inside_geofence: decision.inside,
+        requires_location_review: !!row.checkin_requires_review,
+        location_review_status: row.checkin_review_status || "none",
+        is_current_user: Number(row.user_id) === Number(me.id)
+      };
+    });
+    markers.sort((a, b) => (b.is_current_user ? 1 : 0) - (a.is_current_user ? 1 : 0));
+    return json({
+      date,
+      office: { id: office.id, name: office.name, code: office.code, address: office.address, latitude: office.latitude, longitude: office.longitude, radius_meters: Number(office.radius_meters || 100), max_accuracy_meters: Number(office.max_accuracy_meters || 100) },
+      viewer: { can_view_all_markers: viewerScope === "company", scope: viewerScope },
+      markers
+    });
+  }
+  const attendanceReviewMatch = path.match(/^\/api\/attendance\/(\d+)\/location-review$/);
+  if (attendanceReviewMatch && request.method === "POST") {
+    const aid = Number(attendanceReviewMatch[1]);
+    if (!isAttendanceAdmin) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const b = await request.json().catch(() => ({}));
+    const decision = ["approved", "rejected"].includes(b.status) ? b.status : null;
+    if (!decision) return json({ error: "Tr\u1EA1ng th\xE1i duy\u1EC7t kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    if (!Number.isInteger(aid) || aid <= 0) return json({ error: "ID b\u1EA3n ghi kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    const row = await env.DB.prepare("SELECT a.*, u.department FROM attendance a JOIN users u ON u.id=a.user_id WHERE a.id=?").bind(aid).first();
+    if (!row) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y b\u1EA3n ghi ch\u1EA5m c\xF4ng" }, 404);
+    if (me.role === "manager" && !isAdmin && !isAttendanceHcns && row.department !== me.department) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n xem nh\xE2n s\u1EF1 ngo\xE0i ph\xF2ng ban" }, 403);
+    if (!Number(row.checkin_requires_review)) return json({ error: "B\u1EA3n ghi n\xE0y kh\xF4ng c\u1EA7n xem x\xE9t v\u1ECB tr\xED" }, 400);
+    const note = String(b.note || "").trim() || null;
+    await env.DB.prepare("UPDATE attendance SET checkin_review_status=?, checkin_reviewed_by=?, checkin_review_note=?, checkin_reviewed_at=datetime('now','localtime') WHERE id=?").bind(decision, me.id, note, aid).run();
+    await broadcastAppEvent(env, "attendance", "attendance:location_reviewed", {
+      id: aid,
+      user_id: row.user_id,
+      status: decision,
+      reviewed_by: me.id,
+      reviewed_by_name: me.full_name || "",
+      note
+    }, { actorId: me.id });
+    return json({ ok: true, attendance_id: aid, status: decision });
+  }
+  if (path === "/api/overtime-requests" && request.method === "GET") {
+    const month = String(url.searchParams.get("month") || "");
+    const status = String(url.searchParams.get("status") || "");
+    let q = `SELECT o.*,u.full_name,u.employee_code,u.department FROM overtime_requests o JOIN users u ON u.id=o.user_id WHERE 1=1`;
+    const binds = [];
+    if (!isAttendanceAdmin) {
+      q += " AND o.user_id=?";
+      binds.push(me.id);
+    } else if (me.role === "manager" && !isAdmin && !isAttendanceHcns) {
+      q += " AND u.department=?";
+      binds.push(me.department);
+    }
+    if (/^\d{4}-\d{2}$/.test(month)) {
+      q += " AND strftime('%Y-%m',o.work_date)=?";
+      binds.push(month);
+    }
+    if (["pending", "approved", "rejected"].includes(status)) {
+      q += " AND o.status=?";
+      binds.push(status);
+    }
+    q += " ORDER BY CASE o.status WHEN 'pending' THEN 0 ELSE 1 END,o.work_date DESC,o.id DESC";
+    const { results = [] } = await (binds.length ? env.DB.prepare(q).bind(...binds) : env.DB.prepare(q)).all();
+    return json({ overtime_requests: results });
+  }
+  if (path === "/api/overtime-requests" && request.method === "POST") {
+    const retryAfter = rateLimit(request, `overtime:${me.id}`, 10, 24 * 60 * 60 * 1e3);
+    if (retryAfter) return json({ error: "\u0110\xE3 v\u01B0\u1EE3t s\u1ED1 l\u1EA7n g\u1EEDi y\xEAu c\u1EA7u trong ng\xE0y", code: "RATE_LIMITED" }, 429, { "Retry-After": String(retryAfter) });
+    const b = await request.json().catch(() => ({}));
+    const attendanceId = parseInt(b.attendance_id);
+    const reason = String(b.reason || "").trim();
+    if (!attendanceId || !reason) return json({ error: "Vui l\xF2ng nh\u1EADp l\xFD do l\xE0m th\xEAm gi\u1EDD" }, 400);
+    if (reason.length > 1e3) return json({ error: "L\xFD do l\xE0m th\xEAm gi\u1EDD kh\xF4ng \u0111\u01B0\u1EE3c qu\xE1 1000 k\xFD t\u1EF1" }, 400);
+    const record = await env.DB.prepare("SELECT * FROM attendance WHERE id=? AND user_id=?").bind(attendanceId, me.id).first();
+    if (!record || !record.checkout_time) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y checkout h\u1EE3p l\u1EC7" }, 404);
+    const bounds = attShiftBounds(record.work_type || "office", record.shift || "full", record.expected_start, record.expected_end);
+    const requestedMinutes = Math.max(0, (attToMinutes(record.checkout_time) || 0) - (attToMinutes(bounds.end) || 0));
+    if (requestedMinutes < 1) return json({ error: "Checkout kh\xF4ng mu\u1ED9n h\u01A1n gi\u1EDD k\u1EBFt th\xFAc ca" }, 400);
+    try {
+      const r = await env.DB.prepare("INSERT INTO overtime_requests (attendance_id,user_id,work_date,shift_end_time,checkout_time,requested_minutes,reason,status) VALUES (?,?,?,?,?,?,?,'pending')").bind(record.id, me.id, record.date, bounds.end, record.checkout_time, requestedMinutes, reason).run();
+      const overtimeReqId = r.meta.last_row_id;
+      await broadcastAppEvent(env, "attendance", "overtime:requested", {
+        id: overtimeReqId,
+        attendance_id: record.id,
+        user_id: me.id,
+        user_name: me.full_name,
+        employee_code: me.employee_code,
+        department: me.department,
+        work_date: record.date,
+        requested_minutes: requestedMinutes,
+        reason,
+        status: "pending"
+      }, { actorId: me.id });
+      return json({ ok: true, id: overtimeReqId, requested_minutes: requestedMinutes });
+    } catch (e) {
+      if (String(e.message || "").includes("UNIQUE")) return json({ error: "\u0110\xE3 g\u1EEDi y\xEAu c\u1EA7u l\xE0m th\xEAm gi\u1EDD cho checkout n\xE0y" }, 400);
+      throw e;
+    }
+  }
+  const overtimeAction = path.match(/^\/api\/overtime-requests\/(\d+)\/(approve|reject)$/);
+  if (overtimeAction && request.method === "POST") {
+    if (!isAttendanceAdmin) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n duy\u1EC7t l\xE0m th\xEAm gi\u1EDD" }, 403);
+    const retryAfter = rateLimit(request, `overtime-review:${me.id}`, 30, 60 * 60 * 1e3);
+    if (retryAfter) return json({ error: "\u0110\xE3 v\u01B0\u1EE3t gi\u1EDBi h\u1EA1n duy\u1EC7t trong m\u1ED9t gi\u1EDD", code: "RATE_LIMITED" }, 429, { "Retry-After": String(retryAfter) });
+    const id = parseInt(overtimeAction[1]);
+    const action = overtimeAction[2];
+    const requestRow = await env.DB.prepare("SELECT o.*,u.department FROM overtime_requests o JOIN users u ON u.id=o.user_id WHERE o.id=?").bind(id).first();
+    if (!requestRow) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y y\xEAu c\u1EA7u l\xE0m th\xEAm gi\u1EDD" }, 404);
+    if (me.role === "manager" && !isAdmin && !isAttendanceHcns && requestRow.department !== me.department) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n duy\u1EC7t y\xEAu c\u1EA7u ngo\xE0i ph\xF2ng ban" }, 403);
+    if (requestRow.status !== "pending") return json({ error: "Y\xEAu c\u1EA7u \u0111\xE3 \u0111\u01B0\u1EE3c x\u1EED l\xFD" }, 400);
+    const b = await request.json().catch(() => ({}));
+    const note = String(b.review_note || "").trim();
+    if (action === "reject" && !note) return json({ error: "Vui l\xF2ng nh\u1EADp l\xFD do t\u1EEB ch\u1ED1i" }, 400);
+    const approvedMinutes = action === "approve" ? Math.min(Math.max(0, parseInt(b.approved_minutes ?? requestRow.requested_minutes) || 0), requestRow.requested_minutes) : 0;
+    if (action === "approve" && approvedMinutes < 1) return json({ error: "S\u1ED1 ph\xFAt \u0111\u01B0\u1EE3c duy\u1EC7t ph\u1EA3i l\u1EDBn h\u01A1n 0" }, 400);
+    const nextStatus = action === "approve" ? "approved" : "rejected";
+    await env.DB.prepare("UPDATE overtime_requests SET status=?,approved_minutes=?,reviewer_id=?,reviewer_name=?,review_note=?,reviewed_at=datetime('now','localtime'),updated_at=datetime('now','localtime') WHERE id=?").bind(nextStatus, approvedMinutes, me.id, me.full_name || "", note || null, id).run();
+    const d = /* @__PURE__ */ new Date(`${requestRow.work_date}T00:00:00`);
+    const ot = await refreshInvoiceOvertime(env, requestRow.user_id, d.getMonth() + 1, d.getFullYear(), me);
+    await broadcastAppEvent(env, "attendance", action === "approve" ? "overtime:approved" : "overtime:rejected", {
+      id,
+      user_id: requestRow.user_id,
+      status: nextStatus,
+      approved_minutes: approvedMinutes,
+      reviewer_id: me.id,
+      reviewer_name: me.full_name || "",
+      review_note: note || null,
+      overtime: ot
+    }, { actorId: me.id });
+    return json({ ok: true, status: nextStatus, approved_minutes: approvedMinutes, overtime: ot });
+  }
+  if (path === "/api/overtime-forms" && request.method === "GET") {
+    const month = String(url.searchParams.get("month") || "");
+    const status = String(url.searchParams.get("status") || "");
+    let q = `SELECT f.*,u.full_name,u.employee_code,u.department FROM overtime_forms f JOIN users u ON u.id=f.user_id WHERE 1=1`;
+    const binds = [];
+    if (!isAttendanceAdmin) {
+      q += " AND f.user_id=?";
+      binds.push(me.id);
+    } else if (me.role === "manager" && !isAdmin && !isAttendanceHcns) {
+      q += " AND u.department=?";
+      binds.push(me.department);
+    }
+    if (/^\d{4}-\d{2}$/.test(month)) {
+      q += " AND f.period_month=?";
+      binds.push(month);
+    }
+    if (["draft", "pending", "approved", "partially_approved", "rejected"].includes(status)) {
+      q += " AND f.status=?";
+      binds.push(status);
+    }
+    q += " ORDER BY CASE f.status WHEN 'pending' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END,f.period_month DESC,f.id DESC";
+    const { results: forms = [] } = await (binds.length ? env.DB.prepare(q).bind(...binds) : env.DB.prepare(q)).all();
+    for (const form of forms) {
+      form.items = (await env.DB.prepare("SELECT * FROM overtime_form_items WHERE form_id=? ORDER BY start_at,id").bind(form.id).all()).results || [];
+      form.requested_minutes = form.items.reduce((sum, item) => sum + Number(item.requested_minutes || 0), 0);
+      form.approved_minutes = form.items.reduce((sum, item) => sum + Number(item.approved_minutes || 0), 0);
+    }
+    return json({ overtime_forms: forms });
+  }
+  if (path === "/api/overtime-forms" && request.method === "POST") {
+    const retryAfter = rateLimit(request, `overtime-form:${me.id}`, 20, 24 * 60 * 60 * 1e3);
+    if (retryAfter) return json({ error: "\u0110\xE3 v\u01B0\u1EE3t s\u1ED1 l\u1EA7n t\u1EA1o form OT trong ng\xE0y", code: "RATE_LIMITED" }, 429, { "Retry-After": String(retryAfter) });
+    const b = await request.json().catch(() => ({}));
+    const periodMonth = String(b.period_month || "");
+    const validated = normalizeOvertimeItems(b.items, periodMonth);
+    if (validated.error) return json({ error: validated.error }, 400);
+    const items = await applyCalendarOvertimeCategories(env, validated.items);
+    const status = b.submit === false ? "draft" : "pending";
+    const r = await env.DB.prepare(
+      "INSERT INTO overtime_forms (user_id,period_month,status,source,submitted_at) VALUES (?,?,?,?,CASE WHEN ?='pending' THEN datetime('now','localtime') ELSE NULL END)"
+    ).bind(me.id, periodMonth, status, "employee", status).run();
+    const formId = r.meta.last_row_id;
+    await env.DB.batch(items.map((item) => env.DB.prepare(
+      "INSERT INTO overtime_form_items (form_id,start_at,end_at,requested_minutes,reason,time_category) VALUES (?,?,?,?,?,?)"
+    ).bind(formId, item.start_at, item.end_at, item.requested_minutes, item.reason, item.time_category)));
+    await broadcastAppEvent(env, "attendance", "overtime_form:created", {
+      id: formId,
+      user_id: me.id,
+      period_month: periodMonth,
+      status
+    }, { actorId: me.id });
+    return json({ ok: true, id: formId, status });
+  }
+  const overtimeFormMatch = path.match(/^\/api\/overtime-forms\/(\d+)$/);
+  if (overtimeFormMatch && request.method === "PUT") {
+    const formId = parseInt(overtimeFormMatch[1], 10);
+    const form = await env.DB.prepare("SELECT * FROM overtime_forms WHERE id=?").bind(formId).first();
+    if (!form) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y form OT" }, 404);
+    if (Number(form.user_id) !== Number(me.id) || form.status !== "draft") return json({ error: "Ch\u1EC9 \u0111\u01B0\u1EE3c s\u1EEDa form OT nh\xE1p c\u1EE7a ch\xEDnh b\u1EA1n" }, 403);
+    const b = await request.json().catch(() => ({}));
+    const periodMonth = String(b.period_month || form.period_month);
+    const validated = normalizeOvertimeItems(b.items, periodMonth);
+    if (validated.error) return json({ error: validated.error }, 400);
+    const items = await applyCalendarOvertimeCategories(env, validated.items);
+    await env.DB.batch([
+      env.DB.prepare("UPDATE overtime_forms SET period_month=?,updated_at=datetime('now','localtime') WHERE id=?").bind(periodMonth, formId),
+      env.DB.prepare("DELETE FROM overtime_form_items WHERE form_id=?").bind(formId),
+      ...items.map((item) => env.DB.prepare("INSERT INTO overtime_form_items (form_id,start_at,end_at,requested_minutes,reason,time_category) VALUES (?,?,?,?,?,?)").bind(formId, item.start_at, item.end_at, item.requested_minutes, item.reason, item.time_category))
+    ]);
+    await broadcastAppEvent(env, "attendance", "overtime_form:updated", {
+      id: formId,
+      user_id: me.id,
+      period_month: periodMonth
+    }, { actorId: me.id });
+    return json({ ok: true });
+  }
+  const overtimeFormSubmit = path.match(/^\/api\/overtime-forms\/(\d+)\/submit$/);
+  if (overtimeFormSubmit && request.method === "POST") {
+    const formId = parseInt(overtimeFormSubmit[1], 10);
+    const form = await env.DB.prepare("SELECT * FROM overtime_forms WHERE id=?").bind(formId).first();
+    if (!form) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y form OT" }, 404);
+    if (Number(form.user_id) !== Number(me.id) || form.status !== "draft") return json({ error: "Ch\u1EC9 \u0111\u01B0\u1EE3c g\u1EEDi form OT nh\xE1p c\u1EE7a ch\xEDnh b\u1EA1n" }, 403);
+    await env.DB.prepare("UPDATE overtime_forms SET status='pending',submitted_at=datetime('now','localtime'),updated_at=datetime('now','localtime') WHERE id=?").bind(formId).run();
+    await broadcastAppEvent(env, "attendance", "overtime_form:submitted", {
+      id: formId,
+      user_id: me.id,
+      status: "pending"
+    }, { actorId: me.id });
+    return json({ ok: true, status: "pending" });
+  }
+  const overtimeFormDecision = path.match(/^\/api\/overtime-forms\/(\d+)\/decision$/);
+  if (overtimeFormDecision && request.method === "POST") {
+    if (!isAttendanceAdmin) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n duy\u1EC7t form OT" }, 403);
+    const formId = parseInt(overtimeFormDecision[1], 10);
+    const form = await env.DB.prepare("SELECT f.*,u.department FROM overtime_forms f JOIN users u ON u.id=f.user_id WHERE f.id=?").bind(formId).first();
+    if (!form) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y form OT" }, 404);
+    if (me.role === "manager" && !isAdmin && !isAttendanceHcns && form.department !== me.department) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n duy\u1EC7t form ngo\xE0i ph\xF2ng ban" }, 403);
+    if (form.status !== "pending") return json({ error: "Form OT \u0111\xE3 \u0111\u01B0\u1EE3c x\u1EED l\xFD" }, 400);
+    const b = await request.json().catch(() => ({}));
+    const action = b.action === "reject" ? "reject" : "approve";
+    const note = String(b.review_note || "").trim();
+    if (action === "reject" && !note) return json({ error: "Vui l\xF2ng nh\u1EADp l\xFD do t\u1EEB ch\u1ED1i" }, 400);
+    const { results: items = [] } = await env.DB.prepare("SELECT * FROM overtime_form_items WHERE form_id=? ORDER BY id").bind(formId).all();
+    const supplied = new Map((Array.isArray(b.items) ? b.items : []).map((item) => [Number(item.id), Number(item.approved_minutes)]));
+    const updates = [];
+    let approvedTotal = 0;
+    for (const item of items) {
+      const approved = action === "reject" ? 0 : Math.min(Math.max(0, Number.isFinite(supplied.get(Number(item.id))) ? supplied.get(Number(item.id)) : Number(item.requested_minutes)), Number(item.requested_minutes));
+      approvedTotal += approved;
+      updates.push(env.DB.prepare("UPDATE overtime_form_items SET approved_minutes=?,updated_at=datetime('now','localtime') WHERE id=?").bind(Math.round(approved), item.id));
+    }
+    const requestedTotal = items.reduce((sum, item) => sum + Number(item.requested_minutes || 0), 0);
+    const nextStatus = action === "reject" ? "rejected" : approvedTotal === requestedTotal ? "approved" : "partially_approved";
+    updates.push(env.DB.prepare("UPDATE overtime_forms SET status=?,review_note=?,reviewer_id=?,reviewer_name=?,reviewed_at=datetime('now','localtime'),updated_at=datetime('now','localtime') WHERE id=?").bind(nextStatus, note || null, me.id, me.full_name || "", formId));
+    await env.DB.batch(updates);
+    const [year, month] = form.period_month.split("-").map(Number);
+    const overtime = await refreshInvoiceOvertime(env, form.user_id, month, year, me);
+    await broadcastAppEvent(env, "attendance", "overtime_form:decided", {
+      id: formId,
+      user_id: form.user_id,
+      status: nextStatus,
+      approved_minutes: approvedTotal,
+      overtime
+    }, { actorId: me.id });
+    return json({ ok: true, status: nextStatus, approved_minutes: approvedTotal, overtime });
+  }
+  if (path === "/api/company-holidays" && request.method === "GET") {
+    const { results = [] } = await env.DB.prepare("SELECT * FROM company_holidays ORDER BY holiday_date DESC").all();
+    return json({ holidays: results });
+  }
+  if (path === "/api/company-holidays" && request.method === "POST") {
+    if (!isAdmin) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const b = await request.json().catch(() => ({}));
+    const date = String(b.holiday_date || ""), name = String(b.name || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !name) return json({ error: "Ng\xE0y l\u1EC5 v\xE0 t\xEAn ng\xE0y l\u1EC5 l\xE0 b\u1EAFt bu\u1ED9c" }, 400);
+    const r = await env.DB.prepare("INSERT INTO company_holidays (holiday_date,name,is_active) VALUES (?,?,?)").bind(date, name, b.is_active === false ? 0 : 1).run();
+    return json({ ok: true, id: r.meta.last_row_id });
+  }
+  const holidayMatch = path.match(/^\/api\/company-holidays\/(\d+)$/);
+  if (holidayMatch && ["PUT", "DELETE"].includes(request.method)) {
+    if (!isAdmin) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const id = parseInt(holidayMatch[1]);
+    if (request.method === "DELETE") {
+      await env.DB.prepare("DELETE FROM company_holidays WHERE id=?").bind(id).run();
+      return json({ ok: true });
+    }
+    const b = await request.json().catch(() => ({}));
+    await env.DB.prepare("UPDATE company_holidays SET holiday_date=?,name=?,is_active=?,updated_at=datetime('now','localtime') WHERE id=?").bind(String(b.holiday_date || ""), String(b.name || "").trim(), b.is_active === false ? 0 : 1, id).run();
+    return json({ ok: true });
+  }
+  const attMatch = path.match(/^\/api\/attendance\/(\d+)$/);
+  if (attMatch && request.method === "PUT") {
+    if (!isManager) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const aid = parseInt(attMatch[1]);
+    const record = await env.DB.prepare("SELECT a.*,u.department FROM attendance a JOIN users u ON u.id=a.user_id WHERE a.id=?").bind(aid).first();
+    if (!record) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y ch\u1EA5m c\xF4ng" }, 404);
+    if (!isAdmin && !isAttendanceHcns && record.department !== me.department) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n s\u1EEDa ch\u1EA5m c\xF4ng ngo\xE0i ph\xF2ng ban" }, 403);
+    const b = await request.json().catch(() => ({}));
+    const allowedStatus = ["present", "late", "absent", "leave", "cancelled", "rejected"];
+    const requestedStatus = allowedStatus.includes(b.status) ? b.status : "present";
+    if (["absent", "leave", "cancelled", "rejected"].includes(requestedStatus)) {
+      await env.DB.prepare(
+        "UPDATE attendance SET checkin_time=NULL,checkout_time=NULL,status=?,work_hours=0,late_minutes=0,early_minutes=0,auto_checkout=0,note=? WHERE id=?"
+      ).bind(requestedStatus, String(b.note || "").slice(0, 2e3), aid).run();
+      await broadcastAppEvent(env, "attendance", "attendance:updated", {
+        id: aid,
+        user_id: record.user_id,
+        date: record.date,
+        status: requestedStatus,
+        checkin_time: null,
+        checkout_time: null,
+        work_hours: 0
+      }, { actorId: me.id });
+      return json({ ok: true, status: requestedStatus, late_minutes: 0, early_minutes: 0, work_hours: 0 });
+    }
+    const checkinTime = String(b.checkin_time || "").trim();
+    const checkoutTime = String(b.checkout_time || "").trim();
+    const workType = ["office", "wfh", "business"].includes(String(b.work_type || "")) ? String(b.work_type) : record.work_type || "office";
+    const shift = ["morning", "afternoon", "full"].includes(String(b.shift || "")) ? String(b.shift) : record.shift || "full";
+    if (!checkinTime && !checkoutTime) {
+      return json({ error: "C\u1EA7n nh\u1EADp \xEDt nh\u1EA5t gi\u1EDD check-in ho\u1EB7c check-out" }, 400);
+    }
+    if (checkinTime && !attTimeIsValid(checkinTime) || checkoutTime && !attTimeIsValid(checkoutTime)) {
+      return json({ error: "Gi\u1EDD check-in ho\u1EB7c check-out kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    }
+    if (checkinTime && checkoutTime && attToMinutes(checkoutTime) <= attToMinutes(checkinTime)) {
+      return json({ error: "Gi\u1EDD check-out ph\u1EA3i sau gi\u1EDD check-in" }, 400);
+    }
+    const metrics = attManualTimingMetrics({ ...record, work_type: workType, shift }, checkinTime, checkoutTime);
+    if (requestedStatus === "present" && (metrics.lateMinutes > 0 || metrics.earlyMinutes > 0)) {
+      const allowedCheckout = Math.max(0, attToMinutes(metrics.bounds.end) - ATT_EARLY_CHECKOUT_TOLERANCE_MINUTES);
+      const allowedLabel = `${String(Math.floor(allowedCheckout / 60)).padStart(2, "0")}:${String(allowedCheckout % 60).padStart(2, "0")}`;
+      return json({ error: `Mu\u1ED1n ch\u1EC9nh \u0110\xFAng gi\u1EDD, check-in ph\u1EA3i kh\xF4ng mu\u1ED9n h\u01A1n ${metrics.bounds.lateAfter} v\xE0 check-out kh\xF4ng s\u1EDBm h\u01A1n ${allowedLabel} c\u1EE7a ca.` }, 400);
+    }
+    const status = requestedStatus === "late" ? "late" : metrics.lateMinutes > 0 ? "late" : "present";
+    await env.DB.prepare(
+      "UPDATE attendance SET checkin_time=?,checkout_time=?,work_type=?,shift=?,status=?,work_hours=?,late_minutes=?,early_minutes=?,auto_checkout=0,note=? WHERE id=?"
+    ).bind(checkinTime || null, checkoutTime || null, workType, shift, status, metrics.workHours, metrics.lateMinutes, metrics.earlyMinutes, String(b.note || "").slice(0, 2e3), aid).run();
+    await broadcastAppEvent(env, "attendance", "attendance:updated", {
+      id: aid,
+      user_id: record.user_id,
+      date: record.date,
+      status,
+      checkin_time: checkinTime || null,
+      checkout_time: checkoutTime || null,
+      work_hours: metrics.workHours,
+      late_minutes: metrics.lateMinutes,
+      early_minutes: metrics.earlyMinutes
+    }, { actorId: me.id });
+    return json({ ok: true, status, late_minutes: metrics.lateMinutes, early_minutes: metrics.earlyMinutes, work_hours: metrics.workHours });
+  }
+  if (attMatch && request.method === "DELETE") {
+    if (!isManager) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const aid = parseInt(attMatch[1]);
+    const record = await env.DB.prepare("SELECT a.*, u.department FROM attendance a JOIN users u ON u.id=a.user_id WHERE a.id=?").bind(aid).first();
+    if (!record) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y ch\u1EA5m c\xF4ng" }, 404);
+    if (!isAdmin && !isAttendanceHcns && record.department !== me.department) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n x\xF3a ch\u1EA5m c\xF4ng ngo\xE0i ph\xF2ng ban" }, 403);
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM overtime_requests WHERE attendance_id=?").bind(aid),
+      env.DB.prepare("DELETE FROM attendance WHERE id=?").bind(aid)
+    ]);
+    await broadcastAppEvent(env, "attendance", "attendance:deleted", {
+      id: aid,
+      user_id: record.user_id,
+      date: record.date
+    }, { actorId: me.id });
+    return json({ ok: true, deleted_id: aid });
+  }
+  if (path === "/api/attendance/summary" && request.method === "GET") {
+    const month = parseInt(url.searchParams.get("month"));
+    const year = parseInt(url.searchParams.get("year"));
+    if (!month || !year) return json({ error: "Thi\u1EBFu th\xE1ng/n\u0103m" }, 400);
+    let targetUserId = me.id;
+    const qUserId = url.searchParams.get("userId");
+    if (qUserId) {
+      if (!isManager && parseInt(qUserId) !== me.id) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      targetUserId = parseInt(qUserId);
+      if (targetUserId !== me.id && !isAdmin && !isAttendanceHcns) {
+        const target = await env.DB.prepare("SELECT department FROM users WHERE id=?").bind(targetUserId).first();
+        if (!target || target.department !== me.department) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n xem nh\xE2n s\u1EF1 ngo\xE0i ph\xF2ng ban" }, 403);
+      }
+    }
+    const summary = await buildMonthlyWorkSummary(env, targetUserId, month, year);
+    return json(summary);
+  }
+  const attendanceEmployeeMatch = path.match(/^\/api\/attendance\/employees\/(\d+)\/summary$/);
+  if (attendanceEmployeeMatch && request.method === "GET") {
+    const employeeId = parseInt(attendanceEmployeeMatch[1]);
+    const employee = await env.DB.prepare("SELECT id,full_name,employee_code,department,position,is_active FROM users WHERE id=?").bind(employeeId).first();
+    if (!employee) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y nh\xE2n vi\xEAn" }, 404);
+    if (employeeId !== me.id) {
+      if (!isAttendanceAdmin) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      if (me.role === "manager" && !isAdmin && !isAttendanceHcns && employee.department !== me.department) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n xem nh\xE2n s\u1EF1 ngo\xE0i ph\xF2ng ban" }, 403);
+    }
+    const month = parseInt(url.searchParams.get("month"));
+    const year = parseInt(url.searchParams.get("year"));
+    let from = String(url.searchParams.get("from") || "");
+    let to = String(url.searchParams.get("to") || "");
+    if (!from || !to) {
+      const now = /* @__PURE__ */ new Date();
+      const resolvedYear = year || now.getFullYear();
+      const resolvedMonth = month || now.getMonth() + 1;
+      if (resolvedMonth < 1 || resolvedMonth > 12) return json({ error: "Th\xE1ng kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+      from = attIsoDate(resolvedYear, resolvedMonth, 1);
+      to = attIsoDate(resolvedYear, resolvedMonth, new Date(resolvedYear, resolvedMonth, 0).getDate());
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return json({ error: "Kho\u1EA3ng ng\xE0y kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    const { results: records = [] } = await env.DB.prepare(
+      "SELECT a.*, loc.name AS checkin_office_name, COALESCE(loc.radius_meters,0) AS checkin_office_radius FROM attendance a LEFT JOIN attendance_locations loc ON loc.id=a.checkin_location_id WHERE a.user_id=? AND a.date BETWEEN ? AND ? ORDER BY a.date ASC"
+    ).bind(employeeId, from, to).all();
+    let paidLeaveDays = 0;
+    try {
+      const { results: leaves = [] } = await env.DB.prepare(`SELECT lr.start_date,lr.end_date FROM leave_requests lr LEFT JOIN leave_types lt ON lr.type=lt.code WHERE (CAST(lr.user_id AS TEXT)=CAST(? AS TEXT) OR lr.employee_id=?) AND lr.status='approved' AND COALESCE(lt.paid_policy,'paid')='paid' AND date(lr.start_date)<=date(?) AND date(lr.end_date)>=date(?)`).bind(employeeId, employeeId, to, from).all();
+      for (const leave of leaves) paidLeaveDays += attCountBusinessDaysBetween(String(leave.start_date) > from ? String(leave.start_date) : from, String(leave.end_date) < to ? String(leave.end_date) : to);
+    } catch (_) {
+    }
+    const activeRecords = records.filter((r) => !["cancelled", "rejected"].includes(r.status));
+    const complete = activeRecords.filter((r) => r.checkin_time && r.checkout_time && r.status !== "absent");
+    const fullDays = complete.filter((r) => r.shift !== "morning" && r.shift !== "afternoon").length;
+    const halfDays = complete.length - fullDays;
+    const missingCheckinDays = activeRecords.filter((r) => !r.checkin_time && r.status !== "absent" && r.status !== "leave").length;
+    const missingCheckoutDays = activeRecords.filter((r) => r.checkin_time && !r.checkout_time).length;
+    const lateDays = activeRecords.filter((r) => Number(r.late_minutes || 0) > 0).length;
+    const earlyDays = activeRecords.filter((r) => Number(r.early_minutes || 0) > 0).length;
+    const totalWorkHours = complete.reduce((sum, r) => sum + Number(r.work_hours || 0), 0);
+    const standardWorkDays = await attBusinessDaysBetweenAsync(env, from, to);
+    const today = vnTodayStr();
+    const attendanceRateTo = from.slice(0, 7) === today.slice(0, 7) ? today < to ? today : to : to;
+    const expectedWorkDaysToDate = await attBusinessDaysBetweenAsync(env, from, attendanceRateTo);
+    const actualWorkDays = fullDays + halfDays * 0.5;
+    const overtime = await buildMonthlyOvertimeSummary(env, employeeId, Number(from.slice(5, 7)), Number(from.slice(0, 4)));
+    return json({ employee, period: { from, to }, summary: {
+      standardWorkDays,
+      expectedWorkDaysToDate,
+      actualWorkDays,
+      fullDays,
+      halfDays,
+      officeDays: complete.filter((r) => (r.work_type || "office") === "office").length,
+      wfhDays: complete.filter((r) => r.work_type === "wfh").length,
+      businessDays: complete.filter((r) => r.work_type === "business").length,
+      paidLeaveDays,
+      absentDays: activeRecords.filter((r) => r.status === "absent").length,
+      missingCheckinDays,
+      missingCheckoutDays,
+      lateDays,
+      lateMinutes: activeRecords.reduce((sum, r) => sum + Number(r.late_minutes || 0), 0),
+      earlyDays,
+      earlyMinutes: activeRecords.reduce((sum, r) => sum + Number(r.early_minutes || 0), 0),
+      totalWorkHours,
+      approvedOvertimeMinutes: overtime.approvedOvertimeMinutes,
+      approvedOvertimeHours: overtime.approvedOvertimeHours,
+      attendanceRate: expectedWorkDaysToDate ? Number((actualWorkDays / expectedWorkDaysToDate * 100).toFixed(1)) : 0
+    }, records });
+  }
+  if (path === "/api/attendance/batch" && request.method === "POST") {
+    if (!isAttendanceAdmin) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const b = await request.json().catch(() => ({}));
+    const employeeId = parseInt(b.user_id);
+    const fromDate = String(b.from_date || "");
+    const toDate = String(b.to_date || "");
+    const checkinTime = String(b.checkin_time || "").trim();
+    const checkoutTime = String(b.checkout_time || "").trim();
+    const status = ["present", "late", "absent", "leave"].includes(b.status) ? b.status : "present";
+    const skipNonWorkingDays = b.skip_non_working_days !== false;
+    const workType = ["office", "wfh", "business"].includes(b.work_type) ? b.work_type : "office";
+    const shift = ["morning", "afternoon", "full"].includes(b.shift) ? b.shift : "full";
+    const note = String(b.note || "").slice(0, 2e3);
+    const dryRun = String(url.searchParams.get("dry_run") || "") === "1";
+    if (!employeeId || !/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(toDate) || fromDate > toDate)
+      return json({ error: "Vui l\xF2ng ch\u1ECDn nh\xE2n vi\xEAn v\xE0 kho\u1EA3ng ng\xE0y h\u1EE3p l\u1EC7" }, 400);
+    if (checkinTime && !attTimeIsValid(checkinTime)) return json({ error: "Gi\u1EDD check-in kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    if (checkoutTime && !attTimeIsValid(checkoutTime)) return json({ error: "Gi\u1EDD check-out kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    const employee = await env.DB.prepare("SELECT id,full_name,employee_code,department,is_active FROM users WHERE id=?").bind(employeeId).first();
+    if (!employee || !Number(employee.is_active)) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y nh\xE2n vi\xEAn" }, 404);
+    if (me.role === "manager" && !isAdmin && !isAttendanceHcns && employee.department !== me.department)
+      return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n th\xEAm ch\u1EA5m c\xF4ng cho nh\xE2n s\u1EF1 ngo\xE0i ph\xF2ng ban" }, 403);
+    let ci = checkinTime || null;
+    let co = checkoutTime || null;
+    if (status === "absent" || status === "leave") {
+      ci = null;
+      co = null;
+    }
+    const timing = attManualTimingMetrics({ work_type: workType, shift, expected_start: null, expected_end: null }, ci, co);
+    const workHours = timing.workHours > 0 ? Number(timing.workHours.toFixed(2)) : null;
+    const { results: existingRows = [] } = await env.DB.prepare("SELECT id,date FROM attendance WHERE user_id=? AND date BETWEEN ? AND ?").bind(employeeId, fromDate, toDate).all();
+    const existingDates = new Set(existingRows.map((r) => r.date));
+    const createdDates = [];
+    const skippedDates = [];
+    const existsDates = [];
+    for (let d = /* @__PURE__ */ new Date(`${fromDate}T00:00:00`); d <= /* @__PURE__ */ new Date(`${toDate}T00:00:00`); d.setDate(d.getDate() + 1)) {
+      const iso = attIsoDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
+      if (existingDates.has(iso)) {
+        existsDates.push(iso);
+        continue;
+      }
+      if (skipNonWorkingDays && !await isAttendanceWorkingDay(env, iso, employee)) {
+        skippedDates.push(iso);
+        continue;
+      }
+      createdDates.push(iso);
+    }
+    const summary = {
+      dry_run: dryRun,
+      created: createdDates.length,
+      created_dates: createdDates,
+      skipped: skippedDates.length,
+      skipped_dates: skippedDates,
+      exists: existsDates.length,
+      exists_dates: existsDates,
+      employee: { id: employee.id, full_name: employee.full_name, employee_code: employee.employee_code }
+    };
+    if (dryRun) return json({ ok: true, ...summary });
+    for (const iso of createdDates) {
+      await d1WriteWithRetry(() => env.DB.prepare(
+        "INSERT INTO attendance (user_id,date,checkin_time,checkout_time,status,work_hours,note,work_type,shift,registered,late_minutes,early_minutes) VALUES (?,?,?,?,?,?,?,?,?,1,?,?)"
+      ).bind(employeeId, iso, ci, co, status, workHours, note || null, workType, shift, timing.lateMinutes, timing.earlyMinutes).run());
+    }
+    await broadcastAppEvent(env, "attendance", "attendance:batch_imported", {
+      user_id: employeeId,
+      created_dates: createdDates,
+      count: createdDates.length
+    }, { actorId: me.id });
+    return json({ ok: true, ...summary });
+  }
+  if (path === "/api/attendance-locations" && request.method === "GET") {
+    const schemaReady = await ensureAttendanceLocationSchema(env);
+    if (!schemaReady) return json({ locations: [], schema_ready: false, warning: "Kh\xF4ng th\u1EC3 kh\u1EDFi t\u1EA1o d\u1EEF li\u1EC7u \u0111\u1ECBa \u0111i\u1EC3m ch\u1EA5m c\xF4ng. Vui l\xF2ng th\u1EED l\u1EA1i sau." }, 503);
+    const { results = [] } = await env.DB.prepare("SELECT * FROM attendance_locations ORDER BY is_active DESC,name COLLATE NOCASE").all();
+    return json({ locations: results });
+  }
+  if (path === "/api/attendance-locations/verify" && request.method === "POST") {
+    const result = await verifyAttendanceGeofence(env, await request.json().catch(() => ({})));
+    return json(result);
+  }
+  if (path === "/api/attendance-locations" && request.method === "POST") {
+    if (!isAdmin) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    if (!await ensureAttendanceLocationSchema(env)) return json({ error: "Kh\xF4ng th\u1EC3 kh\u1EDFi t\u1EA1o d\u1EEF li\u1EC7u \u0111\u1ECBa \u0111i\u1EC3m ch\u1EA5m c\xF4ng. Vui l\xF2ng th\u1EED l\u1EA1i sau." }, 503);
+    const b = await request.json().catch(() => ({}));
+    if (!String(b.name || "").trim() || !Number.isFinite(Number(b.latitude)) || !Number.isFinite(Number(b.longitude))) return json({ error: "T\xEAn v\xE0 t\u1ECDa \u0111\u1ED9 l\xE0 b\u1EAFt bu\u1ED9c" }, 400);
+    const r = await env.DB.prepare("INSERT INTO attendance_locations (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active) VALUES (?,?,?,?,?,?,?,?)").bind(String(b.name).trim(), String(b.code || "").trim() || null, String(b.address || "").trim(), Number(b.latitude), Number(b.longitude), Math.max(10, Number(b.radius_meters || 100)), Math.max(5, Number(b.max_accuracy_meters || 100)), b.is_active === false ? 0 : 1).run();
+    return json({ ok: true, id: r.meta.last_row_id });
+  }
+  const attendanceLocationMatch = path.match(/^\/api\/attendance-locations\/(\d+)$/);
+  if (attendanceLocationMatch && ["PUT", "DELETE"].includes(request.method)) {
+    if (!isAdmin) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    if (!await ensureAttendanceLocationSchema(env)) return json({ error: "Kh\xF4ng th\u1EC3 kh\u1EDFi t\u1EA1o d\u1EEF li\u1EC7u \u0111\u1ECBa \u0111i\u1EC3m ch\u1EA5m c\xF4ng. Vui l\xF2ng th\u1EED l\u1EA1i sau." }, 503);
+    const id = Number(attendanceLocationMatch[1]);
+    if (request.method === "DELETE") {
+      await env.DB.prepare("DELETE FROM attendance_locations WHERE id=?").bind(id).run();
+      return json({ ok: true });
+    }
+    const b = await request.json().catch(() => ({}));
+    if (!String(b.name || "").trim() || !Number.isFinite(Number(b.latitude)) || !Number.isFinite(Number(b.longitude))) return json({ error: "T\xEAn v\xE0 t\u1ECDa \u0111\u1ED9 l\xE0 b\u1EAFt bu\u1ED9c" }, 400);
+    await env.DB.prepare("UPDATE attendance_locations SET name=?,code=?,address=?,latitude=?,longitude=?,radius_meters=?,max_accuracy_meters=?,is_active=?,updated_at=datetime('now','localtime') WHERE id=?").bind(String(b.name).trim(), String(b.code || "").trim() || null, String(b.address || "").trim(), Number(b.latitude), Number(b.longitude), Math.max(10, Number(b.radius_meters || 100)), Math.max(5, Number(b.max_accuracy_meters || 100)), b.is_active === false ? 0 : 1, id).run();
+    return json({ ok: true });
+  }
+  if (path === "/api/wifi-whitelist" && request.method === "GET") {
+    const { results } = await env.DB.prepare("SELECT * FROM wifi_whitelist ORDER BY id").all();
+    return json({ whitelist: results });
+  }
+  if (path === "/api/wifi-whitelist" && request.method === "POST") {
+    if (!isAdmin) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const b = await request.json();
+    const ipInfo = await currentIpInfo(env, request);
+    const requestedIp = String(b.ip_range || ipInfo.ip).trim();
+    const rules = String(requestedIp || "").split(",").map((s) => s.trim()).filter(Boolean);
+    if (!rules.length) return json({ error: "Nh\u1EADp \xEDt nh\u1EA5t m\u1ED9t Public IP ho\u1EB7c d\u1EA3i m\u1EA1ng c\xF4ng khai." }, 400);
+    if (rules.some(isPrivateNetworkRule)) return json({ error: "Kh\xF4ng s\u1EED d\u1EE5ng IP n\u1ED9i b\u1ED9, router ho\u1EB7c d\u1EA3i private cho m\u1EA1ng v\u0103n ph\xF2ng." }, 400);
+    const hasCurrentIp = rules.some((rule) => ipMatchesRule(ipInfo.ip, rule));
+    const warning = hasCurrentIp ? null : `IP backend \u0111ang nh\u1EADn l\xE0 ${ipInfo.ip} \u2014 kh\xF4ng n\u1EB1m trong d\u1EA3i v\u1EEBa l\u01B0u. N\u1EBFu IP n\xE0y kh\xF4ng ph\u1EA3i IP v\u0103n ph\xF2ng, vi\u1EC7c ch\u1EA5m c\xF4ng c\xF3 th\u1EC3 b\u1ECB gi\xE1n \u0111o\u1EA1n.`;
+    const r = await env.DB.prepare(
+      "INSERT INTO wifi_whitelist (wifi_name,ip_range,description,is_active) VALUES (?,?,?,1)"
+    ).bind(b.wifi_name || "", requestedIp || ipInfo.ip, b.description || "").run();
+    return json({ ok: true, id: r.meta.last_row_id, warning });
+  }
+  const wifiMatch = path.match(/^\/api\/wifi-whitelist\/(\d+)$/);
+  if (wifiMatch) {
+    const wid = parseInt(wifiMatch[1]);
+    if (request.method === "PUT") {
+      if (!isAdmin) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      const b = await request.json();
+      const requestedIp = String(b.ip_range || "").trim();
+      if (!requestedIp || requestedIp.split(",").some(isPrivateNetworkRule)) {
+        return json({ error: "Nh\u1EADp Public IP/d\u1EA3i m\u1EA1ng h\u1EE3p l\u1EC7; kh\xF4ng s\u1EED d\u1EE5ng IP n\u1ED9i b\u1ED9, router ho\u1EB7c d\u1EA3i private." }, 400);
+      }
+      await env.DB.prepare("UPDATE wifi_whitelist SET wifi_name=?,ip_range=?,description=?,is_active=? WHERE id=?").bind(b.wifi_name || "", b.ip_range || "", b.description || "", b.is_active ?? 1, wid).run();
+      return json({ ok: true });
+    }
+    if (request.method === "DELETE") {
+      if (!isAdmin) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      await env.DB.prepare("DELETE FROM wifi_whitelist WHERE id=?").bind(wid).run();
+      return json({ ok: true });
+    }
+  }
+  if (path === "/api/task-imports/myxteam/project" && request.method === "POST") {
+    if (!isTaskAdmin(me)) return json({ error: "Ch\u1EC9 Admin/HCNS \u0111\u01B0\u1EE3c nh\u1EADp d\u1EEF li\u1EC7u MyXteam" }, 403);
+    let body;
+    try {
+      body = await request.json();
+    } catch (_) {
+      return json({ error: "JSON kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    }
+    const project = body?.project || body;
+    const groups = Array.isArray(project?.groups) ? project.groups : [];
+    const taskCount = groups.reduce((sum, group) => sum + (Array.isArray(group?.tasks) ? group.tasks.length : 0), 0);
+    if (groups.length > 500 || taskCount > 5e3) return json({ error: "Project v\u01B0\u1EE3t gi\u1EDBi h\u1EA1n nh\u1EADp an to\xE0n" }, 413);
+    try {
+      return json({ ok: true, result: await importMyxteamProject(env, me, project) });
+    } catch (error) {
+      console.error("MyXteam import failed", error);
+      return json({ error: error?.message || "Kh\xF4ng th\u1EC3 nh\u1EADp Project MyXteam" }, 400);
+    }
+  }
+  if (path === "/api/task-projects" && request.method === "GET") {
+    const includeArchived = url.searchParams.get("include_archived") === "1";
+    const search = normalizeVietnameseSearch(url.searchParams.get("search"));
+    let q = `SELECT p.*, u.full_name as manager_name,
+                    (SELECT COUNT(*) FROM task_project_members m WHERE m.project_id=p.id) as member_count,
+                    (SELECT GROUP_CONCAT(user_id) FROM task_project_members m WHERE m.project_id=p.id) as member_ids,
+                    (SELECT COUNT(*) FROM tasks t WHERE t.team_project_id=p.id) as task_count
+               FROM task_projects p
+               LEFT JOIN users u ON p.manager_id=u.id
+              WHERE 1=1`;
+    const binds = [];
+    if (!includeArchived) q += " AND COALESCE(p.status,'active')!='archived'";
+    if (!isTaskAdmin(me)) {
+      q += ` AND (p.manager_id=? OR EXISTS (
+        SELECT 1 FROM task_project_members m WHERE m.project_id=p.id AND m.user_id=?
+      ))`;
+      binds.push(me.id, me.id);
+    }
+    q += " ORDER BY CASE COALESCE(p.status,'active') WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, p.updated_at DESC, p.id DESC";
+    const stmt = env.DB.prepare(q);
+    const { results } = await (binds.length ? stmt.bind(...binds) : stmt).all();
+    const visibleProjects = search ? results.filter((project) => normalizeVietnameseSearch(
+      `${project.name || ""} ${project.code || ""} ${project.description || ""} ${project.department || ""}`
+    ).includes(search)) : results;
+    return json({ projects: visibleProjects, canManage: isTaskAdmin(me) });
+  }
+  if (path === "/api/task-projects" && request.method === "POST") {
+    if (!isTaskAdmin(me)) return json({ error: "Khong co quyen" }, 403);
+    const b = await request.json();
+    const name = String(b.name || "").trim();
+    if (!name) return json({ error: "Thieu ten Project" }, 400);
+    const type = "project";
+    const status = ["active", "paused", "archived", "done"].includes(b.status) ? b.status : "active";
+    const managerId = intOrNull(b.manager_id);
+    const r = await env.DB.prepare(
+      `INSERT INTO task_projects (workspace_id,name,code,type,description,department,manager_id,status,start_date,end_date,created_by)
+       VALUES (1,?,?,?,?,?,?,?,?,?,?)`
+    ).bind(name, String(b.code || "").trim(), type, String(b.description || "").trim(), String(b.department || "").trim(), managerId, status, b.start_date || null, b.end_date || null, me.id).run();
+    const projectId = r.meta.last_row_id;
+    const members = Array.isArray(b.members) ? b.members : [];
+    if (managerId && !members.includes(managerId)) members.push(managerId);
+    for (const uid of [...new Set(members.map(Number).filter(Boolean))]) {
+      await env.DB.prepare("INSERT INTO task_project_members (project_id,user_id,role,added_by) VALUES (?,?,?,?)").bind(projectId, uid, uid === managerId ? "owner" : "member", me.id).run();
+    }
+    await ensureDefaultTaskGroup(env, projectId, me.id);
+    await broadcastAppEvent(env, "tasks", "task_project:created", { id: projectId, name, department: b.department || "" }, { actorId: me.id });
+    return json({ ok: true, id: projectId });
+  }
+  const projectTimelineMatch = path.match(/^\/api\/task-projects\/(\d+)\/timeline$/);
+  if (projectTimelineMatch && request.method === "GET") {
+    const projectId = parseInt(projectTimelineMatch[1]);
+    const project = await env.DB.prepare(
+      "SELECT id,name,code,created_by,manager_id FROM task_projects WHERE id=?"
+    ).bind(projectId).first();
+    if (!project) return json({ error: "Khong tim thay Project" }, 404);
+    const canView = isTaskAdmin(me) || Number(project.created_by) === Number(me.id) || Number(project.manager_id) === Number(me.id);
+    if (!canView) return json({ error: "Khong co quyen xem Timeline cua Project nay" }, 403);
+    const kind = String(url.searchParams.get("kind") || "all").toLowerCase();
+    const allowedKinds = {
+      all: ["task_created", "task_completed", "task_reopened", "subtask_created", "subtask_completed", "subtask_reopened", "created"],
+      created: ["task_created", "subtask_created", "created"],
+      completed: ["task_completed", "subtask_completed"],
+      reopened: ["task_reopened", "subtask_reopened"]
+    };
+    const actions = allowedKinds[kind] || allowedKinds.all;
+    const requestedLimit = Number(url.searchParams.get("limit") || 50);
+    const limit = Math.max(1, Math.min(Number.isFinite(requestedLimit) ? Math.trunc(requestedLimit) : 50, 100));
+    const before = intOrNull(url.searchParams.get("before"));
+    const placeholders = actions.map(() => "?").join(",");
+    const binds = [projectId, projectId, ...actions];
+    let q = `SELECT a.id,a.action,a.detail,a.project_id,a.entity_type,a.entity_id,
+                    COALESCE(a.entity_title,t.title) AS entity_title,
+                    a.assignee_id,a.assignee_name,a.created_at,
+                    COALESCE(a.actor_name,u.full_name,'Nguoi dung') AS actor_name,
+                    u.avatar_color,u.avatar_initials
+               FROM task_activity a
+               LEFT JOIN tasks t ON t.id=a.task_id
+               LEFT JOIN users u ON u.id=a.user_id
+              WHERE (a.project_id=? OR (a.project_id IS NULL AND t.team_project_id=?))
+                AND a.action IN (${placeholders})`;
+    if (before) {
+      q += " AND a.id<?";
+      binds.push(before);
+    }
+    q += " ORDER BY a.created_at DESC,a.id DESC LIMIT ?";
+    binds.push(limit + 1);
+    const { results = [] } = await env.DB.prepare(q).bind(...binds).all();
+    const hasMore = results.length > limit;
+    const events = results.slice(0, limit).map((activity) => ({
+      ...activity,
+      // `created` is the only legacy action exposed. It has no reliable
+      // completion state, so never infer one from the current task status.
+      action: activity.action === "created" ? "task_created" : activity.action,
+      entity_type: activity.entity_type || "task",
+      legacy: activity.action === "created"
+    }));
+    return json({
+      project: { id: project.id, name: project.name, code: project.code },
+      events,
+      has_more: hasMore,
+      next_before: hasMore && events.length ? events[events.length - 1].id : null
+    });
+  }
+  const projectMatch = path.match(/^\/api\/task-projects\/(\d+)$/);
+  if (projectMatch) {
+    if (!isTaskAdmin(me)) return json({ error: "Khong co quyen" }, 403);
+    const projectId = parseInt(projectMatch[1]);
+    if (request.method === "PUT") {
+      const b = await request.json();
+      const project = await env.DB.prepare("SELECT * FROM task_projects WHERE id=?").bind(projectId).first();
+      if (!project) return json({ error: "Khong tim thay" }, 404);
+      const type = "project";
+      const status = ["active", "paused", "archived", "done"].includes(b.status) ? b.status : project.status;
+      await env.DB.prepare(
+        `UPDATE task_projects
+            SET name=?,code=?,type=?,description=?,department=?,manager_id=?,status=?,start_date=?,end_date=?,updated_at=datetime('now','localtime')
+          WHERE id=?`
+      ).bind(
+        String(b.name || project.name).trim(),
+        String(b.code ?? project.code ?? "").trim(),
+        type,
+        String(b.description ?? project.description ?? "").trim(),
+        String(b.department ?? project.department ?? "").trim(),
+        intOrNull(b.manager_id) || project.manager_id || null,
+        status,
+        b.start_date ?? project.start_date ?? null,
+        b.end_date ?? project.end_date ?? null,
+        projectId
+      ).run();
+      await broadcastAppEvent(env, "tasks", "task_project:updated", { id: projectId, name: b.name || project.name, status }, { actorId: me.id });
+      return json({ ok: true });
+    }
+    if (request.method === "DELETE") {
+      const permanent = url.searchParams.get("permanent") === "1";
+      if (permanent) {
+        try {
+          const { results: projectTasks = [] } = await env.DB.prepare("SELECT id FROM tasks WHERE team_project_id=?").bind(projectId).all();
+          for (const t of projectTasks) {
+            try {
+              await env.DB.prepare("DELETE FROM subtasks WHERE task_id=?").bind(t.id).run();
+            } catch (_) {
+            }
+            try {
+              await env.DB.prepare("DELETE FROM task_followers WHERE task_id=?").bind(t.id).run();
+            } catch (_) {
+            }
+            try {
+              await env.DB.prepare("DELETE FROM task_comments WHERE task_id=?").bind(t.id).run();
+            } catch (_) {
+            }
+            try {
+              await env.DB.prepare("DELETE FROM task_activity WHERE task_id=?").bind(t.id).run();
+            } catch (_) {
+            }
+            try {
+              await env.DB.prepare("DELETE FROM task_attachments WHERE task_id=?").bind(t.id).run();
+            } catch (_) {
+            }
+            try {
+              await env.DB.prepare("DELETE FROM task_mention_notifications WHERE task_id=?").bind(t.id).run();
+            } catch (_) {
+            }
+          }
+          try {
+            await env.DB.prepare("DELETE FROM tasks WHERE team_project_id=?").bind(projectId).run();
+          } catch (_) {
+          }
+          try {
+            await env.DB.prepare("DELETE FROM task_groups WHERE project_id=?").bind(projectId).run();
+          } catch (_) {
+          }
+          try {
+            await env.DB.prepare("DELETE FROM task_project_members WHERE project_id=?").bind(projectId).run();
+          } catch (_) {
+          }
+          try {
+            await env.DB.prepare("DELETE FROM task_projects WHERE id=?").bind(projectId).run();
+          } catch (_) {
+          }
+        } catch (delErr) {
+          return json({ error: delErr.message || "Kh\xF4ng th\u1EC3 x\xF3a d\u1EF1 \xE1n" }, 500);
+        }
+      } else {
+        await env.DB.prepare("UPDATE task_projects SET status='archived',updated_at=datetime('now','localtime') WHERE id=?").bind(projectId).run();
+      }
+      await broadcastAppEvent(env, "tasks", "task_project:deleted", { id: projectId, permanent }, { actorId: me.id });
+      return json({ ok: true });
+    }
+  }
+  const projectMembersMatch = path.match(/^\/api\/task-projects\/(\d+)\/members$/);
+  if (projectMembersMatch && request.method === "GET") {
+    const projectId = parseInt(projectMembersMatch[1]);
+    if (!await canUseTaskProject(env, projectId, me)) return json({ error: "Khong co quyen voi Project nay" }, 403);
+    const { results = [] } = await env.DB.prepare(
+      `SELECT m.user_id,m.role,m.created_at,u.full_name,u.employee_code,u.department,u.position,u.avatar_color,u.avatar_initials,u.avatar_url
+         FROM task_project_members m JOIN users u ON u.id=m.user_id
+        WHERE m.project_id=? ORDER BY CASE m.role WHEN 'owner' THEN 0 ELSE 1 END,u.full_name COLLATE NOCASE`
+    ).bind(projectId).all();
+    return json({ members: results, can_manage: isTaskAdmin(me) });
+  }
+  if (projectMembersMatch && request.method === "PUT") {
+    if (!isTaskAdmin(me)) return json({ error: "Khong co quyen" }, 403);
+    const projectId = parseInt(projectMembersMatch[1]);
+    const b = await request.json();
+    const project = await env.DB.prepare("SELECT * FROM task_projects WHERE id=?").bind(projectId).first();
+    if (!project) return json({ error: "Khong tim thay" }, 404);
+    const members = Array.isArray(b.members) ? b.members.map(Number).filter(Boolean) : [];
+    if (project.manager_id && !members.includes(project.manager_id)) members.push(project.manager_id);
+    await env.DB.prepare("DELETE FROM task_project_members WHERE project_id=?").bind(projectId).run();
+    for (const uid of [...new Set(members)]) {
+      await env.DB.prepare("INSERT INTO task_project_members (project_id,user_id,role,added_by) VALUES (?,?,?,?)").bind(projectId, uid, uid === Number(project.manager_id) ? "owner" : "member", me.id).run();
+    }
+    await broadcastAppEvent(env, "tasks", "task_project:members_updated", { id: projectId, members: [...new Set(members)] }, { actorId: me.id });
+    return json({ ok: true });
+  }
+  if (path === "/api/task-project-groups/members" && request.method === "PUT") {
+    if (!isTaskAdmin(me)) return json({ error: "Khong co quyen" }, 403);
+    const b = await request.json();
+    const department = String(b.department || "").trim();
+    if (!department) return json({ error: "Thieu ten nhom du an" }, 400);
+    const members = Array.isArray(b.members) ? b.members.map(Number).filter(Boolean) : [];
+    const { results: groupProjects = [] } = await env.DB.prepare(
+      "SELECT id, manager_id FROM task_projects WHERE department=?"
+    ).bind(department).all();
+    for (const p of groupProjects) {
+      const pMembers = [...members];
+      if (p.manager_id && !pMembers.includes(Number(p.manager_id))) {
+        pMembers.push(Number(p.manager_id));
+      }
+      await env.DB.prepare("DELETE FROM task_project_members WHERE project_id=?").bind(p.id).run();
+      for (const uid of [...new Set(pMembers)]) {
+        await env.DB.prepare("INSERT INTO task_project_members (project_id,user_id,role,added_by) VALUES (?,?,?,?)").bind(p.id, uid, uid === Number(p.manager_id) ? "owner" : "member", me.id).run();
+      }
+    }
+    await broadcastAppEvent(env, "tasks", "task_project_group:members_updated", { department, count: groupProjects.length }, { actorId: me.id });
+    return json({ ok: true, count: groupProjects.length });
+  }
+  if (path === "/api/task-groups" && request.method === "GET") {
+    const projectId = intOrNull(url.searchParams.get("project_id"));
+    if (!projectId) return json({ error: "Thieu project_id" }, 400);
+    if (!await canUseTaskProject(env, projectId, me)) return json({ error: "Khong co quyen voi Project nay" }, 403);
+    await ensureDefaultTaskGroup(env, projectId, me.id);
+    const includeArchived = url.searchParams.get("include_archived") === "1";
+    let q = `SELECT g.*,
+                    (SELECT COUNT(*) FROM tasks t WHERE t.group_id=g.id OR (g.position=0 AND t.team_project_id=g.project_id AND t.group_id IS NULL)) as task_count
+               FROM task_groups g WHERE g.project_id=?`;
+    const binds = [projectId];
+    if (!includeArchived) q += " AND g.is_archived=0";
+    q += " ORDER BY g.position ASC, g.id ASC";
+    const { results } = await env.DB.prepare(q).bind(...binds).all();
+    return json({ groups: results, canManage: isTaskAdmin(me) });
+  }
+  if (path === "/api/task-groups" && request.method === "POST") {
+    if (!isTaskAdmin(me)) return json({ error: "Khong co quyen" }, 403);
+    const b = await request.json();
+    const projectId = intOrNull(b.project_id);
+    const name = String(b.name || "").trim();
+    if (!projectId || !name) return json({ error: "Thieu Project hoac ten nhom" }, 400);
+    if (!await canUseTaskProject(env, projectId, me)) return json({ error: "Khong co quyen voi Project nay" }, 403);
+    const color = /^#[0-9a-fA-F]{6}$/.test(String(b.color || "")) ? String(b.color) : "#6366F1";
+    const posRow = await env.DB.prepare("SELECT COALESCE(MAX(position), -1) + 1 as next_pos FROM task_groups WHERE project_id=?").bind(projectId).first();
+    const position = Number.isFinite(Number(b.position)) ? Number(b.position) : Number(posRow?.next_pos || 0);
+    const r = await env.DB.prepare(
+      "INSERT INTO task_groups (project_id,name,position,color,created_by) VALUES (?,?,?,?,?)"
+    ).bind(projectId, name, position, color, me.id).run();
+    const groupId = r.meta.last_row_id;
+    await broadcastAppEvent(env, "tasks", "task_group:created", { id: groupId, project_id: projectId, name, position, color }, { actorId: me.id });
+    return json({ ok: true, id: groupId });
+  }
+  const groupMatch = path.match(/^\/api\/task-groups\/(\d+)$/);
+  if (groupMatch) {
+    if (!isTaskAdmin(me)) return json({ error: "Khong co quyen" }, 403);
+    const groupId = parseInt(groupMatch[1]);
+    const group = await env.DB.prepare("SELECT * FROM task_groups WHERE id=?").bind(groupId).first();
+    if (!group) return json({ error: "Khong tim thay" }, 404);
+    if (!await canUseTaskProject(env, group.project_id, me)) return json({ error: "Khong co quyen voi Project nay" }, 403);
+    if (request.method === "PUT") {
+      const b = await request.json();
+      const name = String(b.name || group.name || "").trim();
+      if (!name) return json({ error: "Thieu ten nhom" }, 400);
+      const color = /^#[0-9a-fA-F]{6}$/.test(String(b.color || "")) ? String(b.color) : group.color;
+      const position = Number.isFinite(Number(b.position)) ? Number(b.position) : group.position;
+      await env.DB.prepare(
+        "UPDATE task_groups SET name=?,position=?,color=?,is_archived=?,updated_at=datetime('now','localtime') WHERE id=?"
+      ).bind(name, position, color, b.is_archived ?? group.is_archived ?? 0, groupId).run();
+      await broadcastAppEvent(env, "tasks", "task_group:updated", { id: groupId, project_id: group.project_id, name, position, color, is_archived: b.is_archived ?? group.is_archived ?? 0 }, { actorId: me.id });
+      return json({ ok: true });
+    }
+    if (request.method === "DELETE") {
+      await env.DB.prepare("UPDATE task_groups SET is_archived=1,updated_at=datetime('now','localtime') WHERE id=?").bind(groupId).run();
+      await broadcastAppEvent(env, "tasks", "task_group:deleted", { id: groupId, project_id: group.project_id }, { actorId: me.id });
+      return json({ ok: true });
+    }
+  }
+  if (path === "/api/task-labels" && request.method === "GET") {
+    const projectId = intOrNull(url.searchParams.get("project_id"));
+    let q = `SELECT l.*, p.name as project_name,
+                    (SELECT COUNT(*) FROM tasks t WHERE t.label_id=l.id) as usage_count
+               FROM task_labels l
+               LEFT JOIN task_projects p ON l.project_id=p.id
+              WHERE l.is_active=1 AND (l.project_id IS NULL`;
+    const binds = [];
+    if (projectId) {
+      q += " OR l.project_id=?";
+      binds.push(projectId);
+    }
+    q += ")";
+    if (!isTaskAdmin(me) && projectId) {
+      q += ` AND (l.project_id IS NULL OR EXISTS (
+        SELECT 1 FROM task_project_members m WHERE m.project_id=l.project_id AND m.user_id=?
+      ) OR EXISTS (SELECT 1 FROM task_projects p2 WHERE p2.id=l.project_id AND p2.manager_id=?))`;
+      binds.push(me.id, me.id);
+    }
+    q += " ORDER BY l.project_id IS NOT NULL, l.name";
+    const stmt = env.DB.prepare(q);
+    const { results } = await (binds.length ? stmt.bind(...binds) : stmt).all();
+    return json({ labels: results, canManage: isTaskAdmin(me) });
+  }
+  if (path === "/api/task-labels" && request.method === "POST") {
+    if (!isTaskAdmin(me)) return json({ error: "Khong co quyen" }, 403);
+    const b = await request.json();
+    const name = String(b.name || "").trim();
+    const color = String(b.color || "").trim();
+    if (!name) return json({ error: "Thieu ten nhan" }, 400);
+    if (!/^#[0-9a-fA-F]{6}$/.test(color)) return json({ error: "Mau khong hop le" }, 400);
+    const projectId = intOrNull(b.project_id);
+    await env.DB.prepare(
+      `INSERT INTO task_labels (workspace_id,project_id,name,code,color,description,is_active,created_by)
+       VALUES (1,?,?,?,?,?,1,?)`
+    ).bind(projectId, name, String(b.code || "").trim(), color, String(b.description || "").trim(), me.id).run();
+    return json({ ok: true });
+  }
+  const labelMatch = path.match(/^\/api\/task-labels\/(\d+)$/);
+  if (labelMatch) {
+    if (!isTaskAdmin(me)) return json({ error: "Khong co quyen" }, 403);
+    const labelId = parseInt(labelMatch[1]);
+    if (request.method === "PUT") {
+      const b = await request.json();
+      const label = await env.DB.prepare("SELECT * FROM task_labels WHERE id=?").bind(labelId).first();
+      if (!label) return json({ error: "Khong tim thay" }, 404);
+      const color = String(b.color || label.color || "").trim();
+      if (!/^#[0-9a-fA-F]{6}$/.test(color)) return json({ error: "Mau khong hop le" }, 400);
+      await env.DB.prepare(
+        `UPDATE task_labels
+            SET name=?,code=?,color=?,description=?,project_id=?,updated_at=datetime('now','localtime')
+          WHERE id=?`
+      ).bind(
+        String(b.name || label.name).trim(),
+        String(b.code ?? label.code ?? "").trim(),
+        color,
+        String(b.description ?? label.description ?? "").trim(),
+        intOrNull(b.project_id) || null,
+        labelId
+      ).run();
+      return json({ ok: true });
+    }
+    if (request.method === "DELETE") {
+      const used = await env.DB.prepare("SELECT COUNT(*) as cnt FROM tasks WHERE label_id=?").bind(labelId).first();
+      if ((used?.cnt || 0) > 0) {
+        await env.DB.prepare("UPDATE task_labels SET is_active=0,updated_at=datetime('now','localtime') WHERE id=?").bind(labelId).run();
+      } else {
+        await env.DB.prepare("DELETE FROM task_labels WHERE id=?").bind(labelId).run();
+      }
+      return json({ ok: true });
+    }
+  }
+  if (path === "/api/tasks" && request.method === "GET") {
+    const date = url.searchParams.get("date");
+    const assignee = url.searchParams.get("assignee");
+    const assigner = url.searchParams.get("assigner");
+    const taskStatus = url.searchParams.get("status");
+    const dept = url.searchParams.get("department");
+    const priority = url.searchParams.get("priority");
+    const projectId = intOrNull(url.searchParams.get("project_id"));
+    const groupId = intOrNull(url.searchParams.get("group_id"));
+    const labelId = intOrNull(url.searchParams.get("label_id"));
+    const search = String(url.searchParams.get("search") || "").trim();
+    const createdFrom = url.searchParams.get("created_from");
+    const createdTo = url.searchParams.get("created_to");
+    const dueFrom = url.searchParams.get("due_from");
+    const dueTo = url.searchParams.get("due_to");
+    const requestedSort = url.searchParams.get("sort");
+    const sort = requestedSort || "created_at";
+    const order = (url.searchParams.get("order") || "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
+    let q = `SELECT t.*, u.full_name as assignee_name, u.employee_code as assignee_code, u.department as assignee_department,
+                    u.avatar_color, u.avatar_initials, ab.full_name as assigner_name,
+                    p.name as project_name, p.code as project_code, p.type as project_type, p.status as project_status,
+                    g.name as group_name, g.position as group_position, g.color as group_color,
+                    l.name as label_name, l.color as label_color_real,
+                    (SELECT COUNT(*) FROM subtasks s WHERE s.task_id=t.id) as subtask_total,
+                    (SELECT COUNT(*) FROM subtasks s WHERE s.task_id=t.id AND s.is_done=1) as subtask_done,
+                    (SELECT COUNT(*) FROM task_followers f WHERE f.task_id=t.id) as follower_count
+             FROM tasks t
+             LEFT JOIN users u ON t.assigned_to=u.id
+             LEFT JOIN users ab ON t.assigned_by=ab.id
+             LEFT JOIN task_projects p ON t.team_project_id=p.id
+             LEFT JOIN task_groups g ON t.group_id=g.id
+             LEFT JOIN task_labels l ON t.label_id=l.id
+             WHERE 1=1`;
+    const binds = [];
+    if (isAdmin || isHcns(me)) {
+      if (assignee) {
+        q += " AND t.assigned_to=?";
+        binds.push(parseInt(assignee));
+      }
+    } else {
+      q += " AND (t.assigned_to=? OR t.assigned_by=? OR EXISTS (SELECT 1 FROM task_followers f WHERE f.task_id=t.id AND f.user_id=?))";
+      binds.push(me.id, me.id, me.id);
+      if (assignee) {
+        q += " AND t.assigned_to=?";
+        binds.push(parseInt(assignee));
+      }
+    }
+    if (date) {
+      q += " AND t.date=?";
+      binds.push(date);
+    }
+    if (taskStatus) {
+      q += " AND t.status=?";
+      binds.push(taskStatus);
+    }
+    if (dept) {
+      q += " AND (t.department=? OR u.department=?)";
+      binds.push(dept, dept);
+    }
+    if (assigner) {
+      q += " AND t.assigned_by=?";
+      binds.push(parseInt(assigner));
+    }
+    if (priority) {
+      q += " AND t.priority=?";
+      binds.push(priority);
+    }
+    if (projectId) {
+      q += " AND t.team_project_id=?";
+      binds.push(projectId);
+    }
+    if (groupId) {
+      q += " AND t.group_id=?";
+      binds.push(groupId);
+    }
+    if (labelId) {
+      q += " AND t.label_id=?";
+      binds.push(labelId);
+    }
+    if (createdFrom) {
+      q += " AND date(t.created_at)>=date(?)";
+      binds.push(createdFrom);
+    }
+    if (createdTo) {
+      q += " AND date(t.created_at)<=date(?)";
+      binds.push(createdTo);
+    }
+    if (dueFrom) {
+      q += " AND date(t.due_date)>=date(?)";
+      binds.push(dueFrom);
+    }
+    if (dueTo) {
+      q += " AND date(t.due_date)<=date(?)";
+      binds.push(dueTo);
+    }
+    if (search) {
+      q += " AND (lower(t.title) LIKE ? OR lower(t.description) LIKE ? OR lower(u.full_name) LIKE ? OR lower(u.employee_code) LIKE ?)";
+      const like = "%" + search.toLowerCase() + "%";
+      binds.push(like, like, like, like);
+    }
+    const sortMap = { due_date: "t.due_date", created_at: "t.created_at", priority: "CASE t.priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 WHEN 'low' THEN 1 ELSE 0 END", updated_at: "t.updated_at" };
+    if (projectId && !requestedSort) {
+      q += " ORDER BY CASE WHEN t.position IS NOT NULL THEN 0 WHEN t.import_position IS NOT NULL THEN 1 ELSE 2 END ASC, t.position ASC, t.import_position ASC, t.created_at DESC";
+    } else {
+      q += ` ORDER BY ${sortMap[sort] || sortMap.created_at} ${order}`;
+    }
+    const stmt = env.DB.prepare(q);
+    const { results } = await (binds.length ? stmt.bind(...binds) : stmt).all();
+    return json({ tasks: results });
+  }
+  if (path === "/api/tasks/reorder" && request.method === "POST") {
+    const b = await request.json();
+    const projectId = intOrNull(b.project_id);
+    if (projectId && !await canUseTaskProject(env, projectId, me)) {
+      return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n v\u1EDBi Team/Project n\xE0y" }, 403);
+    }
+    const statements = [];
+    if (Array.isArray(b.moves) && b.moves.length > 0) {
+      for (const move of b.moves) {
+        const taskId = intOrNull(move.id || move.task_id);
+        if (!taskId) continue;
+        const groupId = move.group_id !== void 0 ? intOrNull(move.group_id) : void 0;
+        const pos = Number.isFinite(Number(move.position)) ? Number(move.position) : 0;
+        if (groupId !== void 0) {
+          statements.push(env.DB.prepare("UPDATE tasks SET group_id=?, position=?, updated_at=datetime('now') WHERE id=?").bind(groupId, pos, taskId));
+        } else {
+          statements.push(env.DB.prepare("UPDATE tasks SET position=?, updated_at=datetime('now') WHERE id=?").bind(pos, taskId));
+        }
+      }
+    } else if (Array.isArray(b.task_ids) && b.task_ids.length > 0) {
+      const groupId = b.group_id !== void 0 ? intOrNull(b.group_id) : void 0;
+      b.task_ids.forEach((taskIdRaw, index) => {
+        const taskId = intOrNull(taskIdRaw);
+        if (!taskId) return;
+        const pos = index * 10;
+        if (groupId !== void 0) {
+          statements.push(env.DB.prepare("UPDATE tasks SET group_id=?, position=?, updated_at=datetime('now') WHERE id=?").bind(groupId, pos, taskId));
+        } else {
+          statements.push(env.DB.prepare("UPDATE tasks SET position=?, updated_at=datetime('now') WHERE id=?").bind(pos, taskId));
+        }
+      });
+    }
+    if (statements.length > 0) {
+      await env.DB.batch(statements);
+    }
+    await broadcastAppEvent(env, "tasks", "task:reordered", {
+      project_id: projectId,
+      moves: b.moves || null,
+      task_ids: b.task_ids || null,
+      group_id: b.group_id !== void 0 ? intOrNull(b.group_id) : null
+    }, { actorId: me.id });
+    return json({ ok: true, updated: statements.length });
+  }
+  if (path === "/api/tasks" && request.method === "POST") {
+    const b = await request.json();
+    if (!b.title) return json({ error: "Thi\u1EBFu ti\xEAu \u0111\u1EC1" }, 400);
+    const status = b.status || "todo";
+    const priority = b.priority || "normal";
+    const projectId = intOrNull(b.team_project_id || b.project_id);
+    const groupId = intOrNull(b.group_id);
+    const labelId = intOrNull(b.label_id);
+    if (!await canUseTaskProject(env, projectId, me)) return json({ error: "Khong co quyen voi Team/Project nay" }, 403);
+    if (groupId && !await canUseTaskGroup(env, groupId, projectId, me)) return json({ error: "Nhom cong viec khong hop le" }, 400);
+    const label = await resolveTaskLabel(env, labelId, projectId);
+    if (labelId && !label) return json({ error: "Nhan cong viec khong hop le" }, 400);
+    const labelColor = label ? label.color : taskLabelColor(status, priority, b.label_color);
+    const r = await env.DB.prepare(
+      "INSERT INTO tasks (title,description,assigned_to,assigned_by,department,date,due_date,status,priority,label_color,checkin_time,checkout_time,workspace_id,team_project_id,group_id,label_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)"
+    ).bind(b.title, b.description || "", b.assigned_to || null, me.id, b.department || "", b.date || null, b.due_date || null, status, priority, labelColor, b.checkin_time || null, b.checkout_time || null, projectId, groupId, labelId).run();
+    const taskId = r.meta.last_row_id;
+    const assignee = await taskActivityAssignee(env, b.assigned_to);
+    await recordTaskActivity(env, {
+      taskId,
+      projectId,
+      user: me,
+      action: "task_created",
+      entityType: "task",
+      entityId: taskId,
+      entityTitle: b.title,
+      assigneeId: assignee.id,
+      assigneeName: assignee.name,
+      detail: "T\u1EA1o c\xF4ng vi\u1EC7c: " + b.title
+    });
+    const { results: projectMembers = [] } = projectId ? await env.DB.prepare("SELECT user_id FROM task_project_members WHERE project_id=?").bind(projectId).all() : { results: [] };
+    const defaultFollowerIds = [...new Set(
+      [Number(me.id), Number(b.assigned_to), ...projectMembers.map((m) => Number(m.user_id))].filter(Boolean)
+    )];
+    for (const followerId of defaultFollowerIds) {
+      const exists = await env.DB.prepare("SELECT id FROM task_followers WHERE task_id=? AND user_id=?").bind(taskId, followerId).first();
+      if (!exists) await env.DB.prepare("INSERT INTO task_followers (task_id,user_id) VALUES (?,?)").bind(taskId, followerId).run();
+    }
+    await broadcastAppEvent(env, "tasks", "task:created", {
+      id: taskId,
+      title: b.title,
+      description: b.description || "",
+      status,
+      priority,
+      assigned_to: b.assigned_to || null,
+      assigned_by: me.id,
+      department: b.department || "",
+      date: b.date || null,
+      due_date: b.due_date || null,
+      team_project_id: projectId,
+      group_id: groupId,
+      label_id: labelId,
+      label_color: labelColor
+    }, { actorId: me.id });
+    return json({ ok: true, id: taskId });
+  }
+  const taskMatch = path.match(/^\/api\/tasks\/(\d+)$/);
+  if (taskMatch) {
+    const tid = parseInt(taskMatch[1]);
+    if (request.method === "GET") {
+      const task = await env.DB.prepare(
+        `SELECT t.*, u.full_name as assignee_name, u.employee_code as assignee_code, u.department as assignee_department,
+                u.avatar_color, u.avatar_initials, ab.full_name as assigner_name,
+                p.name as project_name, p.code as project_code, p.type as project_type,
+                g.name as group_name, g.position as group_position, g.color as group_color,
+                l.name as label_name, l.color as label_color_real
+           FROM tasks t
+           LEFT JOIN users u ON t.assigned_to=u.id
+           LEFT JOIN users ab ON t.assigned_by=ab.id
+           LEFT JOIN task_projects p ON t.team_project_id=p.id
+           LEFT JOIN task_groups g ON t.group_id=g.id
+           LEFT JOIN task_labels l ON t.label_id=l.id
+          WHERE t.id=?`
+      ).bind(tid).first();
+      if (!task) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y" }, 404);
+      if (!isAdmin && !isHcns(me)) {
+        const myId = Number(me.id);
+        const isInvolved = Number(task.assigned_to) === myId || Number(task.assigned_by) === myId;
+        const follower = isInvolved ? null : await env.DB.prepare("SELECT id FROM task_followers WHERE task_id=? AND user_id=?").bind(tid, myId).first();
+        if (!isInvolved && !follower) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y" }, 404);
+      }
+      const { results: subtasks } = await env.DB.prepare(
+        "SELECT s.*, u.full_name as assignee_name FROM subtasks s LEFT JOIN users u ON s.assigned_to=u.id WHERE s.task_id=? ORDER BY s.id"
+      ).bind(tid).all();
+      const { results: followers } = await env.DB.prepare(
+        "SELECT f.*, u.full_name, u.avatar_color, u.avatar_initials FROM task_followers f JOIN users u ON f.user_id=u.id WHERE f.task_id=?"
+      ).bind(tid).all();
+      return json({ task, subtasks, followers });
+    }
+    if (request.method === "PUT") {
+      const b = await request.json();
+      const task = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(tid).first();
+      if (!task) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y" }, 404);
+      if (!isManager && task.assigned_to !== me.id && task.assigned_by !== me.id) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      const nextStatus = b.status || task.status;
+      const nextPriority = b.priority || task.priority;
+      const nextProjectId = b.team_project_id !== void 0 || b.project_id !== void 0 ? intOrNull(b.team_project_id || b.project_id) : task.team_project_id || null;
+      const nextGroupId = b.group_id !== void 0 ? intOrNull(b.group_id) : task.group_id || null;
+      const nextLabelId = b.label_id !== void 0 ? intOrNull(b.label_id) : task.label_id || null;
+      if (!await canUseTaskProject(env, nextProjectId, me)) return json({ error: "Khong co quyen voi Team/Project nay" }, 403);
+      if (nextGroupId && !await canUseTaskGroup(env, nextGroupId, nextProjectId, me)) return json({ error: "Nhom cong viec khong hop le" }, 400);
+      const label = await resolveTaskLabel(env, nextLabelId, nextProjectId);
+      if (nextLabelId && !label) return json({ error: "Nhan cong viec khong hop le" }, 400);
+      const nextColor = label ? label.color : taskLabelColor(nextStatus, nextPriority, b.label_color || task.label_color);
+      const nextTitle = b.title || task.title;
+      const nextAssigneeId = b.assigned_to ?? task.assigned_to;
+      const nextPosition = b.position !== void 0 ? b.position === null ? null : Number(b.position) : task.position;
+      await env.DB.prepare(
+        "UPDATE tasks SET title=?,description=?,assigned_to=?,department=?,date=?,due_date=?,status=?,priority=?,label_color=?,checkin_time=?,checkout_time=?,team_project_id=?,group_id=?,label_id=?,position=?,updated_at=datetime('now') WHERE id=?"
+      ).bind(nextTitle, b.description ?? task.description, nextAssigneeId, b.department ?? task.department, b.date ?? task.date, b.due_date ?? task.due_date, nextStatus, nextPriority, nextColor, b.checkin_time ?? task.checkin_time, b.checkout_time ?? task.checkout_time, nextProjectId, nextGroupId, nextLabelId, nextPosition, tid).run();
+      for (const followerId of [...new Set([Number(task.assigned_by), Number(nextAssigneeId)].filter(Boolean))]) {
+        const exists = await env.DB.prepare("SELECT id FROM task_followers WHERE task_id=? AND user_id=?").bind(tid, followerId).first();
+        if (!exists) await env.DB.prepare("INSERT INTO task_followers (task_id,user_id) VALUES (?,?)").bind(tid, followerId).run();
+      }
+      let activityAction = null;
+      if (task.status !== nextStatus && nextStatus === "done") activityAction = "task_completed";
+      if (task.status === "done" && task.status !== nextStatus) activityAction = "task_reopened";
+      if (activityAction) {
+        const assignee = await taskActivityAssignee(env, nextAssigneeId);
+        await recordTaskActivity(env, {
+          taskId: tid,
+          projectId: nextProjectId,
+          user: me,
+          action: activityAction,
+          entityType: "task",
+          entityId: tid,
+          entityTitle: nextTitle,
+          assigneeId: assignee.id,
+          assigneeName: assignee.name,
+          detail: `${activityAction === "task_completed" ? "Ho\xE0n th\xE0nh" : "M\u1EDF l\u1EA1i"} c\xF4ng vi\u1EC7c: ${nextTitle}`
+        });
+      }
+      await broadcastAppEvent(env, "tasks", "task:updated", {
+        id: tid,
+        title: nextTitle,
+        description: b.description ?? task.description,
+        status: nextStatus,
+        priority: nextPriority,
+        assigned_to: nextAssigneeId,
+        department: b.department ?? task.department,
+        date: b.date ?? task.date,
+        due_date: b.due_date ?? task.due_date,
+        team_project_id: nextProjectId,
+        group_id: nextGroupId,
+        label_id: nextLabelId,
+        position: nextPosition,
+        activity_action: activityAction
+      }, { actorId: me.id });
+      return json({ ok: true });
+    }
+    if (request.method === "DELETE") {
+      if (!isManager) {
+        const task = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(tid).first();
+        if (!task || task.assigned_to !== me.id && task.assigned_by !== me.id) {
+          return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+        }
+      }
+      await env.DB.prepare("DELETE FROM tasks WHERE id=?").bind(tid).run();
+      await env.DB.prepare("DELETE FROM subtasks WHERE task_id=?").bind(tid).run();
+      await env.DB.prepare("DELETE FROM task_comments WHERE task_id=?").bind(tid).run();
+      await env.DB.prepare("DELETE FROM task_followers WHERE task_id=?").bind(tid).run();
+      await broadcastAppEvent(env, "tasks", "task:deleted", { id: tid }, { actorId: me.id });
+      return json({ ok: true });
+    }
+  }
+  const subMatch = path.match(/^\/api\/tasks\/(\d+)\/subtasks$/);
+  if (subMatch && request.method === "POST") {
+    const tid = parseInt(subMatch[1]);
+    const b = await request.json();
+    const parent = await env.DB.prepare("SELECT id,title,assigned_to,assigned_by,team_project_id FROM tasks WHERE id=?").bind(tid).first();
+    if (!parent) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y c\xF4ng vi\u1EC7c" }, 404);
+    if (!isManager && Number(parent.assigned_to) !== Number(me.id) && Number(parent.assigned_by) !== Number(me.id)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const title = String(b.title || "").trim();
+    if (!title) return json({ error: "Thi\u1EBFu ti\xEAu \u0111\u1EC1 c\xF4ng vi\u1EC7c con" }, 400);
+    let r;
+    try {
+      r = await env.DB.prepare(
+        "INSERT INTO subtasks (task_id,title,description,assigned_to,due_date) VALUES (?,?,?,?,?)"
+      ).bind(tid, title, b.description || null, b.assigned_to || null, b.due_date || null).run();
+    } catch (error) {
+      console.error("Create subtask failed", { taskId: tid, userId: me.id, message: String(error?.message || error) });
+      throw error;
+    }
+    const subtaskId = r.meta.last_row_id;
+    const assignee = await taskActivityAssignee(env, b.assigned_to);
+    await recordTaskActivity(env, {
+      taskId: tid,
+      projectId: parent.team_project_id,
+      user: me,
+      action: "subtask_created",
+      entityType: "subtask",
+      entityId: subtaskId,
+      entityTitle: title,
+      assigneeId: assignee.id,
+      assigneeName: assignee.name,
+      detail: `T\u1EA1o c\xF4ng vi\u1EC7c con: ${title}`
+    });
+    await broadcastAppEvent(env, "tasks", "subtask:created", {
+      id: subtaskId,
+      task_id: tid,
+      title,
+      description: b.description || null,
+      assigned_to: b.assigned_to || null,
+      due_date: b.due_date || null,
+      is_done: 0
+    }, { actorId: me.id });
+    return json({ ok: true, id: subtaskId });
+  }
+  const subtaskMatch = path.match(/^\/api\/subtasks\/(\d+)$/);
+  if (subtaskMatch) {
+    const sid = parseInt(subtaskMatch[1]);
+    if (request.method === "PUT") {
+      const b = await request.json();
+      const subtask = await env.DB.prepare(
+        `SELECT s.*,t.assigned_to AS task_assigned_to,t.assigned_by AS task_assigned_by,t.team_project_id
+           FROM subtasks s JOIN tasks t ON t.id=s.task_id WHERE s.id=?`
+      ).bind(sid).first();
+      if (!subtask) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y c\xF4ng vi\u1EC7c con" }, 404);
+      if (!isManager && Number(subtask.task_assigned_to) !== Number(me.id) && Number(subtask.task_assigned_by) !== Number(me.id)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      const nextTitle = String(b.title ?? subtask.title).trim();
+      if (!nextTitle) return json({ error: "Thi\u1EBFu ti\xEAu \u0111\u1EC1 c\xF4ng vi\u1EC7c con" }, 400);
+      const nextDone = b.is_done === void 0 ? Number(subtask.is_done) : b.is_done ? 1 : 0;
+      const nextAssigneeId = b.assigned_to ?? subtask.assigned_to;
+      await env.DB.prepare("UPDATE subtasks SET title=?,description=?,is_done=?,assigned_to=?,due_date=? WHERE id=?").bind(nextTitle, b.description ?? subtask.description ?? null, nextDone, nextAssigneeId, b.due_date ?? subtask.due_date ?? null, sid).run();
+      let activityAction = null;
+      if (!Number(subtask.is_done) && nextDone) activityAction = "subtask_completed";
+      if (Number(subtask.is_done) && !nextDone) activityAction = "subtask_reopened";
+      if (activityAction) {
+        const assignee = await taskActivityAssignee(env, nextAssigneeId);
+        await recordTaskActivity(env, {
+          taskId: subtask.task_id,
+          projectId: subtask.team_project_id,
+          user: me,
+          action: activityAction,
+          entityType: "subtask",
+          entityId: sid,
+          entityTitle: nextTitle,
+          assigneeId: assignee.id,
+          assigneeName: assignee.name,
+          detail: `${activityAction === "subtask_completed" ? "Ho\xE0n th\xE0nh" : "M\u1EDF l\u1EA1i"} c\xF4ng vi\u1EC7c con: ${nextTitle}`
+        });
+      }
+      await broadcastAppEvent(env, "tasks", "subtask:updated", {
+        id: sid,
+        task_id: subtask.task_id,
+        title: nextTitle,
+        description: b.description ?? subtask.description ?? null,
+        is_done: nextDone,
+        assigned_to: nextAssigneeId,
+        due_date: b.due_date ?? subtask.due_date ?? null
+      }, { actorId: me.id });
+      return json({ ok: true });
+    }
+    if (request.method === "DELETE") {
+      const owner = await env.DB.prepare(
+        `SELECT s.task_id, t.assigned_to AS task_assigned_to, t.assigned_by AS task_assigned_by
+           FROM subtasks s JOIN tasks t ON t.id=s.task_id WHERE s.id=?`
+      ).bind(sid).first();
+      if (!owner) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y c\xF4ng vi\u1EC7c con" }, 404);
+      if (!isManager && Number(owner.task_assigned_to) !== Number(me.id) && Number(owner.task_assigned_by) !== Number(me.id)) {
+        return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      }
+      await env.DB.prepare("DELETE FROM subtasks WHERE id=?").bind(sid).run();
+      await broadcastAppEvent(env, "tasks", "subtask:deleted", { id: sid, task_id: owner.task_id }, { actorId: me.id });
+      return json({ ok: true });
+    }
+  }
+  const commentsMatch = path.match(/^\/api\/tasks\/(\d+)\/comments$/);
+  if (commentsMatch) {
+    const tid = parseInt(commentsMatch[1]);
+    if (request.method === "GET") {
+      const { results } = await env.DB.prepare(
+        "SELECT c.*, u.full_name, u.avatar_color, u.avatar_initials FROM task_comments c JOIN users u ON c.user_id=u.id WHERE c.task_id=? ORDER BY c.created_at"
+      ).bind(tid).all();
+      return json({ comments: results });
+    }
+    if (request.method === "POST") {
+      const b = await request.json();
+      if (!b.content) return json({ error: "N\u1ED9i dung kh\xF4ng \u0111\u01B0\u1EE3c tr\u1ED1ng" }, 400);
+      const mentions = Array.isArray(b.mentions) ? b.mentions : [];
+      const r = await env.DB.prepare("INSERT INTO task_comments (task_id,user_id,content,mentions) VALUES (?,?,?,?)").bind(tid, me.id, b.content, mentions.length ? JSON.stringify(mentions) : null).run();
+      const commentId = r.meta.last_row_id;
+      let taskTitle = "";
+      if (mentions.length) {
+        const task = await env.DB.prepare("SELECT title FROM tasks WHERE id=?").bind(tid).first();
+        taskTitle = task?.title || "";
+        for (const m of mentions) {
+          if (Number(m.user_id) === Number(me.id)) continue;
+          await env.DB.prepare(
+            "INSERT INTO task_mention_notifications (user_id,task_id,comment_id,mentioned_by,mentioned_by_name,task_title,comment_snippet) VALUES (?,?,?,?,?,?,?)"
+          ).bind(m.user_id, tid, commentId, me.id, me.full_name || "", taskTitle, b.content.slice(0, 120)).run();
+        }
+        const targetMentionIds = mentions.map((m) => Number(m.user_id)).filter((uid) => uid && uid !== Number(me.id));
+        if (targetMentionIds.length) {
+          try {
+            await sendWebPushNotification(env, targetMentionIds, {
+              title: "\u{1F514} " + (taskTitle || "C\xF4ng vi\u1EC7c m\u1EDBi"),
+              body: `${me.full_name || "\u0110\u1ED3ng nghi\u1EC7p"} \u0111\xE3 nh\u1EAFc t\xEAn b\u1EA1n: "${b.content.slice(0, 100)}"`,
+              icon: me.avatar_url || "/icon-192.png",
+              badge: "/icon-192.png",
+              url: `/#/tasks?id=${tid}`,
+              tag: `task-${tid}-${commentId || Date.now()}`
+            });
+          } catch (err) {
+            console.warn("Task mention push error:", err);
+          }
+          await broadcastAppEvent(env, "notifications", "notification:mention", {
+            id: commentId,
+            type: "task_mention",
+            task_id: tid,
+            task_title: taskTitle,
+            mentioned_by: me.id,
+            mentioned_by_name: me.full_name || "",
+            snippet: b.content.slice(0, 120)
+          }, { actorId: me.id, targetUserIds: targetMentionIds });
+        }
+      }
+      await broadcastAppEvent(env, "tasks", "comment:created", {
+        id: commentId,
+        task_id: tid,
+        user_id: me.id,
+        full_name: me.full_name,
+        avatar_color: me.avatar_color,
+        avatar_initials: me.avatar_initials,
+        content: b.content,
+        mentions,
+        created_at: (/* @__PURE__ */ new Date()).toISOString()
+      }, { actorId: me.id });
+      return json({ ok: true, id: commentId });
+    }
+  }
+  const attachMatch = path.match(/^\/api\/tasks\/(\d+)\/attachments(?:\/(\d+))?$/);
+  if (attachMatch) {
+    const tid = parseInt(attachMatch[1]);
+    const attachmentId = attachMatch[2] ? parseInt(attachMatch[2]) : null;
+    const task = await env.DB.prepare("SELECT id,team_project_id FROM tasks WHERE id=?").bind(tid).first();
+    if (!task || !await canUseTaskProject(env, task.team_project_id, me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n v\u1EDBi c\xF4ng vi\u1EC7c n\xE0y" }, 403);
+    if (request.method === "GET") {
+      const { results } = await env.DB.prepare(
+        "SELECT * FROM task_attachments WHERE task_id=? ORDER BY created_at"
+      ).bind(tid).all();
+      return json({ attachments: results });
+    }
+    if (request.method === "POST") {
+      if (!env.HR_DOCUMENTS) return json({ error: "L\u01B0u tr\u1EEF t\xE0i li\u1EC7u ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh" }, 503);
+      const form = await request.formData().catch(() => null);
+      const file = form?.get("file");
+      if (!file || typeof file.stream !== "function") return json({ error: "Vui l\xF2ng ch\u1ECDn t\u1EC7p \u0111\xEDnh k\xE8m" }, 400);
+      const MAX_BYTES = 10 * 1024 * 1024;
+      if (!Number.isFinite(file.size) || file.size < 1 || file.size > MAX_BYTES) return json({ error: "T\u1EC7p v\u01B0\u1EE3t qu\xE1 10 MB" }, 400);
+      const bytes = await file.arrayBuffer();
+      const contentType = String(file.type || "application/octet-stream");
+      const timestamp = Date.now();
+      const safeName = safeDownloadName(file.name);
+      const storageKey = `task/${tid}/${timestamp}_${safeName}`;
+      await env.HR_DOCUMENTS.put(storageKey, bytes, {
+        httpMetadata: { contentType, cacheControl: "private, no-store" },
+        customMetadata: { task_id: String(tid), user_id: String(me.id) }
+      });
+      await env.DB.prepare(
+        "INSERT INTO task_attachments (task_id,user_id,original_filename,content_type,byte_size,storage_key) VALUES (?,?,?,?,?,?)"
+      ).bind(tid, me.id, safeName, contentType, file.size, storageKey).run();
+      return json({ ok: true });
+    }
+    if (request.method === "DELETE" && attachmentId) {
+      const doc = await env.DB.prepare("SELECT * FROM task_attachments WHERE id=? AND task_id=?").bind(attachmentId, tid).first();
+      if (!doc) return json({ error: "T\u1EADp tin kh\xF4ng t\u1ED3n t\u1EA1i" }, 404);
+      await env.HR_DOCUMENTS.delete(doc.storage_key).catch(() => {
+      });
+      await env.DB.prepare("DELETE FROM task_attachments WHERE id=?").bind(attachmentId).run();
+      return json({ ok: true });
+    }
+  }
+  const followMatch = path.match(/^\/api\/tasks\/(\d+)\/followers$/);
+  if (followMatch && request.method === "POST") {
+    const tid = parseInt(followMatch[1]);
+    const b = await request.json();
+    const task = await env.DB.prepare("SELECT id,assigned_by,team_project_id FROM tasks WHERE id=?").bind(tid).first();
+    if (!task || !await canUseTaskProject(env, task.team_project_id, me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n v\u1EDBi c\xF4ng vi\u1EC7c n\xE0y" }, 403);
+    const uid2 = Number(b.user_id || me.id);
+    const canManageFollowers = isTaskAdmin(me) || Number(task.assigned_by) === Number(me.id);
+    if (uid2 !== Number(me.id) && !canManageFollowers) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n th\xEAm ng\u01B0\u1EDDi theo d\xF5i" }, 403);
+    const target = await env.DB.prepare("SELECT id FROM users WHERE id=? AND is_active=1").bind(uid2).first();
+    if (!target) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y nh\xE2n s\u1EF1 h\u1EE3p l\u1EC7" }, 404);
+    const existingF = await env.DB.prepare("SELECT id FROM task_followers WHERE task_id=? AND user_id=?").bind(tid, uid2).first();
+    if (!existingF) {
+      await env.DB.prepare("INSERT INTO task_followers (task_id,user_id) VALUES (?,?)").bind(tid, uid2).run();
+    }
+    await broadcastAppEvent(env, "tasks", "task:follower_added", { task_id: tid, user_id: uid2 }, { actorId: me.id });
+    return json({ ok: true });
+  }
+  const followerDeleteMatch = path.match(/^\/api\/tasks\/(\d+)\/followers\/(\d+)$/);
+  if (followerDeleteMatch && request.method === "DELETE") {
+    const tid = Number(followerDeleteMatch[1]), followerId = Number(followerDeleteMatch[2]);
+    const task = await env.DB.prepare("SELECT id,assigned_by,team_project_id FROM tasks WHERE id=?").bind(tid).first();
+    if (!task || !await canUseTaskProject(env, task.team_project_id, me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n v\u1EDBi c\xF4ng vi\u1EC7c n\xE0y" }, 403);
+    const canManageFollowers = isTaskAdmin(me) || Number(task.assigned_by) === Number(me.id);
+    if (followerId !== Number(me.id) && !canManageFollowers) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n b\u1ECF ng\u01B0\u1EDDi theo d\xF5i" }, 403);
+    await env.DB.prepare("DELETE FROM task_followers WHERE task_id=? AND user_id=?").bind(tid, followerId).run();
+    await broadcastAppEvent(env, "tasks", "task:follower_removed", { task_id: tid, user_id: followerId }, { actorId: me.id });
+    return json({ ok: true });
+  }
+  if (path === "/api/invoices" && request.method === "GET") {
+    const userId2 = url.searchParams.get("userId");
+    const month2 = url.searchParams.get("month");
+    const year2 = url.searchParams.get("year");
+    const status2 = url.searchParams.get("status");
+    let q = "SELECT i.*, u.full_name, u.employee_code, u.department, u.position FROM invoices i JOIN users u ON i.user_id=u.id WHERE 1=1";
+    const binds = [];
+    if (!isManager) {
+      q += " AND i.user_id=?";
+      binds.push(me.id);
+    } else {
+      if (!isAdmin && !isHcns(me)) {
+        q += " AND u.department=?";
+        binds.push(me.department);
+      }
+      if (userId2) {
+        q += " AND i.user_id=?";
+        binds.push(parseInt(userId2));
+      }
+    }
+    if (month2) {
+      q += " AND i.month=?";
+      binds.push(parseInt(month2));
+    }
+    if (year2) {
+      q += " AND i.year=?";
+      binds.push(parseInt(year2));
+    }
+    if (status2) {
+      q += " AND i.status=?";
+      binds.push(status2);
+    }
+    q += " ORDER BY i.year DESC, i.month DESC, i.id DESC";
+    const stmt = env.DB.prepare(q);
+    const { results } = await (binds.length ? stmt.bind(...binds) : stmt).all();
+    return json({ invoices: results });
+  }
+  if (path === "/api/invoices" && request.method === "POST") {
+    if (!isManager) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const b = await request.json();
+    if (!b.user_id || !b.month || !b.year) return json({ error: "Thi\u1EBFu th\xF4ng tin" }, 400);
+    const invoiceUser = await env.DB.prepare("SELECT department FROM users WHERE id=?").bind(b.user_id).first();
+    if (!invoiceUser) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y nh\xE2n vi\xEAn" }, 404);
+    if (!isAdmin && !isHcns(me) && invoiceUser.department !== me.department) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n l\u1EADp phi\u1EBFu ngo\xE0i ph\xF2ng ban" }, 403);
+    const count = await env.DB.prepare("SELECT COUNT(*) as cnt FROM invoices WHERE year=? AND month=?").bind(b.year, b.month).first();
+    const seq = String((count?.cnt || 0) + 1).padStart(3, "0");
+    const invNum = "HD-" + b.year + String(b.month).padStart(2, "0") + "-" + seq;
+    const base = b.base_salary || 0;
+    const bonus = b.bonus || 0;
+    const allowance = b.allowance || 0;
+    const deduction = b.deduction || 0;
+    const tax = b.tax ?? Math.round((base + bonus) * 0.1);
+    const insurance = b.insurance ?? Math.round(base * 0.08);
+    const overtime = await buildMonthlyOvertimeSummary(env, b.user_id, b.month, b.year, base);
+    const net = base + bonus + allowance + overtime.overtimePay - deduction - tax - insurance;
+    const r = await env.DB.prepare(
+      "INSERT INTO invoices (invoice_number,user_id,month,year,base_salary,bonus,allowance,deduction,tax,insurance,net_salary,work_days,absent_days,late_days,standard_days,paid_leave_days,late_minutes,early_leave_minutes,missing_checkinout_days,approved_overtime_minutes,overtime_pay,status,note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    ).bind(invNum, b.user_id, b.month, b.year, base, bonus, allowance, deduction, tax, insurance, net, b.work_days || 0, b.absent_days || 0, b.late_days || 0, b.standard_days || 0, b.paid_leave_days || 0, b.late_minutes || 0, b.early_leave_minutes || 0, b.missing_checkinout_days || 0, overtime.approvedOvertimeMinutes, overtime.overtimePay, b.status || "draft", b.note || "").run();
+    await env.DB.prepare("INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)").bind(r.meta.last_row_id, null, b.status || "draft", me.id, me.full_name, "Created invoice").run();
+    await broadcastAppEvent(env, "invoices", "invoice:created", {
+      id: r.meta.last_row_id,
+      invoice_number: invNum,
+      user_id: b.user_id,
+      month: b.month,
+      year: b.year,
+      net_salary: net,
+      status: b.status || "draft"
+    }, { actorId: me.id });
+    return json({ ok: true, id: r.meta.last_row_id, invoice_number: invNum });
+  }
+  const invConfirmMatch = path.match(/^\/api\/invoices\/(\d+)\/confirm$/);
+  if (invConfirmMatch && request.method === "POST") {
+    const iid = parseInt(invConfirmMatch[1]);
+    const inv = await env.DB.prepare("SELECT * FROM invoices WHERE id=?").bind(iid).first();
+    if (!inv) return json({ error: "Khong tim thay phieu luong" }, 404);
+    if (inv.user_id !== me.id) return json({ error: "Khong co quyen" }, 403);
+    if (!["issued", "review_requested"].includes(String(inv.status || ""))) {
+      return json({ error: "Chi co the xac nhan phieu luong da phat hanh" }, 400);
+    }
+    await env.DB.prepare(
+      "UPDATE invoices SET status='employee_confirmed',employee_confirmed_at=datetime('now','localtime'),review_status='none',review_resolved_at=COALESCE(review_resolved_at,datetime('now','localtime')) WHERE id=?"
+    ).bind(iid).run();
+    await env.DB.prepare(
+      "UPDATE invoice_review_requests SET status='closed',updated_at=datetime('now','localtime') WHERE invoice_id=? AND status='open'"
+    ).bind(iid).run();
+    await env.DB.prepare("INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)").bind(iid, inv.status || null, "employee_confirmed", me.id, me.full_name || "", "Employee confirmed payslip").run();
+    await broadcastAppEvent(env, "invoices", "invoice:confirmed", {
+      id: iid,
+      user_id: inv.user_id,
+      status: "employee_confirmed"
+    }, { actorId: me.id });
+    return json({ ok: true });
+  }
+  const invReviewMatch = path.match(/^\/api\/invoices\/(\d+)\/review-request$/);
+  if (invReviewMatch && request.method === "POST") {
+    const iid = parseInt(invReviewMatch[1]);
+    const inv = await env.DB.prepare("SELECT * FROM invoices WHERE id=?").bind(iid).first();
+    if (!inv) return json({ error: "Khong tim thay phieu luong" }, 404);
+    if (inv.user_id !== me.id) return json({ error: "Khong co quyen" }, 403);
+    if (inv.locked_at || inv.status === "paid" || inv.status === "employee_confirmed") {
+      return json({ error: "Phieu luong da khoa hoac da xac nhan" }, 400);
+    }
+    if (!["issued", "review_requested"].includes(String(inv.status || ""))) {
+      return json({ error: "Chi co the yeu cau xem lai phieu luong da phat hanh" }, 400);
+    }
+    const b = await request.json().catch(() => ({}));
+    const category = String(b.category || "").trim();
+    const allowed = /* @__PURE__ */ new Set(["attendance", "bonus", "deduction", "base_salary", "bank_info", "other"]);
+    const message = String(b.message || "").trim();
+    if (!allowed.has(category)) return json({ error: "Loai yeu cau khong hop le" }, 400);
+    if (!message) return json({ error: "Vui long nhap ly do can xem lai" }, 400);
+    await env.DB.prepare(
+      `INSERT INTO invoice_review_requests (invoice_id,user_id,category,message,requested_amount,status)
+       VALUES (?,?,?,?,?,'open')`
+    ).bind(iid, me.id, category, message, Number(b.requested_amount || 0)).run();
+    await env.DB.prepare(
+      "UPDATE invoices SET status='review_requested',review_status='open',review_reason=?,review_requested_at=datetime('now','localtime') WHERE id=?"
+    ).bind(message, iid).run();
+    await env.DB.prepare("INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)").bind(iid, inv.status || null, "review_requested", me.id, me.full_name || "", message).run();
+    await broadcastAppEvent(env, "invoices", "invoice:review_requested", {
+      id: iid,
+      user_id: inv.user_id,
+      status: "review_requested",
+      category,
+      message
+    }, { actorId: me.id });
+    return json({ ok: true });
+  }
+  const invResolveMatch = path.match(/^\/api\/invoices\/(\d+)\/resolve-review$/);
+  if (invResolveMatch && request.method === "POST") {
+    if (!isManager) return json({ error: "Khong co quyen" }, 403);
+    const iid = parseInt(invResolveMatch[1]);
+    const inv = await env.DB.prepare("SELECT * FROM invoices WHERE id=?").bind(iid).first();
+    if (!inv) return json({ error: "Khong tim thay phieu luong" }, 404);
+    if (!isAdmin && !isHcns(me)) {
+      const invoiceUser = await env.DB.prepare("SELECT department FROM users WHERE id=?").bind(inv.user_id).first();
+      if (!invoiceUser || invoiceUser.department !== me.department) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n x\u1EED l\xFD phi\u1EBFu ngo\xE0i ph\xF2ng ban" }, 403);
+    }
+    if (inv.locked_at || inv.status === "paid") return json({ error: "Phieu luong da khoa" }, 400);
+    const b = await request.json().catch(() => ({}));
+    const note = String(b.note || "").trim();
+    const nextStatus = b.nextStatus === "employee_confirmed" ? "employee_confirmed" : "issued";
+    if (!note) return json({ error: "Vui long nhap ghi chu xu ly" }, 400);
+    await env.DB.prepare(
+      `UPDATE invoices SET status=?,review_status='resolved',review_note=?,review_resolved_at=datetime('now','localtime'),
+        employee_confirmed_at=CASE WHEN ?='employee_confirmed' THEN datetime('now','localtime') ELSE employee_confirmed_at END
+       WHERE id=?`
+    ).bind(nextStatus, note, nextStatus, iid).run();
+    await env.DB.prepare(
+      "UPDATE invoice_review_requests SET status='resolved',handled_by=?,handled_by_name=?,handled_note=?,handled_at=datetime('now','localtime'),updated_at=datetime('now','localtime') WHERE invoice_id=? AND status='open'"
+    ).bind(me.id, me.full_name || "", note, iid).run();
+    await env.DB.prepare("INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)").bind(iid, inv.status || null, nextStatus, me.id, me.full_name || "", note).run();
+    await broadcastAppEvent(env, "invoices", "invoice:review_resolved", {
+      id: iid,
+      user_id: inv.user_id,
+      status: nextStatus,
+      note
+    }, { actorId: me.id });
+    return json({ ok: true });
+  }
+  const invMatch = path.match(/^\/api\/invoices\/(\d+)$/);
+  if (invMatch) {
+    const iid = parseInt(invMatch[1]);
+    if (request.method === "GET") {
+      const row = await env.DB.prepare(
+        "SELECT i.*, u.full_name, u.employee_code, u.department, u.position, u.contract_type, u.bank_account, u.bank_name FROM invoices i JOIN users u ON i.user_id=u.id WHERE i.id=?"
+      ).bind(iid).first();
+      if (!row) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y" }, 404);
+      if (!isManager && row.user_id !== me.id) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      if (isManager && !isAdmin && !isHcns(me) && row.user_id !== me.id && row.department !== me.department) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      const review = await env.DB.prepare(
+        "SELECT * FROM invoice_review_requests WHERE invoice_id=? ORDER BY id DESC LIMIT 1"
+      ).bind(iid).first();
+      row.latest_review_request = review || null;
+      row.pending_actor = row.status === "issued" ? row.full_name : row.status === "review_requested" ? "HCNS" : "";
+      row.confirmed_by = row.employee_confirmed_at ? row.full_name : "";
+      row.checked_by = row.review_resolved_at ? row.issued_by_name || "" : "";
+      row.approved_by = row.issued_by_name || "";
+      return json({ invoice: row });
+    }
+    if (request.method === "PUT") {
+      if (!isManager) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      const b = await request.json();
+      const existingInv = await env.DB.prepare("SELECT * FROM invoices WHERE id=?").bind(iid).first();
+      if (!existingInv) return json({ error: "Khong tim thay" }, 404);
+      if (!isAdmin && !isHcns(me)) {
+        const invoiceUser = await env.DB.prepare("SELECT department FROM users WHERE id=?").bind(existingInv.user_id).first();
+        if (!invoiceUser || invoiceUser.department !== me.department) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n s\u1EEDa phi\u1EBFu ngo\xE0i ph\xF2ng ban" }, 403);
+      }
+      if (existingInv.locked_at || existingInv.status === "paid") return json({ error: "Phieu luong da khoa, khong the chinh sua" }, 400);
+      const base = b.base_salary || 0, bonus = b.bonus || 0;
+      const allowance = b.allowance || 0, deduction = b.deduction || 0;
+      const tax = b.tax ?? Math.round((base + bonus) * 0.1);
+      const insurance = b.insurance ?? Math.round(base * 0.08);
+      const overtime = await buildMonthlyOvertimeSummary(env, existingInv.user_id, existingInv.month, existingInv.year, base);
+      const net = base + bonus + allowance + overtime.overtimePay - deduction - tax - insurance;
+      const nextStatus = b.status || existingInv.status || "draft";
+      const lockAt = nextStatus === "paid" ? nowStr() : null;
+      const confirmedAt = nextStatus === "employee_confirmed" ? existingInv.employee_confirmed_at || nowStr() : existingInv.employee_confirmed_at;
+      await env.DB.prepare(
+        "UPDATE invoices SET base_salary=?,bonus=?,allowance=?,deduction=?,tax=?,insurance=?,net_salary=?,work_days=?,absent_days=?,late_days=?,standard_days=?,paid_leave_days=?,late_minutes=?,early_leave_minutes=?,missing_checkinout_days=?,approved_overtime_minutes=?,overtime_pay=?,status=?,note=?,locked_at=?,locked_by=?,locked_by_name=?,employee_confirmed_at=? WHERE id=?"
+      ).bind(base, bonus, allowance, deduction, tax, insurance, net, b.work_days || 0, b.absent_days || 0, b.late_days || 0, b.standard_days ?? 0, b.paid_leave_days ?? 0, b.late_minutes ?? 0, b.early_leave_minutes ?? 0, b.missing_checkinout_days ?? 0, overtime.approvedOvertimeMinutes, overtime.overtimePay, nextStatus, b.note || "", lockAt, lockAt ? me.id : null, lockAt ? me.full_name : null, confirmedAt, iid).run();
+      if (nextStatus !== existingInv.status) {
+        await env.DB.prepare("INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)").bind(iid, existingInv.status || null, nextStatus, me.id, me.full_name, b.status_note || b.note || null).run();
+      }
+      await broadcastAppEvent(env, "invoices", "invoice:updated", {
+        id: iid,
+        user_id: existingInv.user_id,
+        status: nextStatus,
+        net_salary: net
+      }, { actorId: me.id });
+      return json({ ok: true });
+    }
+    if (request.method === "DELETE") {
+      if (!isManager) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      const existingInv = await env.DB.prepare("SELECT * FROM invoices WHERE id=?").bind(iid).first();
+      if (existingInv && !isAdmin && !isHcns(me)) {
+        const invoiceUser = await env.DB.prepare("SELECT department FROM users WHERE id=?").bind(existingInv.user_id).first();
+        if (!invoiceUser || invoiceUser.department !== me.department) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n x\xF3a phi\u1EBFu ngo\xE0i ph\xF2ng ban" }, 403);
+      }
+      if (existingInv && (existingInv.locked_at || existingInv.status === "paid")) return json({ error: "Phieu luong da khoa, khong the xoa" }, 400);
+      await env.DB.prepare("DELETE FROM invoices WHERE id=?").bind(iid).run();
+      await broadcastAppEvent(env, "invoices", "invoice:deleted", {
+        id: iid,
+        user_id: existingInv?.user_id
+      }, { actorId: me.id });
+      return json({ ok: true });
+    }
+  }
+  if (path === "/api/settings" && request.method === "GET") {
+    const { results } = await env.DB.prepare("SELECT setting_key,setting_value FROM settings").all();
+    const map = {};
+    results.forEach((r) => {
+      map[r.setting_key] = r.setting_value;
+    });
+    return json({ settings: map });
+  }
+  if (path === "/api/settings" && request.method === "PUT") {
+    if (!isAdmin) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const b = await request.json();
+    await env.DB.batch(
+      Object.entries(b).map(
+        ([k, v]) => env.DB.prepare("INSERT OR REPLACE INTO settings (setting_key,setting_value) VALUES (?,?)").bind(k, String(v))
+      )
+    );
+    return json({ ok: true });
+  }
+  if (path === "/api/departments" && request.method === "GET") {
+    const { results } = await env.DB.prepare(`
+      SELECT d.*, u.full_name AS manager_name, u.employee_code AS manager_employee_code,
+             u.department AS manager_department, u.position AS manager_position
+        FROM departments d
+        LEFT JOIN users u ON u.id = d.manager_id
+       ORDER BY d.name
+    `).all();
+    return json({ departments: results });
+  }
+  if (path === "/api/departments" && request.method === "POST") {
+    const b = await request.json().catch(() => ({}));
+    const name = normalizeDeptName(b.name);
+    if (!name) return json({ error: "Thi\u1EBFu t\xEAn ph\xF2ng ban" }, 400);
+    const dup = await findDepartmentDuplicate(env, name);
+    if (dup) return json({ error: "Ph\xF2ng ban n\xE0y \u0111\xE3 t\u1ED3n t\u1EA1i" }, 400);
+    const managerId = intOrNull(b.manager_id);
+    const manager = managerId ? await env.DB.prepare("SELECT full_name FROM users WHERE id=?").bind(managerId).first() : null;
+    if (managerId && !manager) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y tr\u01B0\u1EDFng ph\xF2ng" }, 400);
+    const managerName = manager?.full_name || String(b.manager || "").trim();
+    try {
+      const r = await env.DB.prepare("INSERT INTO departments (user_id,name,manager,manager_id,description) VALUES (?,?,?,?,?)").bind(env.USER_ID || null, name, managerName, managerId, String(b.description || "").trim()).run();
+      return json({ ok: true, id: r.meta.last_row_id });
+    } catch (e) {
+      if (String(e.message || "").toLowerCase().includes("unique")) return json({ error: "Ph\xF2ng ban n\xE0y \u0111\xE3 t\u1ED3n t\u1EA1i" }, 400);
+      throw e;
+    }
+  }
+  const deptMatch = path.match(/^\/api\/departments\/(\d+)$/);
+  if (deptMatch) {
+    const id = parseInt(deptMatch[1]);
+    if (request.method === "PUT") {
+      const b = await request.json().catch(() => ({}));
+      const name = normalizeDeptName(b.name);
+      if (!name) return json({ error: "Thi\u1EBFu t\xEAn ph\xF2ng ban" }, 400);
+      const dup = await findDepartmentDuplicate(env, name, id);
+      if (dup) return json({ error: "Ph\xF2ng ban n\xE0y \u0111\xE3 t\u1ED3n t\u1EA1i" }, 400);
+      const managerId = intOrNull(b.manager_id);
+      const manager = managerId ? await env.DB.prepare("SELECT full_name FROM users WHERE id=?").bind(managerId).first() : null;
+      if (managerId && !manager) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y tr\u01B0\u1EDFng ph\xF2ng" }, 400);
+      const managerName = manager?.full_name || String(b.manager || "").trim();
+      await env.DB.prepare("UPDATE departments SET name=?,manager=?,manager_id=?,description=? WHERE id=?").bind(name, managerName, managerId, String(b.description || "").trim(), id).run();
+      return json({ ok: true });
+    }
+    if (request.method === "DELETE") {
+      await env.DB.prepare("DELETE FROM departments WHERE id=?").bind(id).run();
+      return json({ ok: true });
+    }
+  }
+  if (path === "/api/employees" && request.method === "GET") {
+    const { results } = await env.DB.prepare("SELECT * FROM employees WHERE user_id=? ORDER BY name").bind(env.USER_ID).all();
+    return json({ employees: results });
+  }
+  if (path === "/api/employees" && request.method === "POST") {
+    const b = await request.json();
+    if (!b.name || !b.code) return json({ error: "Thi\u1EBFu th\xF4ng tin b\u1EAFt bu\u1ED9c" }, 400);
+    const r = await env.DB.prepare("INSERT INTO employees (user_id,code,name,department_id,position,start_date,birthday,status,salary,phone,email) VALUES (?,?,?,?,?,?,?,?,?,?,?)").bind(env.USER_ID, b.code, b.name, b.department_id || null, b.position || "", b.start_date || null, b.birthday || null, b.status || "active", b.salary || 0, b.phone || "", b.email || "").run();
+    return json({ ok: true, id: r.meta.last_row_id });
+  }
+  const empMatch2 = path.match(/^\/api\/employees\/(\d+)$/);
+  if (empMatch2) {
+    const id = parseInt(empMatch2[1]);
+    if (request.method === "PUT") {
+      const b = await request.json();
+      await env.DB.prepare("UPDATE employees SET code=?,name=?,department_id=?,position=?,start_date=?,birthday=?,status=?,salary=?,phone=?,email=? WHERE id=?").bind(b.code, b.name, b.department_id || null, b.position || "", b.start_date || null, b.birthday || null, b.status || "active", b.salary || 0, b.phone || "", b.email || "", id).run();
+      return json({ ok: true });
+    }
+    if (request.method === "DELETE") {
+      await env.DB.prepare("DELETE FROM employees WHERE id=?").bind(id).run();
+      return json({ ok: true });
+    }
+  }
+  if (path === "/api/leave-types" && request.method === "GET") {
+    const includeInactive = url.searchParams.get("includeInactive") === "1";
+    const q = includeInactive ? "SELECT * FROM leave_types ORDER BY is_active DESC, name" : "SELECT * FROM leave_types WHERE is_active=1 ORDER BY name";
+    const { results } = await env.DB.prepare(q).all();
+    return json({ leaveTypes: results });
+  }
+  if (path === "/api/leave-types" && request.method === "POST") {
+    if (!isHcns(me)) return json({ error: "Khong co quyen" }, 403);
+    const b = await request.json().catch(() => ({}));
+    const code = String(b.code || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+    const name = String(b.name || "").trim();
+    if (!code || !name) return json({ error: "Thieu ma hoac ten loai nghi" }, 400);
+    const r = await env.DB.prepare(
+      "INSERT INTO leave_types (code,name,paid_policy,deducts_annual_leave,requires_evidence,requires_bod_approval,max_days,is_active,short_description,policy_description,notice_hours,required_documents,requires_handover,approval_flow) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    ).bind(code, name, b.paid_policy || "paid", b.deducts_annual_leave ? 1 : 0, b.requires_evidence ? 1 : 0, b.requires_bod_approval ? 1 : 0, b.max_days || null, b.is_active ?? 1, String(b.short_description || "").trim(), String(b.policy_description || "").trim(), b.notice_hours === "" || b.notice_hours == null ? null : Number(b.notice_hours), String(b.required_documents || "").trim(), b.requires_handover ? 1 : 0, String(b.approval_flow || "").trim()).run();
+    return json({ ok: true, id: r.meta.last_row_id });
+  }
+  const leaveTypeMatch = path.match(/^\/api\/leave-types\/(\d+)$/);
+  if (leaveTypeMatch) {
+    if (!isHcns(me)) return json({ error: "Khong co quyen" }, 403);
+    const id = parseInt(leaveTypeMatch[1]);
+    if (request.method === "PUT") {
+      const b = await request.json().catch(() => ({}));
+      const code = String(b.code || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+      const name = String(b.name || "").trim();
+      if (!code || !name) return json({ error: "Thieu ma hoac ten loai nghi" }, 400);
+      await env.DB.prepare(
+        "UPDATE leave_types SET code=?,name=?,paid_policy=?,deducts_annual_leave=?,requires_evidence=?,requires_bod_approval=?,max_days=?,is_active=?,short_description=?,policy_description=?,notice_hours=?,required_documents=?,requires_handover=?,approval_flow=?,updated_at=datetime('now','localtime') WHERE id=?"
+      ).bind(code, name, b.paid_policy || "paid", b.deducts_annual_leave ? 1 : 0, b.requires_evidence ? 1 : 0, b.requires_bod_approval ? 1 : 0, b.max_days || null, b.is_active ?? 1, String(b.short_description || "").trim(), String(b.policy_description || "").trim(), b.notice_hours === "" || b.notice_hours == null ? null : Number(b.notice_hours), String(b.required_documents || "").trim(), b.requires_handover ? 1 : 0, String(b.approval_flow || "").trim(), id).run();
+      return json({ ok: true });
+    }
+    if (request.method === "DELETE") {
+      await env.DB.prepare("UPDATE leave_types SET is_active=0,updated_at=datetime('now','localtime') WHERE id=?").bind(id).run();
+      return json({ ok: true });
+    }
+  }
+  if (path === "/api/leave/balances" && request.method === "GET") {
+    const requestedUserId = Number(url.searchParams.get("user_id") || me.id);
+    if (requestedUserId !== Number(me.id) && !isHcns(me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n xem s\u1ED1 d\u01B0" }, 403);
+    const year = Number(url.searchParams.get("year") || (/* @__PURE__ */ new Date()).getFullYear());
+    const targetUser = await env.DB.prepare("SELECT employee_type, lifecycle_status, contract_type FROM users WHERE id=?").bind(requestedUserId).first();
+    const isOfficial = targetUser && targetUser.employee_type !== "TTS" && targetUser.lifecycle_status !== "Th\u1EED vi\u1EC7c" && targetUser.lifecycle_status !== "Th\u1EF1c t\u1EADp" && targetUser.contract_type !== "Th\u1EED vi\u1EC7c" && targetUser.contract_type !== "Th\u1ECFa thu\u1EADn TTS";
+    const defaultAnnualDays = isOfficial ? 12 : 0;
+    let { results = [] } = await env.DB.prepare(
+      "SELECT leave_type_code,available_days,balance_year,updated_at FROM leave_balances WHERE user_id=? AND balance_year=?"
+    ).bind(requestedUserId, year).all();
+    if (!results.find((x) => x.leave_type_code === "annual")) {
+      results.push({
+        leave_type_code: "annual",
+        available_days: defaultAnnualDays,
+        balance_year: year
+      });
+    }
+    return json({ balances: results, year, is_official: isOfficial, default_annual_days: defaultAnnualDays });
+  }
+  if (path === "/api/leave/balances" && request.method === "POST") {
+    if (!isHcns(me)) return json({ error: "Ch\u1EC9 HCNS \u0111\u01B0\u1EE3c \u0111i\u1EC1u ch\u1EC9nh s\u1ED1 d\u01B0" }, 403);
+    const b = await request.json().catch(() => ({}));
+    const userId = Number(b.user_id), typeCode = String(b.leave_type_code || "");
+    const year = Number(b.balance_year || (/* @__PURE__ */ new Date()).getFullYear()), delta = Number(b.delta_days);
+    const note = String(b.note || "").trim();
+    if (!Number.isInteger(userId) || !["annual", "compensatory"].includes(typeCode) || !Number.isFinite(delta) || !delta || !note) return json({ error: "D\u1EEF li\u1EC7u \u0111i\u1EC1u ch\u1EC9nh s\u1ED1 d\u01B0 kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c thi\u1EBFu ghi ch\xFA" }, 400);
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO leave_balances (user_id,leave_type_code,balance_year,available_days,updated_by,updated_by_name)
+        VALUES (?,?,?,?,?,?) ON CONFLICT(user_id,leave_type_code,balance_year) DO UPDATE SET available_days=leave_balances.available_days+excluded.available_days,updated_by=excluded.updated_by,updated_by_name=excluded.updated_by_name,updated_at=datetime('now','localtime')`).bind(userId, typeCode, year, delta, me.id, me.full_name || ""),
+      env.DB.prepare("INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?)").bind(userId, typeCode, year, delta, "hr_adjustment", note, me.id, me.full_name || "")
+    ]);
+    await broadcastAppEvent(env, "leave", "leave_balance:updated", {
+      user_id: userId,
+      leave_type_code: typeCode,
+      balance_year: year,
+      delta_days: delta,
+      note
+    }, { actorId: me.id });
+    return json({ ok: true });
+  }
+  if (path === "/api/leave/uploads" && request.method === "POST") {
+    if (!env.HR_DOCUMENTS) return json({ error: "L\u01B0u tr\u1EEF t\xE0i li\u1EC7u ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh" }, 503);
+    const form = await request.formData().catch(() => null);
+    const file = form?.get("file");
+    if (!file || typeof file.stream !== "function") return json({ error: "Vui l\xF2ng ch\u1ECDn t\u1EC7p \u0111\xEDnh k\xE8m" }, 400);
+    const contentType = String(file.type || "").toLowerCase();
+    if (!LEAVE_DOCUMENT_TYPES.includes(contentType) || !Number.isFinite(file.size) || file.size < 1 || file.size > LEAVE_DOCUMENT_MAX_BYTES) return json({ error: "Ch\u1EC9 nh\u1EADn PDF, JPG, PNG ho\u1EB7c WebP, t\u1ED1i \u0111a 10 MB" }, 400);
+    const bytes = await file.arrayBuffer();
+    if (!employeeDocumentContentMatches(contentType, bytes)) return json({ error: "N\u1ED9i dung t\u1EC7p kh\xF4ng kh\u1EDBp \u0111\u1ECBnh d\u1EA1ng" }, 400);
+    const documentId = crypto.randomUUID(), storageKey = `leave-requests/${me.id}/${documentId}`;
+    await env.HR_DOCUMENTS.put(storageKey, bytes, { httpMetadata: { contentType, cacheControl: "private, no-store" }, customMetadata: { owner_id: String(me.id) } });
+    await env.DB.prepare("INSERT INTO leave_request_documents (id,owner_id,original_filename,content_type,byte_size,storage_key,required_label) VALUES (?,?,?,?,?,?,?)").bind(documentId, me.id, safeDownloadName(file.name), contentType, file.size, storageKey, String(form?.get("label") || "").slice(0, 120)).run();
+    return json({ ok: true, id: documentId, filename: safeDownloadName(file.name) });
+  }
+  if (path === "/api/leave" && request.method === "GET") {
+    const statusFilter = url.searchParams.get("status") || "";
+    const scope = url.searchParams.get("scope") || "";
+    const selfOnly = url.searchParams.get("self") === "1" || scope === "mine";
+    const canReview = me.role === "admin" || isHrOrBod(me) || me.role === "manager";
+    let query, params;
+    if (!canReview || selfOnly) {
+      query = `SELECT lr.*, u.full_name as employee_name, u.employee_code, u.department, lt.name AS type_name, lt.paid_policy, lt.deducts_annual_leave, lt.requires_evidence, lt.requires_bod_approval, lt.max_days, lt.short_description AS type_short_description, lt.policy_description AS type_policy_description, lt.notice_hours AS type_notice_hours, lt.required_documents AS type_required_documents, lt.requires_handover AS type_requires_handover FROM leave_requests lr
+                LEFT JOIN users u ON lr.user_id=u.employee_code OR CAST(lr.user_id AS TEXT)=CAST(u.id AS TEXT) OR lr.employee_id=u.id
+                LEFT JOIN leave_types lt ON lr.type=lt.code
+                WHERE (CAST(lr.user_id AS TEXT)=CAST(? AS TEXT) OR CAST(lr.employee_id AS TEXT)=CAST(? AS TEXT) OR lr.user_id=?)`;
+      params = [String(me.id), String(me.id), String(me.employee_code || "")];
+    } else {
+      query = `SELECT lr.*, u.full_name as employee_name, u.employee_code, u.department, lt.name AS type_name, lt.paid_policy, lt.deducts_annual_leave, lt.requires_evidence, lt.requires_bod_approval, lt.max_days, lt.short_description AS type_short_description, lt.policy_description AS type_policy_description, lt.notice_hours AS type_notice_hours, lt.required_documents AS type_required_documents, lt.requires_handover AS type_requires_handover FROM leave_requests lr
+                LEFT JOIN users u ON CAST(lr.user_id AS TEXT)=CAST(u.id AS TEXT) OR lr.user_id=u.employee_code OR lr.employee_id=u.id
+                LEFT JOIN leave_types lt ON lr.type=lt.code
+                WHERE 1=1`;
+      params = [];
+      if (!isHrOrBod(me)) {
+        query += " AND u.department=?";
+        params.push(me.department);
+      }
+    }
+    if (statusFilter) {
+      query += " AND lr.status=?";
+      params.push(statusFilter);
+    }
+    query += " ORDER BY lr.id DESC";
+    const { results } = await env.DB.prepare(query).bind(...params).all();
+    const leave = await Promise.all(results.map(async (row) => {
+      const docs = await env.DB.prepare("SELECT id,original_filename,content_type,byte_size,required_label FROM leave_request_documents WHERE leave_request_id=?").bind(row.id).all();
+      return {
+        ...row,
+        type_name: row.type_name || row.type,
+        paid_label: leavePaidLabel(row.paid_policy),
+        can_action: row.status === "pending" && canAdvanceLeaveApproval(me, row),
+        document_count: Number(docs.results?.length || 0),
+        documents: docs.results || []
+      };
+    }));
+    return json({ leave });
+  }
+  if (path === "/api/leave" && request.method === "POST") {
+    try {
+      const b = await request.json();
+      if (!b.start_date || !b.end_date || !b.type) return json({ error: "Ch\u1ECDn lo\u1EA1i ngh\u1EC9 v\xE0 ng\xE0y b\u1EAFt \u0111\u1EA7u/k\u1EBFt th\xFAc" }, 400);
+      if (String(b.start_date) > String(b.end_date)) return json({ error: "Ng\xE0y b\u1EAFt \u0111\u1EA7u ph\u1EA3i tr\u01B0\u1EDBc ho\u1EB7c b\u1EB1ng ng\xE0y k\u1EBFt th\xFAc" }, 400);
+      const typeCode = String(b.type).trim();
+      const leaveType = await env.DB.prepare("SELECT * FROM leave_types WHERE code=? AND is_active=1").bind(typeCode).first();
+      if (!leaveType) return json({ error: "Loai nghi phep khong hop le hoac da tat" }, 400);
+      const session = ["full", "morning", "afternoon"].includes(b.leave_session) ? b.leave_session : "full";
+      if (session !== "full" && b.start_date !== b.end_date) return json({ error: "Ngh\u1EC9 n\u1EEDa ng\xE0y ch\u1EC9 \xE1p d\u1EE5ng cho m\u1ED9t ng\xE0y" }, 400);
+      const leaveDays = leaveDaysForSession(b.start_date, b.end_date, session);
+      if (!leaveDays) return json({ error: "Kho\u1EA3ng th\u1EDDi gian ngh\u1EC9 kh\xF4ng c\xF3 ng\xE0y l\xE0m vi\u1EC7c" }, 400);
+      const reason = String(b.reason || "").trim();
+      if (!reason) return json({ error: "Vui l\xF2ng nh\u1EADp l\xFD do ngh\u1EC9" }, 400);
+      const documentIds = [...new Set(Array.isArray(b.document_ids) ? b.document_ids.map(String).filter(Boolean) : [])];
+      if (leaveType.requires_evidence && !documentIds.length) return json({ error: "Lo\u1EA1i ngh\u1EC9 n\xE0y y\xEAu c\u1EA7u t\xE0i li\u1EC7u \u0111\xEDnh k\xE8m" }, 400);
+      const needsHandover = !!leaveType.requires_handover || leaveDays >= 2;
+      const handoverUserId = b.handover_user_id ? Number(b.handover_user_id) : null;
+      if (needsHandover && !handoverUserId) return json({ error: "\u0110\u01A1n ngh\u1EC9 t\u1EEB 2 ng\xE0y ho\u1EB7c theo ch\xEDnh s\xE1ch ph\u1EA3i ch\u1ECDn ng\u01B0\u1EDDi b\xE0n giao" }, 400);
+      if (handoverUserId === Number(me.id)) return json({ error: "Ng\u01B0\u1EDDi b\xE0n giao kh\xF4ng th\u1EC3 l\xE0 ch\xEDnh b\u1EA1n" }, 400);
+      const handoverUser = handoverUserId ? await env.DB.prepare("SELECT id,full_name FROM users WHERE id=? AND is_active=1").bind(handoverUserId).first() : null;
+      if (handoverUserId && !handoverUser) return json({ error: "Ng\u01B0\u1EDDi b\xE0n giao kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+      if (documentIds.length) {
+        const placeholders = documentIds.map(() => "?").join(",");
+        const { results: documents = [] } = await env.DB.prepare(`SELECT id FROM leave_request_documents WHERE owner_id=? AND leave_request_id IS NULL AND id IN (${placeholders})`).bind(me.id, ...documentIds).all();
+        if (documents.length !== documentIds.length) return json({ error: "T\xE0i li\u1EC7u \u0111\xEDnh k\xE8m kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+      }
+      const balanceType = leaveBalanceType(leaveType), balanceYear = Number(String(b.start_date).slice(0, 4));
+      if (balanceType === "annual") {
+        const isOfficial = me.employee_type !== "TTS" && me.lifecycle_status !== "Th\u1EED vi\u1EC7c" && me.lifecycle_status !== "Th\u1EF1c t\u1EADp" && me.contract_type !== "Th\u1EED vi\u1EC7c" && me.contract_type !== "Th\u1ECFa thu\u1EADn TTS";
+        if (!isOfficial) {
+          return json({ error: "Ch\u1EBF \u0111\u1ED9 ph\xE9p n\u0103m ch\u1EC9 \xE1p d\u1EE5ng cho nh\xE2n vi\xEAn ch\xEDnh th\u1EE9c. Th\u1EF1c t\u1EADp sinh v\xE0 nh\xE2n vi\xEAn th\u1EED vi\u1EC7c ch\u01B0a c\xF3 ph\xE9p n\u0103m, vui l\xF2ng ch\u1ECDn lo\u1EA1i ngh\u1EC9 kh\xE1c (v\xED d\u1EE5: Ngh\u1EC9 kh\xF4ng l\u01B0\u01A1ng)." }, 400);
+        }
+      }
+      if (balanceType && await getLeaveBalance(env, me.id, balanceType, balanceYear) < leaveDays) return json({ error: `Kh\xF4ng \u0111\u1EE7 s\u1ED1 d\u01B0 ${balanceType === "annual" ? "ph\xE9p n\u0103m" : "ngh\u1EC9 b\xF9"}` }, 400);
+      const isHcnsApplicant = normalizeDeptName(me.department) === "Ph\xF2ng HCNS";
+      const flow = leavePolicyFor(leaveType), needsBod = flow === "manager_hr_bgd" || isHcnsApplicant;
+      const currentApprover = isHcnsApplicant ? "Tr\u01B0\u1EDFng ph\xF2ng HCNS" : "Qu\u1EA3n l\xFD tr\u1EF1c ti\u1EBFp";
+      const r = await env.DB.prepare(
+        "INSERT INTO leave_requests (user_id,employee_id,type,start_date,end_date,reason,status,current_approver,approval_level,submitted_at,leave_session,total_days,handover_user_id,handover_user_name,approval_flow,balance_reserved_days) VALUES (?,?,?,?,?,?,?,?,?,datetime('now','localtime'),?,?,?,?,?,?)"
+      ).bind(String(me.id), me.id, typeCode, b.start_date, b.end_date, reason, "pending", currentApprover, 1, session, leaveDays, handoverUser?.id || null, handoverUser?.full_name || null, flow, balanceType ? leaveDays : 0).run();
+      const leaveRequestId = r.meta.last_row_id;
+      if (balanceType) await env.DB.batch([
+        env.DB.prepare("UPDATE leave_balances SET available_days=available_days-?,updated_at=datetime('now','localtime') WHERE user_id=? AND leave_type_code=? AND balance_year=?").bind(leaveDays, me.id, balanceType, balanceYear),
+        env.DB.prepare("INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,leave_request_id,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?,?)").bind(me.id, balanceType, balanceYear, leaveRequestId, -leaveDays, "pending_reservation", "Gi\u1EEF ch\u1ED7 \u0111\u01A1n ngh\u1EC9", me.id, me.full_name || "")
+      ]);
+      if (documentIds.length) await env.DB.prepare(`UPDATE leave_request_documents SET leave_request_id=? WHERE id IN (${documentIds.map(() => "?").join(",")})`).bind(leaveRequestId, ...documentIds).run();
+      await env.DB.prepare("INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)").bind(leaveRequestId, 0, me.id, me.full_name, "submitted", needsBod ? "Lu\u1ED3ng c\u1EA7n Ban Gi\xE1m \u0111\u1ED1c ph\xEA duy\u1EC7t cu\u1ED1i" : "Lu\u1ED3ng Qu\u1EA3n l\xFD tr\u1EF1c ti\u1EBFp \u2192 HCNS").run();
+      await broadcastAppEvent(env, "leave", "leave:created", {
+        id: leaveRequestId,
+        user_id: me.id,
+        employee_id: me.id,
+        employee_name: me.full_name,
+        employee_code: me.employee_code,
+        department: me.department,
+        type: typeCode,
+        start_date: b.start_date,
+        end_date: b.end_date,
+        leave_session: session,
+        total_days: leaveDays,
+        status: "pending",
+        current_approver: currentApprover,
+        approval_flow: flow
+      }, { actorId: me.id });
+      return json({ ok: true, id: leaveRequestId });
+    } catch (e) {
+      console.error("Leave create failed", e);
+      return json({ error: e.message || "Kh\xF4ng th\u1EC3 t\u1EA1o y\xEAu c\u1EA7u ngh\u1EC9 ph\xE9p, vui l\xF2ng th\u1EED l\u1EA1i sau" }, 500);
+    }
+  }
+  const leaveDocumentsListMatch = path.match(/^\/api\/leave\/(\d+)\/documents$/);
+  if (leaveDocumentsListMatch && request.method === "GET") {
+    const leaveId = Number(leaveDocumentsListMatch[1]);
+    const leaveRow = await env.DB.prepare(`SELECT lr.*, u.department FROM leave_requests lr LEFT JOIN users u ON (u.id=lr.employee_id OR u.employee_code=lr.user_id) WHERE lr.id=?`).bind(leaveId).first();
+    if (!leaveRow) return json({ error: "\u0110\u01A1n ngh\u1EC9 kh\xF4ng t\u1ED3n t\u1EA1i" }, 404);
+    const isOwner = Number(leaveRow.employee_id) === Number(me.id) || String(leaveRow.user_id) === String(me.id) || String(leaveRow.user_id) === String(me.employee_code || "");
+    if (!isOwner && !canManageLeaveRequest(me, leaveRow)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n xem t\xE0i li\u1EC7u" }, 403);
+    const { results: documents = [] } = await env.DB.prepare("SELECT id,original_filename,content_type,byte_size,required_label,created_at FROM leave_request_documents WHERE leave_request_id=?").bind(leaveId).all();
+    return json({ documents });
+  }
+  const leaveDocumentMatch = path.match(/^\/api\/leave\/(\d+)\/documents\/([0-9a-fA-F-]{36})$/);
+  if (leaveDocumentMatch && request.method === "GET") {
+    const leaveId = Number(leaveDocumentMatch[1]), documentId = leaveDocumentMatch[2];
+    const document = await env.DB.prepare(`SELECT d.*,lr.employee_id,lr.user_id,u.department FROM leave_request_documents d
+      JOIN leave_requests lr ON lr.id=d.leave_request_id LEFT JOIN users u ON (u.id=lr.employee_id OR u.employee_code=lr.user_id) WHERE d.id=? AND d.leave_request_id=?`).bind(documentId, leaveId).first();
+    if (!document) return json({ error: "T\xE0i li\u1EC7u kh\xF4ng t\u1ED3n t\u1EA1i" }, 404);
+    const isOwner = Number(document.employee_id) === Number(me.id) || String(document.user_id) === String(me.id) || String(document.user_id) === String(me.employee_code || "");
+    if (!isOwner && !canManageLeaveRequest(me, document)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n xem t\xE0i li\u1EC7u" }, 403);
+    if (!env.HR_DOCUMENTS) return json({ error: "L\u01B0u tr\u1EEF t\xE0i li\u1EC7u ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh" }, 503);
+    const object = await env.HR_DOCUMENTS.get(document.storage_key);
+    if (!object) return json({ error: "T\u1EC7p kh\xF4ng t\u1ED3n t\u1EA1i tr\xEAn kho l\u01B0u tr\u1EEF" }, 404);
+    const disposition = url.searchParams.get("disposition") === "attachment" ? "attachment" : "inline";
+    const filename = safeDownloadName(document.original_filename);
+    return new Response(object.body, { headers: { "Content-Type": document.content_type || object.httpMetadata?.contentType || "application/octet-stream", "Content-Disposition": `${disposition}; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" } });
+  }
+  const leaveMatch = path.match(/^\/api\/leave\/(\d+)$/);
+  if (leaveMatch) {
+    const id = parseInt(leaveMatch[1]);
+    if (request.method === "PUT") {
+      const b = await request2.json();
+      const request2 = await env.DB.prepare("SELECT lr.*,u.department FROM leave_requests lr LEFT JOIN users u ON u.id=lr.employee_id WHERE lr.id=?").bind(id).first();
+      if (!request2) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y \u0111\u01A1n ngh\u1EC9" }, 404);
+      if (b.status === "rejected") {
+        if (!canAdvanceLeaveApproval(me, request2)) return json({ error: "Ch\u01B0a \u0111\u1EBFn b\u01B0\u1EDBc ph\xEA duy\u1EC7t c\u1EE7a b\u1EA1n" }, 403);
+        await env.DB.prepare("UPDATE leave_requests SET status='rejected',current_approver=NULL WHERE id=?").bind(id).run();
+        if (request2.balance_reserved_days > 0) {
+          const type = request2.type === "annual" ? "annual" : "compensatory", year = Number(String(request2.start_date).slice(0, 4));
+          await env.DB.batch([
+            env.DB.prepare("UPDATE leave_balances SET available_days=available_days+?,updated_at=datetime('now','localtime') WHERE user_id=? AND leave_type_code=? AND balance_year=?").bind(request2.balance_reserved_days, request2.employee_id, type, year),
+            env.DB.prepare("INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,leave_request_id,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?,?)").bind(request2.employee_id, type, year, id, request2.balance_reserved_days, "reservation_release", String(b.note || "T\u1EEB ch\u1ED1i \u0111\u01A1n"), me.id, me.full_name || "")
+          ]);
+        }
+        await env.DB.prepare("INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)").bind(id, request2.approval_level, me.id, me.full_name, "rejected", String(b.note || "")).run();
+        await broadcastAppEvent(env, "leave", "leave:rejected", {
+          id,
+          user_id: request2.employee_id,
+          status: "rejected",
+          note: String(b.note || "")
+        }, { actorId: me.id });
+        return json({ ok: true });
+      }
+      if (b.status === "approved") {
+        if (!canAdvanceLeaveApproval(me, request2)) return json({ error: "Ch\u01B0a \u0111\u1EBFn b\u01B0\u1EDBc ph\xEA duy\u1EC7t c\u1EE7a b\u1EA1n" }, 403);
+        const flow = request2.approval_flow || "manager_hr";
+        let nextLevel = Number(request2.approval_level || 1) + 1, nextApprover = null;
+        if (me.role === "admin" || nextLevel === 3 && flow !== "manager_hr_bgd" || nextLevel > 3) nextLevel = 99;
+        if (nextLevel === 2) nextApprover = "HCNS";
+        else if (nextLevel === 3) nextApprover = "Ban Gi\xE1m \u0111\u1ED1c";
+        const finalApproved = nextLevel === 99;
+        await env.DB.prepare("UPDATE leave_requests SET status=?,approval_level=?,current_approver=? WHERE id=?").bind(finalApproved ? "approved" : "pending", nextLevel, nextApprover, id).run();
+        await env.DB.prepare("INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)").bind(id, request2.approval_level, me.id, me.full_name, finalApproved ? "approved" : "forwarded", String(b.note || "")).run();
+        await broadcastAppEvent(env, "leave", finalApproved ? "leave:approved" : "leave:forwarded", {
+          id,
+          user_id: request2.employee_id,
+          status: finalApproved ? "approved" : "pending",
+          approval_level: nextLevel,
+          current_approver: nextApprover,
+          final: finalApproved,
+          note: String(b.note || "")
+        }, { actorId: me.id });
+        return json({ ok: true, final: finalApproved });
+      }
+      if (Number(request2.employee_id) !== Number(me.id) || request2.status !== "pending") return json({ error: "Ch\u1EC9 \u0111\u01B0\u1EE3c s\u1EEDa \u0111\u01A1n c\u1EE7a b\u1EA1n khi \u0111ang ch\u1EDD duy\u1EC7t" }, 403);
+      const updates = [], vals = [];
+      if (b.reason !== void 0) {
+        const reason = String(b.reason).trim();
+        if (!reason) return json({ error: "Vui l\xF2ng nh\u1EADp l\xFD do ngh\u1EC9" }, 400);
+        updates.push("reason=?");
+        vals.push(reason);
+      }
+      if (!updates.length) return json({ error: "Kh\xF4ng c\xF3 d\u1EEF li\u1EC7u c\u1EADp nh\u1EADt" }, 400);
+      vals.push(id);
+      await env.DB.prepare(`UPDATE leave_requests SET ${updates.join(",")} WHERE id=?`).bind(...vals).run();
+      await broadcastAppEvent(env, "leave", "leave:updated", {
+        id,
+        user_id: request2.employee_id,
+        updates: b
+      }, { actorId: me.id });
+      return json({ ok: true });
+    }
+    if (request.method === "DELETE") {
+      const request2 = await env.DB.prepare("SELECT * FROM leave_requests WHERE id=?").bind(id).first();
+      if (!request2 || Number(request2.employee_id) !== Number(me.id) && !isHcns(me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n x\xF3a \u0111\u01A1n ngh\u1EC9" }, 403);
+      if (request2.status !== "pending") return json({ error: "Ch\u1EC9 \u0111\u01B0\u1EE3c x\xF3a \u0111\u01A1n \u0111ang ch\u1EDD duy\u1EC7t" }, 400);
+      if (request2.balance_reserved_days > 0) {
+        const type = request2.type === "annual" ? "annual" : "compensatory", year = Number(String(request2.start_date).slice(0, 4));
+        await env.DB.batch([
+          env.DB.prepare("UPDATE leave_balances SET available_days=available_days+?,updated_at=datetime('now','localtime') WHERE user_id=? AND leave_type_code=? AND balance_year=?").bind(request2.balance_reserved_days, request2.employee_id, type, year),
+          env.DB.prepare("INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,leave_request_id,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?,?)").bind(request2.employee_id, type, year, id, request2.balance_reserved_days, "reservation_release", "H\u1EE7y \u0111\u01A1n ngh\u1EC9", me.id, me.full_name || "")
+        ]);
+      }
+      await env.DB.prepare("DELETE FROM leave_requests WHERE id=?").bind(id).run();
+      await broadcastAppEvent(env, "leave", "leave:deleted", {
+        id,
+        user_id: request2.employee_id
+      }, { actorId: me.id });
+      return json({ ok: true });
+    }
+  }
+  if (path === "/api/candidates" && request.method === "GET") {
+    const stageFilter = url.searchParams.get("stage") || "";
+    let q = "SELECT * FROM candidates ORDER BY id DESC";
+    const params = [];
+    if (stageFilter) {
+      q = "SELECT * FROM candidates WHERE stage=? ORDER BY id DESC";
+      params.push(stageFilter);
+    }
+    const { results } = await env.DB.prepare(q).bind(...params).all();
+    return json({ candidates: results });
+  }
+  if (path === "/api/candidates" && request.method === "POST") {
+    const b = await request.json();
+    if (!b.name) return json({ error: "Thi\u1EBFu t\xEAn \u1EE9ng vi\xEAn" }, 400);
+    const r = await env.DB.prepare(
+      "INSERT INTO candidates (user_id,name,position,department_id,apply_date,source,stage,notes) VALUES (?,?,?,?,?,?,?,?)"
+    ).bind(env.USER_ID, b.name, b.position || "", b.department_id || null, b.apply_date || null, b.source || "Kh\xE1c", b.stage || "received", b.notes || "").run();
+    return json({ ok: true, id: r.meta.last_row_id });
+  }
+  const candMatch = path.match(/^\/api\/candidates\/(\d+)$/);
+  if (candMatch) {
+    const id = parseInt(candMatch[1]);
+    if (request.method === "PUT") {
+      const b = await request.json();
+      const cols = ["name", "position", "apply_date", "source", "stage", "notes"];
+      const setStrs = [];
+      const vals = [];
+      for (const c of cols) {
+        if (b[c] !== void 0) {
+          setStrs.push(c + "=?");
+          vals.push(b[c]);
+        }
+      }
+      if (b.department !== void 0) {
+        setStrs.push("department_id=?");
+        vals.push(b.department || null);
+      }
+      if (!setStrs.length) return json({ error: "Kh\xF4ng c\xF3 d\u1EEF li\u1EC7u" }, 400);
+      vals.push(id);
+      await env.DB.prepare(`UPDATE candidates SET ${setStrs.join(",")} WHERE id=?`).bind(...vals).run();
+      return json({ ok: true });
+    }
+    if (request.method === "DELETE") {
+      await env.DB.prepare("DELETE FROM candidates WHERE id=?").bind(id).run();
+      return json({ ok: true });
+    }
+  }
+  if (path === "/api/payroll-adjustments/suggestions" && request.method === "GET") {
+    if (!isManager) return json({ error: "Khong co quyen" }, 403);
+    const month = String(url.searchParams.get("month") || "").trim();
+    if (!/^\d{4}-\d{2}$/.test(month)) return json({ error: "Thieu hoac sai thang bang luong" }, 400);
+    const data = await buildPayrollAdjustmentSuggestions(env, month);
+    return json({
+      month,
+      suggestions: data.suggestions,
+      approved: data.approved,
+      manual_sources: [{ source: "manual", label: "HCNS: b\xE1o c\xE1o kh\xF4ng ch\u1EE7 \u0111\u1ED9ng / qu\u1EA3n l\xFD ph\u1EA3i h\u1ECFi ti\u1EBFn \u0111\u1ED9" }]
+    });
+  }
+  if (path === "/api/payroll-adjustments/dismiss" && request.method === "POST") {
+    if (!isHcns(me)) return json({ error: "Ch\u1EC9 HCNS/Admin \u0111\u01B0\u1EE3c x\xF3a \u0111\u1EC1 xu\u1EA5t" }, 403);
+    const body = await request.json().catch(() => ({}));
+    const month = String(body.month || "").trim();
+    const sourceRef = String(body.source_ref || "").trim();
+    if (!/^\d{4}-\d{2}$/.test(month) || !sourceRef || sourceRef.length > 160) {
+      return json({ error: "D\u1EEF li\u1EC7u x\xF3a \u0111\u1EC1 xu\u1EA5t kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    }
+    const data = await buildPayrollAdjustmentSuggestions(env, month);
+    if (!data.suggestions.some((suggestion) => suggestion.source_ref === sourceRef)) {
+      return json({ error: "\u0110\u1EC1 xu\u1EA5t kh\xF4ng c\xF2n t\u1ED3n t\u1EA1i ho\u1EB7c \u0111\xE3 \u0111\u01B0\u1EE3c x\u1EED l\xFD" }, 404);
+    }
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO payroll_adjustment_dismissals (month,source_ref,dismissed_by,dismissed_by_name)
+       VALUES (?,?,?,?)`
+    ).bind(month, sourceRef, me.id, me.full_name || "").run();
+    return json({ ok: true, month, source_ref: sourceRef });
+  }
+  if (path === "/api/payroll-adjustments/penalty-policy-reset-preview" && request.method === "GET") {
+    if (!isHcns(me)) return json({ error: "Ch\u1EC9 HCNS/Admin \u0111\u01B0\u1EE3c xem d\u1ECDn d\u1EEF li\u1EC7u ph\u1EA1t" }, 403);
+    const preview = await getPenaltyPolicyResetPreview(env);
+    return json({ ...preview.summary, conflicts: preview.conflicts });
+  }
+  if (path === "/api/payroll-adjustments/penalty-policy-reset" && request.method === "POST") {
+    if (!isHcns(me)) return json({ error: "Ch\u1EC9 HCNS/Admin \u0111\u01B0\u1EE3c c\u1EADp nh\u1EADt quy \u0111\u1ECBnh ph\u1EA1t" }, 403);
+    const confirmation = String((await request.json().catch(() => ({}))).confirmation || "");
+    if (confirmation !== PENALTY_POLICY_RESET_CONFIRMATION) return json({ error: "X\xE1c nh\u1EADn c\u1EADp nh\u1EADt quy \u0111\u1ECBnh ph\u1EA1t kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    try {
+      return json({ ok: true, ...await resetPenaltyPolicyAdjustments(env, me) });
+    } catch (error) {
+      if (error.conflicts) return json({ error: error.message, conflicts: error.conflicts }, 409);
+      throw error;
+    }
+  }
+  if (path === "/api/payroll-adjustments/apply" && request.method === "POST") {
+    if (!isManager) return json({ error: "Khong co quyen" }, 403);
+    const b = await request.json().catch(() => ({}));
+    const month = String(b.month || "").trim();
+    if (!/^\d{4}-\d{2}$/.test(month)) return json({ error: "Thieu hoac sai thang bang luong" }, 400);
+    const incoming = Array.isArray(b.items) ? b.items : [];
+    if (!incoming.length) return json({ error: "Chua co de xuat nao duoc chon" }, 400);
+    if (incoming.some((item) => item?.source === "manual" || !item?.source_ref) && !isHcns(me)) {
+      return json({ error: "Ch\u1EC9 HCNS/Admin \u0111\u01B0\u1EE3c t\u1EA1o ph\u1EA1t th\u1EE7 c\xF4ng" }, 403);
+    }
+    const data = await buildPayrollAdjustmentSuggestions(env, month);
+    const suggestionByRef = new Map(data.suggestions.map((s) => [s.source_ref, s]));
+    let applied = 0, skipped = 0;
+    const errors = [];
+    for (const item of incoming) {
+      const isManual = item.source === "manual" || !item.source_ref;
+      const base = isManual ? {
+        employee_id: intOrNull(item.employee_id),
+        payroll_id: intOrNull(item.payroll_id),
+        month,
+        type: item.type || payrollAdjustmentType(item.source || "manual", Number(item.amount || 0), Number(item.score_delta || 0)),
+        source: "manual",
+        source_ref: `manual:${month}:${Date.now()}:${Math.random().toString(16).slice(2)}`,
+        violation_date: /^\d{4}-\d{2}-\d{2}$/.test(String(item.violation_date || "")) ? item.violation_date : null,
+        policy_month: month,
+        amount: Number(item.amount || 0),
+        score_delta: Number(item.score_delta || 0),
+        reason: String(item.reason || "").trim()
+      } : suggestionByRef.get(item.source_ref);
+      if (!base) {
+        skipped++;
+        errors.push({ source_ref: item.source_ref || null, error: "De xuat khong con hop le hoac da ap dung" });
+        continue;
+      }
+      if (!base.employee_id || !base.reason) {
+        skipped++;
+        errors.push({ source_ref: item.source_ref || null, error: "Thieu nhan vien hoac ly do" });
+        continue;
+      }
+      const amount = Math.max(0, Number(item.amount ?? base.amount ?? 0));
+      const scoreDelta = Number(item.score_delta ?? base.score_delta ?? 0);
+      const type = item.type || base.type || payrollAdjustmentType(base.source, amount, scoreDelta);
+      let payroll = base.payroll_id ? await env.DB.prepare("SELECT * FROM payroll WHERE id=?").bind(base.payroll_id).first() : null;
+      if (!payroll) payroll = await env.DB.prepare("SELECT * FROM payroll WHERE employee_id=? AND month=? LIMIT 1").bind(base.employee_id, month).first();
+      if (amount > 0 && !payroll) {
+        skipped++;
+        errors.push({ source_ref: base.source_ref, error: "Chua co dong bang luong cho nhan vien nay" });
+        continue;
+      }
+      const existing = base.source_ref ? await env.DB.prepare("SELECT id FROM payroll_adjustments WHERE source_ref=? AND status=?").bind(base.source_ref, "approved").first() : null;
+      if (existing) {
+        skipped++;
+        continue;
+      }
+      await env.DB.prepare(
+        `INSERT INTO payroll_adjustments (employee_id,payroll_id,month,violation_date,policy_month,type,source,source_ref,amount,score_delta,reason,status,created_by,created_by_name,approved_by,approved_by_name,approved_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,'approved',?,?,?,?,datetime('now','localtime'),datetime('now','localtime'))`
+      ).bind(base.employee_id, payroll?.id || null, month, base.violation_date || null, base.policy_month || month, type, base.source, base.source_ref, amount, scoreDelta, String(item.reason || base.reason).trim(), me.id, me.full_name || "", me.id, me.full_name || "").run();
+      if (amount > 0 && payroll) {
+        const nextKpi = Number(payroll.kpi_bonus || 0) + (type === "bonus" ? amount : 0);
+        const nextDeduction = Number(payroll.deduction || 0) + (type === "penalty" ? amount : 0);
+        const nextNet = Number(payroll.base_salary || 0) + nextKpi + Number(payroll.allowance || 0) - nextDeduction;
+        await env.DB.prepare("UPDATE payroll SET kpi_bonus=?,deduction=?,net_salary=? WHERE id=?").bind(nextKpi, nextDeduction, nextNet, payroll.id).run();
+      }
+      applied++;
+    }
+    await broadcastAppEvent(env, "payroll", "payroll:adjusted", {
+      month,
+      applied,
+      skipped
+    }, { actorId: me.id });
+    return json({ ok: true, month, applied, skipped, errors });
+  }
+  if (path === "/api/payroll" && request.method === "GET") {
+    if (!isManager) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const month = url.searchParams.get("month") || (/* @__PURE__ */ new Date()).toISOString().slice(0, 7);
+    const stmt = env.DB.prepare(`SELECT p.*, u.position, u.contract_type
+      FROM payroll p LEFT JOIN users u ON u.id=p.employee_id
+      WHERE p.month=?${!isAdmin && !isHcns(me) ? " AND p.department=?" : ""} ORDER BY p.id DESC`);
+    const { results } = !isAdmin && !isHcns(me) ? await stmt.bind(month, me.department).all() : await stmt.bind(month).all();
+    return json({ payroll: results });
+  }
+  if (path === "/api/payroll/load" && request.method === "POST") {
+    if (!(isAdmin || isHcns(me))) return json({ error: "Khong co quyen" }, 403);
+    const b = await request.json().catch(() => ({}));
+    const month = String(b.month || "").trim();
+    if (!/^\d{4}-\d{2}$/.test(month)) return json({ error: "Thieu hoac sai thang bang luong" }, 400);
+    const batch = await env.DB.prepare("SELECT * FROM payroll_batches WHERE month=?").bind(month).first();
+    if (batch && ["locked", "paid"].includes(String(batch.status || "").toLowerCase())) {
+      return json({ error: "Bang luong thang nay da khoa, khong the dong bo du lieu." }, 409);
+    }
+    const [yearStr, mmStr] = month.split("-");
+    const year = Number(yearStr);
+    const invMonth = Number(mmStr);
+    const { results: users = [] } = await env.DB.prepare(
+      "SELECT id,employee_code,full_name,department,salary FROM users WHERE is_active=1 ORDER BY id"
+    ).all();
+    const existingRow = await env.DB.prepare("SELECT COUNT(*) AS c FROM payroll WHERE month=?").bind(month).first();
+    let created = 0, updated = 0, ready = 0, missingSalary = 0, estimatedTotal = 0;
+    for (const u of users) {
+      const base = Number(u.salary || 0);
+      const status = base > 0 ? "ready" : "missing_salary_config";
+      const warnings = base > 0 ? "" : "Thi\u1EBFu c\u1EA5u h\xECnh l\u01B0\u01A1ng";
+      const workSummary = await buildMonthlyWorkSummary(env, u.id, invMonth, year);
+      const overtime = await buildMonthlyOvertimeSummary(env, u.id, invMonth, year, base);
+      if (base > 0) {
+        ready++;
+        estimatedTotal += base + overtime.overtimePay;
+      } else {
+        missingSalary++;
+      }
+      const existing = await env.DB.prepare("SELECT * FROM payroll WHERE employee_id=? AND month=? LIMIT 1").bind(u.id, month).first();
+      if (existing) {
+        const kpi = Number(existing.kpi_bonus || 0);
+        const allowance = Number(existing.allowance || 0);
+        const deduction = Number(existing.deduction || 0);
+        const net = base + kpi + allowance + overtime.overtimePay - deduction;
+        await env.DB.prepare(
+          `UPDATE payroll SET user_id=?,employee_name=?,employee_code=?,department=?,base_salary=?,kpi_bonus=?,allowance=?,deduction=?,overtime_pay=?,approved_overtime_minutes=?,work_days=?,standard_days=?,paid_leave_days=?,absent_days=?,late_days=?,late_minutes=?,early_leave_minutes=?,missing_checkinout_days=?,net_salary=?,data_status=?,data_warnings=?,source_synced_at=datetime('now','localtime') WHERE id=?`
+        ).bind(String(me.id), u.full_name || "", u.employee_code || "", u.department || "", base, kpi, allowance, deduction, overtime.overtimePay, overtime.approvedOvertimeMinutes, workSummary.actualWorkDays, workSummary.standardWorkDays, workSummary.paidLeaveDays, workSummary.absentDays, workSummary.lateDays, workSummary.lateMinutes, workSummary.earlyLeaveMinutes, workSummary.incompleteDays, net, status, warnings, existing.id).run();
+        updated++;
+      } else {
+        const net = base + overtime.overtimePay;
+        await env.DB.prepare(
+          `INSERT INTO payroll (user_id,employee_id,employee_name,employee_code,department,month,base_salary,kpi_bonus,allowance,deduction,overtime_pay,approved_overtime_minutes,work_days,standard_days,paid_leave_days,absent_days,late_days,late_minutes,early_leave_minutes,missing_checkinout_days,net_salary,data_status,data_warnings,source_synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))`
+        ).bind(String(me.id), u.id, u.full_name || "", u.employee_code || "", u.department || "", month, base, 0, 0, 0, overtime.overtimePay, overtime.approvedOvertimeMinutes, workSummary.actualWorkDays, workSummary.standardWorkDays, workSummary.paidLeaveDays, workSummary.absentDays, workSummary.lateDays, workSummary.lateMinutes, workSummary.earlyLeaveMinutes, workSummary.incompleteDays, net, status, warnings).run();
+        created++;
+      }
+    }
+    await env.DB.prepare(
+      `INSERT INTO payroll_batches (month,status,total_employees,complete_employees,missing_employees,estimated_total,created_by,created_by_name,updated_at)
+       VALUES (?,'draft',?,?,?,?,?,?,datetime('now','localtime'))
+       ON CONFLICT(month) DO UPDATE SET total_employees=excluded.total_employees,complete_employees=excluded.complete_employees,missing_employees=excluded.missing_employees,estimated_total=excluded.estimated_total,updated_at=datetime('now','localtime')`
+    ).bind(month, users.length, ready, missingSalary, estimatedTotal, me.id, me.full_name || "").run();
+    await broadcastAppEvent(env, "payroll", "payroll:loaded", {
+      month,
+      total: users.length,
+      created,
+      updated,
+      ready,
+      missing: missingSalary
+    }, { actorId: me.id });
+    return json({
+      ok: true,
+      loaded: true,
+      month,
+      status: "draft",
+      total: users.length,
+      existing: Number(existingRow?.c || 0),
+      existing_rows: Number(existingRow?.c || 0),
+      created,
+      updated,
+      complete: ready,
+      ready,
+      missing: missingSalary,
+      missing_salary_config: missingSalary,
+      estimated_total: estimatedTotal,
+      warning: missingSalary > 0 ? "Cac truong hop thieu cau hinh luong can duoc xu ly truoc khi trinh phe duyet." : ""
+    });
+  }
+  if (path === "/api/payroll/batch" && request.method === "POST") {
+    if (!(isAdmin || isHcns(me))) return json({ error: "Khong co quyen" }, 403);
+    const b = await request.json().catch(() => ({}));
+    const month = String(b.month || "").trim();
+    if (!/^\d{4}-\d{2}$/.test(month)) return json({ error: "Thieu hoac sai thang bang luong" }, 400);
+    const batch = await env.DB.prepare("SELECT * FROM payroll_batches WHERE month=?").bind(month).first();
+    if (batch && ["locked", "paid"].includes(String(batch.status || "").toLowerCase())) {
+      return json({ error: "Bang luong thang nay da khoa, khong the dong bo du lieu." }, 409);
+    }
+    const { results: users = [] } = await env.DB.prepare(
+      "SELECT id,employee_code,full_name,department,salary FROM users WHERE is_active=1 ORDER BY id"
+    ).all();
+    let created = 0, updated = 0, ready = 0, missing = 0, estimatedTotal = 0;
+    for (const u of users) {
+      const base = Number(u.salary || 0);
+      const status = base > 0 ? "ready" : "missing_salary_config";
+      const warnings = base > 0 ? "" : "Thi\u1EBFu c\u1EA5u h\xECnh l\u01B0\u01A1ng";
+      if (base > 0) {
+        ready++;
+        estimatedTotal += base;
+      } else missing++;
+      const exists = await env.DB.prepare("SELECT id FROM payroll WHERE employee_id=? AND month=? LIMIT 1").bind(u.id, month).first();
+      if (exists) {
+        const row = await env.DB.prepare("SELECT kpi_bonus,allowance,deduction FROM payroll WHERE id=?").bind(exists.id).first();
+        const kpi = Number(row?.kpi_bonus || 0), allowance = Number(row?.allowance || 0), deduction = Number(row?.deduction || 0);
+        await env.DB.prepare(
+          "UPDATE payroll SET user_id=?,employee_name=?,employee_code=?,department=?,base_salary=?,net_salary=?,data_status=?,data_warnings=?,source_synced_at=datetime('now','localtime') WHERE id=?"
+        ).bind(String(me.id), u.full_name || "", u.employee_code || "", u.department || "", base, base + kpi + allowance - deduction, status, warnings, exists.id).run();
+        updated++;
+        continue;
+      }
+      await env.DB.prepare(
+        "INSERT INTO payroll (user_id,employee_id,employee_name,employee_code,department,month,base_salary,kpi_bonus,allowance,deduction,net_salary,data_status,data_warnings,source_synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))"
+      ).bind(String(me.id), u.id, u.full_name || "", u.employee_code || "", u.department || "", month, base, 0, 0, 0, base, status, warnings).run();
+      created++;
+    }
+    await env.DB.prepare(
+      `INSERT INTO payroll_batches (month,status,total_employees,complete_employees,missing_employees,estimated_total,created_by,created_by_name,updated_at)
+       VALUES (?,'draft',?,?,?,?,?,?,datetime('now','localtime'))
+       ON CONFLICT(month) DO UPDATE SET status='draft',total_employees=excluded.total_employees,complete_employees=excluded.complete_employees,missing_employees=excluded.missing_employees,estimated_total=excluded.estimated_total,updated_at=datetime('now','localtime')`
+    ).bind(month, users.length, ready, missing, estimatedTotal, me.id, me.full_name || "").run();
+    await broadcastAppEvent(env, "payroll", "payroll:batch_synced", {
+      month,
+      total: users.length,
+      created,
+      updated,
+      ready,
+      missing
+    }, { actorId: me.id });
+    return json({ ok: true, status: "draft", created, updated, missing, missing_salary_config: missing, complete: ready, total: users.length, month, estimated_total: estimatedTotal });
+  }
+  if (path === "/api/payroll/export-payslips" && request.method === "POST") {
+    if (!(isAdmin || isHcns(me))) return json({ error: "Khong co quyen" }, 403);
+    const b = await request.json().catch(() => ({}));
+    const month = String(b.month || "").trim();
+    if (!/^\d{4}-\d{2}$/.test(month)) return json({ error: "Thieu hoac sai thang bang luong" }, 400);
+    if (String(b.confirmText || "").trim().toLowerCase() !== "xuatphieuluong") {
+      return json({ error: "Can go dung xuatphieuluong de xuat phieu luong" }, 400);
+    }
+    try {
+      const [yearStr, mmStr] = month.split("-");
+      const year = Number(yearStr);
+      const invMonth = Number(mmStr);
+      const { results: rows = [] } = await env.DB.prepare(
+        `SELECT p.*, u.id AS real_user_id, u.bank_account, u.bank_name
+         FROM payroll p
+         LEFT JOIN users u ON u.id=p.employee_id
+        WHERE p.month=?
+        ORDER BY p.id`
+      ).bind(month).all();
+      let created = 0, updated = 0, skipped = 0;
+      const skippedRows = [];
+      for (const p of rows) {
+        try {
+          const employeeId = Number(p.employee_id || p.real_user_id || 0);
+          const status = p.data_status || (Number(p.base_salary || 0) > 0 ? "ready" : "missing_salary_config");
+          if (!employeeId || status !== "ready" || Number(p.base_salary || 0) <= 0) {
+            skipped++;
+            skippedRows.push({ payroll_id: p.id, employee_id: employeeId || null, employee_name: p.employee_name || "", reason: "missing_salary_config" });
+            continue;
+          }
+          const base = Number(p.base_salary || 0);
+          const bonus = Number(p.kpi_bonus || 0);
+          const allowance = Number(p.allowance || 0);
+          const deduction = Number(p.deduction || 0);
+          const workSummary = await buildMonthlyWorkSummary(env, employeeId, invMonth, year);
+          const overtime = await buildMonthlyOvertimeSummary(env, employeeId, invMonth, year, base);
+          const net = Number(base + bonus + allowance + overtime.overtimePay - deduction);
+          const existing = await env.DB.prepare(
+            "SELECT * FROM invoices WHERE payroll_id=? OR (user_id=? AND month=? AND year=?) ORDER BY id DESC LIMIT 1"
+          ).bind(p.id, employeeId, invMonth, year).first();
+          if (existing && (existing.locked_at || existing.status === "paid" || existing.status === "employee_confirmed" || existing.employee_confirmed_at)) {
+            skipped++;
+            skippedRows.push({ invoice_id: existing.id, payroll_id: p.id, employee_id: employeeId, employee_name: p.employee_name || "", reason: "locked_or_confirmed" });
+            continue;
+          }
+          if (existing) {
+            const fromStatus = existing.status || null;
+            await env.DB.prepare(
+              `UPDATE invoices SET payroll_id=?,base_salary=?,bonus=?,allowance=?,deduction=?,tax=0,insurance=0,
+               approved_overtime_minutes=?,overtime_pay=?,net_salary=?,
+               work_days=?,absent_days=?,late_days=?,standard_days=?,paid_leave_days=?,late_minutes=?,early_leave_minutes=?,missing_checkinout_days=?,
+               status='issued',issued_at=datetime('now','localtime'),issued_by=?,issued_by_name=?,
+               review_resolved_at=CASE WHEN status='review_requested' THEN datetime('now','localtime') ELSE review_resolved_at END,
+               review_status=CASE WHEN status='review_requested' THEN 'resolved' ELSE COALESCE(review_status,'none') END,
+               review_note=CASE WHEN status='review_requested' THEN 'Reissued from payroll' ELSE review_note END
+             WHERE id=?`
+            ).bind(
+              p.id,
+              base,
+              bonus,
+              allowance,
+              deduction,
+              overtime.approvedOvertimeMinutes,
+              overtime.overtimePay,
+              net,
+              workSummary.actualWorkDays,
+              workSummary.absentDays,
+              workSummary.lateDays,
+              workSummary.standardWorkDays,
+              workSummary.paidLeaveDays,
+              workSummary.lateMinutes,
+              workSummary.earlyLeaveMinutes,
+              workSummary.incompleteDays,
+              me.id,
+              me.full_name || "",
+              existing.id
+            ).run();
+            await env.DB.prepare(
+              "UPDATE invoice_review_requests SET status='resolved',handled_by=?,handled_by_name=?,handled_note=COALESCE(handled_note,'Reissued from payroll'),handled_at=datetime('now','localtime'),updated_at=datetime('now','localtime') WHERE invoice_id=? AND status='open'"
+            ).bind(me.id, me.full_name || "", existing.id).run();
+            await env.DB.prepare("INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)").bind(existing.id, fromStatus, "issued", me.id, me.full_name || "", fromStatus === "review_requested" ? "Reissued payslip after review" : "Reissued payslip from payroll").run();
+            updated++;
+          } else {
+            const invNum = await nextInvoiceNumber(env, year, invMonth);
+            const r = await env.DB.prepare(
+              `INSERT INTO invoices (invoice_number,user_id,month,year,base_salary,bonus,allowance,deduction,tax,insurance,
+               approved_overtime_minutes,overtime_pay,net_salary,
+               work_days,absent_days,late_days,standard_days,paid_leave_days,late_minutes,early_leave_minutes,missing_checkinout_days,
+               status,note,payroll_id,issued_at,issued_by,issued_by_name,review_status)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'),?,?,'none')`
+            ).bind(
+              invNum,
+              employeeId,
+              invMonth,
+              year,
+              base,
+              bonus,
+              allowance,
+              deduction,
+              0,
+              0,
+              overtime.approvedOvertimeMinutes,
+              overtime.overtimePay,
+              net,
+              workSummary.actualWorkDays,
+              workSummary.absentDays,
+              workSummary.lateDays,
+              workSummary.standardWorkDays,
+              workSummary.paidLeaveDays,
+              workSummary.lateMinutes,
+              workSummary.earlyLeaveMinutes,
+              workSummary.incompleteDays,
+              "issued",
+              "Generated from payroll",
+              p.id,
+              me.id,
+              me.full_name || ""
+            ).run();
+            await env.DB.prepare("INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)").bind(r.meta.last_row_id, null, "issued", me.id, me.full_name || "", "Issued payslip from payroll").run();
+            created++;
+          }
+        } catch (e) {
+          skipped++;
+          skippedRows.push({ payroll_id: p.id, employee_id: p.employee_id || null, employee_name: p.employee_name || "", reason: "row_error", error: String(e?.message || e) });
+          continue;
+        }
+      }
+      if (rows.length) {
+        await env.DB.prepare(
+          "UPDATE payroll_batches SET status='issued',updated_at=datetime('now','localtime') WHERE month=?"
+        ).bind(month).run();
+      }
+      await broadcastAppEvent(env, "payroll", "payroll:payslips_exported", {
+        month,
+        total: rows.length,
+        created,
+        updated,
+        skipped
+      }, { actorId: me.id });
+      await broadcastAppEvent(env, "invoices", "invoices:batch_issued", {
+        month,
+        created,
+        updated
+      }, { actorId: me.id });
+      return json({ ok: true, month, total: rows.length, created, updated, skipped, skippedRows });
+    } catch (e) {
+      console.error("Export payslips failed", e);
+      return json({ error: "Kh\xF4ng th\u1EC3 xu\u1EA5t phi\u1EBFu l\u01B0\u01A1ng, vui l\xF2ng th\u1EED l\u1EA1i sau" }, 500);
+    }
+  }
+  if (path === "/api/payroll" && request.method === "POST") {
+    if (!(isAdmin || isHcns(me))) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const b = await request.json();
+    if (b.employee_name && b.month) {
+      const net = (b.base_salary || 0) + (b.kpi_bonus || 0) + (b.allowance || 0) + (b.overtime_pay || 0) - (b.deduction || 0) - (b.tax || 0) - (b.insurance || 0);
+      const dataStatus = Number(b.base_salary || 0) > 0 ? "ready" : "missing_salary_config";
+      const dataWarnings = dataStatus === "ready" ? "" : "Thi\u1EBFu c\u1EA5u h\xECnh l\u01B0\u01A1ng";
+      const r = await env.DB.prepare(
+        "INSERT INTO payroll (user_id,employee_id,employee_name,employee_code,department,month,base_salary,kpi_bonus,allowance,deduction,overtime_pay,tax,insurance,work_days,standard_days,note,net_salary,data_status,data_warnings,source_synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))"
+      ).bind(String(me.id), b.employee_id || null, b.employee_name, b.employee_code || "", b.department || "", b.month, b.base_salary || 0, b.kpi_bonus || 0, b.allowance || 0, b.deduction || 0, b.overtime_pay || 0, b.tax || 0, b.insurance || 0, b.work_days || 0, b.standard_days || 0, b.note || "", net, dataStatus, dataWarnings).run();
+      await broadcastAppEvent(env, "payroll", "payroll:created", {
+        id: r.meta.last_row_id,
+        month: b.month,
+        employee_name: b.employee_name,
+        employee_code: b.employee_code,
+        net_salary: net
+      }, { actorId: me.id });
+      return json({ ok: true, id: r.meta.last_row_id });
+    }
+    if (b.rows && b.month) {
+      await env.DB.batch(b.rows.map((r) => {
+        const net = (r.base_salary || 0) + (r.kpi_bonus || 0) + (r.allowance || 0) - (r.deduction || 0);
+        const dataStatus = Number(r.base_salary || 0) > 0 ? "ready" : "missing_salary_config";
+        const dataWarnings = dataStatus === "ready" ? "" : "Thi\u1EBFu c\u1EA5u h\xECnh l\u01B0\u01A1ng";
+        return env.DB.prepare(
+          "INSERT INTO payroll (user_id,employee_id,employee_name,employee_code,department,month,base_salary,kpi_bonus,allowance,deduction,net_salary,data_status,data_warnings,source_synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))"
+        ).bind(String(me.id), r.employee_id || null, r.employee_name || "", r.employee_code || "", r.department || "", b.month, r.base_salary || 0, r.kpi_bonus || 0, r.allowance || 0, r.deduction || 0, net, dataStatus, dataWarnings);
+      }));
+      await broadcastAppEvent(env, "payroll", "payroll:batch_created", {
+        month: b.month,
+        count: b.rows.length
+      }, { actorId: me.id });
+      return json({ ok: true });
+    }
+    return json({ error: "Thi\u1EBFu d\u1EEF li\u1EC7u" }, 400);
+  }
+  const payrollMatch = path.match(/^\/api\/payroll\/(\d+)$/);
+  if (payrollMatch) {
+    const id = parseInt(payrollMatch[1]);
+    if (request.method === "PUT") {
+      if (!(isAdmin || isHcns(me))) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      const b = await request.json();
+      const current = await env.DB.prepare("SELECT * FROM payroll WHERE id=?").bind(id).first();
+      if (!current) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y d\xF2ng l\u01B0\u01A1ng" }, 404);
+      const lineChanges = Array.isArray(b.line_changes) ? b.line_changes : [];
+      if (lineChanges.length) {
+        const allowedLines = /* @__PURE__ */ new Set(["base_salary", "allowance", "kpi_bonus", "insurance", "tax", "deduction"]);
+        const normalized = [];
+        for (const raw of lineChanges) {
+          const field = String(raw?.field || "");
+          const lineLabel = String(raw?.label || "").trim();
+          const changeNote2 = String(raw?.note || "").trim();
+          const nextValue = Number(raw?.new_value);
+          if (!allowedLines.has(field) || !lineLabel || !changeNote2 || changeNote2.length > 1e3 || !Number.isFinite(nextValue) || nextValue < 0) {
+            return json({ error: "M\u1ED7i d\xF2ng \u0111i\u1EC1u ch\u1EC9nh ph\u1EA3i h\u1EE3p l\u1EC7 v\xE0 c\xF3 ghi ch\xFA" }, 400);
+          }
+          const beforeValue = Number(current[field] || 0);
+          if (beforeValue !== nextValue) normalized.push({ field, lineLabel, changeNote: changeNote2, beforeValue, nextValue });
+        }
+        if (!normalized.length) return json({ error: "Kh\xF4ng c\xF3 thay \u0111\u1ED5i d\xF2ng l\u01B0\u01A1ng \u0111\u1EC3 l\u01B0u" }, 400);
+        const next = { ...current };
+        for (const item of normalized) next[item.field] = item.nextValue;
+        const net2 = Number(next.base_salary || 0) + Number(next.kpi_bonus || 0) + Number(next.allowance || 0) + Number(next.overtime_pay || 0) - Number(next.deduction || 0) - Number(next.tax || 0) - Number(next.insurance || 0);
+        const dataStatus2 = Number(next.base_salary || 0) > 0 ? "ready" : "missing_salary_config";
+        const dataWarnings2 = dataStatus2 === "ready" ? "" : "Thi\u1EBFu c\u1EA5u h\xECnh l\u01B0\u01A1ng";
+        await ensurePayrollLineChangeLog(env);
+        await env.DB.batch([
+          env.DB.prepare(
+            "UPDATE payroll SET base_salary=?,kpi_bonus=?,allowance=?,deduction=?,overtime_pay=?,tax=?,insurance=?,net_salary=?,data_status=?,data_warnings=?,source_synced_at=datetime('now','localtime') WHERE id=?"
+          ).bind(next.base_salary || 0, next.kpi_bonus || 0, next.allowance || 0, next.deduction || 0, next.overtime_pay || 0, next.tax || 0, next.insurance || 0, net2, dataStatus2, dataWarnings2, id),
+          ...normalized.map((item) => env.DB.prepare(
+            "INSERT INTO payroll_line_change_log (payroll_id,line_key,line_label,before_value,after_value,change_note,changed_by,changed_by_name) VALUES (?,?,?,?,?,?,?,?)"
+          ).bind(id, item.field, item.lineLabel, item.beforeValue, item.nextValue, item.changeNote, me.id, me.full_name || "")),
+          env.DB.prepare(
+            "INSERT INTO payroll_change_log (payroll_id,changed_by,changed_by_name,change_note,before_data,after_data) VALUES (?,?,?,?,?,?)"
+          ).bind(id, me.id, me.full_name || "", `\u0110i\u1EC1u ch\u1EC9nh ${normalized.length} d\xF2ng l\u01B0\u01A1ng`, JSON.stringify(current), JSON.stringify({ ...next, net_salary: net2 }))
+        ]);
+        await broadcastAppEvent(env, "payroll", "payroll:updated", {
+          id,
+          net_salary: net2,
+          changed_lines: normalized.length
+        }, { actorId: me.id });
+        return json({ ok: true, net_salary: net2, changed_lines: normalized.length });
+      }
+      const changeNote = String(b.change_note || "").trim();
+      if (!changeNote) return json({ error: "Vui l\xF2ng nh\u1EADp ghi ch\xFA \u0111i\u1EC1u ch\u1EC9nh" }, 400);
+      if (changeNote.length > 1e3) return json({ error: "Ghi ch\xFA \u0111i\u1EC1u ch\u1EC9nh kh\xF4ng \u0111\u01B0\u1EE3c qu\xE1 1000 k\xFD t\u1EF1" }, 400);
+      const net = (b.base_salary || 0) + (b.kpi_bonus || 0) + (b.allowance || 0) + (b.overtime_pay || 0) - (b.deduction || 0) - (b.tax || 0) - (b.insurance || 0);
+      const dataStatus = Number(b.base_salary || 0) > 0 ? "ready" : "missing_salary_config";
+      const dataWarnings = dataStatus === "ready" ? "" : "Thi\u1EBFu c\u1EA5u h\xECnh l\u01B0\u01A1ng";
+      await env.DB.prepare(
+        "UPDATE payroll SET employee_name=?,employee_code=?,department=?,month=?,base_salary=?,kpi_bonus=?,allowance=?,deduction=?,overtime_pay=?,tax=?,insurance=?,work_days=?,standard_days=?,note=?,net_salary=?,data_status=?,data_warnings=?,source_synced_at=datetime('now','localtime') WHERE id=?"
+      ).bind(b.employee_name || "", b.employee_code || "", b.department || "", b.month || "", b.base_salary || 0, b.kpi_bonus || 0, b.allowance || 0, b.deduction || 0, b.overtime_pay || 0, b.tax || 0, b.insurance || 0, b.work_days || 0, b.standard_days || 0, b.note || "", net, dataStatus, dataWarnings, id).run();
+      await env.DB.prepare(
+        "INSERT INTO payroll_change_log (payroll_id,changed_by,changed_by_name,change_note,before_data,after_data) VALUES (?,?,?,?,?,?)"
+      ).bind(id, me.id, me.full_name || "", changeNote, JSON.stringify(current), JSON.stringify({
+        base_salary: b.base_salary || 0,
+        kpi_bonus: b.kpi_bonus || 0,
+        allowance: b.allowance || 0,
+        deduction: b.deduction || 0,
+        overtime_pay: b.overtime_pay || 0,
+        tax: b.tax || 0,
+        insurance: b.insurance || 0,
+        work_days: b.work_days || 0,
+        standard_days: b.standard_days || 0,
+        net_salary: net,
+        note: b.note || ""
+      })).run();
+      await broadcastAppEvent(env, "payroll", "payroll:updated", {
+        id,
+        net_salary: net
+      }, { actorId: me.id });
+      return json({ ok: true });
+    }
+    if (request.method === "DELETE") {
+      if (!(isAdmin || isHcns(me))) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      const current = await env.DB.prepare("SELECT * FROM payroll WHERE id=?").bind(id).first();
+      if (!current) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y d\xF2ng l\u01B0\u01A1ng" }, 404);
+      const issued = await env.DB.prepare(
+        "SELECT id FROM invoices WHERE payroll_id=? AND (locked_at IS NOT NULL OR status IN ('issued','paid','employee_confirmed') OR employee_confirmed_at IS NOT NULL) LIMIT 1"
+      ).bind(id).first();
+      if (issued) return json({ error: "Kh\xF4ng th\u1EC3 x\xF3a d\xF2ng l\u01B0\u01A1ng \u0111\xE3 ph\xE1t h\xE0nh phi\u1EBFu l\u01B0\u01A1ng. H\xE3y x\u1EED l\xFD phi\u1EBFu \u0111\xE3 ph\xE1t h\xE0nh tr\u01B0\u1EDBc." }, 409);
+      await env.DB.prepare(
+        "INSERT INTO payroll_change_log (payroll_id,changed_by,changed_by_name,change_note,before_data,after_data) VALUES (?,?,?,?,?,?)"
+      ).bind(id, me.id, me.full_name || "", "X\xF3a d\xF2ng l\u01B0\u01A1ng", JSON.stringify(current), "{}").run();
+      await env.DB.prepare("UPDATE payroll_adjustments SET payroll_id=NULL,updated_at=datetime('now','localtime') WHERE payroll_id=?").bind(id).run();
+      await env.DB.prepare("DELETE FROM payroll WHERE id=?").bind(id).run();
+      await broadcastAppEvent(env, "payroll", "payroll:deleted", {
+        id
+      }, { actorId: me.id });
+      return json({ ok: true });
+    }
+  }
+  if (path === "/api/campaigns" && request.method === "GET") {
+    const statusFilter = url.searchParams.get("status") || "";
+    const typeFilter = url.searchParams.get("type") || "";
+    let q = "SELECT * FROM campaigns";
+    const params = [];
+    const clauses = [];
+    if (statusFilter) {
+      clauses.push("status=?");
+      params.push(statusFilter);
+    }
+    if (typeFilter) {
+      clauses.push("type=?");
+      params.push(typeFilter);
+    }
+    if (clauses.length) q += " WHERE " + clauses.join(" AND ");
+    q += " ORDER BY id DESC";
+    const { results } = await env.DB.prepare(q).bind(...params).all();
+    return json({ campaigns: results });
+  }
+  if (path === "/api/campaigns" && request.method === "POST") {
+    if (!isManager) return json({ error: "Ch\u1EC9 HCNS, qu\u1EA3n l\xFD ho\u1EB7c Admin \u0111\u01B0\u1EE3c qu\u1EA3n l\xFD chi\u1EBFn d\u1ECBch" }, 403);
+    const b = await request.json();
+    if (!b.name) return json({ error: "Thi\u1EBFu t\xEAn chi\u1EBFn d\u1ECBch" }, 400);
+    const r = await env.DB.prepare(
+      "INSERT INTO campaigns (user_id,name,type,status,start_date,end_date,budget,spent,goal_reach,goal_leads,goal_conversions,owner_name,description) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    ).bind(env.USER_ID, b.name, b.type || "other", b.status || "planning", b.start_date || null, b.end_date || null, b.budget || 0, b.spent || 0, b.goal_reach || 0, b.goal_leads || 0, b.goal_conversions || 0, b.owner_name || "", b.description || "").run();
+    return json({ ok: true, id: r.meta.last_row_id });
+  }
+  const campMatch = path.match(/^\/api\/campaigns\/(\d+)$/);
+  if (campMatch) {
+    const id = parseInt(campMatch[1]);
+    if (request.method === "PUT") {
+      if (!isManager) return json({ error: "Ch\u1EC9 HCNS, qu\u1EA3n l\xFD ho\u1EB7c Admin \u0111\u01B0\u1EE3c qu\u1EA3n l\xFD chi\u1EBFn d\u1ECBch" }, 403);
+      const b = await request.json();
+      await env.DB.prepare(
+        "UPDATE campaigns SET name=?,type=?,status=?,start_date=?,end_date=?,budget=?,spent=?,goal_reach=?,goal_leads=?,goal_conversions=?,owner_name=?,description=? WHERE id=?"
+      ).bind(b.name || "", b.type || "other", b.status || "planning", b.start_date || null, b.end_date || null, b.budget || 0, b.spent || 0, b.goal_reach || 0, b.goal_leads || 0, b.goal_conversions || 0, b.owner_name || "", b.description || "", id).run();
+      return json({ ok: true });
+    }
+    if (request.method === "DELETE") {
+      if (!isManager) return json({ error: "Ch\u1EC9 HCNS, qu\u1EA3n l\xFD ho\u1EB7c Admin \u0111\u01B0\u1EE3c qu\u1EA3n l\xFD chi\u1EBFn d\u1ECBch" }, 403);
+      await env.DB.prepare("DELETE FROM campaigns WHERE id=?").bind(id).run();
+      return json({ ok: true });
+    }
+  }
+  if (path === "/api/kpi-templates" && request.method === "GET") {
+    if (!isHcns(me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const { results: templates = [] } = await env.DB.prepare("SELECT * FROM kpi_templates ORDER BY id DESC").all();
+    for (const t of templates) t.items = (await env.DB.prepare("SELECT * FROM kpi_template_items WHERE template_id=? ORDER BY id").bind(t.id).all()).results || [];
+    return json({ templates });
+  }
+  const candCvMatch = path.match(/^\/api\/candidates\/(\d+)\/cv$/);
+  if (candCvMatch) {
+    const candidateId = parseInt(candCvMatch[1], 10);
+    const candidate = await env.DB.prepare("SELECT * FROM candidates WHERE id=?").bind(candidateId).first();
+    if (!candidate) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y \u1EE9ng vi\xEAn" }, 404);
+    if (!env.HR_DOCUMENTS) return json({ error: "L\u01B0u tr\u1EEF h\u1ED3 s\u01A1 ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh" }, 503);
+    if (request.method === "GET") {
+      if (!candidate.cv_storage_key) return json({ error: "\u1EE8ng vi\xEAn ch\u01B0a c\xF3 CV" }, 404);
+      const object = await env.HR_DOCUMENTS.get(candidate.cv_storage_key);
+      if (!object) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y t\u1EC7p CV" }, 404);
+      const headers = new Headers();
+      headers.set("Content-Type", candidate.cv_content_type || "application/octet-stream");
+      headers.set("Content-Disposition", `${url.searchParams.get("disposition") === "attachment" ? "attachment" : "inline"}; filename*=UTF-8''${encodeURIComponent(candidate.cv_original_filename || "CV-ung-vien")}`);
+      return new Response(object.body, { headers });
+    }
+    if (request.method === "POST") {
+      const form = await request.formData();
+      const file = form.get("file");
+      if (!file || typeof file.arrayBuffer !== "function") return json({ error: "Vui l\xF2ng ch\u1ECDn t\u1EC7p CV" }, 400);
+      const contentType = String(file.type || "application/octet-stream").toLowerCase();
+      const allowedTypes = ["application/pdf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
+      const fileName = String(file.name || "CV-ung-vien").trim();
+      const ext = fileName.toLowerCase().split(".").pop();
+      if (!allowedTypes.includes(contentType) && !["pdf", "doc", "docx"].includes(ext)) return json({ error: "CV ch\u1EC9 nh\u1EADn \u0111\u1ECBnh d\u1EA1ng PDF, DOC ho\u1EB7c DOCX" }, 400);
+      if (!Number.isFinite(file.size) || file.size < 1 || file.size > 10 * 1024 * 1024) return json({ error: "CV kh\xF4ng \u0111\u01B0\u1EE3c v\u01B0\u1EE3t qu\xE1 10 MB" }, 400);
+      const bytes = await file.arrayBuffer();
+      const storageKey = `candidates/${candidateId}/cv-${crypto.randomUUID()}`;
+      await env.HR_DOCUMENTS.put(storageKey, bytes, { httpMetadata: { contentType, cacheControl: "private, no-store" }, customMetadata: { candidate_id: String(candidateId), uploaded_by: String(me.id) } });
+      if (candidate.cv_storage_key) await env.HR_DOCUMENTS.delete(candidate.cv_storage_key);
+      await env.DB.prepare("UPDATE candidates SET cv_storage_key=?,cv_original_filename=?,cv_content_type=?,cv_byte_size=? WHERE id=?").bind(storageKey, fileName, contentType, file.size, candidateId).run();
+      return json({ ok: true, original_filename: fileName, byte_size: file.size });
+    }
+    return json({ error: "Ph\u01B0\u01A1ng th\u1EE9c kh\xF4ng \u0111\u01B0\u1EE3c h\u1ED7 tr\u1EE3" }, 405);
+  }
+  if (path === "/api/kpi-templates" && request.method === "POST") {
+    if (!isHcns(me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const b = await request.json().catch(() => ({}));
+    const items = b.items || [];
+    const error = !String(b.name || "").trim() ? "C\u1EA7n nh\u1EADp t\xEAn template" : validateKpiItems(items);
+    if (error) return json({ error }, 400);
+    const r = await env.DB.prepare("INSERT INTO kpi_templates (name,description,created_by,created_by_name) VALUES (?,?,?,?)").bind(String(b.name).trim(), String(b.description || "").trim(), me.id, me.full_name).run();
+    for (const item of items) await env.DB.prepare("INSERT INTO kpi_template_items (template_id,criterion_code,title,description,unit,target_value,weight_percent,affects_group1,requires_evidence) VALUES (?,?,?,?,?,?,?,?,?)").bind(r.meta.last_row_id, item.criterion_code, String(item.title).trim(), String(item.description || "").trim(), String(item.unit || "\u0111\u01A1n v\u1ECB").trim(), Number(item.target_value), Number(item.weight_percent || 0), Number(item.affects_group1) === 0 ? 0 : 1, Number(item.requires_evidence) ? 1 : 0).run();
+    return json({ ok: true, id: r.meta.last_row_id });
+  }
+  const templateApplyMatch = path.match(/^\/api\/kpi-templates\/(\d+)\/apply$/);
+  if (templateApplyMatch && request.method === "POST") {
+    if (!isHcns(me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const b = await request.json().catch(() => ({}));
+    const templateId = parseInt(templateApplyMatch[1]);
+    const employeeIds = [...new Set((b.employee_ids || []).map(Number).filter(Boolean))];
+    const month = parseInt(b.month), year = parseInt(b.year);
+    if (!employeeIds.length || !month || !year) return json({ error: "C\u1EA7n ch\u1ECDn nh\xE2n vi\xEAn v\xE0 k\u1EF3 KPI" }, 400);
+    const { results: items = [] } = await env.DB.prepare("SELECT * FROM kpi_template_items WHERE template_id=? ORDER BY id").bind(templateId).all();
+    const error = validateKpiItems(items);
+    if (error) return json({ error }, 400);
+    const created = [], skipped = [];
+    for (const employeeId of employeeIds) {
+      const employee = await env.DB.prepare("SELECT id,full_name FROM users WHERE id=? AND is_active=1").bind(employeeId).first();
+      if (!employee) {
+        skipped.push({ employee_id: employeeId, reason: "Kh\xF4ng h\u1EE3p l\u1EC7" });
+        continue;
+      }
+      const existing = await env.DB.prepare("SELECT status FROM employee_kpi_plans WHERE employee_id=? AND month=? AND year=?").bind(employeeId, month, year).first();
+      if (existing) {
+        skipped.push({ employee_id: employeeId, name: employee.full_name, reason: "\u0110\xE3 c\xF3 KPI " + existing.status });
+        continue;
+      }
+      const plan = await env.DB.prepare("INSERT INTO employee_kpi_plans (employee_id,month,year,status,created_by,created_by_name) VALUES (?,?,?,?,?,?)").bind(employeeId, month, year, "DRAFT", me.id, me.full_name).run();
+      for (const item of items) await env.DB.prepare("INSERT INTO employee_kpi_items (plan_id,criterion_code,title,description,unit,target_value,weight_percent,affects_group1,requires_evidence) VALUES (?,?,?,?,?,?,?,?,?)").bind(plan.meta.last_row_id, item.criterion_code, item.title, item.description, item.unit, item.target_value, item.weight_percent, item.affects_group1, Number(item.requires_evidence) ? 1 : 0).run();
+      created.push({ employee_id: employeeId, name: employee.full_name });
+    }
+    return json({ ok: true, created, skipped });
+  }
+  if (path === "/api/kpis/dashboard" && request.method === "GET") {
+    const month = parseInt(url.searchParams.get("month") || String((/* @__PURE__ */ new Date()).getMonth() + 1));
+    const year = parseInt(url.searchParams.get("year") || String((/* @__PURE__ */ new Date()).getFullYear()));
+    const canViewAll = isHcns(me) || isBgd(me);
+    const rowsSql = canViewAll ? `SELECT u.id employee_id,u.full_name,u.department,u.position,p.id plan_id,p.status
+         FROM users u LEFT JOIN employee_kpi_plans p ON p.employee_id=u.id AND p.month=? AND p.year=? WHERE u.is_active=1 ORDER BY u.full_name` : `SELECT u.id employee_id,u.full_name,u.department,u.position,p.id plan_id,p.status
+         FROM users u LEFT JOIN employee_kpi_plans p ON p.employee_id=u.id AND p.month=? AND p.year=? WHERE u.id=?`;
+    const { results = [] } = await env.DB.prepare(rowsSql).bind(...canViewAll ? [month, year] : [month, year, me.id]).all();
+    for (const row of results) {
+      row.group1_score = null;
+      row.item_count = 0;
+      if (row.plan_id) {
+        const itemCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM employee_kpi_items WHERE plan_id=?").bind(row.plan_id).first();
+        row.item_count = Number(itemCount?.count || 0);
+      }
+      if (row.plan_id && row.status === "APPROVED") {
+        const { results: items = [] } = await env.DB.prepare("SELECT * FROM employee_kpi_items WHERE plan_id=?").bind(row.plan_id).all();
+        if (items.length) row.group1_score = group1Total(items);
+      }
+    }
+    return json({ month, year, kpis: results });
+  }
+  if (path === "/api/kpis" && request.method === "GET") {
+    const employeeId = parseInt(url.searchParams.get("employee_id") || String(me.id));
+    const month = parseInt(url.searchParams.get("month") || String((/* @__PURE__ */ new Date()).getMonth() + 1));
+    const year = parseInt(url.searchParams.get("year") || String((/* @__PURE__ */ new Date()).getFullYear()));
+    if (employeeId !== me.id && !isHcns(me) && !isBgd(me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const plan = await env.DB.prepare("SELECT * FROM employee_kpi_plans WHERE employee_id=? AND month=? AND year=?").bind(employeeId, month, year).first();
+    const items = plan ? (await env.DB.prepare("SELECT * FROM employee_kpi_items WHERE plan_id=? ORDER BY criterion_code,id").bind(plan.id).all()).results : [];
+    await attachKpiEvidence(env, items);
+    if (plan?.status === "APPROVED") plan.group1_total = group1Total(items);
+    return json({ plan: plan || null, items: items || [] });
+  }
+  if (path === "/api/kpis" && request.method === "POST") {
+    if (!isHcns(me)) return json({ error: "Ch\u1EC9 HCNS \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh KPI" }, 403);
+    const b = await request.json().catch(() => ({}));
+    const employeeId = parseInt(b.employee_id), month = parseInt(b.month), year = parseInt(b.year), items = b.items || [];
+    const error = !employeeId || !month || !year ? "Thi\u1EBFu nh\xE2n vi\xEAn ho\u1EB7c k\u1EF3 KPI" : validateKpiItems(items);
+    if (error) return json({ error }, 400);
+    let plan = await env.DB.prepare("SELECT * FROM employee_kpi_plans WHERE employee_id=? AND month=? AND year=?").bind(employeeId, month, year).first();
+    if (plan && ["SUBMITTED", "APPROVED"].includes(plan.status)) return json({ error: "KPI \u0111\xE3 g\u1EEDi/duy\u1EC7t, kh\xF4ng th\u1EC3 s\u1EEDa tr\u1EF1c ti\u1EBFp" }, 400);
+    if (!plan) {
+      const r = await env.DB.prepare("INSERT INTO employee_kpi_plans (employee_id,month,year,status,created_by,created_by_name) VALUES (?,?,?,?,?,?)").bind(employeeId, month, year, "DRAFT", me.id, me.full_name).run();
+      plan = { id: r.meta.last_row_id };
+    }
+    await env.DB.prepare("DELETE FROM employee_kpi_items WHERE plan_id=?").bind(plan.id).run();
+    for (const item of items) await env.DB.prepare("INSERT INTO employee_kpi_items (plan_id,criterion_code,title,description,unit,target_value,weight_percent,affects_group1,requires_evidence) VALUES (?,?,?,?,?,?,?,?,?)").bind(plan.id, item.criterion_code, String(item.title).trim(), String(item.description || "").trim(), String(item.unit || "\u0111\u01A1n v\u1ECB").trim(), Number(item.target_value), Number(item.weight_percent || 0), Number(item.affects_group1) === 0 ? 0 : 1, Number(item.requires_evidence) ? 1 : 0).run();
+    return json({ ok: true, id: plan.id });
+  }
+  const kpiEvidenceMatch = path.match(/^\/api\/kpis\/(\d+)\/evidence$/);
+  if (kpiEvidenceMatch && request.method === "POST") {
+    if (!isHcns(me)) return json({ error: "Ch\u1EC9 HCNS/Admin \u0111\u01B0\u1EE3c c\u1EADp nh\u1EADt link b\u1EB1ng ch\u1EE9ng" }, 403);
+    const planId = parseInt(kpiEvidenceMatch[1]), b = await request.json().catch(() => ({}));
+    const plan = await env.DB.prepare("SELECT * FROM employee_kpi_plans WHERE id=?").bind(planId).first();
+    if (!plan) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y KPI" }, 404);
+    const item = await env.DB.prepare("SELECT * FROM employee_kpi_items WHERE id=? AND plan_id=?").bind(parseInt(b.item_id), planId).first();
+    if (!item) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y ch\u1EC9 ti\xEAu KPI" }, 404);
+    const changed = await replaceKpiEvidence(env, plan, item, b.evidence || [], me, "hr_replace");
+    if (changed && ["SUBMITTED", "APPROVED"].includes(plan.status)) await env.DB.prepare("UPDATE employee_kpi_plans SET status='RETURNED',reviewed_by=?,reviewed_by_name=?,reviewed_at=datetime('now','localtime'),review_note=?,updated_at=datetime('now','localtime') WHERE id=?").bind(me.id, me.full_name || "", "HCNS \u0111\xE3 c\u1EADp nh\u1EADt link b\u1EB1ng ch\u1EE9ng, vui l\xF2ng x\xE1c nh\u1EADn v\xE0 g\u1EEDi l\u1EA1i KPI.", planId).run();
+    return json({ ok: true, requires_employee_confirmation: changed && ["SUBMITTED", "APPROVED"].includes(plan.status) });
+  }
+  const kpiSnapshotMatch = path.match(/^\/api\/kpis\/(\d+)\/snapshot$/);
+  if (kpiSnapshotMatch && request.method === "GET") {
+    if (!isHcns(me)) return json({ error: "Ch\u1EC9 HCNS/Admin \u0111\u01B0\u1EE3c in phi\u1EBFu KPI" }, 403);
+    const snapshot = await env.DB.prepare("SELECT * FROM employee_kpi_approval_snapshots_v2 WHERE plan_id=? ORDER BY id DESC LIMIT 1").bind(parseInt(kpiSnapshotMatch[1])).first();
+    if (!snapshot) return json({ error: "KPI ch\u01B0a \u0111\u01B0\u1EE3c duy\u1EC7t ho\u1EB7c ch\u01B0a c\xF3 phi\u1EBFu ch\u1ED1t" }, 404);
+    const { results: audit = [] } = await env.DB.prepare("SELECT * FROM employee_kpi_evidence_audit WHERE plan_id=? ORDER BY created_at,id").bind(snapshot.plan_id).all();
+    return json({ snapshot: { ...snapshot, payload: JSON.parse(snapshot.snapshot_json) }, audit });
+  }
+  const kpiActionMatch = path.match(/^\/api\/kpis\/(\d+)\/(submit|review)$/);
+  if (kpiActionMatch && request.method === "POST") {
+    const planId = parseInt(kpiActionMatch[1]), action = kpiActionMatch[2], b = await request.json().catch(() => ({}));
+    const plan = await env.DB.prepare("SELECT * FROM employee_kpi_plans WHERE id=?").bind(planId).first();
+    if (!plan) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y KPI" }, 404);
+    if (action === "submit") {
+      if (plan.employee_id !== me.id) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      if (!["DRAFT", "RETURNED", "APPROVED"].includes(plan.status)) return json({ error: "KPI kh\xF4ng \u1EDF tr\u1EA1ng th\xE1i c\xF3 th\u1EC3 g\u1EEDi" }, 400);
+      const items = b.items || [];
+      if (!Array.isArray(items) || !items.length) return json({ error: "C\u1EA7n nh\u1EADp k\u1EBFt qu\u1EA3 KPI" }, 400);
+      for (const item of items) {
+        const current = await env.DB.prepare("SELECT * FROM employee_kpi_items WHERE id=? AND plan_id=?").bind(parseInt(item.id), planId).first();
+        if (!current) return json({ error: "C\xF3 ch\u1EC9 ti\xEAu KPI kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+        const isText = String(current?.unit || "").toLowerCase() === "text";
+        await env.DB.prepare("UPDATE employee_kpi_items SET actual_value=?,actual_text=?, evidence_url=?, updated_at=datetime('now','localtime') WHERE id=? AND plan_id=?").bind(isText ? null : Number(item.actual_value), isText ? String(item.actual_text || "").trim() : null, String(item.evidence_url || "").trim(), parseInt(item.id), planId).run();
+        await replaceKpiEvidence(env, plan, current, item.evidence || [], me, "employee_submit");
+      }
+      const { results = [] } = await env.DB.prepare("SELECT * FROM employee_kpi_items WHERE plan_id=?").bind(planId).all();
+      if (results.some((i) => String(i.unit).toLowerCase() === "text" ? !String(i.actual_text || "").trim() : i.actual_value === null)) return json({ error: "C\u1EA7n nh\u1EADp k\u1EBFt qu\u1EA3 cho to\xE0n b\u1ED9 KPI" }, 400);
+      for (const item of results.filter((i) => Number(i.requires_evidence))) {
+        const count = await env.DB.prepare("SELECT COUNT(*) count FROM employee_kpi_evidence WHERE kpi_item_id=?").bind(item.id).first();
+        if (!Number(count?.count || 0)) return json({ error: `Ch\u1EC9 ti\xEAu \u201C${item.title}\u201D c\u1EA7n \xEDt nh\u1EA5t m\u1ED9t link b\u1EB1ng ch\u1EE9ng` }, 400);
+      }
+      await env.DB.prepare("UPDATE employee_kpi_plans SET status=?,submitted_at=datetime('now','localtime'),updated_at=datetime('now','localtime') WHERE id=?").bind("SUBMITTED", planId).run();
+    } else {
+      if (!isHcns(me)) return json({ error: "Ch\u1EC9 HCNS \u0111\u01B0\u1EE3c duy\u1EC7t KPI" }, 403);
+      if (b.approve) {
+        const { results: textItems = [] } = await env.DB.prepare("SELECT id,criterion_code FROM employee_kpi_items WHERE plan_id=? AND lower(unit)='text'").bind(planId).all();
+        const manualScores = b.manual_scores || {};
+        for (const item of textItems) {
+          const score = Number(manualScores[item.id]);
+          if (!Number.isFinite(score) || score < 0 || score > KPI_GROUP1_MAX[item.criterion_code]) return json({ error: `\u0110i\u1EC3m HCNS cho ${item.criterion_code} ph\u1EA3i t\u1EEB 0 \u0111\u1EBFn ${KPI_GROUP1_MAX[item.criterion_code]}` }, 400);
+          await env.DB.prepare("UPDATE employee_kpi_items SET manual_score=? WHERE id=? AND plan_id=?").bind(score, item.id, planId).run();
+        }
+        await env.DB.prepare("UPDATE employee_kpi_items SET review_note=NULL WHERE plan_id=?").bind(planId).run();
+        const { results: approvedItems = [] } = await env.DB.prepare("SELECT * FROM employee_kpi_items WHERE plan_id=? ORDER BY criterion_code,id").bind(planId).all();
+        await attachKpiEvidence(env, approvedItems);
+        const employee = await env.DB.prepare("SELECT id,full_name,employee_code,department,position FROM users WHERE id=?").bind(plan.employee_id).first();
+        const payload = { plan: { ...plan, status: "APPROVED", reviewed_by: me.id, reviewed_by_name: me.full_name, approved_at: (/* @__PURE__ */ new Date()).toISOString() }, employee, items: approvedItems, group1_total: group1Total(approvedItems) };
+        await env.DB.prepare("INSERT INTO employee_kpi_approval_snapshots_v2 (plan_id,employee_id,month,year,snapshot_json,approved_by,approved_by_name,approved_at) VALUES (?,?,?,?,?,?,?,datetime('now','localtime'))").bind(planId, plan.employee_id, plan.month, plan.year, JSON.stringify(payload), me.id, me.full_name || "").run();
+      } else {
+        const itemNotes = b.item_notes || {};
+        const notes = Object.entries(itemNotes).filter(([, note]) => String(note || "").trim());
+        if (!notes.length && !String(b.note || "").trim()) return json({ error: "H\xE3y ghi y\xEAu c\u1EA7u ch\u1EC9nh s\u1EEDa cho \xEDt nh\u1EA5t m\u1ED9t ti\xEAu ch\xED ho\u1EB7c ghi ch\xFA chung" }, 400);
+        await env.DB.prepare("UPDATE employee_kpi_items SET review_note=NULL WHERE plan_id=?").bind(planId).run();
+        for (const [itemId, note] of notes) await env.DB.prepare("UPDATE employee_kpi_items SET review_note=? WHERE id=? AND plan_id=?").bind(String(note).trim(), parseInt(itemId), planId).run();
+      }
+      const status = b.approve ? "APPROVED" : "RETURNED";
+      await env.DB.prepare("UPDATE employee_kpi_plans SET status=?,reviewed_by=?,reviewed_by_name=?,reviewed_at=datetime('now','localtime'),review_note=?,updated_at=datetime('now','localtime') WHERE id=?").bind(status, me.id, me.full_name, String(b.note || "").trim(), planId).run();
+    }
+    return json({ ok: true });
+  }
+  if (path === "/api/eval-periods" && request.method === "GET") {
+    const { results } = await env.DB.prepare("SELECT * FROM eval_periods ORDER BY year DESC, month DESC").all();
+    return json({ periods: results });
+  }
+  if (path === "/api/eval-periods" && request.method === "POST") {
+    if (!isHcns(me) && !isBgd(me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const b = await request.json().catch(() => ({}));
+    const month = parseInt(b.month), year = parseInt(b.year);
+    if (!month || month < 1 || month > 12 || !year) return json({ error: "Th\xE1ng/n\u0103m k\u1EF3 \u0111\xE1nh gi\xE1 kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    const pad = /* @__PURE__ */ __name((value) => String(value).padStart(2, "0"), "pad");
+    const startMonth = month === 1 ? 12 : month - 1;
+    const startYear = month === 1 ? year - 1 : year;
+    const endMonth = month === 12 ? 1 : month + 1;
+    const endYear = month === 12 ? year + 1 : year;
+    const start = `${startYear}-${pad(startMonth)}-28`;
+    const end = `${endYear}-${pad(endMonth)}-03`;
+    try {
+      const r = await env.DB.prepare(
+        "INSERT INTO eval_periods (month,year,start_date,end_date,created_by,created_by_name) VALUES (?,?,?,?,?,?)"
+      ).bind(month, year, start, end, me.id, me.full_name).run();
+      return json({ ok: true, id: r.meta.last_row_id });
+    } catch (e) {
+      if (String(e.message || "").includes("UNIQUE")) return json({ error: "K\u1EF3 \u0111\xE1nh gi\xE1 th\xE1ng n\xE0y \u0111\xE3 t\u1ED3n t\u1EA1i" }, 400);
+      throw e;
+    }
+  }
+  if (path === "/api/evaluations/report" && request.method === "GET") {
+    let groupScores = function(evaluation) {
+      const ms = safeParseJSON(evaluation?.mentor_scores) || {};
+      const ds = safeParseJSON(evaluation?.department_scores) || {};
+      const merged = {};
+      for (const code of [...N1_CODES, ...N2_CODES, ...N3_CODES]) {
+        if (ds[code] !== void 0 && ds[code] !== null && ds[code] !== "") merged[code] = Number(ds[code]);
+        else if (ms[code] !== void 0 && ms[code] !== null && ms[code] !== "") merged[code] = Number(ms[code]);
+        else merged[code] = 0;
+      }
+      const sum = /* @__PURE__ */ __name((set) => [...set].reduce((s, c) => s + (merged[c] || 0), 0), "sum");
+      return { n1: sum(N1_CODES), n2: sum(N2_CODES), n3: sum(N3_CODES), total: sum(N1_CODES) + sum(N2_CODES) + sum(N3_CODES) };
+    }, ratingFor = function(total) {
+      if (total >= 90) return { label: "Xu\u1EA5t s\u1EAFc", cls: "badge-success", action: "X\xE9t th\u01B0\u1EDFng, ghi nh\u1EADn v\xE0 \u01B0u ti\xEAn ph\xE1t tri\u1EC3n" };
+      if (total >= 80) return { label: "T\u1ED1t", cls: "badge-info", action: "Duy tr\xEC v\xE0 giao m\u1EE5c ti\xEAu cao h\u01A1n" };
+      if (total >= 65) return { label: "\u0110\u1EA1t", cls: "badge-gray", action: "\u0110\xE1p \u1EE9ng y\xEAu c\u1EA7u, ti\u1EBFp t\u1EE5c theo d\xF5i" };
+      if (total >= 50) return { label: "D\u01B0\u1EDBi chu\u1EA9n", cls: "badge-warning", action: "L\u1EADp k\u1EBF ho\u1EA1ch c\u1EA3i thi\u1EC7n, \u0111\xE0o t\u1EA1o v\xE0 \u0111\xE1nh gi\xE1 l\u1EA1i" };
+      return { label: "Y\u1EBFu", cls: "badge-danger", action: "C\u1EA3nh b\xE1o hi\u1EC7u su\u1EA5t, \u0111\xE1nh gi\xE1 l\u1EA1i sau th\u1EDDi h\u1EA1n c\u1EA3i thi\u1EC7n; xem x\xE9t \u0111i\u1EC1u chuy\u1EC3n ho\u1EB7c x\u1EED l\xFD h\u1EE3p \u0111\u1ED3ng theo quy \u0111\u1ECBnh" };
+    };
+    __name(groupScores, "groupScores");
+    __name(ratingFor, "ratingFor");
+    if (!isHcns(me) && !isBgd(me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const periodId = parseInt(url.searchParams.get("period_id") || "0");
+    if (!periodId) {
+      const latest = await env.DB.prepare("SELECT id FROM eval_periods ORDER BY year DESC, month DESC LIMIT 1").first();
+      if (!latest) return json({ report: [], periods: [] });
+      return json({ report: [], periods: [] });
+    }
+    const period = await env.DB.prepare("SELECT * FROM eval_periods WHERE id=?").bind(periodId).first();
+    if (!period) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y k\u1EF3 \u0111\xE1nh gi\xE1" }, 404);
+    const { results: activeUsers } = await env.DB.prepare(
+      "SELECT id, employee_code, full_name, department, position, lifecycle_status, employee_type FROM users WHERE is_active=1 ORDER BY full_name"
+    ).all();
+    const { results: evals } = await env.DB.prepare(
+      `SELECT e.*, p.month AS period_month, p.year AS period_year
+         FROM evaluations e JOIN eval_periods p ON e.period_id=p.id
+        WHERE e.period_id=?`
+    ).bind(periodId).all();
+    const evalByUser = new Map(evals.map((e) => [Number(e.user_id), e]));
+    const N1_CODES = /* @__PURE__ */ new Set(["HS01", "HS02", "HS03", "HS04", "HS05", "HS06"]);
+    const N2_CODES = /* @__PURE__ */ new Set(["VH01", "VH02", "VH03", "VH04"]);
+    const N3_CODES = /* @__PURE__ */ new Set(["SK01", "SK02", "SK03", "SK04"]);
+    let prevEvalByUser = /* @__PURE__ */ new Map();
+    if (period.month && period.year) {
+      const prevDate = new Date(period.year, period.month - 2, 1);
+      const prevMonth = prevDate.getMonth() + 1, prevYear = prevDate.getFullYear();
+      const prevPeriod = await env.DB.prepare(
+        "SELECT id FROM eval_periods WHERE month=? AND year=?"
+      ).bind(prevMonth, prevYear).first();
+      if (prevPeriod) {
+        const { results: prevEvals } = await env.DB.prepare(
+          "SELECT * FROM evaluations WHERE period_id=?"
+        ).bind(prevPeriod.id).all();
+        for (const pe of prevEvals) prevEvalByUser.set(Number(pe.user_id), pe);
+      }
+    }
+    const report = activeUsers.map((u) => {
+      const ev = evalByUser.get(Number(u.id));
+      const scores = groupScores(ev || null);
+      const finalScore = ev?.final_approved_score != null ? Number(ev.final_approved_score) : ev?.mentor_submitted_at && ev?.department_submitted_at ? scores.total : null;
+      const rating = finalScore != null ? ratingFor(finalScore) : null;
+      const prevEv = prevEvalByUser.get(Number(u.id));
+      const prevScores = groupScores(prevEv || null);
+      const prevTotal = prevEv?.final_approved_score != null ? Number(prevEv.final_approved_score) : prevEv?.mentor_submitted_at && prevEv?.department_submitted_at ? prevScores.total : null;
+      return {
+        user_id: u.id,
+        employee_code: u.employee_code,
+        full_name: u.full_name,
+        department: u.department,
+        position: u.position,
+        lifecycle_status: u.lifecycle_status,
+        employee_type: u.employee_type,
+        has_evaluation: !!ev,
+        evaluation_id: ev?.id || null,
+        status: ev?.status || null,
+        mentor_name: ev?.mentor_name || null,
+        department_head_name: ev?.department_head_name || null,
+        n1: ev ? scores.n1 : 0,
+        n2: ev ? scores.n2 : 0,
+        n3: ev ? scores.n3 : 0,
+        total: finalScore,
+        prev_total: prevTotal,
+        rating_label: rating?.label || "Ch\u01B0a \u0111\xE1nh gi\xE1",
+        rating_cls: rating?.cls || "badge-gray",
+        action: rating?.action || "Ch\u01B0a c\xF3 \u0111\xE1nh gi\xE1"
+      };
+    });
+    report.sort((a, b) => (b.total ?? -1) - (a.total ?? -1) || a.full_name.localeCompare(b.full_name));
+    const { results: periods } = await env.DB.prepare("SELECT * FROM eval_periods ORDER BY year DESC, month DESC").all();
+    return json({ report, periods, selectedPeriod: period });
+  }
+  if (path === "/api/evaluations/dashboard" && request.method === "GET") {
+    if (!isHcns(me) && !isBgd(me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const periodId = parseInt(url.searchParams.get("period_id") || "0");
+    if (!periodId) {
+      const latest = await env.DB.prepare("SELECT id FROM eval_periods ORDER BY year DESC, month DESC LIMIT 1").first();
+      if (!latest) return json({ dashboard: { total_employees: 0, xuatsac: 0, tot: 0, dat: 0, duoi_chuan: 0, yeu: 0, avg_score: 0, period: null, policy: [] }, periods: [] });
+      return json({ dashboard: { total_employees: 0, xuatsac: 0, tot: 0, dat: 0, duoi_chuan: 0, yeu: 0, avg_score: 0, period: null, policy: [] }, periods: [] });
+    }
+    const period = await env.DB.prepare("SELECT * FROM eval_periods WHERE id=?").bind(periodId).first();
+    if (!period) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y k\u1EF3 \u0111\xE1nh gi\xE1" }, 404);
+    const { results: activeUsers } = await env.DB.prepare(
+      "SELECT id, employee_code, full_name, department FROM users WHERE is_active=1"
+    ).all();
+    const { results: evals } = await env.DB.prepare(
+      "SELECT e.* FROM evaluations e WHERE e.period_id=?"
+    ).bind(periodId).all();
+    const evalByUser = new Map(evals.map((e) => [Number(e.user_id), e]));
+    let xuatsac = 0, tot = 0, dat = 0, duoi_chuan = 0, yeu = 0, chua_danh_gia = 0, scoredCount = 0, scoreSum = 0;
+    for (const u of activeUsers) {
+      const ev = evalByUser.get(Number(u.id));
+      const score = ev?.final_approved_score != null ? Number(ev.final_approved_score) : null;
+      if (score == null) {
+        chua_danh_gia++;
+        continue;
+      }
+      scoredCount++;
+      scoreSum += score;
+      if (score >= 90) xuatsac++;
+      else if (score >= 80) tot++;
+      else if (score >= 65) dat++;
+      else if (score >= 50) duoi_chuan++;
+      else yeu++;
+    }
+    const avgScore = scoredCount > 0 ? Math.round(scoreSum / scoredCount) : 0;
+    const policy = [
+      { grade: "Xu\u1EA5t s\u1EAFc", range: "\u2265 90 \u0111i\u1EC3m", action: "X\xE9t th\u01B0\u1EDFng, ghi nh\u1EADn v\xE0 \u01B0u ti\xEAn ph\xE1t tri\u1EC3n", cls: "badge-success" },
+      { grade: "T\u1ED1t", range: "80\u201389 \u0111i\u1EC3m", action: "Duy tr\xEC v\xE0 giao m\u1EE5c ti\xEAu cao h\u01A1n", cls: "badge-info" },
+      { grade: "\u0110\u1EA1t", range: "65\u201379 \u0111i\u1EC3m", action: "\u0110\xE1p \u1EE9ng y\xEAu c\u1EA7u c\xF4ng vi\u1EC7c, ti\u1EBFp t\u1EE5c theo d\xF5i", cls: "badge-gray" },
+      { grade: "D\u01B0\u1EDBi chu\u1EA9n", range: "50\u201364 \u0111i\u1EC3m", action: "L\u1EADp k\u1EBF ho\u1EA1ch c\u1EA3i thi\u1EC7n, \u0111\xE0o t\u1EA1o v\xE0 \u0111\xE1nh gi\xE1 l\u1EA1i", cls: "badge-warning" },
+      { grade: "Y\u1EBFu", range: "< 50 \u0111i\u1EC3m", action: "C\u1EA3nh b\xE1o hi\u1EC7u su\u1EA5t, \u0111\xE1nh gi\xE1 l\u1EA1i sau th\u1EDDi h\u1EA1n c\u1EA3i thi\u1EC7n; xem x\xE9t \u0111i\u1EC1u chuy\u1EC3n ho\u1EB7c x\u1EED l\xFD h\u1EE3p \u0111\u1ED3ng theo quy \u0111\u1ECBnh", cls: "badge-danger" }
+    ];
+    const dashboard = {
+      total_employees: activeUsers.length,
+      xuatsac,
+      tot,
+      dat,
+      duoi_chuan,
+      yeu,
+      chua_danh_gia,
+      avg_score: avgScore,
+      period: { month: period.month, year: period.year, start_date: period.start_date, end_date: period.end_date },
+      policy,
+      hr_note: period.hr_note || "",
+      hr_note_by: period.hr_note_by || "",
+      hr_note_at: period.hr_note_at || ""
+    };
+    const { results: periods } = await env.DB.prepare("SELECT * FROM eval_periods ORDER BY year DESC, month DESC").all();
+    return json({ dashboard, periods });
+  }
+  if (path === "/api/evaluations" && request.method === "GET") {
+    const periodId = url.searchParams.get("period_id");
+    let q = `SELECT e.*, u.full_name AS user_name, u.employee_code AS user_code, u.department AS user_department, u.position AS user_position, u.lifecycle_status AS user_lifecycle,
+                     p.month AS period_month, p.year AS period_year, p.start_date AS period_start, p.end_date AS period_end
+              FROM evaluations e LEFT JOIN users u ON e.user_id = u.id LEFT JOIN eval_periods p ON e.period_id = p.id`;
+    const params = [];
+    const clauses = [];
+    if (periodId) {
+      clauses.push("e.period_id=?");
+      params.push(parseInt(periodId));
+    }
+    if (!isHcns(me) && !isBgd(me)) {
+      clauses.push("(e.user_id=? OR e.mentor_id=? OR e.department_head_id=?)");
+      params.push(me.id, me.id, me.id);
+    }
+    if (clauses.length) q += " WHERE " + clauses.join(" AND ");
+    q += " ORDER BY e.updated_at DESC";
+    const { results } = await env.DB.prepare(q).bind(...params).all();
+    return json({ evaluations: results });
+  }
+  if (path === "/api/evaluations" && request.method === "POST") {
+    if (!isHcns(me) && !isBgd(me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const b = await request.json().catch(() => ({}));
+    const periodId = parseInt(b.period_id), userId = parseInt(b.user_id);
+    const mentorId = parseInt(b.mentor_id), deptHeadId = parseInt(b.department_head_id);
+    if (!periodId || !userId || !mentorId || !deptHeadId) return json({ error: "Thi\u1EBFu th\xF4ng tin ph\xE2n c\xF4ng" }, 400);
+    if (mentorId === userId || deptHeadId === userId) return json({ error: "Ng\u01B0\u1EDDi \u0111\xE1nh gi\xE1 kh\xF4ng th\u1EC3 l\xE0 ch\xEDnh TTS" }, 400);
+    const period = await env.DB.prepare("SELECT * FROM eval_periods WHERE id=?").bind(periodId).first();
+    if (!period) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y k\u1EF3 \u0111\xE1nh gi\xE1" }, 404);
+    const target = await env.DB.prepare("SELECT * FROM users WHERE id=?").bind(userId).first();
+    if (!target || !target.is_active) return json({ error: "Nh\xE2n vi\xEAn kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c \u0111\xE3 ng\u1EEBng ho\u1EA1t \u0111\u1ED9ng" }, 400);
+    const mentor = await env.DB.prepare("SELECT full_name FROM users WHERE id=?").bind(mentorId).first();
+    const deptHead = await env.DB.prepare("SELECT full_name FROM users WHERE id=?").bind(deptHeadId).first();
+    const existing = await env.DB.prepare("SELECT * FROM evaluations WHERE period_id=? AND user_id=?").bind(periodId, userId).first();
+    if (existing) {
+      if (existing.mentor_submitted_at || existing.department_submitted_at) {
+        return json({ error: "\u0110\xE3 c\xF3 \u0111\xE1nh gi\xE1 \u0111ang x\u1EED l\xFD, kh\xF4ng th\u1EC3 \u0111\u1ED5i ph\xE2n c\xF4ng" }, 400);
+      }
+      await env.DB.prepare("UPDATE evaluations SET mentor_id=?,mentor_name=?,department_head_id=?,department_head_name=?,updated_at=datetime('now','localtime') WHERE id=?").bind(mentorId, mentor?.full_name || "", deptHeadId, deptHead?.full_name || "", existing.id).run();
+      const snapshot2 = await createEvaluationKpiSnapshot(env, existing.id, userId, period.month, period.year);
+      if (snapshot2.error) return json({ error: snapshot2.error }, 400);
+      return json({ ok: true, id: existing.id });
+    }
+    const r = await env.DB.prepare(
+      "INSERT INTO evaluations (period_id,user_id,mentor_id,mentor_name,department_head_id,department_head_name,status) VALUES (?,?,?,?,?,?,?)"
+    ).bind(periodId, userId, mentorId, mentor?.full_name || "", deptHeadId, deptHead?.full_name || "", "MENTOR_REVIEW").run();
+    const snapshot = await createEvaluationKpiSnapshot(env, r.meta.last_row_id, userId, period.month, period.year);
+    if (snapshot.error) {
+      await env.DB.prepare("DELETE FROM evaluations WHERE id=?").bind(r.meta.last_row_id).run();
+      return json({ error: snapshot.error }, 400);
+    }
+    await env.DB.prepare("INSERT INTO evaluation_history (evaluation_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)").bind(r.meta.last_row_id, null, "MENTOR_REVIEW", me.id, me.full_name, "Ph\xE2n c\xF4ng Mentor & Tr\u01B0\u1EDFng ph\xF2ng \u0111\xE1nh gi\xE1").run();
+    return json({ ok: true, id: r.meta.last_row_id });
+  }
+  const evalDetailMatch = path.match(/^\/api\/evaluations\/(\d+)$/);
+  if (evalDetailMatch && request.method === "GET") {
+    const evalId = parseInt(evalDetailMatch[1]);
+    const ev = await env.DB.prepare(
+      `SELECT e.*, u.full_name AS user_name, u.employee_code AS user_code, u.department AS user_department, u.position AS user_position, u.lifecycle_status AS user_lifecycle,
+              p.month AS period_month, p.year AS period_year, p.start_date AS period_start, p.end_date AS period_end
+       FROM evaluations e LEFT JOIN users u ON e.user_id = u.id LEFT JOIN eval_periods p ON e.period_id = p.id WHERE e.id=?`
+    ).bind(evalId).first();
+    if (!ev) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y phi\u1EBFu \u0111\xE1nh gi\xE1" }, 404);
+    const allowed = ev.user_id === me.id || ev.mentor_id === me.id || ev.department_head_id === me.id || isHcns(me) || isBgd(me);
+    if (!allowed) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    try {
+      const { results: history } = await env.DB.prepare("SELECT * FROM evaluation_history WHERE evaluation_id=? ORDER BY id ASC").bind(evalId).all();
+      const { results: kpi_snapshots } = await env.DB.prepare("SELECT * FROM evaluation_kpi_snapshots WHERE evaluation_id=? ORDER BY criterion_code").bind(evalId).all();
+      return json({ evaluation: ev, history, kpi_snapshots });
+    } catch (error) {
+      console.error("Evaluation detail load failed", { evalId, userId: me.id, message: String(error?.message || error) });
+      return json({ error: "Kh\xF4ng th\u1EC3 t\u1EA3i d\u1EEF li\u1EC7u chi ti\u1EBFt c\u1EE7a phi\u1EBFu \u0111\xE1nh gi\xE1. Vui l\xF2ng th\u1EED l\u1EA1i sau.", code: "EVALUATION_DETAIL_LOAD_FAILED" }, 500);
+    }
+  }
+  const evalActionMatch = path.match(/^\/api\/evaluations\/(\d+)\/action$/);
+  if (evalActionMatch && request.method === "POST") {
+    const evalId = parseInt(evalActionMatch[1]);
+    const ev = await env.DB.prepare("SELECT * FROM evaluations WHERE id=?").bind(evalId).first();
+    if (!ev) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y phi\u1EBFu \u0111\xE1nh gi\xE1" }, 404);
+    const period = await env.DB.prepare("SELECT * FROM eval_periods WHERE id=?").bind(ev.period_id).first();
+    const b = await request.json().catch(() => ({}));
+    const action = String(b.action || "");
+    const isMentor = ev.mentor_id === me.id;
+    const isDept = ev.department_head_id === me.id;
+    const isSelf = ev.user_id === me.id;
+    const withinWindow = !!(period && todayStr() >= period.start_date && todayStr() <= period.end_date);
+    const canScoreNow = withinWindow || !!ev.window_override;
+    const reviewStatuses = ["MENTOR_REVIEW", "EMPLOYEE_REVISION_REQUESTED", "CEO_REVISION_REQUESTED"];
+    async function applyHistory(toStatus, note) {
+      await env.DB.prepare("INSERT INTO evaluation_history (evaluation_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)").bind(evalId, ev.status, toStatus, me.id, me.full_name, note || null).run();
+    }
+    __name(applyHistory, "applyHistory");
+    if (action === "mentor_save_draft" || action === "mentor_submit") {
+      if (!isMentor) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      if (!reviewStatuses.includes(ev.status)) return json({ error: "Phi\u1EBFu kh\xF4ng \u1EDF tr\u1EA1ng th\xE1i c\xF3 th\u1EC3 ch\u1EA5m \u0111i\u1EC3m" }, 400);
+      if (!canScoreNow) return json({ error: "Ngo\xE0i th\u1EDDi gian \u0111\xE1nh gi\xE1 c\u1EE7a k\u1EF3 n\xE0y" }, 400);
+      const scores = b.scores || {}, comments = b.comments || {};
+      const err = action === "mentor_submit" ? evalValidateComplete(scores, comments) : evalValidatePartial(scores, comments);
+      if (err) return json({ error: err }, 400);
+      const submittedAt = action === "mentor_submit" ? nowStr() : ev.mentor_submitted_at;
+      await env.DB.prepare("UPDATE evaluations SET mentor_scores=?,mentor_comments=?,mentor_submitted_at=?,updated_at=datetime('now','localtime') WHERE id=?").bind(JSON.stringify(scores), JSON.stringify(comments), submittedAt, evalId).run();
+      if (action === "mentor_submit") {
+        if (ev.department_submitted_at) {
+          await env.DB.prepare("UPDATE evaluations SET status=? WHERE id=?").bind("EMPLOYEE_CONFIRMATION", evalId).run();
+          await applyHistory("EMPLOYEE_CONFIRMATION", "Mentor & Tr\u01B0\u1EDFng ph\xF2ng \u0111\xE3 ho\xE0n t\u1EA5t \u0111\xE1nh gi\xE1");
+        } else {
+          await applyHistory(ev.status, "Mentor \u0111\xE3 g\u1EEDi \u0111\xE1nh gi\xE1");
+        }
+      }
+      return json({ ok: true });
+    }
+    if (action === "dept_save_draft" || action === "dept_submit") {
+      if (!isDept) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      if (!reviewStatuses.includes(ev.status)) return json({ error: "Phi\u1EBFu kh\xF4ng \u1EDF tr\u1EA1ng th\xE1i c\xF3 th\u1EC3 ch\u1EA5m \u0111i\u1EC3m" }, 400);
+      if (!canScoreNow) return json({ error: "Ngo\xE0i th\u1EDDi gian \u0111\xE1nh gi\xE1 c\u1EE7a k\u1EF3 n\xE0y" }, 400);
+      const scores = b.scores || {}, comments = b.comments || {};
+      const err = action === "dept_submit" ? evalValidateComplete(scores, comments) : evalValidatePartial(scores, comments);
+      if (err) return json({ error: err }, 400);
+      const submittedAt = action === "dept_submit" ? nowStr() : ev.department_submitted_at;
+      await env.DB.prepare("UPDATE evaluations SET department_scores=?,department_comments=?,department_submitted_at=?,updated_at=datetime('now','localtime') WHERE id=?").bind(JSON.stringify(scores), JSON.stringify(comments), submittedAt, evalId).run();
+      if (action === "dept_submit") {
+        if (ev.mentor_submitted_at) {
+          await env.DB.prepare("UPDATE evaluations SET status=? WHERE id=?").bind("EMPLOYEE_CONFIRMATION", evalId).run();
+          await applyHistory("EMPLOYEE_CONFIRMATION", "Mentor & Tr\u01B0\u1EDFng ph\xF2ng \u0111\xE3 ho\xE0n t\u1EA5t \u0111\xE1nh gi\xE1");
+        } else {
+          await applyHistory(ev.status, "Tr\u01B0\u1EDFng ph\xF2ng \u0111\xE3 g\u1EEDi \u0111\xE1nh gi\xE1");
+        }
+      }
+      return json({ ok: true });
+    }
+    if (action === "employee_confirm") {
+      if (!isSelf) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      if (ev.status !== "EMPLOYEE_CONFIRMATION") return json({ error: "Phi\u1EBFu kh\xF4ng \u1EDF tr\u1EA1ng th\xE1i ch\u1EDD x\xE1c nh\u1EADn" }, 400);
+      await env.DB.prepare("UPDATE evaluations SET employee_confirmed_at=?,status=? WHERE id=?").bind(nowStr(), "PENDING_CEO_APPROVAL", evalId).run();
+      await applyHistory("PENDING_CEO_APPROVAL", "TTS \u0111\xE3 x\xE1c nh\u1EADn k\u1EBFt qu\u1EA3");
+      return json({ ok: true });
+    }
+    if (action === "employee_revision") {
+      if (!isSelf) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      if (ev.status !== "EMPLOYEE_CONFIRMATION") return json({ error: "Phi\u1EBFu kh\xF4ng \u1EDF tr\u1EA1ng th\xE1i ch\u1EDD x\xE1c nh\u1EADn" }, 400);
+      const reason = String(b.reason || "").trim();
+      if (!reason) return json({ error: "Vui l\xF2ng nh\u1EADp l\xFD do y\xEAu c\u1EA7u xem x\xE9t l\u1EA1i" }, 400);
+      await env.DB.prepare(
+        `UPDATE evaluations SET employee_revision_reason=?,employee_revision_evidence=?,employee_revision_at=?,
+         status=?,mentor_submitted_at=NULL,department_submitted_at=NULL WHERE id=?`
+      ).bind(reason, String(b.evidence || "").trim(), nowStr(), "EMPLOYEE_REVISION_REQUESTED", evalId).run();
+      await applyHistory("EMPLOYEE_REVISION_REQUESTED", reason);
+      return json({ ok: true });
+    }
+    if (action === "ceo_approve") {
+      if (!isBgd(me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      if (ev.status !== "PENDING_CEO_APPROVAL") return json({ error: "Phi\u1EBFu kh\xF4ng \u1EDF tr\u1EA1ng th\xE1i ch\u1EDD ph\xEA duy\u1EC7t" }, 400);
+      const finalScore = Number(b.finalScore);
+      if (!Number.isFinite(finalScore) || finalScore < 0 || finalScore > 100) return json({ error: "\u0110i\u1EC3m cu\u1ED1i c\xF9ng kh\xF4ng h\u1EE3p l\u1EC7 (0\u2013100)" }, 400);
+      const initialScore = b.initialScore !== void 0 && b.initialScore !== null ? Number(b.initialScore) : null;
+      const adjusted = initialScore !== null && Math.round(initialScore) !== Math.round(finalScore);
+      if (adjusted && !String(b.adjustReason || "").trim()) return json({ error: "Vui l\xF2ng nh\u1EADp l\xFD do \u0111i\u1EC1u ch\u1EC9nh \u0111i\u1EC3m" }, 400);
+      await env.DB.prepare(
+        `UPDATE evaluations SET final_approved_score=?,final_approved_comment=?,final_score_before_adjust=?,final_adjust_reason=?,
+         approved_by=?,approved_by_name=?,approved_at=?,status=? WHERE id=?`
+      ).bind(
+        finalScore,
+        String(b.finalComment || "").trim(),
+        adjusted ? initialScore : null,
+        adjusted ? String(b.adjustReason).trim() : null,
+        me.id,
+        me.full_name,
+        nowStr(),
+        "CEO_APPROVED",
+        evalId
+      ).run();
+      await applyHistory("CEO_APPROVED", adjusted ? `\u0110\xE3 ph\xEA duy\u1EC7t (\u0111i\u1EC1u ch\u1EC9nh \u0111i\u1EC3m: ${initialScore} \u2192 ${finalScore})` : "\u0110\xE3 ph\xEA duy\u1EC7t");
+      return json({ ok: true });
+    }
+    if (action === "ceo_revision") {
+      if (!isBgd(me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      if (ev.status !== "PENDING_CEO_APPROVAL") return json({ error: "Phi\u1EBFu kh\xF4ng \u1EDF tr\u1EA1ng th\xE1i ch\u1EDD ph\xEA duy\u1EC7t" }, 400);
+      const reason = String(b.reason || "").trim();
+      if (!reason) return json({ error: "Vui l\xF2ng nh\u1EADp l\xFD do tr\u1EA3 l\u1EA1i \u0111\xE1nh gi\xE1" }, 400);
+      await env.DB.prepare(
+        `UPDATE evaluations SET ceo_revision_reason=?,ceo_revision_at=?,status=?,
+         mentor_submitted_at=NULL,department_submitted_at=NULL,employee_confirmed_at=NULL WHERE id=?`
+      ).bind(reason, nowStr(), "CEO_REVISION_REQUESTED", evalId).run();
+      await applyHistory("CEO_REVISION_REQUESTED", reason);
+      return json({ ok: true });
+    }
+    if (action === "hr_receive") {
+      if (!isHcns(me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      if (ev.status !== "CEO_APPROVED") return json({ error: "Phi\u1EBFu ch\u01B0a \u0111\u01B0\u1EE3c ph\xEA duy\u1EC7t" }, 400);
+      await env.DB.prepare("UPDATE evaluations SET hr_received_by=?,hr_received_by_name=?,hr_received_at=?,status=? WHERE id=?").bind(me.id, me.full_name, nowStr(), "HR_RECEIVED", evalId).run();
+      await applyHistory("HR_RECEIVED", "HCNS \u0111\xE3 ti\u1EBFp nh\u1EADn");
+      return json({ ok: true });
+    }
+    if (action === "hr_lock") {
+      if (!isHcns(me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      if (ev.status !== "HR_RECEIVED") return json({ error: "Phi\u1EBFu ch\u01B0a \u0111\u01B0\u1EE3c HCNS ti\u1EBFp nh\u1EADn" }, 400);
+      await env.DB.prepare("UPDATE evaluations SET locked_by=?,locked_by_name=?,locked_at=?,status=? WHERE id=?").bind(me.id, me.full_name, nowStr(), "LOCKED", evalId).run();
+      await applyHistory("LOCKED", "HCNS \u0111\xE3 kh\xF3a \u0111i\u1EC3m");
+      return json({ ok: true });
+    }
+    if (action === "hr_reopen") {
+      if (!isHcns(me) && !isBgd(me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+      if (ev.window_override) return json({ ok: true });
+      await env.DB.prepare("UPDATE evaluations SET window_override=1 WHERE id=?").bind(evalId).run();
+      await applyHistory(ev.status, "M\u1EDF l\u1EA1i ngo\xE0i th\u1EDDi gian \u0111\xE1nh gi\xE1");
+      return json({ ok: true });
+    }
+    return json({ error: "H\xE0nh \u0111\u1ED9ng kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+  }
+  const evalPeriodNoteMatch = path.match(/^\/api\/eval-periods\/(\d+)\/note$/);
+  if (evalPeriodNoteMatch && request.method === "POST") {
+    if (!isHcns(me)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const periodId = parseInt(evalPeriodNoteMatch[1]);
+    const period = await env.DB.prepare("SELECT * FROM eval_periods WHERE id=?").bind(periodId).first();
+    if (!period) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y k\u1EF3 \u0111\xE1nh gi\xE1" }, 404);
+    const b = await request.json().catch(() => ({}));
+    const note = String(b.note || "").slice(0, 2e3);
+    await env.DB.prepare("UPDATE eval_periods SET hr_note=?,hr_note_by=?,hr_note_at=? WHERE id=?").bind(note, me.full_name, nowStr(), periodId).run();
+    return json({ ok: true });
+  }
+  if (path === "/api/chat/emojis" && request.method === "GET") {
+    return json({ emojis: await getChatEmojis(), source: "emojihub-with-unicode-fallback" });
+  }
+  if (path === "/api/chat/header-summary" && request.method === "GET") {
+    try {
+      const nowHcm = vnDateTimeStr();
+      const dissolvedFilter = "NOT EXISTS (SELECT 1 FROM dissolved_conversations dc WHERE dc.conversation_id=c.id)";
+      const unread = await env.DB.prepare(
+        `SELECT COUNT(*) AS unread_count
+         FROM messages m JOIN conversation_members cm ON cm.conversation_id=m.conversation_id AND cm.user_id=?
+         JOIN conversations c ON c.id=m.conversation_id
+        WHERE m.deleted_at IS NULL AND m.sender_id != ?
+          AND m.id > COALESCE(cm.last_read_message_id,0) AND ${dissolvedFilter}`
+      ).bind(me.id, me.id).first();
+      const mention = await env.DB.prepare(
+        `SELECT m.id AS message_id,m.conversation_id,c.name AS conversation_name,m.sender_id,u.full_name AS sender_name,
+              m.content AS preview,m.created_at,CASE WHEN ma.message_id IS NULL THEN 0 ELSE 1 END AS mention_all
+         FROM messages m
+         JOIN conversation_members cm ON cm.conversation_id=m.conversation_id AND cm.user_id=?
+         JOIN conversations c ON c.id=m.conversation_id
+         JOIN users u ON u.id=m.sender_id
+         LEFT JOIN message_mentions mm ON mm.message_id=m.id AND mm.mentioned_user_id=?
+         LEFT JOIN message_all_mentions ma ON ma.message_id=m.id
+        WHERE m.deleted_at IS NULL AND m.sender_id != ?
+          AND m.id > COALESCE(cm.last_read_message_id,0)
+          AND (mm.mentioned_user_id IS NOT NULL OR ma.message_id IS NOT NULL)
+          AND ${dissolvedFilter}
+        ORDER BY m.id DESC LIMIT 1`
+      ).bind(me.id, me.id, me.id).first();
+      const upcomingEvent = await env.DB.prepare(
+        `SELECT e.message_id,m.conversation_id,c.name AS conversation_name,e.title,e.start_at,e.end_at,e.location,e.meeting_url,a.response
+         FROM chat_events e
+         JOIN messages m ON m.id=e.message_id
+         JOIN chat_event_attendees a ON a.message_id=e.message_id AND a.user_id=?
+         JOIN conversations c ON c.id=m.conversation_id
+         JOIN conversation_members cm ON cm.conversation_id=c.id AND cm.user_id=?
+        WHERE e.cancelled_at IS NULL AND m.deleted_at IS NULL AND a.response != 'declined'
+          AND ${dissolvedFilter}
+          AND datetime(COALESCE(e.end_at, datetime(e.start_at,'+2 hours'))) >= datetime(?)
+          AND datetime(e.start_at) <= datetime(?,'+1 day')
+        ORDER BY CASE WHEN datetime(e.start_at) <= datetime(?) THEN 0
+                      WHEN datetime(e.start_at) <= datetime(?,'+30 minutes') THEN 1 ELSE 2 END,
+                 datetime(e.start_at) ASC LIMIT 1`
+      ).bind(me.id, me.id, nowHcm, nowHcm, nowHcm, nowHcm).first();
+      return json({ unread_count: Number(unread?.unread_count || 0), mention: mention || null, upcoming_event: upcomingEvent || null });
+    } catch (_) {
+      return json({ unread_count: 0, mention: null, upcoming_event: null });
+    }
+  }
+  if (path === "/api/conversations" && request.method === "GET") {
+    const search = (url.searchParams.get("q") || "").trim();
+    const buildConversationListQuery = /* @__PURE__ */ __name((includeDissolvedFilter) => {
+      let sql = `SELECT c.id, c.type, c.name, c.team_id, c.project_id, c.created_by, c.created_at,
+        (SELECT COUNT(*) FROM conversation_members cm WHERE cm.conversation_id = c.id) AS member_count,
+        (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.id > COALESCE((SELECT cm2.last_read_message_id FROM conversation_members cm2 WHERE cm2.conversation_id = c.id AND cm2.user_id = ?), 0) AND m.sender_id != ?) AS unread_count
+       FROM conversations c
+       JOIN conversation_members cm ON cm.conversation_id = c.id AND cm.user_id = ?
+       WHERE 1=1`;
+      const binds = [me.id, me.id, me.id];
+      if (includeDissolvedFilter) sql += " AND NOT EXISTS (SELECT 1 FROM dissolved_conversations dc WHERE dc.conversation_id=c.id)";
+      if (search) {
+        const like = `%${search}%`;
+        sql += " AND (c.name LIKE ? OR EXISTS (SELECT 1 FROM conversation_members cm2 JOIN users u ON u.id = cm2.user_id WHERE cm2.conversation_id = c.id AND cm2.user_id != ? AND u.full_name LIKE ?))";
+        binds.push(like, me.id, like);
+      }
+      sql += " ORDER BY (SELECT MAX(m.created_at) FROM messages m WHERE m.conversation_id = c.id) DESC";
+      return { sql, binds };
+    }, "buildConversationListQuery");
+    let results = [];
+    try {
+      const query = buildConversationListQuery(true);
+      ({ results = [] } = await env.DB.prepare(query.sql).bind(...query.binds).all());
+    } catch (error) {
+      console.error("Conversation dissolve filter unavailable; using safe legacy list", error);
+      const query = buildConversationListQuery(false);
+      ({ results = [] } = await env.DB.prepare(query.sql).bind(...query.binds).all());
+    }
+    const conversations = await Promise.all(results.map(async (c) => {
+      const lastMsg = await env.DB.prepare(
+        `SELECT m.id, m.content, m.created_at, m.sender_id, u.full_name AS sender_name, m.deleted_at
+         FROM messages m JOIN users u ON u.id = m.sender_id
+         WHERE m.conversation_id = ? ORDER BY m.id DESC LIMIT 1`
+      ).bind(c.id).first();
+      const members = await env.DB.prepare(
+        `SELECT cm.user_id, u.full_name, u.employee_code, u.avatar_url, cm.role
+         FROM conversation_members cm JOIN users u ON u.id = cm.user_id
+         WHERE cm.conversation_id = ?`
+      ).bind(c.id).all().then((r) => r.results || []);
+      return { ...c, last_message: lastMsg || null, members };
+    }));
+    return json({ conversations });
+  }
+  if (path === "/api/conversations" && request.method === "POST") {
+    const b = await request.json().catch(() => ({}));
+    const type = ["direct", "group", "team", "project"].includes(b.type) ? b.type : "direct";
+    const name = String(b.name || "").slice(0, 200) || null;
+    const memberIds = Array.isArray(b.member_ids) ? [...new Set(b.member_ids.map(Number).filter((id) => id > 0 && id !== me.id))] : [];
+    if (type === "direct" && memberIds.length !== 1) return json({ error: "DM c\u1EA7n \u0111\xFAng 1 ng\u01B0\u1EDDi nh\u1EADn" }, 400);
+    if (type === "direct") {
+      const existing = await env.DB.prepare(
+        `SELECT c.id FROM conversations c
+         WHERE c.type = 'direct'
+           AND EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.user_id = ?)
+           AND EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.user_id = ?)
+           AND (SELECT COUNT(*) FROM conversation_members cm WHERE cm.conversation_id = c.id) = 2`
+      ).bind(me.id, memberIds[0]).first();
+      if (existing) return json({ conversation_id: existing.id });
+    }
+    const result = await env.DB.prepare(
+      "INSERT INTO conversations (type, name, team_id, project_id, created_by) VALUES (?, ?, ?, ?, ?)"
+    ).bind(type, name, b.team_id || null, b.project_id || null, me.id).run();
+    const convId = result.meta?.last_row_id;
+    await env.DB.prepare("INSERT INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?)").bind(convId, me.id, "owner").run();
+    for (const uid of memberIds) {
+      await env.DB.prepare("INSERT INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?)").bind(convId, uid, "member").run();
+    }
+    const allMemberIds = [Number(me.id), ...memberIds];
+    const convRow = await env.DB.prepare("SELECT * FROM conversations WHERE id = ?").bind(convId).first();
+    const members = await env.DB.prepare(
+      `SELECT cm.user_id, u.full_name, u.employee_code, u.avatar_url, cm.role, cm.last_read_message_id
+       FROM conversation_members cm JOIN users u ON u.id = cm.user_id WHERE cm.conversation_id = ?`
+    ).bind(convId).all().then((r) => r.results || []);
+    const createdConv = {
+      ...convRow,
+      members,
+      member_count: members.length,
+      unread_count: 0,
+      last_message: null
+    };
+    await broadcastAppEvent(env, "chat", "chat:conversation_created", {
+      conversation_id: convId,
+      conversation: createdConv
+    }, {
+      actorId: me.id,
+      targetUserIds: allMemberIds
+    });
+    return json({ conversation_id: convId, conversation: createdConv });
+  }
+  const convMatch = path.match(/^\/api\/conversations\/(\d+)$/);
+  if (convMatch && request.method === "GET") {
+    const convId = parseInt(convMatch[1]);
+    if (!await chatMember(env, convId, me.id)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n truy c\u1EADp h\u1ED9i tho\u1EA1i n\xE0y" }, 403);
+    const conv = await env.DB.prepare("SELECT * FROM conversations WHERE id = ?").bind(convId).first();
+    if (!conv) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y h\u1ED9i tho\u1EA1i" }, 404);
+    const members = await env.DB.prepare(
+      `SELECT cm.user_id, u.full_name, u.employee_code, u.avatar_url, cm.role, cm.last_read_message_id
+       FROM conversation_members cm JOIN users u ON u.id = cm.user_id WHERE cm.conversation_id = ?`
+    ).bind(convId).all().then((r) => r.results || []);
+    return json({ ...conv, members });
+  }
+  if (convMatch && request.method === "DELETE") {
+    const convId = parseInt(convMatch[1]);
+    const conv = await env.DB.prepare(
+      `SELECT c.id,c.type,c.name,cm.role,
+              EXISTS(SELECT 1 FROM dissolved_conversations dc WHERE dc.conversation_id=c.id) AS is_dissolved
+         FROM conversations c JOIN conversation_members cm ON cm.conversation_id=c.id
+        WHERE c.id=? AND cm.user_id=?`
+    ).bind(convId, me.id).first();
+    if (!conv) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y nh\xF3m" }, 404);
+    if (conv.type === "direct") return json({ error: "H\u1ED9i tho\u1EA1i tr\u1EF1c ti\u1EBFp kh\xF4ng th\u1EC3 gi\u1EA3i t\xE1n" }, 400);
+    if (conv.is_dissolved) return json({ error: "Nh\xF3m n\xE0y \u0111\xE3 \u0111\u01B0\u1EE3c gi\u1EA3i t\xE1n" }, 400);
+    if (conv.role !== "owner") return json({ error: "Ch\u1EC9 Owner m\u1EDBi \u0111\u01B0\u1EE3c gi\u1EA3i t\xE1n nh\xF3m" }, 403);
+    await env.DB.prepare(
+      "INSERT INTO dissolved_conversations (conversation_id,dissolved_by,dissolved_by_name) VALUES (?,?,?)"
+    ).bind(convId, me.id, me.full_name || "").run();
+    await broadcastChatUpdate(env, convId, { type: "conversation:dissolved", conversation_id: convId });
+    await broadcastAppEvent(env, "chat", "chat:conversation_dissolved", { conversation_id: convId }, { actorId: me.id });
+    return json({ ok: true, dissolved: true });
+  }
+  if (convMatch && request.method === "PUT") {
+    const convId = parseInt(convMatch[1]);
+    const conv = await env.DB.prepare("SELECT * FROM conversations WHERE id = ?").bind(convId).first();
+    if (!conv) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y h\u1ED9i tho\u1EA1i" }, 404);
+    const b = await request.json().catch(() => ({}));
+    const name = String(b.name || "").trim();
+    if (!name) return json({ error: "T\xEAn kh\xF4ng \u0111\u01B0\u1EE3c \u0111\u1EC3 tr\u1ED1ng" }, 400);
+    if (name.length > 200) return json({ error: "T\xEAn qu\xE1 d\xE0i (t\u1ED1i \u0111a 200 k\xFD t\u1EF1)" }, 400);
+    await env.DB.prepare("UPDATE conversations SET name = ? WHERE id = ?").bind(name, convId).run();
+    await broadcastChatUpdate(env, convId, { type: "conversation:update", conversation_id: convId, name });
+    await broadcastAppEvent(env, "chat", "chat:conversation_updated", { conversation_id: convId, name }, { actorId: me.id });
+    return json({ ok: true, name });
+  }
+  const convMembersMatch = path.match(/^\/api\/conversations\/(\d+)\/members$/);
+  if (convMembersMatch && request.method === "POST") {
+    const convId = parseInt(convMembersMatch[1]);
+    const b = await request.json().catch(() => ({}));
+    const action = b.action || "add";
+    const userIds = Array.isArray(b.user_ids) ? b.user_ids.map(Number) : [];
+    if (action === "add") {
+      for (const uid of userIds) {
+        await env.DB.prepare("INSERT OR IGNORE INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?)").bind(convId, uid, "member").run();
+      }
+    } else if (action === "remove") {
+      for (const uid of userIds) {
+        await env.DB.prepare("DELETE FROM conversation_members WHERE conversation_id = ? AND user_id = ? AND role != ?").bind(convId, uid, "owner").run();
+      }
+    }
+    return json({ ok: true });
+  }
+  const msgListMatch = path.match(/^\/api\/conversations\/(\d+)\/messages$/);
+  if (msgListMatch && request.method === "GET") {
+    const convId = parseInt(msgListMatch[1]);
+    if (!await chatMember(env, convId, me.id)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n truy c\u1EADp h\u1ED9i tho\u1EA1i n\xE0y" }, 403);
+    const before = url.searchParams.get("before");
+    const around = Number(url.searchParams.get("around") || 0);
+    const limit = Math.min(parseInt(url.searchParams.get("limit") || "30"), 100);
+    let q = `SELECT m.*, u.full_name AS sender_name, u.employee_code AS sender_code, u.avatar_url AS sender_avatar,
+       EXISTS(SELECT 1 FROM pinned_messages pm WHERE pm.message_id = m.id) AS is_pinned
+       FROM messages m JOIN users u ON u.id = m.sender_id
+       WHERE m.conversation_id = ?`;
+    const binds = [convId];
+    if (around > 0) {
+      q += " AND m.id >= ? ORDER BY m.id ASC LIMIT ?";
+      binds.push(around, limit);
+    } else {
+      if (before) {
+        q += " AND m.id < ?";
+        binds.push(Number(before));
+      }
+      q += " ORDER BY m.id DESC LIMIT ?";
+      binds.push(limit);
+    }
+    const { results = [] } = await env.DB.prepare(q).bind(...binds).all();
+    if (!around) results.reverse();
+    const messageIds = results.map((r) => r.id);
+    let attachments = [];
+    let reactions = [];
+    if (messageIds.length) {
+      const placeholders = messageIds.map(() => "?").join(",");
+      const { results: atts = [] } = await env.DB.prepare(
+        `SELECT * FROM message_attachments WHERE message_id IN (${placeholders})`
+      ).bind(...messageIds).all();
+      attachments = atts;
+      const { results: reacs = [] } = await env.DB.prepare(
+        `SELECT mr.message_id, mr.emoji, mr.user_id, u.full_name AS user_name
+         FROM message_reactions mr JOIN users u ON u.id = mr.user_id
+         WHERE mr.message_id IN (${placeholders})`
+      ).bind(...messageIds).all();
+      reactions = reacs;
+    }
+    const attMap = {};
+    for (const a of attachments) {
+      if (!attMap[a.message_id]) attMap[a.message_id] = [];
+      attMap[a.message_id].push(a);
+    }
+    const reacMap = {};
+    for (const r of reactions) {
+      if (!reacMap[r.message_id]) reacMap[r.message_id] = [];
+      reacMap[r.message_id].push(r);
+    }
+    let mentions = [];
+    if (messageIds.length) {
+      const placeholders = messageIds.map(() => "?").join(",");
+      const { results: results2 = [] } = await env.DB.prepare(
+        `SELECT mm.message_id, mm.mentioned_user_id AS user_id, u.full_name
+         FROM message_mentions mm JOIN users u ON u.id = mm.mentioned_user_id
+         WHERE mm.message_id IN (${placeholders})`
+      ).bind(...messageIds).all();
+      mentions = results2;
+    }
+    const mentionMap = {};
+    for (const mention of mentions) {
+      if (!mentionMap[mention.message_id]) mentionMap[mention.message_id] = [];
+      mentionMap[mention.message_id].push(mention);
+    }
+    const messages = await hydrateChatMessages(env, results.map((m) => ({
+      ...m,
+      attachments: attMap[m.id] || [],
+      reactions: reacMap[m.id] || [],
+      mentions: mentionMap[m.id] || []
+    })), me.id);
+    return json({ messages, has_more: results.length >= limit });
+  }
+  if (msgListMatch && request.method === "POST") {
+    const convId = parseInt(msgListMatch[1]);
+    const b = await request.json().catch(() => ({}));
+    const content = String(b.content || "").trim();
+    const messageType = ["text", "poll", "event"].includes(String(b.message_type || "text")) ? String(b.message_type || "text") : "text";
+    const member = await chatMember(env, convId, me.id);
+    if (!member) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n truy c\u1EADp h\u1ED9i tho\u1EA1i n\xE0y" }, 403);
+    if (messageType !== "text" && member.type === "direct") return json({ error: "Poll v\xE0 s\u1EF1 ki\u1EC7n ch\u1EC9 d\xF9ng trong nh\xF3m" }, 400);
+    if (b.mention_all && (member.type === "direct" || !/(^|\s)@all\b/i.test(content))) return json({ error: "@all ch\u1EC9 d\xF9ng \u0111\u01B0\u1EE3c trong nh\xF3m" }, 400);
+    if (messageType === "text" && !content && !b.attachments?.length) return json({ error: "N\u1ED9i dung kh\xF4ng \u0111\u01B0\u1EE3c \u0111\u1EC3 tr\u1ED1ng" }, 400);
+    const poll = b.poll && typeof b.poll === "object" ? b.poll : null;
+    const event = b.event && typeof b.event === "object" ? b.event : null;
+    if (messageType === "poll") {
+      const question = String(poll?.question || "").trim();
+      const options = Array.isArray(poll?.options) ? poll.options.map((value) => String(value || "").trim()).filter(Boolean) : [];
+      if (!question || question.length > 500 || options.length < 2 || options.length > 10 || options.some((value) => value.length > 200)) {
+        return json({ error: "Poll c\u1EA7n c\xE2u h\u1ECFi v\xE0 t\u1EEB 2 \u0111\u1EBFn 10 l\u1EF1a ch\u1ECDn h\u1EE3p l\u1EC7" }, 400);
+      }
+    }
+    if (messageType === "event") {
+      const title = String(event?.title || "").trim();
+      const description = String(event?.description || "").trim();
+      const location = String(event?.location || "").trim();
+      const meetingUrl = String(event?.meeting_url || "").trim();
+      const startAt = new Date(event?.start_at || "");
+      const endAt = event?.end_at ? new Date(event.end_at) : null;
+      if (!title || title.length > 200 || description.length > 2e3 || location.length > 500 || meetingUrl && !/^https?:\/\//i.test(meetingUrl) || Number.isNaN(startAt.getTime()) || endAt && (Number.isNaN(endAt.getTime()) || endAt < startAt)) {
+        return json({ error: "Th\xF4ng tin th\u1EDDi gian s\u1EF1 ki\u1EC7n kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+      }
+    }
+    const result = await env.DB.prepare(
+      "INSERT INTO messages (conversation_id, sender_id, content, reply_to_id, task_id, message_type) VALUES (?, ?, ?, ?, ?, ?)"
+    ).bind(convId, me.id, content || null, b.reply_to_id ? Number(b.reply_to_id) : null, b.task_id ? Number(b.task_id) : null, messageType).run();
+    const messageId = result.meta?.last_row_id;
+    const mentionedUserIds = await saveMessageMentions(env, {
+      conversationId: convId,
+      messageId,
+      mentionedBy: me.id,
+      mentionIds: b.mention_ids
+    });
+    await saveAllMention(env, { conversationId: convId, messageId, mentionedBy: me.id, requested: !!b.mention_all, content });
+    if (messageType === "poll") {
+      await env.DB.prepare("INSERT INTO chat_polls (message_id,question,allows_multiple) VALUES (?,?,1)").bind(messageId, String(poll.question).trim()).run();
+      const options = poll.options.map((value) => String(value || "").trim()).filter(Boolean);
+      for (let index = 0; index < options.length; index++) {
+        await env.DB.prepare("INSERT INTO chat_poll_options (message_id,option_text,position) VALUES (?,?,?)").bind(messageId, options[index], index).run();
+      }
+    }
+    if (messageType === "event") {
+      await env.DB.prepare(
+        "INSERT INTO chat_events (message_id,title,start_at,end_at,description,location,meeting_url) VALUES (?,?,?,?,?,?,?)"
+      ).bind(messageId, String(event.title).trim(), event.start_at, event.end_at || null, String(event.description || "").trim() || null, String(event.location || "").trim() || null, String(event.meeting_url || "").trim() || null).run();
+      const { results: members } = await env.DB.prepare("SELECT user_id FROM conversation_members WHERE conversation_id=?").bind(convId).all();
+      const requested = Array.isArray(event.attendee_ids) ? new Set(event.attendee_ids.map(Number).filter(Boolean)) : null;
+      for (const attendee of members) {
+        if (!requested || requested.has(Number(attendee.user_id))) {
+          await env.DB.prepare("INSERT INTO chat_event_attendees (message_id,user_id,response) VALUES (?,?,?)").bind(messageId, attendee.user_id, Number(attendee.user_id) === Number(me.id) ? "going" : "invited").run();
+        }
+      }
+    }
+    if (b.attachments?.length) {
+      for (const att of b.attachments) {
+        await env.DB.prepare(
+          "INSERT INTO message_attachments (message_id, type, file_name, file_size, mime_type, storage_key, width, height) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        ).bind(messageId, att.type || "file", att.file_name, att.file_size || 0, att.mime_type || "", att.storage_key, att.width || null, att.height || null).run();
+      }
+    }
+    const message = await getChatMessage(env, messageId, me.id);
+    await broadcastChatUpdate(env, convId, { type: "message:new", message });
+    let recipientIds = [];
+    try {
+      const { results: memberRows = [] } = await env.DB.prepare(
+        "SELECT user_id FROM conversation_members WHERE conversation_id = ?"
+      ).bind(convId).all();
+      recipientIds = memberRows.map((r) => Number(r.user_id)).filter((uid) => uid && uid !== Number(me.id));
+      if (recipientIds.length) {
+        const convRow = await env.DB.prepare("SELECT name, type FROM conversations WHERE id = ?").bind(convId).first();
+        const senderName = message.sender_name || me.full_name || "NetViet Chat";
+        const isGroup = convRow?.type !== "direct";
+        const title = isGroup && convRow?.name ? `${convRow.name} (${senderName})` : senderName;
+        const preview = message.content || (message.attachments?.length ? "\u{1F4CE} [T\u1EC7p \u0111\xEDnh k\xE8m]" : message.poll ? "\u{1F4CA} [Cu\u1ED9c b\xECnh ch\u1ECDn]" : message.event ? "\u{1F4C5} [S\u1EF1 ki\u1EC7n]" : "\u0110\xE3 g\u1EEDi m\u1ED9t tin nh\u1EAFn");
+        await sendWebPushNotification(env, recipientIds, {
+          title,
+          body: preview,
+          icon: message.sender_avatar || "/icon-192.png",
+          badge: "/icon-192.png",
+          url: `/#/chat/${convId}/${messageId}`,
+          tag: `chat-${convId}-${messageId || Date.now()}`
+        });
+      }
+    } catch (pushErr) {
+      console.warn("Failed to dispatch chat push notification:", pushErr);
+    }
+    await broadcastAppEvent(env, "chat", "chat:message_created", {
+      conversation_id: convId,
+      message
+    }, {
+      actorId: me.id,
+      targetUserIds: recipientIds.concat(Number(me.id))
+    });
+    return json({ message, mentioned_user_ids: mentionedUserIds });
+  }
+  const convPinnedMatch = path.match(/^\/api\/conversations\/(\d+)\/pinned$/);
+  if (convPinnedMatch && request.method === "GET") {
+    const convId = Number(convPinnedMatch[1]);
+    const member = await env.DB.prepare(
+      "SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?"
+    ).bind(convId, me.id).first();
+    if (!member) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n truy c\u1EADp h\u1ED9i tho\u1EA1i n\xE0y" }, 403);
+    const { results = [] } = await env.DB.prepare(
+      `SELECT m.*, u.full_name AS sender_name, u.avatar_url AS sender_avatar, pm.pinned_by, pm.created_at AS pinned_at,
+       1 AS is_pinned FROM pinned_messages pm JOIN messages m ON m.id = pm.message_id
+       JOIN users u ON u.id = m.sender_id WHERE pm.conversation_id = ? AND m.deleted_at IS NULL
+       ORDER BY pm.created_at DESC LIMIT 30`
+    ).bind(convId).all();
+    return json({ messages: await attachChatAttachments(env, results) });
+  }
+  const convSharedMatch = path.match(/^\/api\/conversations\/(\d+)\/shared\/(images|files|links)$/);
+  if (convSharedMatch && request.method === "GET") {
+    const convId = Number(convSharedMatch[1]);
+    const kind = convSharedMatch[2];
+    const member = await env.DB.prepare(
+      "SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?"
+    ).bind(convId, me.id).first();
+    if (!member) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n truy c\u1EADp h\u1ED9i tho\u1EA1i n\xE0y" }, 403);
+    const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 24), 1), 100);
+    if (kind === "images" || kind === "files") {
+      const attachmentFilter = kind === "images" ? "a.type = 'image'" : "a.type != 'image'";
+      const { results: results2 = [] } = await env.DB.prepare(
+        `SELECT a.*, m.id AS message_id, m.sender_id, m.created_at AS message_created_at, u.full_name AS sender_name
+         FROM message_attachments a JOIN messages m ON m.id = a.message_id JOIN users u ON u.id = m.sender_id
+         WHERE m.conversation_id = ? AND m.deleted_at IS NULL AND ${attachmentFilter}
+         ORDER BY a.id DESC LIMIT ?`
+      ).bind(convId, limit).all();
+      return json({ items: results2 });
+    }
+    const { results = [] } = await env.DB.prepare(
+      `SELECT m.id AS message_id, m.content, m.created_at AS message_created_at, u.full_name AS sender_name
+       FROM messages m JOIN users u ON u.id = m.sender_id
+       WHERE m.conversation_id = ? AND m.deleted_at IS NULL AND m.content LIKE '%http%'
+       ORDER BY m.id DESC LIMIT ?`
+    ).bind(convId, limit).all();
+    return json({ items: results });
+  }
+  const pollVoteMatch = path.match(/^\/api\/messages\/(\d+)\/poll-votes$/);
+  if (pollVoteMatch && request.method === "PUT") {
+    const messageId = Number(pollVoteMatch[1]);
+    const message = await env.DB.prepare("SELECT conversation_id FROM messages WHERE id=? AND message_type=? AND deleted_at IS NULL").bind(messageId, "poll").first();
+    if (!message) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y poll" }, 404);
+    if (!await chatMember(env, message.conversation_id, me.id)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    const poll = await env.DB.prepare("SELECT is_closed FROM chat_polls WHERE message_id=?").bind(messageId).first();
+    if (!poll || poll.is_closed) return json({ error: "Poll \u0111\xE3 \u0111\xF3ng" }, 400);
+    const body = await request.json().catch(() => ({}));
+    const optionIds = [...new Set((Array.isArray(body.option_ids) ? body.option_ids : []).map(Number).filter(Number.isInteger))];
+    const { results: options } = await env.DB.prepare("SELECT id FROM chat_poll_options WHERE message_id=?").bind(messageId).all();
+    const validIds = new Set(options.map((option) => Number(option.id)));
+    if (optionIds.some((id) => !validIds.has(id))) return json({ error: "L\u1EF1a ch\u1ECDn kh\xF4ng thu\u1ED9c poll n\xE0y" }, 400);
+    await env.DB.prepare("DELETE FROM chat_poll_votes WHERE user_id=? AND option_id IN (SELECT id FROM chat_poll_options WHERE message_id=?)").bind(me.id, messageId).run();
+    for (const optionId of optionIds) {
+      await env.DB.prepare("INSERT OR IGNORE INTO chat_poll_votes (option_id,user_id) VALUES (?,?)").bind(optionId, me.id).run();
+    }
+    const updated = await getChatMessage(env, messageId, me.id);
+    await broadcastChatUpdate(env, message.conversation_id, { type: "poll:update", message_id: messageId, poll: updated?.poll });
+    await broadcastAppEvent(env, "chat", "chat:poll_updated", {
+      conversation_id: message.conversation_id,
+      message_id: messageId,
+      poll: updated?.poll
+    }, { actorId: me.id });
+    return json({ poll: updated?.poll || null });
+  }
+  const pollCloseMatch = path.match(/^\/api\/messages\/(\d+)\/poll\/close$/);
+  if (pollCloseMatch && request.method === "POST") {
+    const messageId = Number(pollCloseMatch[1]);
+    const message = await env.DB.prepare("SELECT conversation_id,sender_id FROM messages WHERE id=? AND message_type=? AND deleted_at IS NULL").bind(messageId, "poll").first();
+    if (!message) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y poll" }, 404);
+    if (Number(message.sender_id) !== Number(me.id)) return json({ error: "Ch\u1EC9 ng\u01B0\u1EDDi t\u1EA1o \u0111\u01B0\u1EE3c \u0111\xF3ng poll" }, 403);
+    await env.DB.prepare("UPDATE chat_polls SET is_closed=1,closed_by=?,closed_at=datetime('now','localtime') WHERE message_id=?").bind(me.id, messageId).run();
+    const updated = await getChatMessage(env, messageId, me.id);
+    await broadcastChatUpdate(env, message.conversation_id, { type: "poll:update", message_id: messageId, poll: updated?.poll });
+    await broadcastAppEvent(env, "chat", "chat:poll_updated", {
+      conversation_id: message.conversation_id,
+      message_id: messageId,
+      poll: updated?.poll
+    }, { actorId: me.id });
+    return json({ poll: updated?.poll || null });
+  }
+  const eventResponseMatch = path.match(/^\/api\/messages\/(\d+)\/event-response$/);
+  const eventUpdateMatch = path.match(/^\/api\/messages\/(\d+)\/event$/);
+  if (eventUpdateMatch && request.method === "PUT") {
+    const messageId = Number(eventUpdateMatch[1]);
+    const message = await env.DB.prepare("SELECT conversation_id,sender_id FROM messages WHERE id=? AND message_type=? AND deleted_at IS NULL").bind(messageId, "event").first();
+    if (!message) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y s\u1EF1 ki\u1EC7n" }, 404);
+    if (Number(message.sender_id) !== Number(me.id)) return json({ error: "Ch\u1EC9 ng\u01B0\u1EDDi t\u1EA1o \u0111\u01B0\u1EE3c s\u1EEDa s\u1EF1 ki\u1EC7n" }, 403);
+    const event = (await request.json().catch(() => ({}))).event || {};
+    const title = String(event.title || "").trim();
+    const description = String(event.description || "").trim();
+    const location = String(event.location || "").trim();
+    const meetingUrl = String(event.meeting_url || "").trim();
+    const startAt = new Date(event.start_at || "");
+    const endAt = event.end_at ? new Date(event.end_at) : null;
+    if (!title || title.length > 200 || description.length > 2e3 || location.length > 500 || meetingUrl && !/^https?:\/\//i.test(meetingUrl) || Number.isNaN(startAt.getTime()) || endAt && (Number.isNaN(endAt.getTime()) || endAt < startAt)) {
+      return json({ error: "Th\xF4ng tin th\u1EDDi gian s\u1EF1 ki\u1EC7n kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    }
+    await env.DB.prepare("UPDATE chat_events SET title=?,start_at=?,end_at=?,description=?,location=?,meeting_url=? WHERE message_id=? AND cancelled_at IS NULL").bind(title, event.start_at, event.end_at || null, description || null, location || null, meetingUrl || null, messageId).run();
+    const updated = await getChatMessage(env, messageId, me.id);
+    await broadcastChatUpdate(env, message.conversation_id, { type: "event:update", message_id: messageId, event: updated?.event });
+    await broadcastAppEvent(env, "chat", "chat:event_updated", {
+      conversation_id: message.conversation_id,
+      message_id: messageId,
+      event: updated?.event
+    }, { actorId: me.id });
+    return json({ event: updated?.event || null });
+  }
+  if (eventResponseMatch && request.method === "PUT") {
+    const messageId = Number(eventResponseMatch[1]);
+    const message = await env.DB.prepare("SELECT conversation_id FROM messages WHERE id=? AND message_type=? AND deleted_at IS NULL").bind(messageId, "event").first();
+    if (!message || !await chatMember(env, message.conversation_id, me.id)) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n ho\u1EB7c s\u1EF1 ki\u1EC7n kh\xF4ng t\u1ED3n t\u1EA1i" }, 403);
+    const response = String((await request.json().catch(() => ({}))).response || "");
+    if (!["going", "declined"].includes(response)) return json({ error: "Ph\u1EA3n h\u1ED3i kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    const invited = await env.DB.prepare("SELECT 1 FROM chat_event_attendees WHERE message_id=? AND user_id=?").bind(messageId, me.id).first();
+    if (!invited) return json({ error: "B\u1EA1n kh\xF4ng n\u1EB1m trong danh s\xE1ch m\u1EDDi" }, 403);
+    await env.DB.prepare("UPDATE chat_event_attendees SET response=?,responded_at=datetime('now','localtime') WHERE message_id=? AND user_id=?").bind(response, messageId, me.id).run();
+    const updated = await getChatMessage(env, messageId, me.id);
+    await broadcastChatUpdate(env, message.conversation_id, { type: "event:update", message_id: messageId, event: updated?.event });
+    await broadcastAppEvent(env, "chat", "chat:event_updated", {
+      conversation_id: message.conversation_id,
+      message_id: messageId,
+      event: updated?.event
+    }, { actorId: me.id });
+    return json({ event: updated?.event || null });
+  }
+  const eventCancelMatch = path.match(/^\/api\/messages\/(\d+)\/event$/);
+  if (eventCancelMatch && request.method === "DELETE") {
+    const messageId = Number(eventCancelMatch[1]);
+    const message = await env.DB.prepare("SELECT conversation_id,sender_id FROM messages WHERE id=? AND message_type=? AND deleted_at IS NULL").bind(messageId, "event").first();
+    if (!message) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y s\u1EF1 ki\u1EC7n" }, 404);
+    if (Number(message.sender_id) !== Number(me.id)) return json({ error: "Ch\u1EC9 ng\u01B0\u1EDDi t\u1EA1o \u0111\u01B0\u1EE3c h\u1EE7y s\u1EF1 ki\u1EC7n" }, 403);
+    await env.DB.prepare("UPDATE chat_events SET cancelled_at=datetime('now','localtime'),cancelled_by=? WHERE message_id=?").bind(me.id, messageId).run();
+    const updated = await getChatMessage(env, messageId, me.id);
+    await broadcastChatUpdate(env, message.conversation_id, { type: "event:update", message_id: messageId, event: updated?.event });
+    await broadcastAppEvent(env, "chat", "chat:event_updated", {
+      conversation_id: message.conversation_id,
+      message_id: messageId,
+      event: updated?.event
+    }, { actorId: me.id });
+    return json({ event: updated?.event || null });
+  }
+  const msgMatch = path.match(/^\/api\/messages\/(\d+)$/);
+  if (msgMatch && request.method === "PUT") {
+    const msgId = parseInt(msgMatch[1]);
+    const existing = await env.DB.prepare(
+      "SELECT conversation_id, sender_id FROM messages WHERE id = ? AND deleted_at IS NULL"
+    ).bind(msgId).first();
+    if (!existing) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y tin nh\u1EAFn" }, 404);
+    if (Number(existing.sender_id) !== Number(me.id)) {
+      return json({ error: "Ch\u1EC9 ng\u01B0\u1EDDi g\u1EEDi m\u1EDBi \u0111\u01B0\u1EE3c s\u1EEDa tin nh\u1EAFn" }, 403);
+    }
+    const b = await request.json().catch(() => ({}));
+    const content = String(b.content || "").trim();
+    if (!content) return json({ error: "N\u1ED9i dung kh\xF4ng \u0111\u01B0\u1EE3c \u0111\u1EC3 tr\u1ED1ng" }, 400);
+    const now = (/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19);
+    await env.DB.prepare("UPDATE messages SET content = ?, edited_at = ? WHERE id = ? AND sender_id = ?").bind(content, now, msgId, me.id).run();
+    const updated = await getChatMessage(env, msgId, me.id);
+    await broadcastChatUpdate(env, existing.conversation_id, { type: "message:edit", message: updated });
+    await broadcastAppEvent(env, "chat", "chat:message_edited", {
+      conversation_id: existing.conversation_id,
+      message_id: msgId,
+      message: updated
+    }, { actorId: me.id });
+    return json({ ok: true, message: updated });
+  }
+  if (msgMatch && request.method === "DELETE") {
+    const msgId = parseInt(msgMatch[1]);
+    const existing = await env.DB.prepare(
+      "SELECT conversation_id, sender_id FROM messages WHERE id = ? AND deleted_at IS NULL"
+    ).bind(msgId).first();
+    if (!existing) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y tin nh\u1EAFn" }, 404);
+    if (Number(existing.sender_id) !== Number(me.id) && me.role !== "admin" && me.role !== "director") {
+      return json({ error: "Ch\u1EC9 ng\u01B0\u1EDDi g\u1EEDi m\u1EDBi \u0111\u01B0\u1EE3c x\xF3a tin nh\u1EAFn" }, 403);
+    }
+    const now = (/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19);
+    await env.DB.prepare("UPDATE messages SET deleted_at = ? WHERE id = ?").bind(now, msgId).run();
+    await broadcastChatUpdate(env, existing.conversation_id, {
+      type: "message:delete",
+      message_id: msgId,
+      deleted_at: now
+    });
+    await broadcastAppEvent(env, "chat", "chat:message_deleted", {
+      conversation_id: existing.conversation_id,
+      message_id: msgId,
+      deleted_at: now
+    }, { actorId: me.id });
+    return json({ ok: true, message_id: msgId, deleted_at: now });
+  }
+  const msgPinMatch = path.match(/^\/api\/messages\/(\d+)\/pin$/);
+  if (msgPinMatch && (request.method === "POST" || request.method === "DELETE")) {
+    const messageId = Number(msgPinMatch[1]);
+    const message = await env.DB.prepare("SELECT id, conversation_id FROM messages WHERE id = ? AND deleted_at IS NULL").bind(messageId).first();
+    if (!message) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y tin nh\u1EAFn" }, 404);
+    const member = await env.DB.prepare(
+      "SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?"
+    ).bind(message.conversation_id, me.id).first();
+    if (!member) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n ghim tin nh\u1EAFn n\xE0y" }, 403);
+    const isPinning = request.method === "POST";
+    if (isPinning) {
+      await env.DB.prepare("INSERT OR IGNORE INTO pinned_messages (conversation_id, message_id, pinned_by) VALUES (?, ?, ?)").bind(message.conversation_id, messageId, me.id).run();
+    } else {
+      await env.DB.prepare("DELETE FROM pinned_messages WHERE conversation_id = ? AND message_id = ?").bind(message.conversation_id, messageId).run();
+    }
+    await broadcastChatUpdate(env, message.conversation_id, {
+      type: "message:pin",
+      message_id: messageId,
+      conversation_id: message.conversation_id,
+      is_pinned: isPinning,
+      pinned_by: me.id
+    });
+    await broadcastAppEvent(env, "chat", "chat:message_pinned", {
+      conversation_id: message.conversation_id,
+      message_id: messageId,
+      is_pinned: isPinning,
+      pinned_by: me.id
+    }, { actorId: me.id });
+    return json({ ok: true, pinned: isPinning, message_id: messageId });
+  }
+  const msgReactionMatch = path.match(/^\/api\/messages\/(\d+)\/reactions$/);
+  if (msgReactionMatch && (request.method === "POST" || request.method === "DELETE")) {
+    const msgId = parseInt(msgReactionMatch[1]);
+    const message = await env.DB.prepare(
+      "SELECT id, conversation_id FROM messages WHERE id = ? AND deleted_at IS NULL"
+    ).bind(msgId).first();
+    if (!message) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y tin nh\u1EAFn" }, 404);
+    const isMember = await chatMember(env, message.conversation_id, me.id);
+    if (!isMember) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n truy c\u1EADp h\u1ED9i tho\u1EA1i n\xE0y" }, 403);
+    if (request.method === "POST") {
+      const b = await request.json().catch(() => ({}));
+      const emoji = String(b.emoji || "").trim();
+      if (!emoji) return json({ error: "Emoji l\xE0 b\u1EAFt bu\u1ED9c" }, 400);
+      await env.DB.prepare("INSERT OR IGNORE INTO message_reactions (message_id, user_id, emoji) VALUES (?, ?, ?)").bind(msgId, me.id, emoji).run();
+    } else {
+      const emoji = url.searchParams.get("emoji") || "";
+      if (emoji) {
+        await env.DB.prepare("DELETE FROM message_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?").bind(msgId, me.id, emoji).run();
+      } else {
+        await env.DB.prepare("DELETE FROM message_reactions WHERE message_id = ? AND user_id = ?").bind(msgId, me.id).run();
+      }
+    }
+    const { results: reactions = [] } = await env.DB.prepare(
+      `SELECT mr.emoji, mr.user_id, u.full_name AS user_name
+       FROM message_reactions mr JOIN users u ON u.id = mr.user_id
+       WHERE mr.message_id = ?`
+    ).bind(msgId).all();
+    await broadcastChatUpdate(env, message.conversation_id, {
+      type: "reaction:update",
+      message_id: msgId,
+      conversation_id: message.conversation_id,
+      reactions
+    });
+    await broadcastAppEvent(env, "chat", "chat:reaction_updated", {
+      conversation_id: message.conversation_id,
+      message_id: msgId,
+      reactions
+    }, { actorId: me.id });
+    return json({ ok: true, reactions });
+  }
+  const msgReadMatch = path.match(/^\/api\/messages\/(\d+)\/read$/);
+  if (msgReadMatch && request.method === "POST") {
+    const msgId = parseInt(msgReadMatch[1]);
+    const msg = await env.DB.prepare("SELECT conversation_id FROM messages WHERE id = ?").bind(msgId).first();
+    if (!msg) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y tin nh\u1EAFn" }, 404);
+    const isMember = await env.DB.prepare(
+      "SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?"
+    ).bind(msg.conversation_id, me.id).first();
+    if (!isMember) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n" }, 403);
+    await env.DB.prepare("INSERT OR IGNORE INTO message_reads (message_id, user_id) VALUES (?, ?)").bind(msgId, me.id).run();
+    await env.DB.prepare(
+      "UPDATE conversation_members SET last_read_message_id = MAX(COALESCE(last_read_message_id,0), ?) WHERE conversation_id = ? AND user_id = ?"
+    ).bind(msgId, msg.conversation_id, me.id).run();
+    await broadcastChatUpdate(env, msg.conversation_id, { type: "conversation:read", user_id: me.id, message_id: msgId });
+    return json({ ok: true });
+  }
+  if (path === "/api/search/messages" && request.method === "GET") {
+    const q = (url.searchParams.get("q") || "").trim();
+    if (!q || q.length < 2) return json({ error: "T\u1EEB kh\xF3a t\u1ED1i thi\u1EC3u 2 k\xFD t\u1EF1" }, 400);
+    const convId = url.searchParams.get("conversation_id");
+    const limit = Math.min(parseInt(url.searchParams.get("limit") || "20"), 50);
+    let sql = `SELECT m.*, u.full_name AS sender_name, c.name AS conversation_name, c.type AS conversation_type
+       FROM messages m JOIN users u ON u.id = m.sender_id
+       JOIN conversations c ON c.id = m.conversation_id
+       JOIN conversation_members cm ON cm.conversation_id = c.id AND cm.user_id = ?
+       WHERE m.content LIKE ?1 AND m.deleted_at IS NULL`;
+    const binds = [me.id];
+    if (convId) {
+      sql += " AND m.conversation_id = ?";
+      binds.push(Number(convId));
+    }
+    sql += " ORDER BY m.id DESC LIMIT ?";
+    binds.push(limit);
+    const { results = [] } = await env.DB.prepare(sql).bind(...binds).all();
+    return json({ results });
+  }
+  const chatDocumentMatch = path.match(/^\/api\/documents\/(.+)$/);
+  if (chatDocumentMatch && request.method === "GET") {
+    let storageKey = "";
+    try {
+      storageKey = decodeURIComponent(chatDocumentMatch[1]);
+    } catch (_) {
+      return json({ error: "\u0110\u01B0\u1EDDng d\u1EABn t\u1EC7p kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+    }
+    if (!storageKey.startsWith("chat/")) return json({ error: "Kh\xF4ng t\xECm th\u1EA5y t\u1EC7p" }, 404);
+    const attachment = await env.DB.prepare(
+      `SELECT a.file_name, a.mime_type, m.conversation_id
+       FROM message_attachments a JOIN messages m ON m.id = a.message_id
+       JOIN conversation_members cm ON cm.conversation_id = m.conversation_id AND cm.user_id = ?
+       WHERE a.storage_key = ? AND m.deleted_at IS NULL LIMIT 1`
+    ).bind(me.id, storageKey).first();
+    if (!attachment) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n truy c\u1EADp t\u1EC7p n\xE0y" }, 403);
+    if (!env.HR_DOCUMENTS) return json({ error: "L\u01B0u tr\u1EEF t\u1EC7p chat ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh" }, 503);
+    const object = await env.HR_DOCUMENTS.get(storageKey);
+    if (!object) return json({ error: "T\u1EC7p kh\xF4ng t\u1ED3n t\u1EA1i tr\xEAn kho l\u01B0u tr\u1EEF" }, 404);
+    const filename = safeDownloadName(attachment.file_name || storageKey.split("/").pop() || "download");
+    const disposition = url.searchParams.get("disposition") === "attachment" ? "attachment" : "inline";
+    return new Response(object.body, { headers: {
+      "Content-Type": attachment.mime_type || object.httpMetadata?.contentType || "application/octet-stream",
+      "Content-Disposition": `${disposition}; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff"
+    } });
+  }
+  const convUploadMatch = path.match(/^\/api\/conversations\/(\d+)\/upload$/);
+  if (convUploadMatch && request.method === "POST") {
+    const convId = parseInt(convUploadMatch[1]);
+    const isMember = await env.DB.prepare(
+      "SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?"
+    ).bind(convId, me.id).first();
+    if (!isMember) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n t\u1EA3i t\u1EC7p l\xEAn h\u1ED9i tho\u1EA1i n\xE0y" }, 403);
+    const formData = await request.formData();
+    const file = formData.get("file");
+    if (!file || typeof file.name !== "string") return json({ error: "Vui l\xF2ng ch\u1ECDn file" }, 400);
+    const buffer = await file.arrayBuffer();
+    const key = `chat/${convId}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+    await env.HR_DOCUMENTS.put(key, buffer, {
+      httpMetadata: { contentType: file.type || "application/octet-stream" }
+    });
+    const isImage = String(file.type || "").startsWith("image/");
+    return json({
+      storage_key: key,
+      file_name: file.name,
+      file_size: buffer.byteLength,
+      mime_type: file.type || "application/octet-stream",
+      type: isImage ? "image" : "file"
+    });
+  }
+  const wsMatch = path.match(/^\/api\/chat\/ws\/(\d+)$/);
+  if (wsMatch && request.method === "GET") {
+    const convId = parseInt(wsMatch[1]);
+    const isMember = await env.DB.prepare(
+      "SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?"
+    ).bind(convId, me.id).first();
+    if (!isMember) return json({ error: "Kh\xF4ng c\xF3 quy\u1EC1n truy c\u1EADp h\u1ED9i tho\u1EA1i n\xE0y" }, 403);
+    const doId = env.CHAT_ROOM.idFromName(String(convId));
+    const stub = env.CHAT_ROOM.get(doId);
+    const wsUrl = new URL(request.url);
+    wsUrl.searchParams.set("conv", String(convId));
+    return stub.fetch(new Request(wsUrl.toString(), request));
+  }
+  const docServeMatch = path.match(/^\/api\/documents\/(.+)$/);
+  if (docServeMatch && request.method === "GET") {
+    const storageKey = decodeURIComponent(docServeMatch[1]);
+    if (!env.HR_DOCUMENTS) return json({ error: "L\u01B0u tr\u1EEF t\xE0i li\u1EC7u ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh" }, 503);
+    const object = await env.HR_DOCUMENTS.get(storageKey);
+    if (!object) return json({ error: "T\u1EC7p kh\xF4ng t\u1ED3n t\u1EA1i" }, 404);
+    const disposition = url.searchParams.get("disposition") === "attachment" ? "attachment" : "inline";
+    const filename = storageKey.split("/").pop() || "document";
+    return new Response(object.body, {
+      headers: {
+        "Content-Type": object.httpMetadata?.contentType || "application/octet-stream",
+        "Content-Disposition": `${disposition}; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff"
+      }
+    });
+  }
+  return json({ error: "Not found" }, 404);
+}
+__name(handle, "handle");
+
+// src/chat-room.js
+var ChatRoom = class {
+  static {
+    __name(this, "ChatRoom");
+  }
+  constructor(ctx, env) {
+    this.ctx = ctx;
+    this.env = env;
+    this.sessions = /* @__PURE__ */ new Map();
+    this.conversationId = null;
+    this.restoreSessions();
+  }
+  // ── Restore sessions after hibernation ────────────────────────────
+  restoreSessions() {
+    for (const ws of this.ctx.getWebSockets()) {
+      try {
+        const session = ws.deserializeAttachment();
+        if (session && session.userId) {
+          this.sessions.set(ws, session);
+          if (!this.conversationId && session.conversationId) {
+            this.conversationId = session.conversationId;
+          }
+        }
+      } catch (_) {
+      }
+    }
+  }
+  // ── HTTP fetch — handles WebSocket upgrade ──────────────────────────
+  async fetch(request) {
+    const url = new URL(request.url);
+    const requestedConversationId = url.searchParams.get("conv");
+    if (requestedConversationId) this.conversationId = requestedConversationId;
+    if (request.method === "POST" && url.pathname === "/broadcast") {
+      const payload = await request.json().catch(() => null);
+      if (payload?.type) this.broadcast(payload);
+      return new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json" } });
+    }
+    const upgradeHeader = request.headers.get("Upgrade");
+    if (upgradeHeader !== "websocket") {
+      return new Response("Expected Upgrade: websocket", { status: 426 });
+    }
+    const [client, server] = Object.values(new WebSocketPair());
+    this.ctx.acceptWebSocket(server);
+    return new Response(null, { status: 101, webSocket: client });
+  }
+  // ── WebSocket lifecycle ───────────────────────────────────────────
+  async webSocketMessage(ws, raw) {
+    try {
+      const msg = JSON.parse(raw);
+      if (msg.type === "auth") {
+        await this.handleAuth(ws, msg);
+        return;
+      }
+      const session = this.sessions.get(ws);
+      if (!session) {
+        ws.send(JSON.stringify({ type: "auth:error", message: "WebSocket ch\u01B0a \u0111\u01B0\u1EE3c x\xE1c th\u1EF1c" }));
+        return;
+      }
+      switch (msg.type) {
+        case "message:send":
+          await this.handleSend(session, msg);
+          break;
+        case "message:edit":
+          await this.handleEdit(session, msg);
+          break;
+        case "message:delete":
+          await this.handleDelete(session, msg);
+          break;
+        case "reaction:add":
+          await this.handleReaction(session, msg, "add");
+          break;
+        case "reaction:remove":
+          await this.handleReaction(session, msg, "remove");
+          break;
+        case "typing:start":
+          this.broadcast({ type: "typing:start", user_id: session.userId, user_name: session.userName }, ws);
+          break;
+        case "typing:stop":
+          this.broadcast({ type: "typing:stop", user_id: session.userId }, ws);
+          break;
+        case "conversation:read":
+          await this.handleRead(session, msg);
+          break;
+      }
+    } catch (error) {
+      console.error("ChatRoom WS error", error?.message || error);
+    }
+  }
+  async webSocketClose(ws, code, reason) {
+    const session = this.sessions.get(ws);
+    if (session) {
+      this.broadcast({ type: "user:offline", user_id: session.userId }, ws);
+      this.sessions.delete(ws);
+    }
+  }
+  async webSocketError(ws, error) {
+    console.error("ChatRoom WS error", error?.message || error);
+  }
+  // ── Auth ──────────────────────────────────────────────────────────
+  async handleAuth(ws, msg) {
+    if (!msg.token || !msg.user_id) return;
+    let user = null;
+    try {
+      user = await this.env.DB.prepare(
+        `SELECT u.id, u.full_name, u.employee_code
+         FROM users u JOIN sessions s ON s.user_id = u.id
+         WHERE s.token = ? AND s.revoked = 0 AND s.expires_at > ?`
+      ).bind(msg.token, Math.floor(Date.now() / 1e3)).first();
+    } catch (_) {
+    }
+    if (!user) {
+      ws.send(JSON.stringify({ type: "auth:error", message: "Invalid token" }));
+      ws.close(4001, "Unauthorized");
+      return;
+    }
+    if (!this.conversationId) {
+      ws.send(JSON.stringify({ type: "auth:error", message: "Conversation ID missing" }));
+      ws.close(4e3, "Internal error");
+      return;
+    }
+    const sessionData = {
+      userId: user.id,
+      userName: user.full_name || "Unknown",
+      userCode: user.employee_code || "",
+      conversationId: this.conversationId
+    };
+    ws.serializeAttachment(sessionData);
+    this.sessions.set(ws, sessionData);
+    const isMember = await this.env.DB.prepare(
+      "SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?"
+    ).bind(Number(this.conversationId), user.id).first();
+    if (!isMember) {
+      ws.send(JSON.stringify({ type: "auth:error", message: "Not a member" }));
+      ws.close(4003, "Forbidden");
+      return;
+    }
+    ws.send(JSON.stringify({ type: "auth:ok", user_id: user.id, user_name: user.full_name }));
+    this.broadcast({ type: "user:online", user_id: user.id, user_name: user.full_name }, ws);
+  }
+  // ── Message handlers ──────────────────────────────────────────────
+  async handleSend(session, msg) {
+    if (!msg.content && !msg.attachments?.length) return;
+    const convId = Number(this.conversationId);
+    const content = String(msg.content || "").trim();
+    const replyToId = msg.reply_to_id ? Number(msg.reply_to_id) : null;
+    if (msg.mention_all) {
+      const conversation = await this.env.DB.prepare("SELECT type FROM conversations WHERE id=?").bind(convId).first();
+      if (conversation?.type === "direct" || !/(^|\s)@all\b/i.test(content)) {
+        return;
+      }
+    }
+    const result = await this.env.DB.prepare(
+      `INSERT INTO messages (conversation_id, sender_id, content, reply_to_id, task_id)
+       VALUES (?, ?, ?, ?, ?)`
+    ).bind(convId, session.userId, content || null, replyToId, msg.task_id ? Number(msg.task_id) : null).run();
+    const messageId = result.meta?.last_row_id;
+    if (!messageId) return;
+    await this.saveMentions(convId, messageId, session.userId, msg.mention_ids);
+    await this.saveAllMention(convId, messageId, session.userId, msg.mention_all, content);
+    if (msg.attachments?.length) {
+      for (const att of msg.attachments) {
+        await this.env.DB.prepare(
+          `INSERT INTO message_attachments (message_id, type, file_name, file_size, mime_type, storage_key, width, height)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        ).bind(messageId, att.type || "file", att.file_name, att.file_size || 0, att.mime_type || "", att.storage_key, att.width || null, att.height || null).run();
+      }
+    }
+    const fullMsg = await this.fetchMessage(messageId, session.userId);
+    if (!fullMsg) return;
+    this.broadcast({ type: "message:new", message: fullMsg });
+    await broadcastAppEvent(this.env, "chat", "chat:message_created", {
+      conversation_id: convId,
+      message: fullMsg
+    }, { actorId: session.userId });
+    try {
+      const { results: memberRows = [] } = await this.env.DB.prepare(
+        "SELECT user_id FROM conversation_members WHERE conversation_id = ?"
+      ).bind(convId).all();
+      const onlineUserIds = /* @__PURE__ */ new Set();
+      for (const [, s] of this.sessions) {
+        if (s.userId) onlineUserIds.add(Number(s.userId));
+      }
+      const offlineRecipientIds = memberRows.map((r) => Number(r.user_id)).filter((uid) => uid && uid !== session.userId && !onlineUserIds.has(uid));
+      if (offlineRecipientIds.length) {
+        const convRow = await this.env.DB.prepare("SELECT name, type FROM conversations WHERE id = ?").bind(convId).first();
+        const senderName = fullMsg.sender_name || session.userName || "NetViet Chat";
+        const isGroup = convRow?.type !== "direct";
+        const title = isGroup && convRow?.name ? `${convRow.name} (${senderName})` : senderName;
+        const preview = fullMsg.content || "\u{1F4CE} [T\u1EC7p \u0111\xEDnh k\xE8m]";
+        await sendWebPushNotification(this.env, offlineRecipientIds, {
+          title,
+          body: preview,
+          icon: fullMsg.sender_avatar || "/icon-192.png",
+          badge: "/icon-192.png",
+          url: `/#/chat/${convId}/${messageId}`,
+          tag: `chat-${convId}-${messageId}`
+        });
+      }
+    } catch (pushErr) {
+      console.warn("ChatRoom WS push error:", pushErr?.message || pushErr);
+    }
+  }
+  async handleEdit(session, msg) {
+    if (!msg.message_id || !msg.content) return;
+    const now = (/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19);
+    await this.env.DB.prepare(
+      "UPDATE messages SET content = ?, edited_at = ? WHERE id = ? AND sender_id = ?"
+    ).bind(String(msg.content), now, Number(msg.message_id), session.userId).run();
+    const updated = await this.fetchMessage(Number(msg.message_id), session.userId);
+    if (updated) {
+      this.broadcast({ type: "message:edit", message: updated });
+      await broadcastAppEvent(this.env, "chat", "chat:message_edited", {
+        conversation_id: Number(this.conversationId),
+        message_id: Number(msg.message_id),
+        message: updated
+      }, { actorId: session.userId });
+    }
+  }
+  async handleDelete(session, msg) {
+    if (!msg.message_id) return;
+    const now = (/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19);
+    await this.env.DB.prepare(
+      "UPDATE messages SET deleted_at = ? WHERE id = ? AND sender_id = ?"
+    ).bind(now, Number(msg.message_id), session.userId).run();
+    this.broadcast({ type: "message:delete", message_id: Number(msg.message_id), deleted_at: now });
+    await broadcastAppEvent(this.env, "chat", "chat:message_deleted", {
+      conversation_id: Number(this.conversationId),
+      message_id: Number(msg.message_id),
+      deleted_at: now
+    }, { actorId: session.userId });
+  }
+  async handleReaction(session, msg, action) {
+    if (!msg.message_id || !msg.emoji) return;
+    const messageId = Number(msg.message_id);
+    const emoji = String(msg.emoji);
+    if (action === "add") {
+      await this.env.DB.prepare(
+        "INSERT OR IGNORE INTO message_reactions (message_id, user_id, emoji) VALUES (?, ?, ?)"
+      ).bind(messageId, session.userId, emoji).run();
+    } else {
+      await this.env.DB.prepare(
+        "DELETE FROM message_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?"
+      ).bind(messageId, session.userId, emoji).run();
+    }
+    const reactions = await this.fetchReactions(messageId);
+    this.broadcast({ type: "reaction:update", message_id: messageId, reactions });
+    await broadcastAppEvent(this.env, "chat", "chat:reaction_updated", {
+      conversation_id: Number(this.conversationId),
+      message_id: messageId,
+      reactions
+    }, { actorId: session.userId });
+  }
+  async handleRead(session, msg) {
+    if (!msg.message_id) return;
+    const messageId = Number(msg.message_id);
+    await this.env.DB.prepare(
+      "INSERT OR IGNORE INTO message_reads (message_id, user_id) VALUES (?, ?)"
+    ).bind(messageId, session.userId).run();
+    await this.env.DB.prepare(
+      "UPDATE conversation_members SET last_read_message_id = MAX(last_read_message_id, ?) WHERE conversation_id = ? AND user_id = ?"
+    ).bind(messageId, Number(this.conversationId), session.userId).run();
+    this.broadcast({ type: "conversation:read", user_id: session.userId, message_id: messageId });
+  }
+  // ── Helpers ───────────────────────────────────────────────────────
+  async fetchMessage(messageId, userId) {
+    const row = await this.env.DB.prepare(
+      `SELECT m.*, u.full_name AS sender_name, u.employee_code AS sender_code, u.avatar_url AS sender_avatar,
+       EXISTS(SELECT 1 FROM pinned_messages pm WHERE pm.message_id = m.id) AS is_pinned
+       FROM messages m JOIN users u ON u.id = m.sender_id
+       WHERE m.id = ?`
+    ).bind(messageId).first();
+    if (!row) return null;
+    const attachments = await this.env.DB.prepare(
+      "SELECT * FROM message_attachments WHERE message_id = ?"
+    ).bind(messageId).all().then((r) => r.results || []);
+    const reactions = await this.fetchReactions(messageId);
+    const mentions = await this.env.DB.prepare(
+      `SELECT mm.mentioned_user_id AS user_id, u.full_name
+       FROM message_mentions mm JOIN users u ON u.id = mm.mentioned_user_id
+       WHERE mm.message_id = ?`
+    ).bind(messageId).all().then((r) => r.results || []);
+    const mentionAll = await this.env.DB.prepare("SELECT 1 FROM message_all_mentions WHERE message_id=?").bind(messageId).first();
+    return {
+      ...row,
+      attachments,
+      reactions,
+      mentions,
+      mention_all: !!mentionAll,
+      deleted_at: row.deleted_at || null,
+      edited_at: row.edited_at || null
+    };
+  }
+  async fetchReactions(messageId) {
+    const { results = [] } = await this.env.DB.prepare(
+      `SELECT mr.emoji, mr.user_id, u.full_name AS user_name
+       FROM message_reactions mr JOIN users u ON u.id = mr.user_id
+       WHERE mr.message_id = ?`
+    ).bind(messageId).all();
+    return results;
+  }
+  async saveMentions(conversationId, messageId, mentionedBy, mentionIds) {
+    const requestedIds = [...new Set((Array.isArray(mentionIds) ? mentionIds : []).map(Number).filter((id) => Number.isInteger(id) && id > 0 && id !== mentionedBy))].slice(0, 25);
+    if (!requestedIds.length) return;
+    const placeholders = requestedIds.map(() => "?").join(",");
+    const { results = [] } = await this.env.DB.prepare(
+      `SELECT user_id FROM conversation_members WHERE conversation_id = ? AND user_id IN (${placeholders})`
+    ).bind(conversationId, ...requestedIds).all();
+    for (const row of results) {
+      await this.env.DB.prepare(
+        "INSERT OR IGNORE INTO message_mentions (message_id, mentioned_user_id, mentioned_by) VALUES (?, ?, ?)"
+      ).bind(messageId, row.user_id, mentionedBy).run();
+    }
+  }
+  async saveAllMention(conversationId, messageId, mentionedBy, requested, content) {
+    if (!requested) return;
+    const conversation = await this.env.DB.prepare("SELECT type FROM conversations WHERE id=?").bind(conversationId).first();
+    if (conversation?.type === "direct" || !/(^|\s)@all\b/i.test(String(content || ""))) return;
+    await this.env.DB.prepare("INSERT OR IGNORE INTO message_all_mentions (message_id,mentioned_by) VALUES (?,?)").bind(messageId, mentionedBy).run();
+  }
+  // ── Broadcast ─────────────────────────────────────────────────────
+  broadcast(data, excludeWs = null) {
+    const payload = JSON.stringify(data);
+    for (const [ws, session] of this.sessions) {
+      if (ws === excludeWs) continue;
+      try {
+        ws.send(payload);
+      } catch (_) {
+      }
+    }
+    const knownSockets = new Set(this.sessions.keys());
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws === excludeWs || knownSockets.has(ws)) continue;
+      try {
+        ws.send(JSON.stringify({ type: "auth:error", message: "Please re-authenticate" }));
+      } catch (_) {
+      }
+    }
+  }
+};
+
+// src/sync-hub.js
+var AppSyncHub = class {
+  static {
+    __name(this, "AppSyncHub");
+  }
+  constructor(ctx, env) {
+    this.ctx = ctx;
+    this.env = env;
+    this.sessions = /* @__PURE__ */ new Map();
+    this.sseClients = /* @__PURE__ */ new Map();
+    this.nextSseClientId = 1;
+    this.seq = 0;
+    this.replayBuffer = [];
+    this.maxBufferSize = 100;
+    if (this.ctx?.blockConcurrencyWhile) {
+      this.initPromise = this.ctx.blockConcurrencyWhile(async () => {
+        await this.initStorage();
+        this.restoreSessions();
+      });
+    } else {
+      this.initPromise = (async () => {
+        await this.initStorage();
+        this.restoreSessions();
+      })();
+    }
+  }
+  // ── Storage Initialization ──────────────────────────────────────────
+  async initStorage() {
+    try {
+      if (this.ctx?.storage) {
+        let stored = await this.ctx.storage.get(["seq", "replayBuffer", "buffer"]);
+        if (!stored || typeof stored.get !== "function" && !stored.seq && !stored.replayBuffer) {
+          const seqVal = await this.ctx.storage.get("seq");
+          const bufferVal = await this.ctx.storage.get("replayBuffer") || await this.ctx.storage.get("buffer");
+          if (seqVal !== void 0) this.seq = Number(seqVal) || 0;
+          if (bufferVal) this.replayBuffer = Array.isArray(bufferVal) ? bufferVal : [];
+          return;
+        }
+        if (stored) {
+          if (typeof stored.get === "function") {
+            this.seq = Number(stored.get("seq")) || 0;
+            this.replayBuffer = stored.get("replayBuffer") || stored.get("buffer") || [];
+          } else {
+            this.seq = Number(stored.seq) || 0;
+            this.replayBuffer = stored.replayBuffer || stored.buffer || [];
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("AppSyncHub initStorage error:", err?.message || err);
+    }
+  }
+  // ── Restore sessions after hibernation ──────────────────────────────
+  restoreSessions() {
+    if (!this.ctx?.getWebSockets) return;
+    for (const ws of this.ctx.getWebSockets()) {
+      try {
+        const session = ws.deserializeAttachment ? ws.deserializeAttachment() : null;
+        if (session && session.userId) {
+          this.sessions.set(ws, session);
+        }
+      } catch (_) {
+      }
+    }
+  }
+  // ── HTTP Fetch Handler ──────────────────────────────────────────────
+  async fetch(request) {
+    const url = new URL(request.url);
+    if (request.method === "POST" && (url.pathname === "/broadcast" || url.pathname === "/api/realtime/broadcast")) {
+      try {
+        const payload = await request.json().catch(() => ({}));
+        const res = await this.broadcast(payload);
+        return new Response(JSON.stringify(res), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err?.message || String(err) }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+    }
+    if (url.pathname === "/stats" || url.pathname === "/api/realtime/stats") {
+      const activeTopics = /* @__PURE__ */ new Set();
+      for (const s of this.sessions.values()) {
+        if (Array.isArray(s.topics)) s.topics.forEach((t) => activeTopics.add(t));
+      }
+      return new Response(JSON.stringify({
+        ok: true,
+        seq: this.seq,
+        buffer_size: this.replayBuffer.length,
+        bufferSize: this.replayBuffer.length,
+        active_connections: this.sessions.size,
+        activeWs: this.sessions.size,
+        active_sse: this.sseClients.size,
+        activeSse: this.sseClients.size,
+        totalConnections: this.sessions.size + this.sseClients.size,
+        topics_active: Array.from(activeTopics)
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+    if (url.pathname === "/events" || url.pathname === "/api/realtime/events") {
+      return await this.handleSse(request);
+    }
+    const upgradeHeader = request.headers.get("Upgrade");
+    if (upgradeHeader === "websocket") {
+      if (typeof WebSocketPair === "undefined") {
+        return new Response(JSON.stringify({ error: "WebSocketPair not supported in this environment" }), {
+          status: 501,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      const [client, server] = Object.values(new WebSocketPair());
+      if (this.ctx?.acceptWebSocket) {
+        this.ctx.acceptWebSocket(server);
+      }
+      return new Response(null, { status: 101, webSocket: client });
+    }
+    return new Response(JSON.stringify({ error: "Endpoint not found or upgrade required" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+  // ── WebSocket Lifecycle (Cloudflare Hibernation API) ────────────────
+  async webSocketMessage(ws, raw) {
+    try {
+      const msg = typeof raw === "string" ? JSON.parse(raw) : JSON.parse(new TextDecoder().decode(raw));
+      if (msg.type === "auth") {
+        await this.handleAuth(ws, msg);
+        return;
+      }
+      if (msg.type === "ping") {
+        ws.send(JSON.stringify({ type: "pong", t: msg.t, serverTime: Date.now() }));
+        const session2 = this.sessions.get(ws);
+        if (session2) {
+          session2.lastPingAt = Date.now();
+          if (ws.serializeAttachment) {
+            ws.serializeAttachment(session2);
+          }
+        }
+        return;
+      }
+      const session = this.sessions.get(ws);
+      if (!session) {
+        ws.send(JSON.stringify({ type: "auth:error", message: "WebSocket ch\u01B0a \u0111\u01B0\u1EE3c x\xE1c th\u1EF1c", code: "UNAUTHORIZED" }));
+        return;
+      }
+      switch (msg.type) {
+        case "subscribe":
+          this.handleSubscribe(ws, session, msg);
+          break;
+        case "unsubscribe":
+          this.handleUnsubscribe(ws, session, msg);
+          break;
+        case "replay":
+          this.handleReplay(ws, session, msg.lastEventSeq !== void 0 ? msg.lastEventSeq : msg.fromSeq || 0);
+          break;
+        default:
+          break;
+      }
+    } catch (error) {
+      console.error("AppSyncHub WS message error:", error?.message || error);
+    }
+  }
+  async webSocketClose(ws, code, reason) {
+    this.sessions.delete(ws);
+  }
+  async webSocketError(ws, error) {
+    this.sessions.delete(ws);
+    console.error("AppSyncHub WS error:", error?.message || error);
+  }
+  // ── WebSocket Handlers ──────────────────────────────────────────────
+  async handleAuth(ws, msg) {
+    if (!msg.token) {
+      ws.send(JSON.stringify({ type: "auth:error", message: "Token missing", code: "UNAUTHORIZED" }));
+      try {
+        ws.close(4001, "Unauthorized");
+      } catch (_) {
+      }
+      return;
+    }
+    let user = null;
+    try {
+      if (this.env?.DB) {
+        user = await this.env.DB.prepare(
+          `SELECT u.id, u.full_name, u.role, u.department, u.employee_code, u.is_active
+           FROM users u JOIN sessions s ON s.user_id = u.id
+           WHERE s.token = ? AND s.revoked = 0 AND CAST(s.expires_at AS INTEGER) > CAST(strftime('%s','now') AS INTEGER)`
+        ).bind(msg.token).first();
+      }
+    } catch (err) {
+      console.warn("AppSyncHub auth db error:", err?.message || err);
+    }
+    if (!user || user.is_active === 0 || user.is_active === false) {
+      ws.send(JSON.stringify({ type: "auth:error", message: "Invalid or expired token", code: "UNAUTHORIZED" }));
+      try {
+        ws.close(4001, "Unauthorized");
+      } catch (_) {
+      }
+      return;
+    }
+    const session = {
+      userId: Number(user.id),
+      userName: user.full_name || "User",
+      userRole: user.role || "employee",
+      department: user.department || "",
+      employeeCode: user.employee_code || "",
+      topics: Array.isArray(msg.topics) && msg.topics.length > 0 ? msg.topics : ["*"],
+      connectedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      lastPingAt: Date.now()
+    };
+    if (ws.serializeAttachment) {
+      ws.serializeAttachment(session);
+    }
+    this.sessions.set(ws, session);
+    ws.send(JSON.stringify({
+      type: "auth:ok",
+      userId: session.userId,
+      userName: session.userName,
+      currentSeq: this.seq
+    }));
+    if (msg.lastEventSeq !== void 0 && msg.lastEventSeq !== null) {
+      this.handleReplay(ws, session, Number(msg.lastEventSeq));
+    }
+  }
+  handleSubscribe(ws, session, msg) {
+    if (!Array.isArray(msg.topics)) return;
+    const current = new Set(session.topics || []);
+    for (const t of msg.topics) {
+      if (typeof t === "string" && t.trim()) current.add(t.trim());
+    }
+    session.topics = Array.from(current);
+    if (ws.serializeAttachment) {
+      ws.serializeAttachment(session);
+    }
+    this.sessions.set(ws, session);
+    ws.send(JSON.stringify({ type: "subscribe:ok", topics: session.topics }));
+  }
+  handleUnsubscribe(ws, session, msg) {
+    if (!Array.isArray(msg.topics)) return;
+    const current = new Set(session.topics || []);
+    for (const t of msg.topics) {
+      if (typeof t === "string") current.delete(t.trim());
+    }
+    session.topics = Array.from(current);
+    if (ws.serializeAttachment) {
+      ws.serializeAttachment(session);
+    }
+    this.sessions.set(ws, session);
+    ws.send(JSON.stringify({ type: "unsubscribe:ok", topics: session.topics }));
+  }
+  handleReplay(ws, session, lastEventSeq) {
+    const clientSeq = Number(lastEventSeq || 0);
+    if (clientSeq >= this.seq || this.replayBuffer.length === 0) {
+      ws.send(JSON.stringify({ type: "replay:complete", replayedCount: 0, currentSeq: this.seq }));
+      return;
+    }
+    const oldestSeq = this.replayBuffer[0].seq;
+    if (clientSeq < oldestSeq - 1) {
+      ws.send(JSON.stringify({
+        type: "replay:overflow",
+        message: "Replay buffer overflow \u2014 missed events exceed buffer limit.",
+        oldestAvailableSeq: oldestSeq,
+        currentSeq: this.seq
+      }));
+      return;
+    }
+    const missed = this.replayBuffer.filter((e) => e.seq > clientSeq && this.isEventVisibleToSession(e, session));
+    ws.send(JSON.stringify({
+      type: "replay:batch",
+      events: missed,
+      replayedCount: missed.length,
+      currentSeq: this.seq
+    }));
+  }
+  // ── Universal Broadcast Method (RPC & Internal HTTP) ────────────────
+  async broadcast(eventInput) {
+    this.seq++;
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const rawTarget = eventInput.targetUserIds || eventInput.target_user_ids;
+    const rawActor = eventInput.actorId !== void 0 && eventInput.actorId !== null ? eventInput.actorId : eventInput.actor_id;
+    const event = {
+      id: eventInput.id || `evt_${Date.now()}_${this.seq}_${Math.random().toString(36).slice(2, 8)}`,
+      seq: this.seq,
+      topic: String(eventInput.topic || "system"),
+      event: String(eventInput.event || eventInput.topic || "update"),
+      payload: eventInput.payload !== void 0 ? eventInput.payload : {},
+      actor_id: rawActor !== void 0 && rawActor !== null ? Number(rawActor) : null,
+      actorId: rawActor !== void 0 && rawActor !== null ? Number(rawActor) : null,
+      targetUserIds: Array.isArray(rawTarget) && rawTarget.length > 0 ? rawTarget.map(Number).filter((id) => Number.isInteger(id) && id > 0) : void 0,
+      timestamp: eventInput.timestamp || now
+    };
+    this.replayBuffer.push(event);
+    if (this.replayBuffer.length > this.maxBufferSize) {
+      this.replayBuffer.splice(0, this.replayBuffer.length - this.maxBufferSize);
+    }
+    if (this.ctx?.storage) {
+      this.ctx.storage.put({ seq: this.seq, replayBuffer: this.replayBuffer }).catch(() => {
+      });
+    }
+    const payloadString = JSON.stringify(event);
+    if (this.ctx?.getWebSockets) {
+      for (const ws of this.ctx.getWebSockets()) {
+        if (!this.sessions.has(ws)) {
+          const session = ws.deserializeAttachment ? ws.deserializeAttachment() : null;
+          if (session) this.sessions.set(ws, session);
+        }
+      }
+    }
+    for (const [ws, session] of this.sessions) {
+      if (this.isEventVisibleToSession(event, session)) {
+        try {
+          ws.send(payloadString);
+        } catch (_) {
+          this.sessions.delete(ws);
+        }
+      }
+    }
+    const sseChunk = new TextEncoder().encode(`id: ${event.seq}
+event: message
+data: ${payloadString}
+
+`);
+    for (const [clientId, sseClient] of this.sseClients) {
+      if (this.isEventVisibleToSession(event, sseClient.session)) {
+        try {
+          sseClient.writer.write(sseChunk).catch(() => {
+            this.cleanupSseClient(clientId);
+          });
+        } catch (_) {
+          this.cleanupSseClient(clientId);
+        }
+      }
+    }
+    return { ok: true, id: event.id, seq: event.seq };
+  }
+  // ── Event Visibility Check ──────────────────────────────────────────
+  isEventVisibleToSession(event, session) {
+    if (!session) return false;
+    if (Array.isArray(event.targetUserIds) && event.targetUserIds.length > 0) {
+      const uid = Number(session.userId);
+      if (!event.targetUserIds.includes(uid)) {
+        return false;
+      }
+    }
+    const topics = Array.isArray(session.topics) ? session.topics : ["*"];
+    if (!topics.includes("*") && !topics.includes("all") && !topics.includes(event.topic)) {
+      return false;
+    }
+    return true;
+  }
+  // ── SSE Fallback Handler ────────────────────────────────────────────
+  async handleSse(request, mockUser = null) {
+    const url = new URL(request.url);
+    const token = url.searchParams.get("token") || (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "").trim();
+    const lastEventSeq = parseInt(url.searchParams.get("lastEventSeq") || request.headers.get("Last-Event-ID") || "0", 10);
+    const rawTopics = url.searchParams.get("topics");
+    const topics = rawTopics ? rawTopics.split(",").map((s) => s.trim()).filter(Boolean) : ["*"];
+    let user = mockUser;
+    if (!user) {
+      if (!token) {
+        return new Response(JSON.stringify({ error: "Token missing", code: "UNAUTHORIZED" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      try {
+        if (this.env?.DB) {
+          user = await this.env.DB.prepare(
+            `SELECT u.id, u.full_name, u.role, u.department, u.employee_code, u.is_active
+             FROM users u JOIN sessions s ON s.user_id = u.id
+             WHERE s.token = ? AND s.revoked = 0 AND CAST(s.expires_at AS INTEGER) > CAST(strftime('%s','now') AS INTEGER)`
+          ).bind(token).first();
+        }
+      } catch (_) {
+      }
+      if (!user || user.is_active === 0 || user.is_active === false) {
+        return new Response(JSON.stringify({ error: "Invalid or expired token", code: "UNAUTHORIZED" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+    }
+    const session = {
+      userId: Number(user.id),
+      userName: user.full_name || "User",
+      userRole: user.role || "employee",
+      department: user.department || "",
+      employeeCode: user.employee_code || "",
+      topics: topics.length > 0 ? topics : ["*"]
+    };
+    const { readable, writable } = new TransformStream();
+    const writer = writable.getWriter();
+    const encoder = new TextEncoder();
+    const clientId = this.nextSseClientId++;
+    const keepAliveTimer = setInterval(() => {
+      try {
+        writer.write(encoder.encode(": keepalive\n\n")).catch(() => this.cleanupSseClient(clientId));
+      } catch (_) {
+        this.cleanupSseClient(clientId);
+      }
+    }, 25e3);
+    this.sseClients.set(clientId, { clientId, writer, session, keepAliveTimer });
+    writer.write(encoder.encode(`data: ${JSON.stringify({ type: "connected", seq: this.seq, userId: user.id, timestamp: (/* @__PURE__ */ new Date()).toISOString() })}
+
+`)).catch(() => {
+    });
+    if (lastEventSeq > 0 && lastEventSeq < this.seq) {
+      const oldestSeq = this.replayBuffer[0]?.seq || 0;
+      if (lastEventSeq < oldestSeq - 1) {
+        writer.write(encoder.encode(`data: ${JSON.stringify({ type: "replay:overflow", oldestAvailableSeq: oldestSeq, currentSeq: this.seq })}
+
+`)).catch(() => {
+        });
+      } else {
+        const missed = this.replayBuffer.filter((e) => e.seq > lastEventSeq && this.isEventVisibleToSession(e, session));
+        for (const evt of missed) {
+          writer.write(encoder.encode(`id: ${evt.seq}
+event: message
+data: ${JSON.stringify(evt)}
+
+`)).catch(() => {
+          });
+        }
+        writer.write(encoder.encode(`data: ${JSON.stringify({ type: "replay:complete", replayedCount: missed.length, currentSeq: this.seq })}
+
+`)).catch(() => {
+        });
+      }
+    }
+    if (request.signal) {
+      request.signal.addEventListener("abort", () => this.cleanupSseClient(clientId));
+    }
+    return new Response(readable, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+        "Access-Control-Allow-Origin": "*"
+      }
+    });
+  }
+  async handleSSE(request, mockUser = null) {
+    return this.handleSse(request, mockUser);
+  }
+  cleanupSseClient(clientId) {
+    const client = this.sseClients.get(clientId);
+    if (client) {
+      if (client.keepAliveTimer) clearInterval(client.keepAliveTimer);
+      try {
+        client.writer.close();
+      } catch (_) {
+      }
+      this.sseClients.delete(clientId);
+    }
+  }
+};
+
+// worker.js
+function secureAssetResponse(response, pathname) {
+  const headers = new Headers(response.headers);
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("X-Frame-Options", "DENY");
+  headers.set("Referrer-Policy", "no-referrer");
+  headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=(self)");
+  if (pathname === "/" || pathname.endsWith(".html")) {
+    headers.set("Cache-Control", "no-store, max-age=0");
+    headers.set("Content-Security-Policy", "default-src 'self'; img-src 'self' https://pub-84c3902526ad4c82b488275b43b39e3a.r2.dev https://api.vietqr.io data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
+  }
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+__name(secureAssetResponse, "secureAssetResponse");
+var worker_default = {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    if (url.pathname.startsWith("/api/")) {
+      try {
+        return await handle(request, env);
+      } catch (error) {
+        const errorId = crypto.randomUUID();
+        console.error("Unhandled API error", { errorId, path: url.pathname, message: String(error?.message || error), stack: error?.stack });
+        return new Response(JSON.stringify({ error: `Kh\xF4ng th\u1EC3 x\u1EED l\xFD y\xEAu c\u1EA7u. M\xE3 tham chi\u1EBFu: ${errorId}`, code: "UNEXPECTED_API_ERROR", error_id: errorId }), {
+          status: 500,
+          headers: {
+            "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": "no-store, max-age=0",
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "DENY",
+            "Referrer-Policy": "no-referrer"
+          }
+        });
+      }
+    }
+    const assetResponse = await env.ASSETS.fetch(request);
+    if (assetResponse.status !== 404) return secureAssetResponse(assetResponse, url.pathname);
+    if (url.pathname.includes(".")) return secureAssetResponse(assetResponse, url.pathname);
+    const indexUrl = new URL("/index.html", url);
+    return secureAssetResponse(await env.ASSETS.fetch(new Request(indexUrl, request)), "/index.html");
+  },
+  async scheduled(event, env) {
+    return handleScheduled(event, env);
+  }
+};
+export {
+  AppSyncHub,
+  ChatRoom,
+  worker_default as default
+};
+//# sourceMappingURL=worker.js.map

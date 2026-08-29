@@ -1,6 +1,4 @@
-// ════════════════════════════════════════════════
-//  Utility helpers
-// ════════════════════════════════════════════════
+import { icon } from './icons.js';
 
 // Standard company department list (8 fixed values). Used by any
 // department dropdown/filter (users, departments, recruitment).
@@ -37,6 +35,37 @@ export function isHcnsDepartment(department) {
   const key = String(department || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .replace(/đ/gi, 'd').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   return ['phong hcns', 'hcns', 'nhan su', 'phong nhan su', 'hanh chinh nhan su', 'hr'].includes(key);
+}
+
+export function yieldToMain() {
+  if (typeof window !== 'undefined' && window.scheduler && typeof window.scheduler.yield === 'function') {
+    return window.scheduler.yield();
+  }
+  return new Promise(resolve => {
+    if (typeof requestAnimationFrame !== 'undefined') {
+      requestAnimationFrame(() => setTimeout(resolve, 0));
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
+export function getVietnameseSortKey(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '';
+  return parts.slice().reverse().join(' ');
+}
+
+export function compareVietnameseNames(a, b) {
+  const keyA = getVietnameseSortKey(typeof a === 'string' ? a : (a?.full_name || a?.name || ''));
+  const keyB = getVietnameseSortKey(typeof b === 'string' ? b : (b?.full_name || b?.name || ''));
+  return keyA.localeCompare(keyB, 'vi', { sensitivity: 'accent', numeric: true });
+}
+
+export function sortVietnameseNames(list, key = 'full_name') {
+  if (!Array.isArray(list)) return [];
+  const getValue = typeof key === 'function' ? key : (item => (item && typeof item === 'object' ? item[key] : item));
+  return [...list].sort((a, b) => compareVietnameseNames(getValue(a), getValue(b)));
 }
 
 export function esc(s) {
@@ -91,27 +120,30 @@ export function setAvatar(el, name, color, ini, imageUrl = '') {
 
 export function statusBadge(status) {
   const map = {
-    present: ['badge-success', '✅ Đúng giờ'],
-    registered: ['badge-info', '📝 Chờ check-in'],
-    late: ['badge-warning', '⏰ Đi muộn'],
-    absent: ['badge-danger', '❌ Vắng'],
-    leave: ['badge-info', '🏖 Nghỉ phép'],
-    'half-day': ['badge-gray', '🌓 Nửa ngày'],
+    present: ['badge-success', `${icon('circleCheck', 'xs')} Đúng giờ`],
+    ontime: ['badge-success', `${icon('circleCheck', 'xs')} Đúng giờ`],
+    on_time: ['badge-success', `${icon('circleCheck', 'xs')} Đúng giờ`],
+    registered: ['badge-info', `${icon('clock3', 'xs')} Chờ check-in`],
+    late: ['badge-warning', `${icon('clock3', 'xs')} Đi muộn`],
+    early: ['badge-warning', `${icon('clock3', 'xs')} Về sớm`],
+    absent: ['badge-danger', `${icon('circleX', 'xs')} Vắng`],
+    leave: ['badge-info', `${icon('calendarDays', 'xs')} Nghỉ phép`],
+    'half-day': ['badge-gray', `${icon('clock3', 'xs')} Nửa ngày`],
   };
   const [cls, label] = map[status] || ['badge-gray', status || '—'];
-  return `<span class="badge ${cls}">${esc(label)}</span>`;
+  return `<span class="badge ${cls}">${label}</span>`;
 }
 
 export function taskStatusBadge(s) {
   const map = {
-    todo: ['badge-gray', '📌 Chờ làm'],
-    'in-progress': ['badge-info', '🔄 Đang làm'],
-    done: ['badge-success', '✅ Hoàn thành'],
-    cancelled: ['badge-danger', '❌ Hủy'],
-    review: ['badge-warning', '🔍 Review'],
+    todo: ['badge-gray', `${icon('pin', 'xs')} Chờ làm`],
+    'in-progress': ['badge-info', `${icon('refreshCw', 'xs')} Đang làm`],
+    done: ['badge-success', `${icon('circleCheck', 'xs')} Hoàn thành`],
+    cancelled: ['badge-danger', `${icon('circleX', 'xs')} Hủy`],
+    review: ['badge-warning', `${icon('search', 'xs')} Review`],
   };
   const [cls, label] = map[s] || ['badge-gray', s || '—'];
-  return `<span class="badge ${cls}">${esc(label)}</span>`;
+  return `<span class="badge ${cls}">${label}</span>`;
 }
 
 export function taskStatusLabel(s) {
@@ -121,46 +153,46 @@ export function taskStatusLabel(s) {
 
 export function priorityBadge(p) {
   const map = {
-    low: ['badge-gray', '⬇ Thấp'],
-    normal: ['badge-info', '➡ Bình thường'],
-    high: ['badge-warning', '⬆ Cao'],
-    urgent: ['badge-danger', '🔥 Khẩn cấp'],
+    low: ['badge-gray', `${icon('arrowDown', 'xs')} Thấp`],
+    normal: ['badge-info', `${icon('arrowRight', 'xs')} Bình thường`],
+    high: ['badge-warning', `${icon('arrowUp', 'xs')} Cao`],
+    urgent: ['badge-danger', `${icon('triangleAlert', 'xs')} Khẩn cấp`],
   };
   const [cls, label] = map[p] || ['badge-gray', p || '—'];
-  return `<span class="badge ${cls}">${esc(label)}</span>`;
+  return `<span class="badge ${cls}">${label}</span>`;
 }
 
 export function invStatusBadge(s) {
   const map = {
     draft: ['badge-gray', 'Nháp'],
-    pending: ['badge-warning', '⏳ Chờ duyệt'],
-    approved: ['badge-success', '✅ Đã duyệt'],
-    issued: ['badge-info', 'Đã phát hành'],
-    employee_confirmed: ['badge-success', 'Đã xác nhận'],
-    review_requested: ['badge-warning', 'Yêu cầu xem lại'],
-    paid: ['badge-info', '💳 Đã trả'],
+    pending: ['badge-warning', `${icon('clock3', 'xs')} Chờ duyệt`],
+    approved: ['badge-success', `${icon('circleCheck', 'xs')} Đã duyệt`],
+    issued: ['badge-info', `${icon('fileText', 'xs')} Đã phát hành`],
+    employee_confirmed: ['badge-success', `${icon('circleCheck', 'xs')} Đã xác nhận`],
+    review_requested: ['badge-warning', `${icon('triangleAlert', 'xs')} Yêu cầu xem lại`],
+    paid: ['badge-info', `${icon('creditCard', 'xs')} Đã trả`],
   };
   const [cls, label] = map[s] || ['badge-gray', s || '—'];
-  return `<span class="badge ${cls}">${esc(label)}</span>`;
+  return `<span class="badge ${cls}">${label}</span>`;
 }
 
 export function roleLabel(r) {
   const map = {
-    admin:    '👑 Quản trị viên',
-    manager:  '⭐ Nhân sự',
-    employee: '👤 Nhân viên',
+    admin:    'Quản trị viên',
+    manager:  'Nhân sự',
+    employee: 'Nhân viên',
   };
   return map[r] || r || '—';
 }
 
 export function roleBadge(r) {
   const map = {
-    admin: ['badge-danger', '👑 Admin'],
-    manager: ['badge-warning', '⭐ Nhân sự'],
-    employee: ['badge-gray', '👤 Nhân viên'],
+    admin: ['badge-danger', `${icon('shieldAlert', 'xs')} Admin`],
+    manager: ['badge-warning', `${icon('star', 'xs')} Nhân sự`],
+    employee: ['badge-gray', `${icon('user', 'xs')} Nhân viên`],
   };
   const [cls, label] = map[r] || ['badge-gray', r || '—'];
-  return `<span class="badge ${cls}">${esc(label)}</span>`;
+  return `<span class="badge ${cls}">${label}</span>`;
 }
 
 // ── Vòng đời nhân sự (lifecycle status) ─────────────────────────
@@ -168,14 +200,14 @@ export const LIFECYCLE_STATUSES = ['Chờ tiếp nhận', 'Thực tập', 'Thử
 
 export function lifecycleBadge(status) {
   const map = {
-    'Chờ tiếp nhận': ['badge-gray', '🕓 Chờ tiếp nhận'],
-    'Thực tập':      ['badge-info', '🎓 Thực tập'],
-    'Thử việc':      ['badge-warning', '🧪 Thử việc'],
-    'Chính thức':    ['badge-success', '✅ Chính thức'],
-    'Đã nghỉ':       ['badge-danger', '🚪 Đã nghỉ'],
+    'Chờ tiếp nhận': ['badge-gray', `${icon('clock3', 'xs')} Chờ tiếp nhận`],
+    'Thực tập':      ['badge-info', `${icon('badgeCheck', 'xs')} Thực tập`],
+    'Thử việc':      ['badge-warning', `${icon('clipboardCheck', 'xs')} Thử việc`],
+    'Chính thức':    ['badge-success', `${icon('circleCheck', 'xs')} Chính thức`],
+    'Đã nghỉ':       ['badge-danger', `${icon('logOut', 'xs')} Đã nghỉ`],
   };
   const [cls, label] = map[status] || ['badge-gray', status || '—'];
-  return `<span class="badge ${cls}">${esc(label)}</span>`;
+  return `<span class="badge ${cls}">${label}</span>`;
 }
 
 // ── Bàn giao tài sản (asset handover) ───────────────────────────
@@ -326,7 +358,10 @@ export function openModal(title, bodyHtml, footerHtml = '') {
   document.getElementById('modal-footer').innerHTML = footerHtml;
   document.getElementById('modal')?.classList.remove('modal--scroll-fixed', 'modal--project', 'modal--project-timeline', 'modal--attendance-summary', 'modal--user-detail', 'modal--user-profile', 'modal--user-form', 'modal--payslip', 'modal--avatar-crop', 'modal--payroll-edit');
   ov?.classList.remove('modal-overlay--desktop-centered');
-  ov.classList.remove('hidden');
+  ov?.classList.remove('hidden');
+  if (typeof window !== 'undefined' && typeof window.normalizeIcons === 'function') {
+    window.normalizeIcons(document.getElementById('modal'));
+  }
 }
 
 export function closeModal() {

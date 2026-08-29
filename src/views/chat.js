@@ -5,6 +5,8 @@
 
 import { api } from '../api.js';
 import { navigate } from '../app.js';
+import { EventBus } from '../event-bus.js';
+import { realtime } from '../realtime.js';
 import { esc, toast, openModal, closeModal, loadingHTML } from '../utils.js';
 import { icon } from '../icons.js';
 import { playChatSound, playMentionSound } from '../sound.js';
@@ -28,6 +30,7 @@ let selectedMentionAll = false;
 let pendingFiles = [];
 let pendingFileCounter = 0;
 let conversationRefreshTimer = null;
+let silentLoadTimer = null;
 const DEFAULT_REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '😡'];
 const FALLBACK_PICKER_EMOJIS = ['😀','😁','😂','🤣','😊','😍','😘','😎','🤔','😭','😡','👍','👎','❤️','🎉','✅','🔥','👏','🙏','👀'];
 
@@ -54,15 +57,84 @@ export async function renderChat(el, user, route = {}) {
   loadConversations();
   const [, conversationId, messageId] = route.segments || [];
   if (Number(conversationId)) openConversation(Number(conversationId), Number(messageId) || null);
-  conversationRefreshTimer = setInterval(loadConversationsSilently, 10_000);
+  conversationRefreshTimer = setInterval(() => {
+    if (!wsAuthenticated && (!realtime || !realtime.isConnected())) {
+      loadConversationsSilently();
+    }
+  }, 20_000);
   el._cleanup = () => {
     document.body.classList.remove('in-chat-conv', 'in-chat-page');
     disconnectWS();
+    document.removeEventListener('keydown', handleLightboxKeydown);
     if (conversationRefreshTimer) clearInterval(conversationRefreshTimer);
     conversationRefreshTimer = null;
     if (silentLoadTimer) clearTimeout(silentLoadTimer);
     silentLoadTimer = null;
   };
+
+  function handleChatEvent(data, topic = '') {
+    if (!data) return;
+    const eventType = topic || data.event || data.type || '';
+    const convId = Number(data.conversation_id || data.conversationId || data.convId || data.message?.conversation_id);
+
+    if (eventType === 'chat:message_new' || eventType === 'chat:message' || data.type === 'message:new') {
+      const msg = data.message || data;
+      if (msg && msg.conversation_id && Number(msg.conversation_id) === activeConvId) {
+        if (!messages.find(m => m.id === msg.id)) {
+          messages.push(msg);
+          renderMessages();
+          scrollToBottom();
+          markRead(msg.id);
+        }
+      }
+      loadConversationsSilently();
+      return;
+    }
+
+    if (eventType === 'chat:message_edit' || eventType === 'chat:message_edited' || data.type === 'message:edit') {
+      if (convId === activeConvId) refreshMessages();
+      loadConversationsSilently();
+      return;
+    }
+
+    if (eventType === 'chat:message_delete' || eventType === 'chat:message_deleted' || data.type === 'message:delete') {
+      if (convId === activeConvId) {
+        const msgId = Number(data.message_id || data.messageId || data.id);
+        if (msgId) {
+          const msg = messages.find(m => m.id === msgId);
+          if (msg) msg.deleted_at = new Date().toISOString();
+          renderMessages();
+        } else {
+          refreshMessages();
+        }
+      }
+      loadConversationsSilently();
+      return;
+    }
+
+    if (eventType === 'chat:reaction' || eventType === 'chat:reaction_updated' || data.type === 'reaction:update') {
+      if (convId === activeConvId || !convId) {
+        const msgId = Number(data.message_id || data.messageId);
+        const msg = messages.find(m => m.id === msgId);
+        if (msg && data.reactions) {
+          msg.reactions = data.reactions;
+          renderMessages();
+        }
+      }
+      return;
+    }
+
+    if (eventType === 'chat:pin' || eventType === 'chat:message_pinned') {
+      if (convId === activeConvId) refreshMessages();
+      return;
+    }
+
+    // Default: reload conversations list
+    loadConversationsSilently();
+  }
+
+  EventBus.bindView(el, 'chat', (data) => handleChatEvent(data, 'chat'));
+  EventBus.bindView(el, 'chat:*', (data, topic) => handleChatEvent(data, topic));
 }
 
 // ── Component: Page header ──────────────────────────────────────────
@@ -1764,7 +1836,6 @@ async function markRead(msgId) {
   }
 }
 
-let silentLoadTimer = null;
 function loadConversationsSilently() {
   if (silentLoadTimer) clearTimeout(silentLoadTimer);
   silentLoadTimer = setTimeout(() => {

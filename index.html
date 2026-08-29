@@ -106,7 +106,7 @@
       <!-- Main -->
       <div class="nav-section-label">Tổng quan</div>
       <a href="#/dashboard" class="nav-item" data-nav="dashboard">
-        <span class="nav-icon">🏠</span><span>Dashboard</span>
+        <span class="nav-icon" data-icon="layoutDashboard"></span><span>Dashboard</span>
       </a>
       <a href="#/notifications" class="nav-item" data-nav="notifications">
         <span class="nav-icon" data-icon="bell"></span><span>Thông báo</span>
@@ -115,19 +115,19 @@
       <!-- HR Section -->
       <div class="nav-section-label">Nhân sự</div>
       <a href="#/attendance" class="nav-item" data-nav="attendance">
-        <span class="nav-icon">⏱️</span><span>Chấm công</span>
+        <span class="nav-icon" data-icon="clock3"></span><span>Chấm công</span>
       </a>
       <a href="#/leave" class="nav-item" data-nav="leave">
-        <span class="nav-icon">🏖️</span><span>Nghỉ phép</span>
+        <span class="nav-icon" data-icon="calendarDays"></span><span>Nghỉ phép</span>
       </a>
       <a href="#/tasks" class="nav-item" data-nav="tasks">
-        <span class="nav-icon">📋</span><span>Công việc <span id="task-mention-badge" class="nav-badge hidden"></span></span>
+        <span class="nav-icon" data-icon="clipboardList"></span><span>Công việc <span id="task-mention-badge" class="nav-badge hidden"></span></span>
       </a>
       <a href="#/invoices" class="nav-item" data-nav="invoices">
-        <span class="nav-icon">💵</span><span>Phiếu lương</span>
+        <span class="nav-icon" data-icon="banknote"></span><span>Phiếu lương</span>
       </a>
       <a href="#/evaluation" class="nav-item" data-nav="evaluation">
-        <span class="nav-icon">📈</span><span>Đánh giá hiệu suất</span>
+        <span class="nav-icon" data-icon="barChart3"></span><span>Đánh giá hiệu suất</span>
       </a>
 
       <a href="#/kpis" class="nav-item" data-nav="kpis">
@@ -135,47 +135,47 @@
       </a>
 
       <a href="#/assets" class="nav-item" data-nav="assets">
-        <span class="nav-icon">&#128279;</span><span>Bàn giao dự án &amp; tài khoản</span>
+        <span class="nav-icon" data-icon="link"></span><span>Bàn giao dự án &amp; tài khoản</span>
       </a>
 
       <!-- Admin Section -->
       <div class="nav-section" id="admin-nav">
         <div class="nav-section-label">Quản lý công ty</div>
         <a href="#/users" class="nav-item" data-nav="users">
-          <span class="nav-icon">👥</span><span>Nhân viên</span>
+          <span class="nav-icon" data-icon="users"></span><span>Nhân viên</span>
         </a>
         <a href="#/departments" class="nav-item" data-nav="departments">
-          <span class="nav-icon">🏢</span><span>Phòng ban</span>
+          <span class="nav-icon" data-icon="building2"></span><span>Phòng ban</span>
         </a>
         <a href="#/payroll" class="nav-item" data-nav="payroll">
-          <span class="nav-icon">💰</span><span>Bảng lương</span>
+          <span class="nav-icon" data-icon="banknote"></span><span>Bảng lương</span>
         </a>
         <a href="#/recruitment" class="nav-item" data-nav="recruitment">
-          <span class="nav-icon">🎯</span><span>Tuyển dụng</span>
+          <span class="nav-icon" data-icon="target"></span><span>Tuyển dụng</span>
         </a>
         <a href="#/campaigns" class="nav-item" data-nav="campaigns">
-          <span class="nav-icon">📣</span><span>Chiến dịch MKT</span>
+          <span class="nav-icon" data-icon="megaphone"></span><span>Chiến dịch MKT</span>
         </a>
         <a href="#/wifi" class="nav-item" data-nav="wifi">
-          <span class="nav-icon">📍</span><span>Địa điểm chấm công</span>
+          <span class="nav-icon" data-icon="mapPin"></span><span>Địa điểm chấm công</span>
         </a>
       </div>
 
       <div class="nav-section-label">Hệ thống</div>
       <a href="#/settings" class="nav-item" data-nav="settings">
-        <span class="nav-icon">⚙️</span><span>Cài đặt</span>
+        <span class="nav-icon" data-icon="settings"></span><span>Cài đặt</span>
       </a>
       <a href="#/db-admin" class="nav-item hidden" data-nav="db-admin" id="db-admin-nav-item">
-        <span class="nav-icon">🗂️</span><span>Database Admin</span>
+        <span class="nav-icon" data-icon="library"></span><span>Database Admin</span>
       </a>
     </nav>
 
     <div class="sidebar-footer">
       <button id="btn-change-pw" class="nav-item w-full" style="background:none;border:none;cursor:pointer;text-align:left;">
-        <span class="nav-icon">🔑</span><span>Đổi mật khẩu</span>
+        <span class="nav-icon" data-icon="keyRound"></span><span>Đổi mật khẩu</span>
       </button>
       <button id="btn-logout" class="nav-item nav-logout w-full" style="background:none;border:none;cursor:pointer;text-align:left;">
-        <span class="nav-icon">🚪</span><span>Đăng xuất</span>
+        <span class="nav-icon" data-icon="logOut"></span><span>Đăng xuất</span>
       </button>
     </div>
   </aside>
@@ -296,7 +296,7 @@
 <div id="task-panel" class="task-panel hidden">
   <div class="task-panel-head">
     <button id="task-panel-back" class="task-panel-back-btn" aria-label="Quay lại">
-      <span class="back-icon" aria-hidden="true">←</span>
+      <span class="back-icon" aria-hidden="true" data-icon="arrowLeft"></span>
       <span>Quay lại</span>
     </button>
   </div>

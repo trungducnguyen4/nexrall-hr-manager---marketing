@@ -1,5 +1,7 @@
 import { api } from '../api.js';
+import { EventBus } from '../event-bus.js';
 import { esc, taskStatusBadge, priorityBadge, toast, loadingHTML, openModal, closeModal } from '../utils.js';
+import { icon } from '../icons.js';
 import { openTaskForm, sanitizeRichText } from './tasks.js';
 
 const QUICK_LABEL_MAP = {
@@ -21,30 +23,63 @@ function quickLabelName(color) {
 let _currentTaskId = null;
 let _users = [];
 let _me = null;
+let _panelUnsubs = [];
 
 export async function openPanel(taskId, me) {
   _currentTaskId = taskId;
   _me = me;
+  _panelUnsubs.forEach(u => u());
+  _panelUnsubs = [];
+
+  // Bind reactive event listeners for open task
+  _panelUnsubs.push(
+    EventBus.on('task:*', (data) => {
+      const tid = Number(data?.taskId || data?.id || data?.task?.id);
+      if (tid && Number(_currentTaskId) === tid) loadTask();
+    }),
+    EventBus.on('subtask:*', (data) => {
+      const tid = Number(data?.taskId || data?.task_id || data?.subtask?.task_id);
+      if (tid && Number(_currentTaskId) === tid) loadTask();
+    }),
+    EventBus.on('comment:*', (data) => {
+      const tid = Number(data?.taskId || data?.task_id || data?.comment?.task_id);
+      if (tid && Number(_currentTaskId) === tid) loadTask();
+    }),
+    EventBus.on('tasks', (data) => {
+      const tid = Number(data?.taskId || data?.id);
+      if (tid && Number(_currentTaskId) === tid) loadTask();
+    })
+  );
+
   try { _users = (await api.getUsers()).users || []; } catch (_) {}
 
   const overlay = document.getElementById('task-panel-overlay');
   const panel = document.getElementById('task-panel');
-  overlay.classList.remove('hidden');
-  panel.classList.remove('hidden');
+  overlay?.classList.remove('hidden');
+  panel?.classList.remove('hidden');
   const panelTitleEl = document.getElementById('task-panel-title');
   if (panelTitleEl) panelTitleEl.textContent = 'Đang tải...';
-  document.getElementById('task-panel-body').innerHTML = loadingHTML();
+  const bodyEl = document.getElementById('task-panel-body');
+  if (bodyEl) bodyEl.innerHTML = loadingHTML();
 
-  overlay.onclick = closePanel;
-  document.getElementById('task-panel-back').onclick = closePanel;
+  if (overlay) overlay.onclick = closePanel;
+  const backBtn = document.getElementById('task-panel-back');
+  if (backBtn) backBtn.onclick = closePanel;
 
   await loadTask();
 }
 
-function closePanel() {
-  document.getElementById('task-panel-overlay').classList.add('hidden');
-  document.getElementById('task-panel').classList.add('hidden');
+export function closePanel() {
+  document.getElementById('task-panel-overlay')?.classList.add('hidden');
+  document.getElementById('task-panel')?.classList.add('hidden');
   _currentTaskId = null;
+  _panelUnsubs.forEach(u => u());
+  _panelUnsubs = [];
+}
+
+export async function renderTaskpanel(el, me) {
+  el.innerHTML = `<div class="empty-state"><div class="empty-icon">${icon('clipboardList', 'xl')}</div><div class="empty-text">Bảng chi tiết công việc</div></div>`;
+  el._cleanup = () => closePanel();
 }
 
 async function loadTask() {
@@ -55,7 +90,7 @@ async function loadTask() {
     const memberResponse = task.team_project_id ? await api.getTaskProjectMembers(task.team_project_id).catch(() => ({ members: [] })) : { members: [] };
     renderPanel(task, subtasks || [], followers || [], comments || [], memberResponse.members || []);
   } catch (e) {
-    document.getElementById('task-panel-body').innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">${esc(e.message)}</div></div>`;
+    document.getElementById('task-panel-body').innerHTML = `<div class="empty-state"><div class="empty-icon">${icon('triangleAlert', 'xl')}</div><div class="empty-text">${esc(e.message)}</div></div>`;
   }
 }
 
@@ -92,8 +127,8 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
       </div>
       <div class="tp-header-actions">
         <span class="task-follower-stack task-follower-stack-header" title="Người theo dõi (${followers.length})">${followerStack}${followerCount}</span>
-        ${canEdit ? `<button id="tp-edit" class="btn-primary btn-sm">✏️ Sửa</button>` : ''}
-        ${canEdit ? `<button id="tp-copy" class="btn-secondary btn-sm">⧉ Sao chép</button>` : ''}
+        ${canEdit ? `<button id="tp-edit" class="btn-primary btn-sm">${icon('pencil', 'xs')} Sửa</button>` : ''}
+        ${canEdit ? `<button id="tp-copy" class="btn-secondary btn-sm">${icon('copy', 'xs')} Sao chép</button>` : ''}
       </div>
     </div>
 
@@ -101,15 +136,15 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
     <main class="task-panel-main">
 
       <div class="card tp-section">
-        <div class="tp-section-title"><span class="tp-section-label">📝 Mô tả</span></div>
+        <div class="tp-section-title"><span class="tp-section-label">${icon('fileText', 'sm')} Mô tả</span></div>
         <div class="tp-desc">${renderTaskDescription(task.description)}</div>
       </div>
 
       <div class="card tp-section">
         <div class="tp-section-title">
-          <span class="tp-section-label">☑️ Công việc con</span>
+          <span class="tp-section-label">${icon('clipboardCheck', 'sm')} Công việc con</span>
           <span class="tp-sub-count">${doneSubs}/${subtasks.length}</span>
-          ${canEdit ? `<button id="tp-add-sub" class="btn-primary btn-xs">+ Thêm</button>` : ''}
+          ${canEdit ? `<button id="tp-add-sub" class="btn-primary btn-xs">${icon('plus', 'xs')} Thêm</button>` : ''}
         </div>
         ${subtasks.length ? `<div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div><div class="progress-text">${pct}% hoàn thành</div>` : ''}
         <div id="tp-subtask-list" class="tp-subtask-list">
@@ -120,29 +155,29 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
                 <div class="subtask-title${s.is_done ? ' is-done' : ''}">${esc(s.title)}</div>
                 ${s.description ? `<div class="subtask-desc${s.is_done ? ' is-done' : ''}">${esc(s.description)}</div>` : ''}
                 <div class="subtask-meta">
-                  ${s.assignee_name ? `<span class="subtask-meta-chip">👤 ${esc(s.assignee_name)}</span>` : ''}
-                  ${s.due_date ? `<span class="subtask-meta-chip">Hạn: ${esc(s.due_date)}</span>` : ''}
+                  ${s.assignee_name ? `<span class="subtask-meta-chip">${icon('user', 'xs')} ${esc(s.assignee_name)}</span>` : ''}
+                  ${s.due_date ? `<span class="subtask-meta-chip">${icon('clock3', 'xs')} Hạn: ${esc(s.due_date)}</span>` : ''}
                 </div>
               </div>
-              ${canEdit ? `<div class="subtask-actions"><button class="btn-secondary btn-xs sub-edit" data-sid="${s.id}">Sửa</button><button class="btn-icon sub-del" data-sid="${s.id}" title="Xóa subtask">🗑</button></div>` : ''}
+              ${canEdit ? `<div class="subtask-actions"><button class="btn-secondary btn-xs sub-edit" data-sid="${s.id}">${icon('pencil', 'xs')} Sửa</button><button class="btn-icon sub-del" data-sid="${s.id}" title="Xóa subtask">${icon('trash2', 'xs')}</button></div>` : ''}
             </div>
           `).join('') || '<div class="tp-empty">Chưa có việc con.</div>'}
         </div>
       </div>
 
       <div class="card tp-section">
-        <div class="tp-section-title"><span class="tp-section-label">📎 Đính kèm tập tin</span></div>
+        <div class="tp-section-title"><span class="tp-section-label">${icon('paperclip', 'sm')} Đính kèm tập tin</span></div>
         <div id="tp-attachments">
           <div style="font-size:12px;color:var(--text-2);margin-bottom:8px;">Chưa có tập tin đính kèm.</div>
         </div>
         <div>
-          <button type="button" class="btn-secondary btn-sm" id="tp-attach-btn">Thêm tập tin đính kèm</button>
+          <button type="button" class="btn-secondary btn-sm" id="tp-attach-btn">${icon('plus', 'xs')} Thêm tập tin đính kèm</button>
           <input type="file" id="tp-attach-input" multiple style="display:none"/>
         </div>
       </div>
 
       <div class="card tp-section">
-        <div class="tp-section-title"><span class="tp-section-label">💬 Bình luận</span><span class="tp-sub-count">${comments.length}</span></div>
+        <div class="tp-section-title"><span class="tp-section-label">${icon('messageSquare', 'sm')} Bình luận</span><span class="tp-sub-count">${comments.length}</span></div>
         <div id="tp-comments" class="tp-comments">
           ${comments.map(c => `<div class="comment"><div class="avatar avatar-sm" style="background:${esc(c.avatar_color || '#4F46E5')};flex-shrink:0;">${esc(c.avatar_initials || c.full_name?.charAt(0) || '?')}</div><div class="comment-body"><div class="comment-meta"><b>${esc(c.full_name)}</b><span>${esc(c.created_at?.slice(0,16) || '')}</span></div><div class="comment-text">${renderCommentContent(c)}</div></div></div>`).join('') || '<div class="tp-empty">Chưa có bình luận.</div>'}
         </div>
@@ -151,8 +186,8 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
           <textarea id="tp-cmt-input" rows="2" placeholder="Viết bình luận…"></textarea>
           <div class="tp-comment-input-foot">
             <span class="tp-comment-hint">Shift + Enter để xuống dòng</span>
-            <button type="button" class="tp-mention-btn" id="tp-mention-btn" title="Mention người dùng">@</button>
-            <button id="tp-cmt-send" class="btn-primary btn-sm">Gửi</button>
+            <button type="button" class="tp-mention-btn" id="tp-mention-btn" title="Mention người dùng">${icon('atSign', 'xs')}</button>
+            <button id="tp-cmt-send" class="btn-primary btn-sm">${icon('send', 'xs')} Gửi</button>
           </div>
         </div>
       </div>
@@ -161,7 +196,7 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
     <aside class="task-panel-aside">
 
       <div class="card tp-section">
-        <div class="tp-section-title"><span class="tp-section-label">Thông tin</span></div>
+        <div class="tp-section-title"><span class="tp-section-label">${icon('circleInfo', 'sm')} Thông tin</span></div>
         <div class="tp-meta">
           <div class="detail-item"><div class="detail-label">Giao cho</div><div class="detail-val">${esc(task.assignee_name || '—')}${task.assignee_code ? ` · ${esc(task.assignee_code)}` : ''}</div></div>
           <div class="detail-item"><div class="detail-label">Người giao</div><div class="detail-val">${esc(task.assigner_name || '—')}</div></div>
@@ -233,9 +268,9 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
       return;
     }
     container.innerHTML = attachments.map(a => `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px;">
-      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📎 <a href="/api/documents/${esc(a.storage_key)}" target="_blank" rel="noopener noreferrer">${esc(a.original_filename)}</a></span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${icon('paperclip', 'xs')} <a href="/api/documents/${esc(a.storage_key)}" target="_blank" rel="noopener noreferrer">${esc(a.original_filename)}</a></span>
       <span style="color:var(--text-2);font-size:11px;">${a.byte_size ? Math.round(a.byte_size/1024) + ' KB' : ''}</span>
-      <button type="button" class="btn-icon" data-del-attach="${a.id}" style="font-size:14px;" title="Xóa">×</button>
+      <button type="button" class="btn-icon" data-del-attach="${a.id}" title="Xóa">${icon('trash2', 'xs')}</button>
     </div>`).join('');
     container.querySelectorAll('[data-del-attach]').forEach(btn => btn.addEventListener('click', async () => {
       if (!confirm('Xóa tập tin đính kèm?')) return;

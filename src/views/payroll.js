@@ -1,5 +1,6 @@
 import { api } from '../api.js?v=20260811-penalty-policy-v3';
-import { esc, fmtMoney, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination, avatarColor, initials, isHcnsDepartment } from '../utils.js?v=20260811-hr-access-v1';
+import { EventBus } from '../event-bus.js';
+import { esc, fmtMoney, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination, avatarColor, initials, isHcnsDepartment, sortVietnameseNames, compareVietnameseNames } from '../utils.js?v=20260811-hr-access-v1';
 import { payslipDetailHTML, hydratePayslipAttendance, preparePayslipModal } from './payslip-detail.js?v=20260804-inline-line-notes-v1';
 import { icon } from '../icons.js';
 
@@ -30,16 +31,16 @@ function payrollMoney(value, ready) {
 
 function getDeptIcon(deptName) {
   const name = String(deptName || '').toLowerCase();
-  if (name.includes('gameshow') || name.includes('game')) return '🎬';
-  if (name.includes('giám đốc') || name.includes('bgd') || name.includes('ban giám đốc')) return '👑';
-  if (name.includes('marketing') || name.includes('truyền thông')) return '📣';
-  if (name.includes('biên tập') || name.includes('nội dung') || name.includes('content')) return '📝';
-  if (name.includes('hcns') || name.includes('nhân sự') || name.includes('hành chính')) return '👥';
-  if (name.includes('kế toán') || name.includes('tài chính')) return '💰';
-  if (name.includes('tạp vụ') || name.includes('bảo vệ')) return '🛡️';
-  if (name.includes('kỹ thuật') || name.includes('it') || name.includes('dev')) return '💻';
-  if (name.includes('sản xuất') || name.includes('phim trường')) return '🎥';
-  return '🏢';
+  if (name.includes('marketing') || name.includes('truyền thông')) return icon('megaphone', 'xs');
+  if (name.includes('biên tập') || name.includes('nội dung') || name.includes('content')) return icon('squarePen', 'xs');
+  if (name.includes('hcns') || name.includes('nhân sự') || name.includes('hành chính')) return icon('users', 'xs');
+  if (name.includes('kế toán') || name.includes('tài chính')) return icon('banknote', 'xs');
+  if (name.includes('tạp vụ') || name.includes('bảo vệ')) return icon('shield', 'xs');
+  if (name.includes('kỹ thuật') || name.includes('it') || name.includes('dev')) return icon('wifi', 'xs');
+  if (name.includes('sản xuất') || name.includes('phim') || name.includes('gameshow') || name.includes('game')) return icon('activity', 'xs');
+  if (name.includes('thực tập sinh') || name.includes('tts')) return icon('bookOpen', 'xs');
+  if (name.includes('giám đốc') || name.includes('bgd') || name.includes('ban giám đốc')) return icon('trophy', 'xs');
+  return icon('building2', 'xs');
 }
 
 function renderDonutChartSVG(slices, centerTitle, centerVal) {
@@ -553,6 +554,7 @@ export async function renderPayroll(el, me) {
       const missingSalaryCount = payrolls.length - readyCount;
       let filtered = filterBySearch(payrolls, document.getElementById('payroll-search')?.value || '', ['employee_name', 'employee_code']);
       filtered = filterByDepartment(filtered, document.getElementById('payroll-dept-filter')?.value || '', ['department']);
+      filtered = sortVietnameseNames(filtered, 'employee_name');
       const pageData = paginateRows(filtered, currentPage);
       currentPage = pageData.page;
 
@@ -651,11 +653,11 @@ export async function renderPayroll(el, me) {
                       <span class="dumbbell-mark" style="left: 100%"></span>
                     </div>
                     <div class="dumbbell-bar ${barClass}" style="left: ${leftPercent.toFixed(1)}%; width: ${widthPercent.toFixed(1)}%;"></div>
-                    <div class="dumbbell-dot dumbbell-dot-emp" style="left: ${empLeft.toFixed(1)}%;" title="👤 Nhân sự: ${r.empPct.toFixed(1)}% (${r.count} người)">
-                      <span class="dumbbell-dot-badge">👤 ${r.empPct.toFixed(1)}%</span>
+                    <div class="dumbbell-dot dumbbell-dot-emp" style="left: ${empLeft.toFixed(1)}%;" title="Nhân sự: ${r.empPct.toFixed(1)}% (${r.count} người)">
+                      <span class="dumbbell-dot-badge">${icon('user', 'xs')} ${r.empPct.toFixed(1)}%</span>
                     </div>
-                    <div class="dumbbell-dot dumbbell-dot-budget" style="left: ${budgetLeft.toFixed(1)}%;" title="💰 Quỹ lương: ${r.budgetPct.toFixed(1)}% (${fmtMoney(r.totalNet)})">
-                      <span class="dumbbell-dot-badge">💰 ${r.budgetPct.toFixed(1)}%</span>
+                    <div class="dumbbell-dot dumbbell-dot-budget" style="left: ${budgetLeft.toFixed(1)}%;" title="Quỹ lương: ${r.budgetPct.toFixed(1)}% (${fmtMoney(r.totalNet)})">
+                      <span class="dumbbell-dot-badge">${icon('banknote', 'xs')} ${r.budgetPct.toFixed(1)}%</span>
                     </div>
                   </div>
                 </div>
@@ -767,8 +769,8 @@ export async function renderPayroll(el, me) {
                   </div>
                 </div>
                 <div class="payroll-dumbbell-legend">
-                  <span class="payroll-dumbbell-legend-item"><span class="dumbbell-legend-dot dumbbell-legend-dot--emp"></span> 👤 % Nhân sự</span>
-                  <span class="payroll-dumbbell-legend-item"><span class="dumbbell-legend-dot dumbbell-legend-dot--budget"></span> 💰 % Quỹ lương</span>
+                  <span class="payroll-dumbbell-legend-item"><span class="dumbbell-legend-dot dumbbell-legend-dot--emp"></span> ${icon('user', 'xs')} % Nhân sự</span>
+                  <span class="payroll-dumbbell-legend-item"><span class="dumbbell-legend-dot dumbbell-legend-dot--budget"></span> ${icon('banknote', 'xs')} % Quỹ lương</span>
                 </div>
               </div>
 
@@ -941,6 +943,15 @@ export async function renderPayroll(el, me) {
     } finally {
     }
   }
+
+  el._cleanup = () => {
+    payrollRowCache.clear();
+  };
+
+  EventBus.bindView(el, 'payroll', () => loadPayroll({ keepStatus: true }));
+  EventBus.bindView(el, 'payroll:*', () => loadPayroll({ keepStatus: true }));
+  EventBus.bindView(el, 'invoices', () => loadPayroll({ keepStatus: true }));
+  EventBus.bindView(el, 'invoices:*', () => loadPayroll({ keepStatus: true }));
 
   loadPayroll();
 }

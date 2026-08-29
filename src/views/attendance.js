@@ -1,27 +1,35 @@
-import { api } from '../api.js?v=20260811-attendance-correction-v1';
-import { esc, fmtDate, statusBadge, setAvatar, toast, openModal, closeModal, loadingHTML, emptyHTML, today, initials, avatarColor, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js?v=20260811-attendance-registration-v1';
+import { api } from '../api.js?v=20260811-attendance-registration-v1';
+import { EventBus } from '../event-bus.js';
+import { esc, fmtDate, statusBadge, setAvatar, toast, openModal, closeModal, loadingHTML, emptyHTML, today, initials, avatarColor, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination, sortVietnameseNames, compareVietnameseNames } from '../utils.js?v=20260811-attendance-registration-v1';
 import { attendanceClosingMonth } from '../attendance-period.js';
 import { getDeviceLocation } from '../location.js?v=20260816-location-v1';
 import { renderGeoMap, classifyMarker } from '../geo-map.js?v=20260817-geofence-soft-v1';
+import { icon } from '../icons.js';
 
-const WORK_TYPE_LABEL = { office: '🏢 Văn phòng', wfh: '🏠 WFH', business: '✈️ Công tác' };
+const WORK_TYPE_LABEL = { office: 'Văn phòng', wfh: 'WFH', business: 'Công tác' };
 const SHIFT_LABEL = { morning: 'Ca sáng (08:30–12:00)', afternoon: 'Ca chiều (13:30–17:00)', full: 'Cả ngày' };
 const SHIFT_LABEL_SHORT = { morning: 'Ca sáng', afternoon: 'Ca chiều', full: 'Cả ngày' };
 const isHcnsDepartment = (department) => ['hcns', 'phong hcns', 'nhan su', 'phong nhan su', 'hanh chinh nhan su', 'hr'].includes(String(department || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim());
 
+function formatAttendanceNote(note) {
+  if (!note) return '—';
+  return esc(note)
+    .replace(/\[Quên checkout\]/gi, 'Tự động checkout')
+    .replace(/quên checkout/gi, 'Tự động checkout');
+}
 
 export async function renderAttendance(el, me, route = {}) {
   const isManager = me.role === 'admin' || me.role === 'manager';
   const canManageAttendance = isManager || isHcnsDepartment(me.department);
   const canImportHistorical = me.role === 'admin' || isHcnsDepartment(me.department);
-  const routeDate = /^\d{4}-\d{2}-\d{2}$/.test(String(route.segments?.[1] || '')) ? String(route.segments[1]) : '';
-  const routeEmployeeId = Number(route.segments?.[2] || 0);
+  const routeEmployeeId = /^\d+$/.test(String(route.segments?.[1] || '')) ? Number(route.segments[1]) : null;
+  const routeDate = /^\d{4}-\d{2}-\d{2}$/.test(String(route.segments?.[2] || route.segments?.[1] || '')) ? String(route.segments[2] || route.segments[1]) : '';
   const closingMonth = attendanceClosingMonth();
   const closingLabel = `Kỳ chốt công: ${closingMonth.slice(5, 7)}/${closingMonth.slice(0, 4)}`;
 
   el.innerHTML = `
     <div class="page-header">
-      <div class="page-title">⏱️ Chấm công</div>
+      <div class="page-title">${icon('clock3', 'lg')} <span>Chấm công</span></div>
     </div>
 
     <!-- Clock-in card -->
@@ -40,9 +48,9 @@ export async function renderAttendance(el, me, route = {}) {
         <div class="field" style="margin-bottom:10px;">
           <label style="color:rgba(255,255,255,.7)">Hình thức làm việc</label>
           <div class="att-chip-row" id="att-worktype-row">
-            <button type="button" class="att-chip" data-worktype="office">🏢 Văn phòng</button>
-            <button type="button" class="att-chip" data-worktype="wfh">🏠 WFH</button>
-            <button type="button" class="att-chip" data-worktype="business">✈️ Công tác</button>
+            <button type="button" class="att-chip" data-worktype="office">${icon('building2', 'xs')} <span>Văn phòng</span></button>
+            <button type="button" class="att-chip" data-worktype="wfh">${icon('home', 'xs')} <span>WFH</span></button>
+            <button type="button" class="att-chip" data-worktype="business">${icon('plane', 'xs')} <span>Công tác</span></button>
           </div>
         </div>
         <div class="field" id="att-shift-field" style="margin-bottom:10px;">
@@ -67,25 +75,25 @@ export async function renderAttendance(el, me, route = {}) {
           <label style="color:rgba(255,255,255,.7)">Ghi chú (tuỳ chọn)</label>
           <input id="att-reg-note" type="text" placeholder="Ghi chú..." style="background:rgba(255,255,255,.2);border-color:rgba(255,255,255,.4);color:#fff;"/>
         </div>
-        <button id="btn-register" class="att-btn-in" style="width:100%;">📝 Đăng ký & Check In</button>
+        <button id="btn-register" class="att-btn-in" style="width:100%;">${icon('clock3', 'sm')} <span>Đăng ký & Check In</span></button>
       </div>
 
       <div id="att-note-wrap" style="margin-top:10px;display:none;">
         <input id="att-note" type="text" placeholder="Ghi chú (tuỳ chọn)" style="background:rgba(255,255,255,.2);border-color:rgba(255,255,255,.4);color:#fff;border-radius:8px;padding:8px 12px;width:100%;"/>
       </div>
       <div class="att-clock-btns">
-        <button id="btn-checkout" class="att-btn-out" disabled>🏁 Check Out</button>
+        <button id="btn-checkout" class="att-btn-out" disabled>${icon('logOut', 'sm')} <span>Check Out</span></button>
       </div>
 
         </div><!-- /att-clock-main -->
 
         <div class="att-clock-geo" id="att-clock-geo">
           <div class="att-clock-geo-head">
-            <div class="att-clock-geo-title">📍 Vị trí chấm công</div>
+            <div class="att-clock-geo-title">${icon('mapPin', 'xs')} <span>Vị trí chấm công</span></div>
             <div class="att-clock-geo-controls">
               <input type="date" id="att-geo-date" value="${esc(routeDate || today())}"/>
               <select id="att-geo-office"><option value="">Tự động</option></select>
-              <button type="button" id="btn-geo-refresh" class="att-geo-refresh" title="Làm mới bản đồ">🔄</button>
+              <button type="button" id="btn-geo-refresh" class="att-geo-refresh" title="Làm mới bản đồ">${icon('refreshCw', 'xs')}</button>
             </div>
           </div>
           <div class="att-clock-geo-meta" id="att-geo-meta">Đang tải…</div>
@@ -102,24 +110,14 @@ export async function renderAttendance(el, me, route = {}) {
       </div><!-- /att-clock-grid -->
     </div>
 
-    <div class="card" style="margin:14px 0;">
-      <div class="card-header"><div class="card-title">📝 Form làm thêm giờ</div><button id="btn-create-ot-form" class="btn-primary btn-sm">+ Tạo form</button></div>
-      <div id="ot-form-list">${loadingHTML()}</div>
-    </div>
-
-    ${canManageAttendance ? `<div class="card" style="margin:14px 0;">
-      <div class="card-header"><div class="card-title">⏱️ Yêu cầu làm thêm giờ</div><select id="ot-status-filter" class="btn-secondary btn-sm"><option value="pending">Chờ duyệt</option><option value="approved">Đã duyệt</option><option value="rejected">Đã từ chối</option><option value="">Tất cả</option></select></div>
-      <div id="ot-request-list">${loadingHTML()}</div>
-    </div>` : ''}
-
-    <!-- Filter -->
+    <!-- 2. Attendance History (Placed in its natural DOM position to eliminate CLS) -->
     <div id="att-history-card" class="card" style="margin-bottom:14px;">
       <div class="card-header" style="margin-bottom:10px;">
-        <div class="card-title">📅 Lịch sử chấm công</div>
+        <div class="card-title">${icon('calendarDays', 'sm')} <span>Lịch sử chấm công</span></div>
         <div style="display:flex;gap:8px;">
-          ${canManageAttendance ? `<button id="btn-att-monthly-board" class="btn-secondary btn-sm">▦ Bảng chấm công tổng hợp</button>` : ''}
-          ${!canManageAttendance ? `<button id="btn-my-att-summary" class="btn-secondary btn-sm">Tổng kết của tôi</button>` : ''}
-          ${canImportHistorical ? `<button id="btn-import-att" class="btn-secondary btn-sm">⇧ Nhập bảng</button>` : ''}${isManager ? `<button id="btn-add-att" class="btn-primary btn-sm">+ Thêm</button>` : ''}
+          ${canManageAttendance ? `<button id="btn-att-monthly-board" class="btn-secondary btn-sm">${icon('clipboardList', 'xs')} <span>Bảng chấm công tổng hợp</span></button>` : ''}
+          ${!canManageAttendance ? `<button id="btn-my-att-summary" class="btn-secondary btn-sm">${icon('user', 'xs')} <span>Tổng kết của tôi</span></button>` : ''}
+          ${canImportHistorical ? `<button id="btn-import-att" class="btn-secondary btn-sm">${icon('upload', 'xs')} <span>Nhập bảng</span></button>` : ''}${isManager ? `<button id="btn-add-att" class="btn-primary btn-sm">${icon('plus', 'xs')} <span>Thêm</span></button>` : ''}
         </div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
@@ -141,12 +139,24 @@ export async function renderAttendance(el, me, route = {}) {
       </div>
       <div id="att-list">${loadingHTML()}</div>
     </div>
-  `;
 
-  // Keep the attendance history immediately below the clock actions, before overtime forms.
-  const historyCard = document.getElementById('att-history-card');
-  const clockCard = document.getElementById('att-clock-card');
-  if (historyCard && clockCard) clockCard.insertAdjacentElement('afterend', historyCard);
+    <!-- 3. Overtime Forms -->
+    <div class="card" style="margin:14px 0;">
+      <div class="card-header">
+        <div class="card-title">${icon('squarePen', 'sm')} <span>Form làm thêm giờ</span></div>
+        <div style="display:flex;gap:8px;">
+          <button id="btn-ot-summary-board" class="btn-secondary btn-sm">${icon('clipboardList', 'xs')} <span>Bảng tổng hợp OT</span></button>
+          <button id="btn-create-ot-form" class="btn-primary btn-sm">${icon('plus', 'xs')} <span>Tạo form</span></button>
+        </div>
+      </div>
+      <div id="ot-form-list">${loadingHTML()}</div>
+    </div>
+
+    ${canManageAttendance ? `<div class="card" style="margin:14px 0;">
+      <div class="card-header"><div class="card-title">${icon('clock3', 'sm')} <span>Yêu cầu làm thêm giờ</span></div><select id="ot-status-filter" class="btn-secondary btn-sm"><option value="pending">Chờ duyệt</option><option value="approved">Đã duyệt</option><option value="rejected">Đã từ chối</option><option value="">Tất cả</option></select></div>
+      <div id="ot-request-list">${loadingHTML()}</div>
+    </div>` : ''}
+  `;
 
   // Live clock
   const liveTime = document.getElementById('att-live-time');
@@ -406,13 +416,13 @@ export async function renderAttendance(el, me, route = {}) {
   } else {
     // Đã đăng ký nhưng chưa check-in (trường hợp hiếm, có thể xảy ra nếu user đăng ký từ nơi khác)
     // Vẫn hiện nút "Đăng ký & Check In" để user có thể check-in
-    statusLine.innerHTML = `<span class="badge badge-info" style="font-size:12px;">📍 Đã đăng ký — sẵn sàng check in</span>${infoLine}`;
+    statusLine.innerHTML = `<span class="badge badge-info" style="font-size:12px;">${icon('mapPin', 'xs')} Đã đăng ký — sẵn sàng check in</span>${infoLine}`;
     btnOut.disabled = true;
     noteWrap.style.display = 'block';
     regWrap.style.display = 'block';
     // Đổi nhãn nút thành "Check In" vì đã đăng ký rồi
     const regBtn = document.getElementById('btn-register');
-    if (regBtn) regBtn.textContent = '⏰ Check In';
+    if (regBtn) regBtn.innerHTML = `${icon('clock3', 'sm')} <span>Check In</span>`;
   }
 }
 
@@ -493,7 +503,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
       loadHistory();
     } catch(e) {
       toast(e.message || 'Lỗi check out', 'error');
-      btnOut.disabled = false; btnOut.textContent = '🏁 Check Out';
+      btnOut.disabled = false; btnOut.innerHTML = `${icon('logOut', 'sm')} <span>Check Out</span>`;
     } finally {
       submitting = false;
     }
@@ -734,6 +744,240 @@ document.getElementById('btn-register').addEventListener('click', async () => {
     }
   }
 
+  async function openOvertimeSummaryBoard() {
+    const monthValue = document.getElementById('att-month-filter')?.value || closingMonth;
+    const [year, month] = monthValue.split('-').map(Number);
+    openModal(`Bảng tổng hợp làm thêm giờ (OT) Tháng ${String(month).padStart(2, '0')}/${year}`, `<div id="ot-summary-board-content">${loadingHTML()}</div>`, `<button class="btn-secondary" id="ot-summary-board-close">Đóng</button>`);
+    document.getElementById('modal')?.classList.add('modal--scroll-fixed', 'modal--attendance-board');
+    document.getElementById('ot-summary-board-close')?.addEventListener('click', closeModal);
+
+    try {
+      const { overtime_forms: forms = [] } = await api.getOvertimeForms({ month: monthValue });
+      const content = document.getElementById('ot-summary-board-content');
+      if (!content) return;
+
+      if (!forms.length) {
+        content.innerHTML = emptyHTML('📝', `Chưa có dữ liệu làm thêm giờ trong tháng ${String(month).padStart(2, '0')}/${year}`);
+        return;
+      }
+
+      // Aggregate by user
+      const userMap = new Map();
+      let grandTotalRequestedMinutes = 0;
+      let grandTotalApprovedMinutes = 0;
+
+      forms.forEach(form => {
+        const uid = Number(form.user_id);
+        if (!userMap.has(uid)) {
+          userMap.set(uid, {
+            userId: uid,
+            fullName: form.full_name || '—',
+            employeeCode: form.employee_code || '—',
+            department: form.department || '—',
+            totalForms: 0,
+            approvedForms: 0,
+            pendingForms: 0,
+            rejectedForms: 0,
+            draftForms: 0,
+            totalRequestedMinutes: 0,
+            totalApprovedMinutes: 0,
+            workdayApprovedMinutes: 0,
+            restdayApprovedMinutes: 0,
+            holidayApprovedMinutes: 0,
+            forms: [],
+          });
+        }
+        const u = userMap.get(uid);
+        u.totalForms++;
+        if (form.status === 'approved' || form.status === 'partially_approved') u.approvedForms++;
+        else if (form.status === 'pending') u.pendingForms++;
+        else if (form.status === 'rejected') u.rejectedForms++;
+        else if (form.status === 'draft') u.draftForms++;
+
+        const reqMin = Number(form.requested_minutes || 0);
+        const appMin = Number(form.approved_minutes || 0);
+        u.totalRequestedMinutes += reqMin;
+        u.totalApprovedMinutes += appMin;
+        grandTotalRequestedMinutes += reqMin;
+        grandTotalApprovedMinutes += appMin;
+
+        (form.items || []).forEach(item => {
+          const itemAppMin = Number(item.approved_minutes || 0);
+          if (itemAppMin > 0) {
+            if (item.time_category === 'holiday') u.holidayApprovedMinutes += itemAppMin;
+            else if (item.time_category === 'rest_day' || item.time_category === 'weekend') u.restdayApprovedMinutes += itemAppMin;
+            else u.workdayApprovedMinutes += itemAppMin;
+          }
+        });
+
+        u.forms.push(form);
+      });
+
+      const userList = Array.from(userMap.values()).sort((a, b) => b.totalApprovedMinutes - a.totalApprovedMinutes || compareVietnameseNames(a.fullName, b.fullName));
+
+      const formatHours = min => (Number(min || 0) / 60).toFixed(2) + 'h';
+      const formatTime = v => v ? new Date(v).toLocaleString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+      const timeCatLabel = c => c === 'holiday' ? '<span class="badge badge-danger">Ngày lễ</span>' : c === 'rest_day' || c === 'weekend' ? '<span class="badge badge-warning">Ngày nghỉ</span>' : '<span class="badge badge-gray">Ngày thường</span>';
+
+      const renderBoard = (filterText = '', deptFilter = '') => {
+        let filtered = userList;
+        if (filterText) {
+          const s = filterText.toLowerCase();
+          filtered = filtered.filter(u => u.fullName.toLowerCase().includes(s) || u.employeeCode.toLowerCase().includes(s));
+        }
+        if (deptFilter) {
+          filtered = filtered.filter(u => u.department === deptFilter);
+        }
+
+        const uniqueDepts = [...new Set(userList.map(u => u.department).filter(Boolean))];
+
+        content.innerHTML = `
+          <div class="att-board-note" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px;padding:12px 16px;background:linear-gradient(135deg, rgba(79,70,229,0.05) 0%, rgba(59,130,246,0.08) 100%);border:1px solid rgba(79,70,229,0.15);border-radius:10px;">
+            <div style="display:flex;gap:18px;flex-wrap:wrap;">
+              <div><small style="color:var(--text-2);display:block">Tổng nhân sự có OT</small><strong style="font-size:18px;color:var(--text)">${userList.length}</strong></div>
+              <div><small style="color:var(--text-2);display:block">Tổng số form OT</small><strong style="font-size:18px;color:var(--text)">${forms.length}</strong></div>
+              <div><small style="color:var(--text-2);display:block">Tổng giờ đề nghị</small><strong style="font-size:18px;color:var(--primary)">${formatHours(grandTotalRequestedMinutes)}</strong></div>
+              <div><small style="color:var(--text-2);display:block">Tổng giờ đã duyệt</small><strong style="font-size:18px;color:#10B981">${formatHours(grandTotalApprovedMinutes)}</strong></div>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <input type="text" id="ot-summary-search" placeholder="Tìm theo tên, mã NV..." value="${esc(filterText)}" style="padding:6px 10px;font-size:13px;border-radius:6px;border:1px solid var(--border);min-width:180px;background:var(--surface);"/>
+              ${uniqueDepts.length > 1 ? `
+                <select id="ot-summary-dept" style="padding:6px 10px;font-size:13px;border-radius:6px;border:1px solid var(--border);background:var(--surface);">
+                  <option value="">Tất cả phòng ban</option>
+                  ${uniqueDepts.map(d => `<option value="${esc(d)}" ${d === deptFilter ? 'selected' : ''}>${esc(d)}</option>`).join('')}
+                </select>
+              ` : ''}
+            </div>
+          </div>
+
+          <div class="table-wrap att-overtime-board-table" style="max-height:60vh;">
+            <table>
+              <thead>
+                <tr style="background:var(--surface-2);">
+                  <th style="width:40px;text-align:center;">#</th>
+                  <th>Nhân viên</th>
+                  <th>Phòng ban</th>
+                  <th style="text-align:center;">Số form</th>
+                  <th style="text-align:right;">Ngày thường</th>
+                  <th style="text-align:right;">Ngày nghỉ</th>
+                  <th style="text-align:right;">Ngày lễ</th>
+                  <th style="text-align:right;">Tổng đề nghị</th>
+                  <th style="text-align:right;color:#10B981;font-weight:700;">Tổng đã duyệt</th>
+                  <th style="text-align:center;width:90px;">Chi tiết</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${filtered.length ? filtered.map((u, idx) => `
+                  <tr class="ot-summary-main-row" data-user-id="${u.userId}" style="cursor:pointer;">
+                    <td style="text-align:center;color:var(--text-2);">${idx + 1}</td>
+                    <td>
+                      <strong>${esc(u.fullName)}</strong>
+                      <br><small style="color:var(--text-2);">${esc(u.employeeCode)}</small>
+                    </td>
+                    <td>${esc(u.department)}</td>
+                    <td style="text-align:center;">
+                      <span class="badge ${u.approvedForms > 0 ? 'badge-success' : 'badge-gray'}">${u.totalForms} form</span>
+                      ${u.pendingForms > 0 ? `<br><small style="color:var(--warning)">(${u.pendingForms} chờ duyệt)</small>` : ''}
+                    </td>
+                    <td style="text-align:right;">${u.workdayApprovedMinutes > 0 ? `<span style="color:var(--text)">${formatHours(u.workdayApprovedMinutes)}</span>` : '<span style="color:var(--text-3)">—</span>'}</td>
+                    <td style="text-align:right;">${u.restdayApprovedMinutes > 0 ? `<span style="color:#D97706;font-weight:600">${formatHours(u.restdayApprovedMinutes)}</span>` : '<span style="color:var(--text-3)">—</span>'}</td>
+                    <td style="text-align:right;">${u.holidayApprovedMinutes > 0 ? `<span style="color:#DC2626;font-weight:600">${formatHours(u.holidayApprovedMinutes)}</span>` : '<span style="color:var(--text-3)">—</span>'}</td>
+                    <td style="text-align:right;color:var(--text-2);">${formatHours(u.totalRequestedMinutes)}</td>
+                    <td style="text-align:right;">
+                      <strong style="color:#10B981;font-size:13.5px;background:rgba(16,185,129,0.1);padding:3px 8px;border-radius:6px;">${formatHours(u.totalApprovedMinutes)}</strong>
+                    </td>
+                    <td style="text-align:center;">
+                      <button class="btn-secondary btn-sm ot-toggle-detail-btn" data-user-id="${u.userId}" style="padding:3px 8px;font-size:11.5px;">
+                        ▼ Xem
+                      </button>
+                    </td>
+                  </tr>
+                  <tr class="ot-summary-detail-row" id="ot-detail-row-${u.userId}" style="display:none;background:var(--surface-2);">
+                    <td colspan="10" style="padding:12px 16px;">
+                      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;">
+                        <div style="font-weight:650;font-size:13px;margin-bottom:8px;color:var(--text);">
+                          📋 Chi tiết ${u.forms.length} form OT của ${esc(u.fullName)} (${esc(u.employeeCode)})
+                        </div>
+                        <table style="width:100%;font-size:12px;border-collapse:collapse;">
+                          <thead>
+                            <tr style="border-bottom:1px solid var(--border);color:var(--text-2);text-align:left;">
+                              <th style="padding:6px 8px;">Form ID</th>
+                              <th style="padding:6px 8px;">Thời gian ca OT</th>
+                              <th style="padding:6px 8px;">Thời điểm</th>
+                              <th style="padding:6px 8px;">Lý do</th>
+                              <th style="padding:6px 8px;text-align:right;">Đề nghị</th>
+                              <th style="padding:6px 8px;text-align:right;">Đã duyệt</th>
+                              <th style="padding:6px 8px;text-align:center;">Trạng thái</th>
+                              <th style="padding:6px 8px;">Ghi chú / Người duyệt</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            ${u.forms.map(form => {
+                              const items = form.items && form.items.length ? form.items : [{
+                                start_at: '—', end_at: '—', reason: '—', time_category: 'workday',
+                                requested_minutes: form.requested_minutes, approved_minutes: form.approved_minutes
+                              }];
+                              return items.map((item, itIdx) => `
+                                <tr style="border-bottom:1px dashed var(--border);">
+                                  <td style="padding:6px 8px;color:var(--text-2);">${itIdx === 0 ? `#${form.id}` : ''}</td>
+                                  <td style="padding:6px 8px;">${formatTime(item.start_at)}<br>→ ${formatTime(item.end_at)}</td>
+                                  <td style="padding:6px 8px;">${timeCatLabel(item.time_category)}</td>
+                                  <td style="padding:6px 8px;max-width:200px;">${esc(item.reason || '—')}</td>
+                                  <td style="padding:6px 8px;text-align:right;">${(Number(item.requested_minutes || 0) / 60).toFixed(2)}h</td>
+                                  <td style="padding:6px 8px;text-align:right;color:#10B981;font-weight:600;">${(Number(item.approved_minutes || 0) / 60).toFixed(2)}h</td>
+                                  <td style="padding:6px 8px;text-align:center;">${itIdx === 0 ? formStatus(form.status) : ''}</td>
+                                  <td style="padding:6px 8px;font-size:11px;color:var(--text-2);">${itIdx === 0 ? `${esc(form.review_note || '')}${form.reviewer_name ? ` · ${esc(form.reviewer_name)}` : ''}` : ''}</td>
+                                </tr>
+                              `).join('');
+                            }).join('')}
+                          </tbody>
+                        </table>
+                      </div>
+                    </td>
+                  </tr>
+                `).join('') : `<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--text-2);">Không tìm thấy nhân viên phù hợp</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+        `;
+
+        // Bind search & filter events
+        const searchInput = document.getElementById('ot-summary-search');
+        if (searchInput) {
+          searchInput.addEventListener('input', e => renderBoard(e.target.value, document.getElementById('ot-summary-dept')?.value || ''));
+          searchInput.focus();
+          searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+        }
+        const deptSelect = document.getElementById('ot-summary-dept');
+        if (deptSelect) {
+          deptSelect.addEventListener('change', e => renderBoard(document.getElementById('ot-summary-search')?.value || '', e.target.value));
+        }
+
+        // Bind row toggle buttons
+        content.querySelectorAll('.ot-toggle-detail-btn, .ot-summary-main-row').forEach(el => {
+          el.addEventListener('click', e => {
+            // Prevent double toggle if clicking button directly
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+            const uid = el.dataset.userId;
+            const detailRow = document.getElementById(`ot-detail-row-${uid}`);
+            const btn = content.querySelector(`.ot-toggle-detail-btn[data-user-id="${uid}"]`);
+            if (detailRow) {
+              const isHidden = detailRow.style.display === 'none';
+              detailRow.style.display = isHidden ? 'table-row' : 'none';
+              if (btn) btn.textContent = isHidden ? '▲ Đóng' : '▼ Xem';
+            }
+          });
+        });
+      };
+
+      renderBoard();
+
+    } catch (error) {
+      const content = document.getElementById('ot-summary-board-content');
+      if (content) content.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">${esc(error.message || 'Không thể tải bảng tổng hợp làm thêm giờ')}</div></div>`;
+    }
+  }
+
   async function loadHistory() {
     const listEl = document.getElementById('att-list');
     if (!listEl) return;
@@ -754,6 +998,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
         filteredEmployees = filterByDepartment(filteredEmployees, document.getElementById('att-dept-filter')?.value || '', ['department']);
         const locationFilter = document.getElementById('att-location-filter')?.value || '';
         if (locationFilter) filteredEmployees = filteredEmployees.filter(e => (e.work_location || '').toLowerCase() === locationFilter.toLowerCase());
+        filteredEmployees = sortVietnameseNames(filteredEmployees, 'full_name');
         const pageData = paginateRows(filteredEmployees, historyPage);
         historyPage = pageData.page;
         if (!filteredEmployees.length) { listEl.innerHTML = emptyHTML('👥', 'Không có nhân viên phù hợp'); return; }
@@ -833,11 +1078,11 @@ document.getElementById('btn-register').addEventListener('click', async () => {
                   <td style="white-space:nowrap">${esc((WORK_TYPE_LABEL[a.work_type] || WORK_TYPE_LABEL.office))}</td>
                   <td style="white-space:nowrap">${esc(SHIFT_LABEL_SHORT[a.shift] || SHIFT_LABEL_SHORT.full)}${a.work_type === 'business' ? `<br><span style="font-size:11px;color:var(--text-2)">${esc(a.expected_start||'—')}–${esc(a.expected_end||'—')}</span>` : ''}</td>
                   <td>${timeCell(a.checkin_time, checkinValid)}</td>
-                  <td>${timeCell(a.checkout_time, checkoutValid)}${Number(a.auto_checkout) ? '<br><span class="att-quen-checkout-tag">Quên checkout</span>' : ''}</td>
+                  <td>${timeCell(a.checkout_time, checkoutValid)}${Number(a.auto_checkout) ? '<br><span class="att-quen-checkout-tag">Tự động checkout</span>' : ''}</td>
                   <td>${a.work_hours ? Number(a.work_hours).toFixed(1)+'h' : '—'}</td>
                   <td>${a.overtime_status === 'approved' ? `<span class="badge badge-success">${Number(a.approved_overtime_minutes || 0) / 60}h duyệt</span>` : a.overtime_status === 'pending' ? '<span class="badge badge-warning">Chờ duyệt</span>' : a.overtime_status === 'rejected' ? `<span class="badge badge-danger">Từ chối</span>${a.overtime_review_note ? `<br><small style="color:var(--danger)">${esc(a.overtime_review_note)}</small>` : ''}` : '—'}</td>
                   <td>${statusWithMinutes(a)}</td>
-                  <td style="max-width:140px;">${esc(a.note||'—')}</td>
+                  <td style="max-width:140px;">${formatAttendanceNote(a.note)}</td>
                 </tr>`;
               }).join('')}
             </tbody>
@@ -907,18 +1152,18 @@ document.getElementById('btn-register').addEventListener('click', async () => {
           // Location-review (ngoài phạm vi GPS) indicator + admin action.
           let locReviewHtml = '';
           if (Number(r.checkin_requires_review) && r.checkin_review_status !== 'approved' && r.checkin_review_status !== 'rejected') {
-            locReviewHtml = `<div class="att-loc-review att-loc-review--pending"><span>🔴 Ngoài phạm vi · Cần xem xét</span><br><small>${Math.round(Number(r.checkin_distance_meters) || 0)} m / giới hạn ${Math.round(Number(r.checkin_office_radius) || 0)} m${r.checkin_accuracy_meters != null ? ` · GPS ±${Math.round(Number(r.checkin_accuracy_meters))} m` : ''}</small></div>`;
+            locReviewHtml = `<div class="att-loc-review att-loc-review--pending"><span>${icon('triangleAlert', 'xs')} Ngoài phạm vi · Cần xem xét</span><br><small>${Math.round(Number(r.checkin_distance_meters) || 0)} m / giới hạn ${Math.round(Number(r.checkin_office_radius) || 0)} m${r.checkin_accuracy_meters != null ? ` · GPS ±${Math.round(Number(r.checkin_accuracy_meters))} m` : ''}</small></div>`;
           } else if (r.checkin_review_status === 'approved') {
-            locReviewHtml = `<div class="att-loc-review att-loc-review--approved"><span>✅ Đã xác nhận vị trí</span></div>`;
+            locReviewHtml = `<div class="att-loc-review att-loc-review--approved"><span>${icon('circleCheck', 'xs')} Đã xác nhận vị trí</span></div>`;
           } else if (r.checkin_review_status === 'rejected') {
-            locReviewHtml = `<div class="att-loc-review att-loc-review--rejected"><span>⛔ Vị trí không hợp lệ</span>${r.checkin_review_note ? `<br><small>${esc(r.checkin_review_note)}</small>` : ''}</div>`;
+            locReviewHtml = `<div class="att-loc-review att-loc-review--rejected"><span>${icon('ban', 'xs')} Vị trí không hợp lệ</span>${r.checkin_review_note ? `<br><small>${esc(r.checkin_review_note)}</small>` : ''}</div>`;
           }
           const actions = [];
-          if (isManager) actions.push(`<button class="btn-icon att-summary-edit" data-id="${r.id}" data-checkin="${esc(r.checkin_time || '')}" data-checkout="${esc(r.checkout_time || '')}" data-status="${esc(r.status)}" data-note="${esc(r.note || '')}" data-work-type="${esc(r.work_type || 'office')}" data-shift="${esc(r.shift || 'full')}" data-expected-start="${esc(r.expected_start || '')}" data-expected-end="${esc(r.expected_end || '')}" title="Sửa">✏️</button>`);
+          if (isManager) actions.push(`<button class="btn-icon att-summary-edit" data-id="${r.id}" data-checkin="${esc(r.checkin_time || '')}" data-checkout="${esc(r.checkout_time || '')}" data-status="${esc(r.status)}" data-note="${esc(r.note || '')}" data-work-type="${esc(r.work_type || 'office')}" data-shift="${esc(r.shift || 'full')}" data-expected-start="${esc(r.expected_start || '')}" data-expected-end="${esc(r.expected_end || '')}" title="Sửa">${icon('pencil', 'xs')}</button>`);
           if (isManager && Number(r.checkin_requires_review) && r.checkin_review_status !== 'approved' && r.checkin_review_status !== 'rejected') {
             actions.push(`<button class="btn-secondary btn-xs att-review-btn" data-id="${r.id}" data-decision="approved">✓ Xác nhận</button><button class="btn-danger btn-xs att-review-btn" data-id="${r.id}" data-decision="rejected">✕ Không hợp lệ</button>`);
           }
-          return `<tr><td>${esc(r.date)}</td><td>${esc(new Date(r.date + 'T00:00:00').toLocaleDateString('vi-VN', { weekday: 'short' }))}</td><td>${esc(WORK_TYPE_LABEL[r.work_type] || WORK_TYPE_LABEL.office)}</td><td>${esc(SHIFT_LABEL_SHORT[r.shift] || SHIFT_LABEL_SHORT.full)}</td><td>${timeCell(r.checkin_time, checkinValid)}</td><td>${timeCell(r.checkout_time, checkoutValid)}</td><td>${r.work_hours ? Number(r.work_hours).toFixed(1) + 'h' : '—'}</td><td>${r.late_minutes ? r.late_minutes + 'p' : '—'}</td><td>${r.early_minutes ? r.early_minutes + 'p' : '—'}</td><td>${displayStatus}${locReviewHtml}</td><td>${esc(r.note || '—')}</td>${isManager ? `<td style="white-space:nowrap">${actions.join(' ')}</td>` : ''}</tr>`;
+          return `<tr><td>${esc(r.date)}</td><td>${esc(new Date(r.date + 'T00:00:00').toLocaleDateString('vi-VN', { weekday: 'short' }))}</td><td>${esc(WORK_TYPE_LABEL[r.work_type] || WORK_TYPE_LABEL.office)}</td><td>${esc(SHIFT_LABEL_SHORT[r.shift] || SHIFT_LABEL_SHORT.full)}</td><td>${timeCell(r.checkin_time, checkinValid)}</td><td>${timeCell(r.checkout_time, checkoutValid)}</td><td>${r.work_hours ? Number(r.work_hours).toFixed(1) + 'h' : '—'}</td><td>${r.late_minutes ? r.late_minutes + 'p' : '—'}</td><td>${r.early_minutes ? r.early_minutes + 'p' : '—'}</td><td>${displayStatus}${locReviewHtml}</td><td>${formatAttendanceNote(r.note)}</td>${isManager ? `<td style="white-space:nowrap">${actions.join(' ')}</td>` : ''}</tr>`;
         }).join('') : `<tr><td colspan="${isManager ? 12 : 11}" class="att-summary-empty">Không có bản ghi phù hợp.</td></tr>`;
         document.querySelectorAll('.att-summary-edit').forEach(btn => btn.addEventListener('click', () => openEditAttModal(btn.dataset)));
         document.querySelectorAll('.att-review-btn').forEach(btn => btn.addEventListener('click', async () => {
@@ -942,6 +1187,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
 
   document.getElementById('btn-my-att-summary')?.addEventListener('click', () => openAttendanceSummary(me.id));
   document.getElementById('btn-att-monthly-board')?.addEventListener('click', openMonthlyAttendanceBoard);
+  document.getElementById('btn-ot-summary-board')?.addEventListener('click', openOvertimeSummaryBoard);
 
   function openEditAttModal(data) {
     const standard = { morning: { lateAfter: '08:45', end: '12:00' }, afternoon: { lateAfter: '13:45', end: '17:00' }, full: { lateAfter: '08:45', end: '17:00' } }[data.shift] || { lateAfter: '08:45', end: '17:00' };
@@ -1152,8 +1398,35 @@ document.getElementById('btn-register').addEventListener('click', async () => {
   document.getElementById('att-geo-date')?.addEventListener('change', () => loadGeoPanel());
   document.getElementById('btn-geo-refresh')?.addEventListener('click', () => loadGeoPanel());
 
-  await loadTodayStatus();
-  await loadHistory();
+  let attEventTimer = null;
+  function handleAttendanceEvent() {
+    if (attEventTimer) clearTimeout(attEventTimer);
+    attEventTimer = setTimeout(() => {
+      if (!el.isConnected) return;
+      loadTodayStatus();
+      loadHistory();
+      loadGeoPanel();
+      if (canManageAttendance) {
+        loadAttendanceCompliance();
+        loadOvertimeRequests();
+      }
+    }, 250);
+  }
+
+  const prevCleanup = el._cleanup;
+  el._cleanup = () => {
+    if (attEventTimer) clearTimeout(attEventTimer);
+    if (typeof prevCleanup === 'function') prevCleanup();
+  };
+
+  EventBus.bindView(el, 'attendance', handleAttendanceEvent);
+  EventBus.bindView(el, 'attendance:*', handleAttendanceEvent);
+
+  await Promise.allSettled([
+    loadTodayStatus(),
+    loadHistory(),
+    loadGeoPanel(),
+  ]);
   if (routeEmployeeId && (canManageAttendance || routeEmployeeId === Number(me.id))) {
     openAttendanceSummary(routeEmployeeId, routeDate);
   }

@@ -6,7 +6,7 @@
 //          typing:stop, conversation:read
 // =====================================================================
 
-import { sendWebPushNotification } from '../server.js';
+import { sendWebPushNotification, broadcastAppEvent } from '../server.js';
 
 export class ChatRoom {
   constructor(ctx, env) {
@@ -202,6 +202,12 @@ export class ChatRoom {
 
     this.broadcast({ type: 'message:new', message: fullMsg });
 
+    // App-wide sync broadcast
+    await broadcastAppEvent(this.env, 'chat', 'chat:message_created', {
+      conversation_id: convId,
+      message: fullMsg,
+    }, { actorId: session.userId });
+
     // ── Web Push to offline members (lock screen / background) ──
     try {
       const { results: memberRows = [] } = await this.env.DB.prepare(
@@ -248,7 +254,14 @@ export class ChatRoom {
     ).bind(String(msg.content), now, Number(msg.message_id), session.userId).run();
 
     const updated = await this.fetchMessage(Number(msg.message_id), session.userId);
-    if (updated) this.broadcast({ type: 'message:edit', message: updated });
+    if (updated) {
+      this.broadcast({ type: 'message:edit', message: updated });
+      await broadcastAppEvent(this.env, 'chat', 'chat:message_edited', {
+        conversation_id: Number(this.conversationId),
+        message_id: Number(msg.message_id),
+        message: updated,
+      }, { actorId: session.userId });
+    }
   }
 
   async handleDelete(session, msg) {
@@ -259,6 +272,11 @@ export class ChatRoom {
     ).bind(now, Number(msg.message_id), session.userId).run();
 
     this.broadcast({ type: 'message:delete', message_id: Number(msg.message_id), deleted_at: now });
+    await broadcastAppEvent(this.env, 'chat', 'chat:message_deleted', {
+      conversation_id: Number(this.conversationId),
+      message_id: Number(msg.message_id),
+      deleted_at: now,
+    }, { actorId: session.userId });
   }
 
   async handleReaction(session, msg, action) {
@@ -278,6 +296,11 @@ export class ChatRoom {
 
     const reactions = await this.fetchReactions(messageId);
     this.broadcast({ type: 'reaction:update', message_id: messageId, reactions });
+    await broadcastAppEvent(this.env, 'chat', 'chat:reaction_updated', {
+      conversation_id: Number(this.conversationId),
+      message_id: messageId,
+      reactions,
+    }, { actorId: session.userId });
   }
 
   async handleRead(session, msg) {

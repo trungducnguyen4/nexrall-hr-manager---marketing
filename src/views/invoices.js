@@ -1,6 +1,8 @@
 import { api } from '../api.js?v=20260722-payroll-export-ux';
-import { esc, fmtMoney, fmtDateTime, invStatusBadge, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js?v=20260722-payroll-export-ux';
+import { EventBus } from '../event-bus.js';
+import { esc, fmtMoney, fmtDateTime, invStatusBadge, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination, sortVietnameseNames, compareVietnameseNames } from '../utils.js?v=20260722-payroll-export-ux';
 import { payslipDetailHTML, hydratePayslipAttendance, preparePayslipModal } from './payslip-detail.js';
+import { icon } from '../icons.js';
 
 export async function renderInvoices(el, me) {
   const isManager = me.role === 'admin' || me.role === 'manager';
@@ -8,10 +10,10 @@ export async function renderInvoices(el, me) {
   el.innerHTML = `
     <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;">
       <div>
-        <div class="page-title">💰 Phiếu lương</div>
+        <div class="page-title">${icon('creditCard', 'lg')} <span>Phiếu lương</span></div>
         <div class="page-sub">Quản lý phiếu lương nhân viên</div>
       </div>
-      ${isManager ? `<button id="btn-new-inv" class="btn-primary btn-sm">+ Tạo phiếu</button>` : ''}
+      ${isManager ? `<button id="btn-new-inv" class="btn-primary btn-sm">${icon('plus', 'xs')} <span>Tạo phiếu</span></button>` : ''}
     </div>
 
     <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
@@ -42,7 +44,7 @@ export async function renderInvoices(el, me) {
   let currentPage = 1;
   if (isManager) {
     try {
-      users = (await api.getUsers()).users || [];
+      users = sortVietnameseNames((await api.getUsers()).users || [], 'full_name');
       const sel = document.getElementById('inv-user-filter');
       users.forEach(u => {
         const opt = document.createElement('option');
@@ -79,6 +81,7 @@ export async function renderInvoices(el, me) {
       if (isManager) {
         filteredInvoices = filterBySearch(filteredInvoices, document.getElementById('inv-search')?.value || '', ['full_name', 'employee_code', 'invoice_number']);
         filteredInvoices = filterByDepartment(filteredInvoices, document.getElementById('inv-dept-filter')?.value || '', ['department']);
+        filteredInvoices = sortVietnameseNames(filteredInvoices, 'full_name');
       }
       const pageData = paginateRows(filteredInvoices, currentPage);
       currentPage = pageData.page;
@@ -111,6 +114,13 @@ export async function renderInvoices(el, me) {
   document.getElementById('btn-new-inv')?.addEventListener('click', () => {
     openCreateInvoiceModal(users, loadInvoices);
   });
+
+  el._cleanup = () => {};
+
+  EventBus.bindView(el, 'invoices', () => loadInvoices());
+  EventBus.bindView(el, 'invoices:*', () => loadInvoices());
+  EventBus.bindView(el, 'payroll', () => loadInvoices());
+  EventBus.bindView(el, 'payroll:*', () => loadInvoices());
 
   loadInvoices();
 }

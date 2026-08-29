@@ -1,11 +1,13 @@
 import { api } from '../api.js';
 import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML } from '../utils.js';
+import { icon } from '../icons.js';
 
 const PAGE_SIZE = 10;
 
 export async function renderDbAdmin(el, me) {
+  el._cleanup = () => {};
   if (me.role !== 'admin') {
-    el.innerHTML = `<div class="empty-state"><div class="empty-icon">🔒</div><div class="empty-text">Chỉ Admin mới có quyền truy cập</div></div>`;
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">${icon('lock', 'lg')}</div><div class="empty-text">Chỉ Admin mới có quyền truy cập</div></div>`;
     return;
   }
 
@@ -20,18 +22,18 @@ export async function renderDbAdmin(el, me) {
   el.innerHTML = `
     <div class="page-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
       <div>
-        <div class="page-title">🗂️ Database Admin</div>
+        <div class="page-title">${icon('archive', 'lg')} <span>Database Admin</span></div>
         <div class="page-sub">Xem và chỉnh sửa dữ liệu hệ thống ở chế độ admin an toàn</div>
       </div>
-      <button id="db-refresh" class="btn-secondary btn-sm">🔄 Làm mới</button>
+      <button id="db-refresh" class="btn-secondary btn-sm">${icon('refreshCw', 'xs')} <span>Làm mới</span></button>
     </div>
 
     <div class="card" style="margin-bottom:14px;">
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
         <select id="db-table-select" style="flex:1;min-width:180px;"></select>
         <input id="db-search" type="text" placeholder="Tìm kiếm..." style="flex:2;min-width:180px;"/>
-        <button id="db-add" class="btn-primary btn-sm">+ Thêm dòng</button>
-        <button id="db-export" class="btn-secondary btn-sm">⬇ Export CSV</button>
+        <button id="db-add" class="btn-primary btn-sm">${icon('plus', 'xs')} <span>Thêm dòng</span></button>
+        <button id="db-export" class="btn-secondary btn-sm">${icon('download', 'xs')} <span>Export CSV</span></button>
       </div>
     </div>
 
@@ -213,6 +215,8 @@ export async function renderDbAdmin(el, me) {
     a.click();
     URL.revokeObjectURL(a.href);
   }
+
+  el._cleanup = () => {};
 
   loadTables();
 }

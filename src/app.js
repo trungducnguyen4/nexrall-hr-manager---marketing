@@ -1,9 +1,11 @@
 // ════════════════════════════════════════════════
 //  HR Manager — Main App Entry
 // ════════════════════════════════════════════════
-import { api, setToken, loadToken, clearCache } from './api.js?v=20260817-geofence-soft-v1';
+import { api, setToken, loadToken, getToken, clearCache } from './api.js?v=20260817-geofence-soft-v1';
+import { realtime } from './realtime.js';
+import { EventBus } from './event-bus.js';
 import { initNativeShell, verifyBiometricIfAvailable } from './native.js';
-import { setAvatar, toast, initials, avatarColor, closeModal, isHcnsDepartment, roleLabel } from './utils.js?v=20260826-role-label-fix-v1';
+import { setAvatar, toast, initials, avatarColor, closeModal, isHcnsDepartment, roleLabel, yieldToMain } from './utils.js?v=20260826-role-label-fix-v1';
 import { icon } from './icons.js';
 import { playChatSound, playMentionSound, playTaskSound, isSoundEnabled, toggleSound } from './sound.js';
 import { autoSyncPushSubscription } from './push.js';
@@ -42,9 +44,9 @@ let _appInitialized = false;
 let _activeViewNode = null;
 let _activeViewCleanup = null;
 let _routeGeneration = 0;
-let _chatUnreadTimer = null;
 let _chatUnreadRequestInFlight = false;
 let _chatUnreadWatchersBound = false;
+let _realtimeUnsubs = [];
 
 // ── DOM refs ────────────────────────────────────
 const loginScreen  = document.getElementById('login-screen');
@@ -81,6 +83,7 @@ loginForm.addEventListener('submit', async (e) => {
     const { token, user: userData } = await api.login(user, pw);
     await setToken(token);
     me = userData;
+    realtime.connect({ user: me, token });
     if (me.must_change_password) window.location.hash = '#/settings';
     loginScreen.classList.add('hidden');
     appEl.classList.remove('hidden');
@@ -107,7 +110,8 @@ async function boot() {
   appEl.classList.add('hidden');
   loginScreen.classList.remove('hidden');
 
-  if (!await loadToken()) return;
+  const token = await loadToken();
+  if (!token) return;
 
   loginBtn.disabled = true;
   loginBtn.textContent = 'Đang kiểm tra phiên...';
@@ -116,11 +120,13 @@ async function boot() {
     await verifyBiometricIfAvailable();
     const { user: userData } = await api.me();
     me = userData;
+    realtime.connect({ user: me, token });
     if (me.must_change_password) window.location.hash = '#/settings';
     loginScreen.classList.add('hidden');
     appEl.classList.remove('hidden');
     initApp();
   } catch (_) {
+    realtime.disconnect();
     await setToken(null);
     clearCache();
     loginUser.value = '';
@@ -136,7 +142,20 @@ async function boot() {
 // ════════════════════════════════════════════════
 //  APP INIT
 // ════════════════════════════════════════════════
-async function refreshEmployeeAlertBadge() {
+let _alertBadgeInFlight = false;
+let _alertBadgeTimer = null;
+export function refreshEmployeeAlertBadge(immediate = false) {
+  if (_alertBadgeTimer) clearTimeout(_alertBadgeTimer);
+  if (immediate) {
+    _doRefreshEmployeeAlertBadge();
+  } else {
+    _alertBadgeTimer = setTimeout(_doRefreshEmployeeAlertBadge, 150);
+  }
+}
+
+async function _doRefreshEmployeeAlertBadge() {
+  if (_alertBadgeInFlight || !me) return;
+  _alertBadgeInFlight = true;
   const iconHost = document.getElementById('employee-alert-icon');
   const countHost = document.getElementById('employee-alert-count');
   const bottomBadge = document.getElementById('bottom-nav-notif-badge');
@@ -156,6 +175,8 @@ async function refreshEmployeeAlertBadge() {
   } catch (_) {
     if (countHost) countHost.classList.add('hidden');
     if (bottomBadge) bottomBadge.classList.add('hidden');
+  } finally {
+    _alertBadgeInFlight = false;
   }
 }
 
@@ -163,9 +184,22 @@ let _lastTaskMentionCount = null;
 let _lastChatUnreadCount = null;
 let _lastChatMentionKey = null;
 
-async function refreshTaskMentionBadge() {
+let _taskMentionInFlight = false;
+let _taskMentionTimer = null;
+export function refreshTaskMentionBadge(immediate = false) {
+  if (_taskMentionTimer) clearTimeout(_taskMentionTimer);
+  if (immediate) {
+    _doRefreshTaskMentionBadge();
+  } else {
+    _taskMentionTimer = setTimeout(_doRefreshTaskMentionBadge, 150);
+  }
+}
+
+async function _doRefreshTaskMentionBadge() {
+  if (_taskMentionInFlight || !me) return;
   const badge = document.getElementById('task-mention-badge');
   if (!badge) return;
+  _taskMentionInFlight = true;
   try {
     const { count = 0 } = await api.getUnreadMentionCount();
     const numCount = Number(count || 0);
@@ -175,10 +209,11 @@ async function refreshTaskMentionBadge() {
     _lastTaskMentionCount = numCount;
     badge.textContent = numCount > 99 ? '99+' : String(numCount);
     badge.classList.toggle('hidden', numCount < 1);
-  } catch (_) {}
+  } catch (_) {
+  } finally {
+    _taskMentionInFlight = false;
+  }
 }
-
-let _mentionBadgeTimer = null;
 
 function setChatUnreadBadge(value) {
   const count = Math.max(0, Number(value) || 0);
@@ -286,6 +321,80 @@ function onDataMutated() {
   refreshTaskMentionBadge();
 }
 
+function setupRealtimeBusListeners() {
+  _realtimeUnsubs.forEach(unsub => { try { unsub(); } catch (_) {} });
+  _realtimeUnsubs = [];
+
+  // Chat events -> refresh header summary & unread badges reactively
+  _realtimeUnsubs.push(EventBus.on('chat', () => refreshChatHeaderSummary()));
+  _realtimeUnsubs.push(EventBus.on('chat:*', () => refreshChatHeaderSummary()));
+
+  // Task mentions & comments -> refresh task mention badge reactively
+  _realtimeUnsubs.push(EventBus.on('notification:mention', () => {
+    refreshTaskMentionBadge();
+    refreshEmployeeAlertBadge();
+  }));
+  _realtimeUnsubs.push(EventBus.on('task:mention', () => refreshTaskMentionBadge()));
+  _realtimeUnsubs.push(EventBus.on('comment:created', () => refreshTaskMentionBadge()));
+  _realtimeUnsubs.push(EventBus.on('task-mentions-read', () => refreshTaskMentionBadge()));
+
+  // Notification center & HR alerts -> refresh alert badge reactively
+  _realtimeUnsubs.push(EventBus.on('notifications', () => refreshEmployeeAlertBadge()));
+  _realtimeUnsubs.push(EventBus.on('notification:*', () => refreshEmployeeAlertBadge()));
+
+  // Tasks mutations -> refresh badges
+  _realtimeUnsubs.push(EventBus.on('tasks', () => refreshTaskMentionBadge()));
+  _realtimeUnsubs.push(EventBus.on('task:*', (data, topic) => {
+    refreshTaskMentionBadge();
+    if (topic === 'task:completed_notif' && data?.title) {
+      refreshEmployeeAlertBadge();
+      toast(`✅ Hoàn thành: ${data.title} (${data.completedBy || 'Nhân viên'})`, 'info', 4000);
+    }
+  }));
+
+  // Leave & Attendance & Invoices -> refresh alert badge
+  _realtimeUnsubs.push(EventBus.on('leave', () => refreshEmployeeAlertBadge()));
+  _realtimeUnsubs.push(EventBus.on('leave:*', () => refreshEmployeeAlertBadge()));
+  _realtimeUnsubs.push(EventBus.on('attendance', () => refreshEmployeeAlertBadge()));
+  _realtimeUnsubs.push(EventBus.on('attendance:*', () => refreshEmployeeAlertBadge()));
+  _realtimeUnsubs.push(EventBus.on('invoices', () => refreshEmployeeAlertBadge()));
+  _realtimeUnsubs.push(EventBus.on('invoices:*', () => refreshEmployeeAlertBadge()));
+  _realtimeUnsubs.push(EventBus.on('invoice:*', () => refreshEmployeeAlertBadge()));
+
+  // User profile / avatar updates
+  _realtimeUnsubs.push(EventBus.on('users', (event) => {
+    const payload = event?.payload || {};
+    const uid = payload.id !== undefined ? payload.id : event?.actorId;
+    if (Number(uid) === Number(me?.id)) {
+      if (payload.avatar_url !== undefined) {
+        me.avatar_url = payload.avatar_url;
+        setAvatar(document.getElementById('sidebar-av'), me.full_name, me.avatar_color, me.avatar_initials, me.avatar_url);
+        setAvatar(document.getElementById('header-av'), me.full_name, me.avatar_color, me.avatar_initials, me.avatar_url);
+      }
+      if (payload.full_name) {
+        me.full_name = payload.full_name;
+        document.getElementById('sidebar-name').textContent = me.full_name;
+      }
+      if (payload.role) {
+        me.role = payload.role;
+        document.getElementById('sidebar-role').textContent = roleLabel(me.role);
+      }
+    }
+  }));
+
+  // Reconnection / overflow resync
+  _realtimeUnsubs.push(EventBus.on('realtime:replayed', () => {
+    refreshChatHeaderSummary();
+    refreshEmployeeAlertBadge();
+    refreshTaskMentionBadge();
+  }));
+  _realtimeUnsubs.push(EventBus.on('realtime:overflow', () => {
+    refreshChatHeaderSummary();
+    refreshEmployeeAlertBadge();
+    refreshTaskMentionBadge();
+  }));
+}
+
 function startChatUnreadWatcher() {
   if (!_chatUnreadWatchersBound) {
     document.addEventListener('visibilitychange', onChatUnreadForeground);
@@ -294,20 +403,13 @@ function startChatUnreadWatcher() {
     document.addEventListener('hr-data-mutated', onDataMutated);
     _chatUnreadWatchersBound = true;
   }
+  setupRealtimeBusListeners();
   refreshChatHeaderSummary();
   refreshEmployeeAlertBadge();
   refreshTaskMentionBadge();
-  if (!_chatUnreadTimer) _chatUnreadTimer = window.setInterval(() => {
-    refreshChatHeaderSummary();
-    refreshEmployeeAlertBadge();
-  }, 10_000);
 }
 
 function stopChatUnreadWatcher() {
-  if (_chatUnreadTimer) window.clearInterval(_chatUnreadTimer);
-  _chatUnreadTimer = null;
-  if (_mentionBadgeTimer) window.clearInterval(_mentionBadgeTimer);
-  _mentionBadgeTimer = null;
   if (_chatUnreadWatchersBound) {
     document.removeEventListener('visibilitychange', onChatUnreadForeground);
     window.removeEventListener('focus', onChatUnreadForeground);
@@ -315,6 +417,8 @@ function stopChatUnreadWatcher() {
     document.removeEventListener('hr-data-mutated', onDataMutated);
     _chatUnreadWatchersBound = false;
   }
+  _realtimeUnsubs.forEach(unsub => { try { unsub(); } catch (_) {} });
+  _realtimeUnsubs = [];
   _chatUnreadRequestInFlight = false;
   setChatUnreadBadge(0);
   clearChatAttention();
@@ -353,8 +457,10 @@ function initApp() {
   renderSoundButton();
   refreshEmployeeAlertBadge();
   refreshTaskMentionBadge();
-  if (_mentionBadgeTimer) clearInterval(_mentionBadgeTimer);
-  _mentionBadgeTimer = setInterval(refreshTaskMentionBadge, 30000);
+  if (!realtime.isConnected()) {
+    const token = getToken();
+    if (token) realtime.connect({ user: me, token });
+  }
   startChatUnreadWatcher();
   autoSyncPushSubscription().catch(() => {});
 
@@ -426,40 +532,38 @@ function initApp() {
     }
   });
 
-  // Mobile virtual keyboard detection (hides bottom nav bar when typing)
+  // Mobile virtual keyboard detection (hides bottom nav bar only when virtual keyboard is active on mobile)
   if (window.visualViewport) {
     let initialViewportH = window.visualViewport.height;
+    let _kbRaf = false;
     window.visualViewport.addEventListener('resize', () => {
-      const isKeyboard = window.visualViewport.height < initialViewportH * 0.82;
-      document.body.classList.toggle('keyboard-open', isKeyboard);
-    });
-  }
-  document.addEventListener('focusin', (e) => {
-    const target = e.target;
-    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
-      document.body.classList.add('keyboard-open');
-    }
-  });
-  document.addEventListener('focusout', (e) => {
-    const target = e.target;
-    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
-      setTimeout(() => {
-        const active = document.activeElement;
-        if (!active || (active.tagName !== 'INPUT' && active.tagName !== 'TEXTAREA' && !active.isContentEditable)) {
+      if (window.innerWidth >= 768) {
+        if (document.body.classList.contains('keyboard-open')) {
           document.body.classList.remove('keyboard-open');
         }
-      }, 100);
-    }
-  });
+        return;
+      }
+      if (!_kbRaf) {
+        _kbRaf = true;
+        requestAnimationFrame(() => {
+          _kbRaf = false;
+          const isKeyboard = window.visualViewport.height < initialViewportH * 0.82;
+          document.body.classList.toggle('keyboard-open', isKeyboard);
+        });
+      }
+    });
+  }
 
   document.getElementById('btn-logout').addEventListener('click', async () => {
     try { await api.logout(); } catch(_) {}
+    realtime.disconnect();
     stopChatUnreadWatcher();
     await setToken(null);
     me = null;
     // Clear all caches on logout
     clearCache();
     _destroyAllViews();
+    _appInitialized = false;
     appEl.classList.add('hidden');
     loginScreen.classList.remove('hidden');
     loginUser.value = '';
@@ -477,165 +581,27 @@ function initApp() {
   route();
 }
 
-const GLYPH_ICONS = {
-  '🏠': 'layoutDashboard',
-  '⏱️': 'clock3',
-  '⏱': 'clock3',
-  '🏖️': 'calendarDays',
-  '🏖': 'calendarDays',
-  '📋': 'clipboardList',
-  '💵': 'banknote',
-  '💰': 'banknote',
-  '📈': 'barChart3',
-  '📊': 'barChart3',
-  '👥': 'users',
-  '🏢': 'building2',
-  '🎯': 'target',
-  '📣': 'megaphone',
-  '📡': 'wifi',
-  '⚙️': 'settings',
-  '⚙': 'settings',
-  '🔑': 'keyRound',
-  '🚪': 'logOut',
-  '☰': 'menu',
-  '✕': 'x',
-  '✖': 'x',
-  '←': 'arrowLeft',
-  '→': 'arrowRight',
-  '✅': 'circleCheck',
-  '❌': 'circleX',
-  '⚠️': 'triangleAlert',
-  '⚠': 'triangleAlert',
-  '🔒': 'lock',
-  '🔓': 'lockOpen',
-  '⛔': 'ban',
-  '✏️': 'pencil',
-  '✏': 'pencil',
-  '🗑️': 'trash2',
-  '🗑': 'trash2',
-  '🔍': 'search',
-  '📅': 'calendarDays',
-  '🗓️': 'calendarDays',
-  '🗓': 'calendarDays',
-  '🕒': 'clock3',
-  '⏳': 'clock3',
-  '⏰': 'clock3',
-  '🔄': 'refreshCw',
-  '📌': 'mapPin',
-  '➡': 'arrowRight',
-  '⬆': 'arrowUp',
-  '⬇': 'arrowDown',
-  '🔥': 'triangleAlert',
-  '💳': 'creditCard',
-  '👑': 'shieldAlert',
-  '⭐': 'star',
-  '👤': 'userRound',
-  '🎓': 'badgeCheck',
-  '🧪': 'clipboardCheck',
-  '📝': 'fileText',
-  '🗂️': 'library',
-  '🗂': 'library',
-  '🎁': 'gift',
-  '▶️': 'arrowRight',
-  '▶': 'arrowRight',
-  '📱': 'smartPhone',
-  '📧': 'mail',
-  '🤝': 'handshake',
-  '👁️': 'eye',
-  '👁': 'eye',
-  '🏁': 'flag',
-  '☑️': 'clipboardCheck',
-  '☑': 'clipboardCheck',
-  '☀️': 'sun',
-  '☀': 'sun',
-  '🌤️': 'sun',
-  '🌤': 'sun',
-  '🌙': 'moon',
-  '🏥': 'heartPulse',
-  '👶': 'userRound',
-  '✈️': 'plane',
-  '✈': 'plane',
-  '🏃': 'activity',
-  '🌓': 'moon',
-  '👋': 'userRound',
-  '💡': 'lightbulb',
-  '🏆': 'trophy',
-  '💻': 'notebookTabs',
-  '🎨': 'sparkles',
-};
-
-function normalizeIcons(root = document) {
+export function normalizeIcons(root = document) {
   renderDataIcons(root);
-  replaceGlyphTextNodes(root);
+}
+
+if (typeof window !== 'undefined') {
+  window.normalizeIcons = normalizeIcons;
 }
 
 function renderDataIcons(root = document) {
+  if (!root) return;
   const nodes = [];
-  if (root.nodeType === Node.ELEMENT_NODE && root.matches('[data-icon]')) nodes.push(root);
+  if (root.nodeType === 1 && root.matches?.('[data-icon]')) nodes.push(root);
   if (root.querySelectorAll) nodes.push(...root.querySelectorAll('[data-icon]'));
-  nodes.forEach(el => {
-    if (el.dataset.iconRendered === '1') return;
-    const size = el.dataset.iconSize || (el.classList.contains('nav-icon') ? 'lg' : 'sm');
+  for (let i = 0; i < nodes.length; i++) {
+    const el = nodes[i];
+    if (el.dataset.iconRendered === '1') continue;
+    const size = el.dataset.iconSize || (el.classList?.contains('nav-icon') ? 'lg' : 'sm');
     el.innerHTML = icon(el.dataset.icon, size);
     el.dataset.iconRendered = '1';
-  });
-}
-
-function replaceGlyphTextNodes(root = document) {
-  if (root.nodeType === Node.TEXT_NODE) {
-    replaceGlyphNode(root);
-    return;
   }
-  if (root.nodeType !== Node.ELEMENT_NODE && root.nodeType !== Node.DOCUMENT_NODE) return;
-  const walkerRoot = root.nodeType === Node.TEXT_NODE ? root.parentNode : root;
-  if (!walkerRoot) return;
-  const walker = document.createTreeWalker(walkerRoot, NodeFilter.SHOW_TEXT, {
-    acceptNode(node) {
-      const parent = node.parentElement;
-      if (!parent || parent.closest('script,style,textarea,option')) return NodeFilter.FILTER_REJECT;
-      if (parent.closest('svg,.app-icon')) return NodeFilter.FILTER_REJECT;
-      return Object.keys(GLYPH_ICONS).some(glyph => node.nodeValue.includes(glyph))
-        ? NodeFilter.FILTER_ACCEPT
-        : NodeFilter.FILTER_REJECT;
-    }
-  });
-  const nodes = [];
-  while (walker.nextNode()) nodes.push(walker.currentNode);
-  nodes.forEach(replaceGlyphNode);
 }
-
-function replaceGlyphNode(textNode) {
-  const parent = textNode.parentElement;
-  if (!parent || parent.closest('script,style,textarea,option,svg,.app-icon')) return;
-  const text = textNode.nodeValue;
-  const glyphs = Object.keys(GLYPH_ICONS).filter(glyph => text.includes(glyph));
-  if (!glyphs.length) return;
-  const pattern = new RegExp(glyphs.map(escapeRegExp).join('|'), 'g');
-  const frag = document.createDocumentFragment();
-  let lastIndex = 0;
-  for (const match of text.matchAll(pattern)) {
-    if (match.index > lastIndex) frag.append(document.createTextNode(text.slice(lastIndex, match.index)));
-    const wrap = document.createElement('span');
-    wrap.innerHTML = icon(GLYPH_ICONS[match[0]], 'sm');
-    frag.append(wrap.firstElementChild);
-    lastIndex = match.index + match[0].length;
-  }
-  if (lastIndex < text.length) frag.append(document.createTextNode(text.slice(lastIndex)));
-  textNode.replaceWith(frag);
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-const iconObserver = new MutationObserver(mutations => {
-  for (const mutation of mutations) {
-    mutation.addedNodes.forEach(node => {
-      if (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.TEXT_NODE) normalizeIcons(node);
-    });
-  }
-});
-iconObserver.observe(document.documentElement, { childList: true, subtree: true });
 
 function syncBottomNav(hash, path, segments) {
   const isSelfProfile = path === 'users' && segments[1] && String(segments[1]) === String(me?.id);
@@ -661,11 +627,16 @@ async function route() {
   const segments = routeKey.split('/').filter(Boolean);
   const path = segments[0] || 'dashboard';
 
+  // 1. Immediately update active nav state (instant paint for INP < 16ms)
   document.querySelectorAll('.nav-item[data-nav]').forEach(link => {
     link.classList.toggle('active', link.dataset.nav === path);
   });
 
   syncBottomNav(hash, path, segments);
+
+  // Yield to allow the browser to paint the immediate active tab/nav feedback
+  await yieldToMain();
+  if (routeGeneration !== _routeGeneration) return;
 
   // Keep exactly one route view in the DOM. Views contain repeated element IDs
   // and some legacy global selectors; retaining hidden route DOM lets events
@@ -701,6 +672,7 @@ async function route() {
         viewNode.remove();
         return;
       }
+      normalizeIcons(viewNode);
       _activeViewNode = viewNode;
       _activeViewCleanup = viewNode._cleanup || null;
       viewNode._cleanup = null;
@@ -840,4 +812,5 @@ function startClock() {
 // ════════════════════════════════════════════════
 window.onerror = (msg, src, line, col, err) => console.error('APP ERROR:', msg, err);
 initNativeShell();
+normalizeIcons(document);
 boot();

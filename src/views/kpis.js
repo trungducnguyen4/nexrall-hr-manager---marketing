@@ -1,5 +1,7 @@
 import { api } from '../api.js';
-import { esc, openModal, closeModal, toast, loadingHTML, emptyHTML } from '../utils.js?v=20260729-modal-reset';
+import { EventBus } from '../event-bus.js';
+import { esc, openModal, closeModal, toast, loadingHTML, emptyHTML, sortVietnameseNames, compareVietnameseNames } from '../utils.js?v=20260729-modal-reset';
+import { icon } from '../icons.js';
 
 const SCORED = [
   ['HS01', 'Hoàn thành mục tiêu tháng'], ['HS02', 'Chất lượng đầu ra'],
@@ -66,19 +68,26 @@ async function showKpiEvidenceAudit(planId) {
 
 export async function renderKpis(el, me) {
   const d = now(), admin = hr(me);
-  el.innerHTML = `<div class="page-header"><div><div class="page-title">🎯 KPI nhân viên</div><div class="page-sub">KPI theo nhân viên, template và điểm Nhóm 1 tự động.</div></div>${admin ? '<button id="kpi-new" class="btn-primary">+ Tạo KPI tháng</button>' : ''}</div><div class="filter-bar"><label>Tháng <input id="kpi-month" type="number" min="1" max="12" value="${d.month}" style="width:70px"></label><label>Năm <input id="kpi-year" type="number" value="${d.year}" style="width:90px"></label><button id="kpi-load" class="btn-secondary btn-sm">Xem</button></div><div id="kpi-table">${loadingHTML()}</div>`;
+  el.innerHTML = `<div class="page-header"><div><div class="page-title">${icon('target', 'lg')} <span>KPI nhân viên</span></div><div class="page-sub">KPI theo nhân viên, template và điểm Nhóm 1 tự động.</div></div>${admin ? `<button id="kpi-new" class="btn-primary">${icon('plus', 'xs')} <span>Tạo KPI tháng</span></button>` : ''}</div><div class="filter-bar"><label>Tháng <input id="kpi-month" type="number" min="1" max="12" value="${d.month}" style="width:70px"></label><label>Năm <input id="kpi-year" type="number" value="${d.year}" style="width:90px"></label><button id="kpi-load" class="btn-secondary btn-sm">Xem</button></div><div id="kpi-table">${loadingHTML()}</div>`;
   async function load() {
     const month = +el.querySelector('#kpi-month').value, year = +el.querySelector('#kpi-year').value, box = el.querySelector('#kpi-table');
     box.innerHTML = loadingHTML();
     if (!admin) return renderEmployeeKpi(box, month, year, load);
     try {
       const { kpis = [] } = await api.getKpiDashboard({ month, year });
-      box.innerHTML = kpis.length ? `<div class="card"><div class="table-wrap"><table><thead><tr><th>Nhân viên</th><th>Phòng ban</th><th>Trạng thái</th><th>Chỉ tiêu</th><th>Nhóm 1</th></tr></thead><tbody>${kpis.map(r => `<tr class="kpi-dashboard-row" tabindex="0" role="button" aria-label="Mở KPI của ${esc(r.full_name)}" data-id="${r.employee_id}"><td><strong>${esc(r.full_name)}</strong></td><td>${esc(r.department || '—')}</td><td><span class="badge ${r.status === 'APPROVED' ? 'badge-success' : r.status === 'SUBMITTED' ? 'badge-warning' : 'badge-gray'}">${esc(status[r.status] || 'Chưa cấu hình')}</span></td><td>${r.item_count || 0}</td><td>${r.group1_score == null ? '—' : r.group1_score + '/60'}</td></tr>`).join('')}</tbody></table></div></div>` : emptyHTML('🎯', 'Chưa có KPI tháng');
+      const sortedKpis = sortVietnameseNames(kpis, 'full_name');
+      box.innerHTML = sortedKpis.length ? `<div class="card"><div class="table-wrap"><table><thead><tr><th>Nhân viên</th><th>Phòng ban</th><th>Trạng thái</th><th>Chỉ tiêu</th><th>Nhóm 1</th></tr></thead><tbody>${sortedKpis.map(r => `<tr class="kpi-dashboard-row" tabindex="0" role="button" aria-label="Mở KPI của ${esc(r.full_name)}" data-id="${r.employee_id}"><td><strong>${esc(r.full_name)}</strong></td><td>${esc(r.department || '—')}</td><td><span class="badge ${r.status === 'APPROVED' ? 'badge-success' : r.status === 'SUBMITTED' ? 'badge-warning' : 'badge-gray'}">${esc(status[r.status] || 'Chưa cấu hình')}</span></td><td>${r.item_count || 0}</td><td>${r.group1_score == null ? '—' : r.group1_score + '/60'}</td></tr>`).join('')}</tbody></table></div></div>` : emptyHTML('🎯', 'Chưa có KPI tháng');
       box.querySelectorAll('.kpi-dashboard-row').forEach(row => { const open = () => detail(+row.dataset.id, month, year, me, load); row.onclick = open; row.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); } }; });
     } catch (error) { box.innerHTML = emptyHTML('⚠️', error.message); }
   }
   el.querySelector('#kpi-load').onclick = load;
   el.querySelector('#kpi-new')?.addEventListener('click', () => editor(me, load));
+
+  el._cleanup = () => {};
+
+  EventBus.bindView(el, 'kpis', () => load());
+  EventBus.bindView(el, 'kpi:*', () => load());
+
   await load();
 }
 

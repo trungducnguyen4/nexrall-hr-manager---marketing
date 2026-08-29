@@ -1,5 +1,7 @@
-import { esc, lifecycleBadge, today } from '../utils.js';
+import { esc, lifecycleBadge, today, isHcnsDepartment, yieldToMain } from '../utils.js';
+import { icon } from '../icons.js';
 import { api } from '../api.js';
+import { EventBus } from '../event-bus.js';
 import { renderGeoMap, classifyMarker } from '../geo-map.js?v=20260817-dash-geo-v1';
 import { openTaskPanel } from '../app.js';
 
@@ -42,7 +44,8 @@ function getInitials(name) {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-async function renderEmployeeDashboard(el, me) {
+async function renderEmployeeDashboard(el, me, isSwitched = false) {
+  const isHrUser = isHcnsDepartment(me.department);
   const displayName = me.full_name || 'Nhân viên';
   const department = me.department || 'Chưa phân phòng';
   const position = me.position || 'Nhân viên';
@@ -55,6 +58,23 @@ async function renderEmployeeDashboard(el, me) {
 
   el.innerHTML = `
     <section class="emp-dashboard">
+      ${isHrUser ? `
+        <div class="hr-dash-header" style="margin-bottom:18px;">
+          <div class="hr-dash-title-box">
+            <h1>${icon('user', 'md')} Không Gian Cá Nhân Của Bạn</h1>
+            <p>Tiến độ công việc, nhiệm vụ & chấm công cá nhân của bạn</p>
+          </div>
+          <div class="hr-tab-switcher">
+            <button type="button" class="hr-tab-btn" id="tab-btn-back-org">
+              ${icon('barChart3', 'xs')} Bảng Điều Hành Nhân Sự & Quản Trị
+            </button>
+            <button type="button" class="hr-tab-btn active">
+              ${icon('user', 'xs')} Không gian cá nhân
+            </button>
+          </div>
+        </div>
+      ` : ''}
+
       <!-- 1. Hero Banner with Quick Attendance Widget (Single clock in header) -->
       <header class="emp-hero">
         <div class="emp-hero-info">
@@ -101,7 +121,7 @@ async function renderEmployeeDashboard(el, me) {
             <a href="#/tasks" class="emp-link-subtle">Xem bảng việc →</a>
           </header>
           <div id="emp-task-barchart" class="emp-panel-body">
-            <div style="text-align:center;padding:16px;color:var(--text-3);">Đang tải biểu đồ công việc...</div>
+            <div class="emp-skeleton-chart" aria-hidden="true"></div>
           </div>
         </article>
 
@@ -115,7 +135,7 @@ async function renderEmployeeDashboard(el, me) {
             <a href="#/attendance" class="emp-link-subtle">Lịch sử →</a>
           </header>
           <div id="emp-att-summary-content" class="emp-panel-body">
-            <div style="text-align:center;padding:16px;color:var(--text-3);">Đang tải dữ liệu kỳ công...</div>
+            <div class="emp-skeleton-rings" aria-hidden="true"></div>
           </div>
         </article>
 
@@ -136,7 +156,12 @@ async function renderEmployeeDashboard(el, me) {
             </div>
           </header>
           <div id="emp-tasks-list" class="emp-tasks-list emp-panel-body">
-            <div style="text-align:center;padding:24px;color:var(--text-3);">Đang tải công việc...</div>
+            <div class="emp-skeleton-list" aria-hidden="true">
+              <div class="emp-skeleton-row"></div>
+              <div class="emp-skeleton-row"></div>
+              <div class="emp-skeleton-row"></div>
+              <div class="emp-skeleton-row"></div>
+            </div>
           </div>
         </article>
 
@@ -153,7 +178,7 @@ async function renderEmployeeDashboard(el, me) {
             </div>
           </header>
           <div id="emp-requests-content" class="emp-panel-body">
-            <div style="text-align:center;padding:16px;color:var(--text-3);">Đang tải đơn từ & tăng ca...</div>
+            <div class="emp-skeleton-requests" aria-hidden="true"></div>
           </div>
         </article>
       </div>
@@ -610,6 +635,27 @@ async function renderEmployeeDashboard(el, me) {
     }
   });
 
+  document.getElementById('tab-btn-back-org')?.addEventListener('click', async (e) => {
+    e.target?.closest?.('.hr-tab-btn')?.classList?.add('active');
+    localStorage.setItem('hr_dashboard_tab', 'org');
+    await yieldToMain();
+    await renderHrDashboard(el, me, 'org');
+  });
+
+  el._dashUpdaters = {
+    type: 'employee',
+    loadTodayAttendance,
+    loadTasks,
+    loadRequestsAndOT,
+    loadAttendanceDetails,
+    refreshAll: () => Promise.allSettled([
+      loadTodayAttendance(),
+      loadTasks(),
+      loadRequestsAndOT(),
+      loadAttendanceDetails(),
+    ]),
+  };
+
   await Promise.allSettled([
     loadTodayAttendance(),
     loadTasks(),
@@ -618,20 +664,29 @@ async function renderEmployeeDashboard(el, me) {
   ]);
 }
 
+function fmtMoneyShort(val) {
+  const num = Number(val || 0);
+  if (num >= 1_000_000_000) return (num / 1_000_000_000).toFixed(2) + ' tỷ';
+  if (num >= 1_000_000) return (num / 1_000_000).toFixed(0) + ' tr';
+  if (num >= 1_000) return (num / 1_000).toFixed(0) + ' k';
+  return new Intl.NumberFormat('vi-VN').format(num) + ' đ';
+}
+
 const number = value => new Intl.NumberFormat('vi-VN').format(Number(value || 0));
-const percent = value => `${Number(value || 0).toFixed(0)}%`;
+const percent = value => `${Number(value || 0).toFixed(1)}%`;
 const dashLink = (href, icon, value, title, detail, tone = 'neutral') => `<a class="admin-dash-stat ${tone}" href="${href}"><i data-icon="${icon}"></i><strong>${value}</strong><span>${esc(title)}</span><small>${esc(detail)}</small></a>`;
 const progress = (value, tone = '') => `<div class="admin-dash-progress ${tone}" role="progressbar" aria-valuenow="${Math.round(value)}" aria-valuemin="0" aria-valuemax="100"><i style="width:${Math.max(0, Math.min(100, value))}%"></i></div>`;
 
+// ── 1. ORIGINAL ADMIN DASHBOARD (TỔNG QUAN VẬN HÀNH CHO ADMIN) ──
 async function renderAdminDashboard(el, me) {
   el.innerHTML = `<section class="admin-dashboard admin-dashboard-loading"><div class="admin-dash-hero"><div><p>TỔNG QUAN VẬN HÀNH</p><h1>Đang tải dữ liệu vận hành…</h1><small>Dashboard điều hành sử dụng dữ liệu trực tiếp từ hệ thống.</small></div></div><div class="admin-dash-stat-grid">${Array.from({length:4},()=>'<div class="admin-dash-skeleton"></div>').join('')}</div></section>`;
   let data;
   try { data = await api.getAdminDashboard(); } catch (error) { el.innerHTML = `<div class="reference-empty">Không thể tải Dashboard điều hành. ${esc(error.message || 'Vui lòng thử lại.')}</div>`; return; }
-  const a=data.attendance || {}, p=data.people || {}, ap=data.approvals || {}, al=data.employee_alerts || {};
-  const date = new Date().toLocaleDateString('vi-VN',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
-  const actions = data.action_items.length ? data.action_items.map(item=>`<article class="admin-action ${esc(item.severity)}"><span aria-hidden="true"></span><div><strong>${esc(item.title)}</strong><small>${esc(item.detail)}</small></div><a href="${esc(item.action_url)}" class="admin-action-btn btn-secondary btn-sm">${esc(item.action_label || 'Xem')}</a></article>`).join('') : '<p class="reference-empty">Không có hạng mục cần xử lý ngay.</p>';
-  const insights = data.insights.map(item=>`<li class="${esc(item.severity)}">${esc(item.text)}</li>`).join('');
-  const campaigns=(data.campaigns.items||[]).map(c=>`<div class="admin-campaign"><strong>${esc(c.name)}</strong><span>${c.budget?percent(c.spent/c.budget*100):'Chưa có ngân sách'}</span>${progress(c.budget?c.spent/c.budget*100:0,c.spent>c.budget?'danger':'')}<small>${number(c.spent)} / ${number(c.budget)} đ</small></div>`).join('') || '<p class="reference-empty">Chưa có chiến dịch đang chạy.</p>';
+  const a = data.attendance || {}, p = data.people || {}, ap = data.approvals || {}, al = data.employee_alerts || {};
+  const date = new Date().toLocaleDateString('vi-VN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const actions = (data.action_items || []).length ? data.action_items.map(item => `<article class="admin-action ${esc(item.severity)}"><span aria-hidden="true"></span><div><strong>${esc(item.title)}</strong><small>${esc(item.detail)}</small></div><a href="${esc(item.action_url)}" class="admin-action-btn btn-secondary btn-sm">${esc(item.action_label || 'Xem')}</a></article>`).join('') : '<p class="reference-empty">Không có hạng mục cần xử lý ngay.</p>';
+  const insights = (data.insights || []).map(item => `<li class="${esc(item.severity)}">${esc(item.text)}</li>`).join('');
+  const campaigns = (data.campaigns?.items || []).map(c => `<div class="admin-campaign"><strong>${esc(c.name)}</strong><span>${c.budget ? percent(c.spent / c.budget * 100) : 'Chưa có ngân sách'}</span>${progress(c.budget ? c.spent / c.budget * 100 : 0, c.spent > c.budget ? 'danger' : '')}<small>${number(c.spent)} / ${number(c.budget)} đ</small></div>`).join('') || '<p class="reference-empty">Chưa có chiến dịch đang chạy.</p>';
 
   const checkedIn = Number(a.checked_in || 0);
   const eligible = Number(a.eligible || 0);
@@ -654,7 +709,7 @@ async function renderAdminDashboard(el, me) {
         </div>
         <div class="admin-dash-health">
           <b>Hệ thống đang hoạt động</b>
-          <span>${data.action_items.length ? `${data.action_items.length} vấn đề cần chú ý` : 'Không có vấn đề quan trọng cần xử lý'}</span>
+          <span>${(data.action_items || []).length ? `${data.action_items.length} vấn đề cần chú ý` : 'Không có vấn đề quan trọng cần xử lý'}</span>
         </div>
       </header>
 
@@ -789,13 +844,390 @@ async function renderAdminDashboard(el, me) {
           <a href="#/campaigns">Xem chiến dịch →</a>
         </header>
         <div class="admin-campaign-summary">
-          <b>${number(data.campaigns.active)} đang chạy</b>
-          <span>${number(data.campaigns.spent)} / ${number(data.campaigns.budget)} đ${data.campaigns.spent_percent===null?'':' · '+percent(data.campaigns.spent_percent)}</span>
+          <b>${number(data.campaigns?.active || 0)} đang chạy</b>
+          <span>${number(data.campaigns?.spent || 0)} / ${number(data.campaigns?.budget || 0)} đ${data.campaigns?.spent_percent===null?'':' · '+percent(data.campaigns?.spent_percent)}</span>
         </div>
         <div class="admin-campaigns">${campaigns}</div>
       </article>
     </section>
   `;
+}
+
+// ── 2. HR MANAGEMENT DASHBOARD (DÀNH RIÊNG CHO PHÒNG HCNS / NHÂN SỰ) ──
+function renderMonthlyAttendanceLineChart(monthlyData = []) {
+  if (!monthlyData.length) {
+    return `<div style="text-align:center;padding:24px;color:var(--text-3);">Chưa có dữ liệu chuyên cần theo tháng</div>`;
+  }
+  const W = 600;
+  const H = 175;
+  const padL = 42;
+  const padR = 30;
+  const padT = 22;
+  const padB = 34;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+  const N = monthlyData.length;
+
+  const points = monthlyData.map((m, i) => {
+    const x = N > 1 ? padL + (i * innerW) / (N - 1) : padL + innerW / 2;
+    const clampedRate = Math.max(0, Math.min(100, Number(m.rate || 0)));
+    const y = padT + (1 - clampedRate / 100) * innerH;
+    return { 
+      x: Math.round(x * 10) / 10, 
+      y: Math.round(y * 10) / 10, 
+      rate: clampedRate, 
+      label: m.label, 
+      month: m.month, 
+      days: m.working_days || 0,
+      checkins: m.checkins || 0
+    };
+  });
+
+  const linePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+  const areaPath = `${linePath} L ${points[points.length - 1].x} ${padT + innerH} L ${points[0].x} ${padT + innerH} Z`;
+
+  // Grid levels: 100, 75, 50, 25, 0
+  const gridLevels = [100, 75, 50, 25, 0];
+  const gridSvg = gridLevels.map(lvl => {
+    const y = padT + (1 - lvl / 100) * innerH;
+    return `
+      <line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="var(--border)" stroke-width="1" stroke-dasharray="${lvl === 0 || lvl === 100 ? '0' : '4,4'}" opacity="0.6" />
+      <text x="${padL - 8}" y="${y + 3.5}" text-anchor="end" font-size="10" font-weight="600" fill="var(--text-3)">${lvl}%</text>
+    `;
+  }).join('');
+
+  const dotsSvg = points.map(p => `
+    <g class="hr-line-point" title="${esc(p.month)}: ${p.rate}% (${number(p.checkins)} lượt / ${p.days} ngày làm việc)">
+      <circle cx="${p.x}" cy="${p.y}" r="5" fill="#10B981" stroke="#ffffff" stroke-width="2" />
+      <text x="${p.x}" y="${Math.max(14, p.y - 8)}" text-anchor="middle" font-size="11" font-weight="800" fill="#10B981">${p.rate}%</text>
+      <text x="${p.x}" y="${H - 12}" text-anchor="middle" font-size="11" font-weight="700" fill="var(--text-2)">${esc(p.label)}</text>
+    </g>
+  `).join('');
+
+  return `
+    <div class="hr-att-linechart-wrap">
+      <svg viewBox="0 0 ${W} ${H}" class="hr-att-linechart-svg">
+        <defs>
+          <linearGradient id="attLineGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#10B981" stop-opacity="0.25" />
+            <stop offset="100%" stop-color="#10B981" stop-opacity="0.01" />
+          </linearGradient>
+        </defs>
+        ${gridSvg}
+        <path d="${areaPath}" fill="url(#attLineGrad)" />
+        <path d="${linePath}" fill="none" stroke="#10B981" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+        ${dotsSvg}
+      </svg>
+    </div>
+  `;
+}
+
+// ── 2. HR MANAGEMENT DASHBOARD (DÀNH RIÊNG CHO PHÒNG HCNS / NHÂN SỰ) ──
+async function renderHrDashboard(el, me, activeTab = 'org') {
+  el.innerHTML = `
+    <section class="admin-dashboard admin-dashboard-loading">
+      <div class="hr-dash-header">
+        <div class="hr-dash-title-box">
+          <h1>${icon('layoutDashboard', 'md')} Bảng Điều Hành Nhân Sự & Quản Trị</h1>
+          <p>Đang tải dữ liệu tổng quan toàn công ty…</p>
+        </div>
+      </div>
+      <div class="hr-dash-grid-2">
+        <div class="admin-dash-skeleton" style="height:280px;border-radius:14px;"></div>
+        <div class="admin-dash-skeleton" style="height:280px;border-radius:14px;"></div>
+      </div>
+    </section>
+  `;
+
+  let data;
+  try {
+    data = await api.getAdminDashboard();
+  } catch (error) {
+    el.innerHTML = `<div class="reference-empty">Không thể tải Dashboard nhân sự. ${esc(error.message || 'Vui lòng thử lại.')}</div>`;
+    return;
+  }
+
+  const p = data.people || {};
+  const a = data.attendance || {};
+  const ot = data.ot_stats || {};
+  const lv = data.leave_stats || {};
+  const rec = data.recruitment || {};
+  const depts = data.departments || [];
+  const totalPayroll = data.total_payroll || 0;
+  const actions = data.action_items || [];
+  const monthlyAtt = a.monthly_trend || [];
+  const now = new Date();
+  const dateFormatted = now.toLocaleDateString('vi-VN', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
+
+  // Compute max for recruitment funnel
+  const maxRec = Math.max(1, rec.active || 0, rec.received || 0);
+
+  const getActionIcon = (act) => {
+    if (act.action_url?.includes('leave')) return 'plane';
+    if (act.action_url?.includes('attendance') && act.title?.toLowerCase().includes('ot')) return 'timer';
+    if (act.action_url?.includes('attendance') && act.title?.toLowerCase().includes('vị trí')) return 'mapPin';
+    if (act.action_url?.includes('users') || act.title?.toLowerCase().includes('hợp đồng')) return 'fileText';
+    if (act.action_url?.includes('kpis') || act.title?.toLowerCase().includes('kpi')) return 'target';
+    return 'circleHelp';
+  };
+
+  const getActionSeverityTag = (sev) => {
+    if (sev === 'danger') return '<span class="hr-action-tag" style="background:#FEE2E2;color:#DC2626;border-color:#FCA5A5;">🔴 Khẩn cấp</span>';
+    if (sev === 'warning') return '<span class="hr-action-tag" style="background:#FEF3C7;color:#D97706;border-color:#FCD34D;">🟡 Cần phê duyệt</span>';
+    return '<span class="hr-action-tag" style="background:#E0E7FF;color:#4F46E5;border-color:#C7D2FE;">🔵 Cần xử lý</span>';
+  };
+
+  el.innerHTML = `
+    <section class="admin-dashboard">
+      <!-- ── DASHBOARD HEADER & TAB SWITCHER ── -->
+      <header class="hr-dash-header">
+        <div class="hr-dash-title-box">
+          <h1>${icon('layoutDashboard', 'md')} Bảng Điều Hành Nhân Sự & Quản Trị</h1>
+          <p>Toàn công ty · ${esc(dateFormatted)} · Cập nhật ${esc(data.generated_at ? data.generated_at.slice(11, 19) : '')}</p>
+        </div>
+        <div class="hr-tab-switcher">
+          <button type="button" class="hr-tab-btn ${activeTab === 'org' ? 'active' : ''}" id="tab-btn-org">
+            ${icon('barChart3', 'xs')} Bảng Điều Hành Nhân Sự & Quản Trị
+          </button>
+          <button type="button" class="hr-tab-btn ${activeTab === 'me' ? 'active' : ''}" id="tab-btn-me">
+            ${icon('user', 'xs')} Không gian cá nhân
+          </button>
+        </div>
+      </header>
+
+      <!-- ── 1. HÀNG 1: VIỆC CẦN XỬ LÝ NGAY (ACTION CENTER LÊN ĐẦU TIÊN VỚI ĐẦY ĐỦ THÔNG TIN) ── -->
+      <div style="margin-bottom:20px;">
+        <article class="hr-panel">
+          <div class="hr-panel-head">
+            <div class="hr-panel-title">
+              ${icon('shieldAlert', 'sm')} Việc cần xử lý ngay
+              <span class="badge badge-danger" style="margin-left:6px;font-size:12px;padding:2px 8px;">${actions.length} việc cần xử lý</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px;">
+              <span style="font-size:12px;color:var(--text-2);">Tập trung giải quyết các tác vụ tồn đọng để hệ thống vận hành thông suốt</span>
+              <a href="#/notifications" class="hr-panel-link">Xem tất cả thông báo ${icon('arrowRight', 'xs')}</a>
+            </div>
+          </div>
+
+          <div class="hr-action-list">
+            ${actions.length ? actions.map(act => `
+              <div class="hr-action-item ${esc(act.severity || 'warning')}">
+                <div class="hr-action-icon-wrap">${icon(getActionIcon(act), 'md')}</div>
+                <div class="hr-action-body">
+                  <div class="hr-action-title">
+                    <span>${esc(act.title)}</span>
+                    ${getActionSeverityTag(act.severity)}
+                  </div>
+                  <div class="hr-action-detail">${esc(act.detail)}</div>
+                  <div class="hr-action-tags">
+                    <span class="hr-action-tag">${icon('clock3', 'xs')} Hôm nay</span>
+                    <span class="hr-action-tag">Toàn công ty</span>
+                  </div>
+                </div>
+                <a href="${esc(act.action_url || '#')}" class="btn-primary hr-action-btn">
+                  ${esc(act.action_label || 'Xử lý ngay')} ${icon('arrowRight', 'xs')}
+                </a>
+              </div>
+            `).join('') : `
+              <div class="empty-state" style="padding:32px 16px;grid-column:1/-1;">
+                <div class="empty-icon">${icon('checkCheck', 'lg')}</div>
+                <div class="empty-text" style="font-size:14px;font-weight:600;color:var(--text);">Tuyệt vời! Không có hạng mục nào cần xử lý khẩn cấp hôm nay.</div>
+                <p style="font-size:12px;color:var(--text-3);margin-top:4px;">Tất cả đơn nghỉ phép, làm thêm giờ, đánh giá KPI và chấm công đều đã được duyệt hoàn tất.</p>
+              </div>
+            `}
+          </div>
+        </article>
+      </div>
+
+      <!-- ── 2. HÀNG 2: TỶ LỆ CHẤM CÔNG PHÒNG BAN + XU HƯỚNG CHUYÊN CẦN THEO THÁNG ── -->
+      <div class="hr-dash-grid-2">
+        <!-- Cột 1: Tỷ lệ chấm công theo phòng ban hôm nay -->
+        <article class="hr-panel">
+          <div class="hr-panel-head">
+            <div class="hr-panel-title">
+              ${icon('building2', 'sm')} Tỷ lệ chấm công theo phòng ban hôm nay
+            </div>
+            <a href="#/attendance" class="hr-panel-link">Xem bảng công ${icon('arrowRight', 'xs')}</a>
+          </div>
+          <div class="hr-dept-rings-grid">
+            ${depts.map(d => {
+              const rate = d.checkin_rate != null ? Number(d.checkin_rate) : 0;
+              const circumference = 251.33;
+              const offset = (circumference * (1 - Math.min(100, Math.max(0, rate)) / 100)).toFixed(1);
+              const color = rate >= 80 ? '#10B981' : rate >= 50 ? '#F59E0B' : rate > 0 ? '#EF4444' : '#94A3B8';
+              return `
+                <div class="hr-dept-ring-card">
+                  <div class="hr-dept-ring-name" title="${esc(d.department)}">${esc(d.department)}</div>
+                  <div class="hr-dept-donut-box">
+                    <svg viewBox="0 0 100 100" class="hr-dept-donut-svg">
+                      <circle cx="50" cy="50" r="40" class="hr-donut-bg" />
+                      <circle cx="50" cy="50" r="40" class="hr-donut-fill" style="stroke:${color}; stroke-dasharray: 251.33; stroke-dashoffset: ${offset};" />
+                    </svg>
+                    <div class="hr-dept-donut-inner">
+                      <strong style="color:${color};">${rate}%</strong>
+                      <small>${number(d.checked_in)}/${number(d.headcount)}</small>
+                    </div>
+                  </div>
+                  <div class="hr-dept-ring-meta">
+                    <span class="badge ${rate >= 80 ? 'badge-success' : rate >= 50 ? 'badge-warning' : rate > 0 ? 'badge-danger' : 'badge-gray'}">
+                      ${rate === 100 ? '🟢 Đủ 100%' : rate >= 80 ? '🟢 Tốt' : rate > 0 ? `🟡 Vắng ${d.not_checked_in}` : '⚪ Chưa chấm'}
+                    </span>
+                  </div>
+                </div>
+              `;
+            }).join('') || '<div style="text-align:center;padding:24px;color:var(--text-3);width:100%;">Chưa có dữ liệu phòng ban</div>'}
+          </div>
+        </article>
+
+        <!-- Cột 2: Tình hình chấm công & Xu hướng chuyên cần theo từng tháng (Thu nhỏ) -->
+        <article class="hr-panel">
+          <div class="hr-panel-head">
+            <div class="hr-panel-title">
+              ${icon('calendarDays', 'sm')} Xu hướng chuyên cần theo tháng
+            </div>
+            <span style="font-size:11.5px;color:var(--text-3);font-style:italic;">* Loại trừ ngày nghỉ</span>
+          </div>
+          
+          <!-- Hôm nay quick summary -->
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--surface-2);border-radius:10px;margin-bottom:12px;flex-wrap:wrap;gap:6px;">
+            <div>
+              <strong style="font-size:15px;color:#10B981;">${number(a.checked_in)}/${number(a.eligible)}</strong>
+              <span style="font-size:12px;color:var(--text-2);margin-left:4px;">(${percent(a.checkin_rate)})</span>
+            </div>
+            <div style="display:flex;gap:4px;flex-wrap:wrap;">
+              <span class="badge badge-info" style="font-size:11px;padding:2px 6px;">VP: ${number(a.office)}</span>
+              ${a.wfh > 0 ? `<span class="badge badge-primary" style="font-size:11px;padding:2px 6px;">WFH: ${number(a.wfh)}</span>` : ''}
+              ${a.late > 0 ? `<span class="badge badge-warning" style="font-size:11px;padding:2px 6px;">Muộn: ${number(a.late)}</span>` : ''}
+              ${a.not_checked_in > 0 ? `<span class="badge badge-danger" style="font-size:11px;padding:2px 6px;">Vắng: ${number(a.not_checked_in)}</span>` : ''}
+            </div>
+          </div>
+
+          <!-- Monthly Line Chart -->
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+            <span style="font-size:11.5px;font-weight:700;color:var(--text-2);">Tỷ lệ có mặt / ngày làm việc</span>
+            <span style="font-size:11px;color:#10B981;font-weight:700;">● Chuyên cần (%)</span>
+          </div>
+          ${renderMonthlyAttendanceLineChart(monthlyAtt)}
+        </article>
+      </div>
+
+      <!-- ── 3. HÀNG 3: NGHỈ PHÉP & TĂNG CA + TUYỂN DỤNG ── -->
+      <div class="hr-dash-grid-2 equal">
+        <!-- Nghỉ phép & Tăng ca toàn công ty -->
+        <article class="hr-panel">
+          <div class="hr-panel-head">
+            <div class="hr-panel-title">
+              ${icon('clipboardCheck', 'sm')} Nghỉ phép & Tăng ca (OT) toàn công ty
+            </div>
+            <div style="display:flex;gap:8px;">
+              <a href="#/leave" class="hr-panel-link">Nghỉ phép ${icon('arrowRight', 'xs')}</a>
+              <a href="#/attendance" class="hr-panel-link">Tăng ca ${icon('arrowRight', 'xs')}</a>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+            <!-- Cột Nghỉ phép -->
+            <div style="background:var(--surface-2);border-radius:10px;padding:12px 14px;">
+              <div style="font-size:12.5px;font-weight:700;color:var(--text);margin-bottom:6px;display:flex;align-items:center;gap:6px;">
+                ${icon('plane', 'xs')} Nghỉ phép
+              </div>
+              <div style="font-size:18px;font-weight:800;color:var(--text);margin-bottom:4px;">
+                ${number(lv.today_leave_count)} <small style="font-size:12px;font-weight:550;color:var(--text-2);">hôm nay</small>
+              </div>
+              <div style="font-size:11.5px;color:var(--text-2);display:flex;flex-direction:column;gap:3px;">
+                <span>⏳ <strong>${number(lv.pending_count)}</strong> đơn chờ duyệt</span>
+                <span>📅 <strong>${number(lv.month_total_approved)}</strong> lượt nghỉ tháng này</span>
+              </div>
+            </div>
+
+            <!-- Cột Tăng ca -->
+            <div style="background:var(--surface-2);border-radius:10px;padding:12px 14px;">
+              <div style="font-size:12.5px;font-weight:700;color:var(--text);margin-bottom:6px;display:flex;align-items:center;gap:6px;">
+                ${icon('timer', 'xs')} Tăng ca (OT)
+              </div>
+              <div style="font-size:18px;font-weight:800;color:#6366F1;margin-bottom:4px;">
+                ${number(ot.ot_month_hours)}h <small style="font-size:12px;font-weight:550;color:var(--text-2);">tháng này</small>
+              </div>
+              <div style="font-size:11.5px;color:var(--text-2);display:flex;flex-direction:column;gap:3px;">
+                <span>⏳ <strong>${number(ot.pending_count)}</strong> phiếu chờ duyệt</span>
+                <span>👥 <strong>${number(ot.ot_employee_count)}</strong> nhân sự làm OT (${ot.ot_form_count} form)</span>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <!-- Tuyển dụng & Phễu ứng viên -->
+        <article class="hr-panel">
+          <div class="hr-panel-head">
+            <div class="hr-panel-title">
+              ${icon('funnel', 'sm')} Tuyển dụng & Phễu ứng viên
+            </div>
+            <a href="#/recruitment" class="hr-panel-link">Xem tuyển dụng ${icon('arrowRight', 'xs')}</a>
+          </div>
+
+          <div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <strong style="font-size:15px;color:var(--text);">${number(rec.open_positions)} vị trí đang tuyển</strong>
+              <span style="font-size:12px;color:var(--text-2);margin-left:6px;">(${number(rec.active)} ứng viên)</span>
+            </div>
+            <span class="badge badge-success">+${number(rec.hired_this_month)} đã nhận việc</span>
+          </div>
+
+          <div class="hr-funnel-container">
+            <div class="hr-funnel-step">
+              <span class="hr-funnel-label">1. Ứng tuyển (${number(rec.received)})</span>
+              <div class="hr-funnel-bar-wrap">
+                <div class="hr-funnel-bar-fill" style="width:${Math.max(12, Math.min(100, Math.round((rec.received / maxRec) * 100)))}%;">
+                  ${number(rec.received)}
+                </div>
+              </div>
+            </div>
+
+            <div class="hr-funnel-step">
+              <span class="hr-funnel-label">2. Sàng lọc (${number(rec.screening)})</span>
+              <div class="hr-funnel-bar-wrap">
+                <div class="hr-funnel-bar-fill" style="width:${Math.max(12, Math.min(100, Math.round((rec.screening / maxRec) * 100)))}%;background:linear-gradient(90deg, #3B82F6 0%, #2563EB 100%);">
+                  ${number(rec.screening)}
+                </div>
+              </div>
+            </div>
+
+            <div class="hr-funnel-step">
+              <span class="hr-funnel-label">3. Phỏng vấn (${number(rec.interview)})</span>
+              <div class="hr-funnel-bar-wrap">
+                <div class="hr-funnel-bar-fill" style="width:${Math.max(12, Math.min(100, Math.round((rec.interview / maxRec) * 100)))}%;background:linear-gradient(90deg, #F59E0B 0%, #D97706 100%);">
+                  ${number(rec.interview)}
+                </div>
+              </div>
+            </div>
+
+            <div class="hr-funnel-step">
+              <span class="hr-funnel-label">4. Offer (${number(rec.offer)})</span>
+              <div class="hr-funnel-bar-wrap">
+                <div class="hr-funnel-bar-fill" style="width:${Math.max(12, Math.min(100, Math.round((rec.offer / maxRec) * 100)))}%;background:linear-gradient(90deg, #10B981 0%, #059669 100%);">
+                  ${number(rec.offer)}
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+  `;
+
+  // Bind tab switching events
+  document.getElementById('tab-btn-me')?.addEventListener('click', async () => {
+    document.querySelectorAll('.hr-tab-btn').forEach(btn => btn.classList.toggle('active', btn.id === 'tab-btn-me'));
+    localStorage.setItem('hr_dashboard_tab', 'me');
+    await yieldToMain();
+    await renderEmployeeDashboard(el, me, true);
+  });
+  document.getElementById('tab-btn-org')?.addEventListener('click', async () => {
+    document.querySelectorAll('.hr-tab-btn').forEach(btn => btn.classList.toggle('active', btn.id === 'tab-btn-org'));
+    localStorage.setItem('hr_dashboard_tab', 'org');
+    await yieldToMain();
+    await renderHrDashboard(el, me, 'org');
+  });
 }
 
 // ── Admin dashboard: today's attendance location map (geofence viz) ──
@@ -919,6 +1351,88 @@ async function renderAdminGeoPanel(el, me) {
 }
 
 export async function renderDashboard(el, me) {
-  if (me.role === 'admin') { await renderAdminDashboard(el, me); void renderAdminGeoPanel(el, me); }
-  else await renderEmployeeDashboard(el, me);
+  const isHrUser = isHcnsDepartment(me.department);
+  const isAdmin = me.role === 'admin';
+
+  let refreshTimer = null;
+  const handleDashboardEvent = (data, topic = '') => {
+    if (!el.isConnected) return;
+    const updaters = el._dashUpdaters;
+
+    // Granular in-place updates for Employee Dashboard without wiping DOM or causing layout shift
+    if (updaters && updaters.type === 'employee') {
+      const top = String(topic || '').toLowerCase();
+      if (top.startsWith('task') || top.startsWith('subtask') || top.startsWith('comment')) {
+        updaters.loadTasks?.();
+        return;
+      }
+      if (top.startsWith('attendance')) {
+        updaters.loadTodayAttendance?.();
+        updaters.loadAttendanceDetails?.();
+        return;
+      }
+      if (top.startsWith('leave') || top.startsWith('ot')) {
+        updaters.loadRequestsAndOT?.();
+        return;
+      }
+      if (top.startsWith('notification') || top.startsWith('user') || top.startsWith('payroll')) {
+        updaters.refreshAll?.();
+        return;
+      }
+      return;
+    }
+
+    // Debounced refresh for HR / Admin dashboards
+    if (refreshTimer) return;
+    refreshTimer = setTimeout(async () => {
+      refreshTimer = null;
+      if (!el.isConnected) return;
+      if (isHrUser) {
+        const currentTab = localStorage.getItem('hr_dashboard_tab') || 'org';
+        if (currentTab === 'org') {
+          await renderHrDashboard(el, me, 'org');
+        } else {
+          await renderEmployeeDashboard(el, me, true);
+        }
+      } else if (isAdmin) {
+        await renderAdminDashboard(el, me);
+        void renderAdminGeoPanel(el, me);
+      } else {
+        await renderEmployeeDashboard(el, me, false);
+      }
+    }, 250);
+  };
+
+  el._cleanup = () => {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    el._dashUpdaters = null;
+  };
+
+  EventBus.bindView(el, 'tasks', (data) => handleDashboardEvent(data, 'tasks'));
+  EventBus.bindView(el, 'task:*', (data, topic) => handleDashboardEvent(data, topic));
+  EventBus.bindView(el, 'subtask:*', (data, topic) => handleDashboardEvent(data, topic));
+  EventBus.bindView(el, 'attendance', (data) => handleDashboardEvent(data, 'attendance'));
+  EventBus.bindView(el, 'attendance:*', (data, topic) => handleDashboardEvent(data, topic));
+  EventBus.bindView(el, 'leave', (data) => handleDashboardEvent(data, 'leave'));
+  EventBus.bindView(el, 'leave:*', (data, topic) => handleDashboardEvent(data, topic));
+  EventBus.bindView(el, 'users', (data) => handleDashboardEvent(data, 'users'));
+  EventBus.bindView(el, 'user:*', (data, topic) => handleDashboardEvent(data, topic));
+  EventBus.bindView(el, 'payroll', (data) => handleDashboardEvent(data, 'payroll'));
+  EventBus.bindView(el, 'payroll:*', (data, topic) => handleDashboardEvent(data, topic));
+  EventBus.bindView(el, 'notifications', (data) => handleDashboardEvent(data, 'notifications'));
+  EventBus.bindView(el, 'notification:*', (data, topic) => handleDashboardEvent(data, topic));
+
+  if (isHrUser) {
+    const currentTab = localStorage.getItem('hr_dashboard_tab') || 'org';
+    if (currentTab === 'org') {
+      await renderHrDashboard(el, me, 'org');
+    } else {
+      await renderEmployeeDashboard(el, me, true);
+    }
+  } else if (isAdmin) {
+    await renderAdminDashboard(el, me);
+    void renderAdminGeoPanel(el, me);
+  } else {
+    await renderEmployeeDashboard(el, me, false);
+  }
 }

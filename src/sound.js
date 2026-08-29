@@ -20,16 +20,18 @@ function getAudioContext() {
   return _audioCtx;
 }
 
-// Auto-unlock AudioContext on first user interaction
+// Auto-unlock AudioContext on first user interaction (deferred so it never blocks INP)
 if (typeof document !== 'undefined') {
   const unlock = () => {
-    const ctx = getAudioContext();
-    if (ctx && ctx.state === 'suspended') {
-      ctx.resume().catch(() => {});
-    }
     document.removeEventListener('click', unlock);
     document.removeEventListener('keydown', unlock);
     document.removeEventListener('touchstart', unlock);
+    setTimeout(() => {
+      const ctx = getAudioContext();
+      if (ctx && ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
+    }, 100);
   };
   document.addEventListener('click', unlock, { passive: true });
   document.addEventListener('keydown', unlock, { passive: true });

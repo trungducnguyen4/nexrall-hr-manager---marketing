@@ -1,4 +1,5 @@
 import { api } from '../api.js';
+import { EventBus } from '../event-bus.js';
 import { esc, emptyHTML, fmtDate } from '../utils.js';
 import { icon } from '../icons.js';
 import { navigate } from '../app.js';
@@ -319,6 +320,13 @@ export async function renderNotifications(el) {
   });
 
   document.getElementById('notification-refresh')?.addEventListener('click', load);
+
+  el._cleanup = () => {
+    if (searchTimer) clearTimeout(searchTimer);
+  };
+
+  EventBus.bindView(el, 'notifications', () => load());
+  EventBus.bindView(el, 'notification:*', () => load());
 
   await load();
 }

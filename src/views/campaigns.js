@@ -1,5 +1,7 @@
 import { api } from '../api.js';
+import { EventBus } from '../event-bus.js';
 import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtMoney, noop, safeCb, isHcnsDepartment } from '../utils.js?v=20260811-hr-access-v1';
+import { icon } from '../icons.js';
 
 const CAMPAIGN_TYPES = [
   { value: 'social',    label: 'Social Media',    icon: '📱', color: '#6366F1' },
@@ -30,10 +32,10 @@ export async function renderCampaigns(el, me) {
   el.innerHTML = `
     <div class="page-header">
       <div class="page-header-left">
-        <div class="page-title">📣 Chiến dịch Marketing</div>
+        <div class="page-title">${icon('megaphone', 'lg')} <span>Chiến dịch Marketing</span></div>
         <div class="page-sub">Quản lý toàn bộ chiến dịch marketing công ty</div>
       </div>
-      ${isAdmin ? `<button id="btn-new-campaign" class="btn-primary btn-sm">+ Tạo chiến dịch</button>` : ''}
+      ${isAdmin ? `<button id="btn-new-campaign" class="btn-primary btn-sm">${icon('plus', 'xs')} <span>Tạo chiến dịch</span></button>` : ''}
     </div>
 
     <!-- Stats -->
@@ -203,6 +205,11 @@ export async function renderCampaigns(el, me) {
       listEl.innerHTML = emptyHTML('⚠️', e.message);
     }
   }
+
+  el._cleanup = () => {};
+
+  EventBus.bindView(el, 'campaigns', () => loadCampaigns());
+  EventBus.bindView(el, 'campaign:*', () => loadCampaigns());
 
   loadCampaigns();
 }

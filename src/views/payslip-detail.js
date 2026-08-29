@@ -158,3 +158,8 @@ export async function hydratePayslipAttendance() {
 export function preparePayslipModal() {
   document.getElementById('modal')?.classList.add('modal--scroll-fixed', 'modal--payslip');
 }
+
+export async function renderPayslipDetail(el, me) {
+  el._cleanup = () => {};
+}
+

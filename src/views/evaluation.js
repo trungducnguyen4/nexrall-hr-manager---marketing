@@ -1,5 +1,7 @@
-import { esc, EVAL_GROUPS, EVAL_RATING_SCALE, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtDateTime, noop, safeCb, paginateRows, paginationHTML, bindPagination } from '../utils.js?v=20260728-evaluation-policy';
+import { esc, EVAL_GROUPS, EVAL_RATING_SCALE, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtDateTime, noop, safeCb, paginateRows, paginationHTML, bindPagination, sortVietnameseNames, compareVietnameseNames } from '../utils.js?v=20260728-evaluation-policy';
 import { api } from '../api.js';
+import { EventBus } from '../event-bus.js';
+import { icon } from '../icons.js';
 
 const REWARD_POLICY = [
   '90-100 điểm: thưởng 1-2 triệu đồng',
@@ -58,14 +60,14 @@ export async function renderEvaluation(el, me) {
   el.innerHTML = `
     <div class="page-header">
       <div class="page-header-left">
-        <div class="page-title">📈 Đánh giá hiệu suất</div>
+        <div class="page-title">${icon('barChart3', 'lg')} <span>Đánh giá hiệu suất</span></div>
         <div class="page-sub">Quy định &amp; tiêu chí đánh giá áp dụng cho nhân viên chính thức và TTS</div>
       </div>
     </div>
 
     <div class="card" style="margin-bottom:16px;">
       <div class="card-header">
-        <div class="card-title">📋 Quy định &amp; Tiêu chí đánh giá</div>
+        <div class="card-title">${icon('clipboardCheck', 'sm')} <span>Quy định &amp; Tiêu chí đánh giá</span></div>
         <button id="eval-toggle" class="btn-secondary btn-sm" aria-expanded="false">Mở rộng</button>
       </div>
 
@@ -175,6 +177,17 @@ export async function renderEvaluation(el, me) {
   // Workflow: assignment/scoring/approval — role-scoped, appended below the policy card
   const workflowEl = document.getElementById('eval-workflow');
   if (workflowEl) renderWorkflowSection(workflowEl, me);
+
+  el._cleanup = () => {};
+
+  EventBus.bindView(el, 'evaluations', () => {
+    const wEl = document.getElementById('eval-workflow');
+    if (wEl) renderWorkflowSection(wEl, me);
+  });
+  EventBus.bindView(el, 'evaluation:*', () => {
+    const wEl = document.getElementById('eval-workflow');
+    if (wEl) renderWorkflowSection(wEl, me);
+  });
 }
 
 // ════════════════════════════════════════════════
@@ -238,9 +251,9 @@ async function renderWorkflowSection(el, me) {
   let evaluations = [], periods = [], basicUsers = [];
   try {
     const [evR, pR] = await Promise.all([api.getEvaluations(), api.getEvalPeriods()]);
-    evaluations = evR.evaluations || [];
+    evaluations = sortVietnameseNames(evR.evaluations || [], 'user_name');
     periods = pR.periods || [];
-    if (hr || ceo) basicUsers = (await api.getUsersBasic()).users || [];
+    if (hr || ceo) basicUsers = sortVietnameseNames((await api.getUsersBasic()).users || [], 'full_name');
   } catch (e) {
     el.innerHTML = `<div class="card">${emptyHTML('⚠️', 'Không thể tải dữ liệu đánh giá hiệu suất')}</div>`;
     return;

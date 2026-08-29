@@ -6,7 +6,9 @@
 //  See server.js /api/assets for permission enforcement.
 // ════════════════════════════════════════════════
 import { api } from '../api.js';
+import { EventBus } from '../event-bus.js';
 import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, assetStatusBadge, lifecycleBadge, fmtDate, DEPARTMENTS, noop, safeCb, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js';
+import { icon } from '../icons.js';
 
 // HCNS (Phòng HCNS) and Ban Giám Đốc are DEPARTMENTS (not roles).
 function isHrOrBod(u) {
@@ -15,15 +17,16 @@ function isHrOrBod(u) {
 function isDeptManager(u) { return u.role === 'manager'; }
 
 export async function renderAssetSection(el, me) {
-  const isHr = isHrOrBod(me);
-  const isMgr = isDeptManager(me);
+  el._cleanup = () => {};
 
-  el.innerHTML = loadingHTML();
+  EventBus.bindView(el, 'assets', () => renderAssetSection(el, me));
+  EventBus.bindView(el, 'asset:*', () => renderAssetSection(el, me));
+
   let assets = [];
   try {
     assets = (await api.getAssets()).assets || [];
   } catch (e) {
-    el.innerHTML = `<div class="card"><div class="card-header"><div class="card-title">🗂️ Bàn giao tài sản</div></div>${emptyHTML('⚠️', 'Không thể tải dữ liệu tài sản')}</div>`;
+    el.innerHTML = `<div class="card"><div class="card-header"><div class="card-title">${icon('keyRound', 'sm')} <span>Bàn giao tài sản</span></div></div>${emptyHTML('⚠️', 'Không thể tải dữ liệu tài sản')}</div>`;
     return;
   }
 
@@ -38,26 +41,27 @@ export async function renderAssetSection(el, me) {
 
   sections.push(`
     <div class="card-header">
-      <div class="card-title">🔐 Dự án &amp; tài khoản tôi bàn giao</div>
-      <button class="btn-primary btn-sm" id="asset-add-own">+ Bàn giao dự án</button>
+      <div class="card-title">${icon('keyRound', 'sm')} <span>Dự án &amp; tài khoản tôi bàn giao</span></div>
+      <button class="btn-primary btn-sm" id="asset-add-own">${icon('plus', 'xs')} <span>Bàn giao dự án</span></button>
     </div>
     <div id="asset-own-list">${renderAssetList(ownAssets, 'own')}</div>
   `);
 
   if (mentorAssets.length) {
     sections.push(`
-      <div class="card-header"><div class="card-title">👨‍🏫 Dự án cần bạn xác nhận (Mentor)</div></div>
+      <div class="card-header"><div class="card-title">${icon('userRound', 'sm')} <span>Dự án cần bạn xác nhận (Mentor)</span></div></div>
       <div id="asset-mentor-list">${renderAssetList(mentorAssets, 'mentor')}</div>
     `);
   }
 
   if (deptAssets.length) {
     sections.push(`
-      <div class="card-header"><div class="card-title">🏢 Tài sản nhân sự phòng ban</div></div>
+      <div class="card-header"><div class="card-title">${icon('building2', 'sm')} <span>Tài sản nhân sự phòng ban</span></div></div>
       <div id="asset-dept-list">${renderAssetList(deptAssets, 'manage')}</div>
     `);
   }
 
+  const isHr = isHrOrBod(me);
   if (isHr) {
     sections.push(renderManageSection(assets));
   }

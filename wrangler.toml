@@ -25,6 +25,15 @@ bucket_name = "netviet-hr-documents"
 name = "CHAT_ROOM"
 class_name = "ChatRoom"
 
+# AppSyncHub: Global Durable Object for real-time event distribution and client sync
+[[durable_objects.bindings]]
+name = "SYNC_HUB"
+class_name = "AppSyncHub"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["ChatRoom"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["AppSyncHub"]

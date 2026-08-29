@@ -1,4 +1,5 @@
 import { api } from '../api.js';
+import { EventBus } from '../event-bus.js';
 import { esc, toast, openModal, closeModal, loadingHTML, roleLabel, setAvatar } from '../utils.js';
 import { isSoundEnabled, toggleSound, playChatSound, playMentionSound, playTaskSound } from '../sound.js';
 import { isPushSupported, getPushPermission, getExistingPushSubscription, subscribePushNotification, unsubscribePushNotification, testPushNotification } from '../push.js';
@@ -37,7 +38,7 @@ export async function renderSettings(el, me) {
     el.innerHTML = `
       <div class="settings-container">
         <div class="settings-header">
-          <div class="page-title">⚙️ Cài đặt hệ thống</div>
+          <div class="page-title">${icon('settings', 'lg')} <span>Cài đặt hệ thống</span></div>
           <div class="page-sub">Quản lý thông báo đẩy màn hình khóa, âm thanh, bảo mật tài khoản và cấu hình doanh nghiệp</div>
         </div>
 
@@ -741,6 +742,11 @@ export async function renderSettings(el, me) {
       el.innerHTML = `<div style="color:var(--danger);font-size:13px;">${esc(e.message)}</div>`;
     }
   }
+
+  el._cleanup = () => {};
+
+  EventBus.bindView(el, 'users', () => { if (_activeSettingsTab === 'profile') renderFrame(); });
+  EventBus.bindView(el, 'user:*', () => { if (_activeSettingsTab === 'profile') renderFrame(); });
 
   // Initial render
   renderFrame();

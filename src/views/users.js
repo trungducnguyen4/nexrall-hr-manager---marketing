@@ -1,4 +1,5 @@
 import { api } from '../api.js';
+import { EventBus } from '../event-bus.js';
 import {
   esc, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtMoney, fmtDate,
   fmtDateTime, initials, avatarColor, lifecycleBadge, LIFECYCLE_STATUSES, safeCb, isHcnsDepartment,
@@ -166,6 +167,7 @@ function bindUnsavedWarning(cancelButtonId) {
 }
 
 export async function renderUsers(el, me, route = {}) {
+  el._cleanup = () => {};
   const employeeId = Number(route.segments?.[1] || 0);
   if (employeeId) return renderEmployeeProfile(el, me, employeeId, route);
   return renderEmployeeDirectory(el, me);
@@ -359,6 +361,11 @@ async function renderEmployeeDirectory(el, me) {
   });
 
   el._cleanup = () => clearTimeout(searchTimer);
+
+  EventBus.bindView(el, 'users', () => loadDirectory());
+  EventBus.bindView(el, 'users:*', () => loadDirectory());
+  EventBus.bindView(el, 'user:*', () => loadDirectory());
+
   await loadDirectory();
 }
 
@@ -728,6 +735,14 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
       button.innerHTML = `${icon('trash2', 'sm')} <span>Xóa tài khoản</span>`;
     }
   });
+
+  el._cleanup = () => {};
+
+  EventBus.bindView(el, 'users', () => refreshProfile());
+  EventBus.bindView(el, 'user:*', (data) => {
+    if (!data?.id || Number(data.id) === employeeId) refreshProfile();
+  });
+
   renderTab();
 }
 

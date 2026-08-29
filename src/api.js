@@ -2,6 +2,8 @@
 //  API helpers — all backend calls go through here
 // ════════════════════════════════════════════════
 
+import { EventBus } from './event-bus.js';
+
 let _token = null;
 const NATIVE_API_ORIGIN = 'https://nexrall-hr-manager-marketing.netviettv-hr-manager.workers.dev';
 const isNativeApp = () => !!globalThis.Capacitor?.isNativePlatform?.();
@@ -46,7 +48,23 @@ const CACHE_TTL = {
 };
 
 // Map of cacheKey → { data, ts, inflight }
-const _cache = new Map();
+export const _cache = new Map();
+export function getCache() { return _cache; }
+
+// Topic to cache prefix mappings for real-time invalidation
+export const TOPIC_CACHE_MAP = {
+  'leave': ['/api/leave-types', '/api/leave'],
+  'departments': ['/api/departments'],
+  'users': ['/api/departments', '/api/users'],
+  'attendance': ['/api/attendance-locations', '/api/wifi-whitelist', '/api/attendance'],
+  'wifi': ['/api/wifi-whitelist', '/api/attendance-locations'],
+  'location_config': ['/api/wifi-whitelist', '/api/attendance-locations'],
+  'tasks': ['/api/tasks', '/api/projects', '/api/task-groups'],
+  'chat': ['/api/chat'],
+  'notifications': ['/api/notifications'],
+  'payroll': ['/api/payroll', '/api/invoices'],
+  'invoices': ['/api/invoices', '/api/payroll'],
+};
 
 function ttlFor(path) {
   for (const [prefix, ttl] of Object.entries(CACHE_TTL)) {
@@ -66,6 +84,27 @@ export function clearCache() { _cache.clear(); }
 
 // A monotonic write-generation counter — incremented by every inv() call.
 let _writeGen = 0;
+
+// Wire EventBus to automatically invalidate related caches upon real-time events
+export function setupCacheInvalidation(bus = EventBus) {
+  if (!bus || typeof bus.on !== 'function') return () => {};
+  return bus.on('*', (event, topic) => {
+    _writeGen++;
+    const topicKey = event?.topic || (typeof topic === 'string' ? topic.split(':')[0] : null);
+    if (topicKey && TOPIC_CACHE_MAP[topicKey]) {
+      TOPIC_CACHE_MAP[topicKey].forEach(prefix => invalidateCache(prefix));
+    }
+    const eventName = event?.event;
+    if (eventName && typeof eventName === 'string') {
+      const domain = eventName.split(':')[0];
+      if (domain && TOPIC_CACHE_MAP[domain]) {
+        TOPIC_CACHE_MAP[domain].forEach(prefix => invalidateCache(prefix));
+      }
+    }
+  });
+}
+
+setupCacheInvalidation(EventBus);
 
 // ────────────────────────────────────────────────
 function headers(extra = {}) {
@@ -356,9 +395,10 @@ export const api = {
   reorderTasks: (d) => req('POST', '/api/tasks/reorder', d).then(r => { inv('/api/tasks'); return r; }),
   createSubtask: (taskId, d) => req('POST', `/api/tasks/${taskId}/subtasks`, d).then(r => { inv('/api/tasks'); return r; }),
   updateSubtask: (id, d) => req('PUT', `/api/subtasks/${id}`, d).then(r => { inv('/api/tasks'); return r; }),
-  deleteSubtask: (id) => req('DELETE', `/api/subtasks/${id}`).then(r => { inv('/api/tasks'); return r; }),
   getComments: (taskId) => req('GET', `/api/tasks/${taskId}/comments`),
   addComment:  (taskId, content, mentions) => req('POST', `/api/tasks/${taskId}/comments`, { content, mentions: mentions || [] }).then(r => { inv('/api/tasks'); return r; }),
+  getTaskCompletionSubscriptions: () => req('GET', '/api/tasks/completion-subscriptions'),
+  toggleTaskCompletionSubscription: (d) => req('POST', '/api/tasks/completion-subscriptions/toggle', d),
   addTaskFollower: (taskId, userId) => req('POST', `/api/tasks/${taskId}/followers`, userId ? { user_id: userId } : {}).then(r => { inv('/api/tasks'); return r; }),
   removeTaskFollower: (taskId, userId) => req('DELETE', `/api/tasks/${taskId}/followers/${userId}`).then(r => { inv('/api/tasks'); return r; }),
   getUnreadMentionCount: () => req('GET', '/api/notifications/task-mentions/unread-count'),

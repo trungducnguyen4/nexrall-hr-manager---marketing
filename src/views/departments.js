@@ -1,12 +1,13 @@
 import { api } from '../api.js';
-import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb } from '../utils.js';
+import { EventBus } from '../event-bus.js';
+import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, sortVietnameseNames, compareVietnameseNames } from '../utils.js';
 import { icon } from '../icons.js';
 
 const DEPT_COLORS = [
   '#6366F1', '#10B981', '#F59E0B', '#EF4444', '#3B82F6',
   '#8B5CF6', '#14B8A6', '#F97316', '#EC4899', '#64748B',
 ];
-const DEPT_ICONS = ['📣', '📝', '🔍', '📱', '🎨', '📊', '🤝', '💻', '📡', '🏆'];
+const DEPT_ICON_NAMES = ['megaphone', 'squarePen', 'search', 'smartPhone', 'sparkles', 'barChart3', 'handshake', 'wifi', 'activity', 'trophy'];
 
 function colorForDept(name) {
   let h = 0;
@@ -15,9 +16,20 @@ function colorForDept(name) {
 }
 
 function iconForDept(name) {
+  const lower = String(name || '').toLowerCase();
+  if (lower.includes('marketing') || lower.includes('truyền thông')) return icon('megaphone', 'md');
+  if (lower.includes('biên tập') || lower.includes('nội dung') || lower.includes('content')) return icon('squarePen', 'md');
+  if (lower.includes('hcns') || lower.includes('nhân sự') || lower.includes('hành chính')) return icon('users', 'md');
+  if (lower.includes('kế toán') || lower.includes('tài chính') || lower.includes('quỹ')) return icon('banknote', 'md');
+  if (lower.includes('tạp vụ') || lower.includes('bảo vệ')) return icon('shield', 'md');
+  if (lower.includes('kỹ thuật') || lower.includes('it') || lower.includes('dev')) return icon('wifi', 'md');
+  if (lower.includes('sản xuất') || lower.includes('phim') || lower.includes('gameshow')) return icon('activity', 'md');
+  if (lower.includes('thực tập sinh') || lower.includes('tts')) return icon('bookOpen', 'md');
+  if (lower.includes('giám đốc') || lower.includes('bgd') || lower.includes('ban giám đốc')) return icon('trophy', 'md');
   let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 17 + name.charCodeAt(i)) & 0xffffffff;
-  return DEPT_ICONS[Math.abs(h) % DEPT_ICONS.length];
+  for (let i = 0; i < lower.length; i++) h = (h * 17 + lower.charCodeAt(i)) & 0xffffffff;
+  const iconName = DEPT_ICON_NAMES[Math.abs(h) % DEPT_ICON_NAMES.length];
+  return icon(iconName, 'md');
 }
 
 export async function renderDepartments(el, me) {
@@ -28,7 +40,7 @@ export async function renderDepartments(el, me) {
       <!-- Header -->
       <div class="departments-header">
         <div class="departments-header-left">
-          <h1 class="departments-title">🏢 Phòng ban & Cơ cấu tổ chức</h1>
+          <h1 class="departments-title">${icon('building2', 'lg')} <span>Phòng ban & Cơ cấu tổ chức</span></h1>
           <p class="departments-sub">Quản lý sơ đồ phòng ban, trưởng bộ phận và phân bổ nhân sự toàn công ty</p>
         </div>
         ${isAdmin ? `<button id="btn-new-dept" class="btn-primary btn-sm dept-add-btn">${icon('plus', 'sm')} <span>Thêm phòng ban</span></button>` : ''}
@@ -92,7 +104,7 @@ export async function renderDepartments(el, me) {
       currentDepts = deptsRes.status === 'fulfilled'
         ? (deptsRes.value.departments || []).map(d => ({ ...d, manager: d.manager_name || d.manager || '' }))
         : [];
-      currentUsers = usersRes.status === 'fulfilled' ? (usersRes.value.users || []) : [];
+      currentUsers = usersRes.status === 'fulfilled' ? sortVietnameseNames(usersRes.value.users || [], 'full_name') : [];
       renderDeptDashboard();
     } catch (e) {
       gridEl.innerHTML = emptyHTML('⚠️', e.message);
@@ -126,21 +138,21 @@ export async function renderDepartments(el, me) {
     if (metricsEl) {
       metricsEl.innerHTML = `
         <div class="dept-metric-card">
-          <div class="dept-metric-icon dept-metric-icon--blue">🏢</div>
+          <div class="dept-metric-icon dept-metric-icon--blue">${icon('building2', 'md')}</div>
           <div class="dept-metric-data">
             <span class="dept-metric-val">${totalDepts}</span>
             <span class="dept-metric-lbl">Phòng ban hoạt động</span>
           </div>
         </div>
         <div class="dept-metric-card">
-          <div class="dept-metric-icon dept-metric-icon--green">👥</div>
+          <div class="dept-metric-icon dept-metric-icon--green">${icon('users', 'md')}</div>
           <div class="dept-metric-data">
             <span class="dept-metric-val">${totalAssignedUsers}</span>
             <span class="dept-metric-lbl">Nhân sự đã phân bổ</span>
           </div>
         </div>
         <div class="dept-metric-card">
-          <div class="dept-metric-icon dept-metric-icon--purple">👔</div>
+          <div class="dept-metric-icon dept-metric-icon--purple">${icon('userRound', 'md')}</div>
           <div class="dept-metric-data">
             <span class="dept-metric-val">${deptsWithManager} <small style="font-size:12px;font-weight:600;color:var(--text-3);">/ ${totalDepts}</small></span>
             <span class="dept-metric-lbl">Đã bổ nhiệm trưởng phòng</span>
@@ -148,7 +160,7 @@ export async function renderDepartments(el, me) {
         </div>
         <div class="dept-metric-card ${unassignedUsers.length > 0 ? 'dept-metric-card--warn' : ''}">
           <div class="dept-metric-icon ${unassignedUsers.length > 0 ? 'dept-metric-icon--amber' : 'dept-metric-icon--slate'}">
-            ${unassignedUsers.length > 0 ? '⚠️' : '✅'}
+            ${unassignedUsers.length > 0 ? icon('triangleAlert', 'md') : icon('circleCheck', 'md')}
           </div>
           <div class="dept-metric-data">
             <span class="dept-metric-val">${unassignedUsers.length}</span>
@@ -260,6 +272,13 @@ export async function renderDepartments(el, me) {
     }
   }
 
+  el._cleanup = () => {};
+
+  EventBus.bindView(el, 'departments', () => loadDepts());
+  EventBus.bindView(el, 'department:*', () => loadDepts());
+  EventBus.bindView(el, 'users', () => loadDepts());
+  EventBus.bindView(el, 'user:*', () => loadDepts());
+
   loadDepts();
 }
 
@@ -333,7 +352,7 @@ function deptHubCardHTML(d, members, allUsers, isAdmin) {
           </div>
         ` : `
           <div class="dept-hub-manager-unassigned">
-            <span class="dept-hub-unassigned-icon">👤</span>
+            <span class="dept-hub-unassigned-icon">${icon('user', 'xs')}</span>
             <span class="dept-hub-unassigned-text">Chưa bổ nhiệm trưởng phòng</span>
           </div>
         `}
@@ -343,7 +362,7 @@ function deptHubCardHTML(d, members, allUsers, isAdmin) {
       <div class="dept-hub-members-section">
         <div class="dept-hub-members-head">
           <span class="dept-hub-members-title">
-            👥 Danh sách nhân sự
+            ${icon('users', 'xs')} <span>Danh sách nhân sự</span>
           </span>
           <span class="dept-hub-member-badge" style="background:${color}15; color:${color};">
             ${memberCount} thành viên

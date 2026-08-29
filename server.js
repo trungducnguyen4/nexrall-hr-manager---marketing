@@ -21,6 +21,24 @@ const SEED_VERSION = '2026-08-13-add-phong-it-v1';
 const LEAVE_DOCUMENT_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
 const LEAVE_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
 
+function getVietnameseSortKey(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '';
+  return parts.slice().reverse().join(' ');
+}
+
+function compareVietnameseNames(a, b) {
+  const keyA = getVietnameseSortKey(typeof a === 'string' ? a : (a?.full_name || a?.name || a?.employee_name || a?.user_name || ''));
+  const keyB = getVietnameseSortKey(typeof b === 'string' ? b : (b?.full_name || b?.name || b?.employee_name || b?.user_name || ''));
+  return keyA.localeCompare(keyB, 'vi', { sensitivity: 'accent', numeric: true });
+}
+
+function sortVietnameseNames(list, key = 'full_name') {
+  if (!Array.isArray(list)) return [];
+  const getValue = typeof key === 'function' ? key : (item => (item && typeof item === 'object' ? item[key] : item));
+  return [...list].sort((a, b) => compareVietnameseNames(getValue(a), getValue(b)));
+}
+
 async function ensureLeavePolicySchema(env) {
   await env.DB.exec(`CREATE TABLE IF NOT EXISTS leave_balances (
     id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, leave_type_code TEXT NOT NULL,
@@ -650,6 +668,9 @@ export async function migrate(env) {
   try { await env.DB.exec('ALTER TABLE candidates ADD COLUMN cv_original_filename TEXT'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE candidates ADD COLUMN cv_content_type TEXT'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE candidates ADD COLUMN cv_byte_size INTEGER DEFAULT 0'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE candidates ADD COLUMN department TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE candidates ADD COLUMN email TEXT'); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE candidates ADD COLUMN phone TEXT'); } catch (_) {}
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS payroll_change_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     payroll_id INTEGER NOT NULL,
@@ -710,10 +731,12 @@ export async function migrate(env) {
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN expected_end TEXT'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN late_minutes INTEGER DEFAULT 0'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN early_minutes INTEGER DEFAULT 0'); } catch (_) {}
-  try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN registered INTEGER DEFAULT 0'); } catch (_) {}
   // Auto-checkout marker: set to 1 when the nightly scheduled job closes a day
-  // the employee forgot to check out (tag "Quên checkout").
+  // the employee forgot to check out (tag "Tự động checkout").
   try { await env.DB.exec('ALTER TABLE attendance ADD COLUMN auto_checkout INTEGER DEFAULT 0'); } catch (_) {}
+  try {
+    await env.DB.exec(`UPDATE attendance SET note = replace(replace(replace(note, '[Quên checkout]', 'Tự động checkout'), '[quên checkout]', 'Tự động checkout'), 'quên checkout', 'Tự động checkout') WHERE note LIKE '%quên checkout%' OR note LIKE '%Quên checkout%'`);
+  } catch (_) {}
   // Additive GPS/geofence audit. Existing IP-based attendance remains readable.
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS attendance_locations (
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, code TEXT, address TEXT,
@@ -1204,6 +1227,16 @@ export async function migrate(env) {
   try { await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_task_projects_external ON task_projects(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL"); } catch (_) {}
   try { await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_task_groups_external ON task_groups(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL"); } catch (_) {}
   try { await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_external ON tasks(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL"); } catch (_) {}
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS task_completion_subscriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      department TEXT DEFAULT '',
+      project_id INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    )`);
+    await env.DB.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_task_comp_sub ON task_completion_subscriptions(user_id, department, project_id)');
+  } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_leave_requests_type ON leave_requests(type)'); } catch (_) {}
   try { await env.DB.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_departments_name_ci ON departments(lower(name))'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE departments ADD COLUMN manager_id INTEGER'); } catch (_) {}
@@ -2200,6 +2233,96 @@ async function broadcastChatUpdate(env, conversationId, payload) {
   } catch (error) { console.warn('Chat broadcast failed', error?.message || error); }
 }
 
+/**
+ * Universal Real-Time Event Broadcaster
+ * Dispatches standardized event envelopes to the AppSyncHub Durable Object.
+ * Non-blocking & fault-tolerant: broadcast errors never fail the primary D1 transaction.
+ *
+ * @param {object} env - Cloudflare Worker environment bindings
+ * @param {string|object} topicOrEvent - Domain topic ('tasks', 'chat', 'notifications', 'attendance', 'leave', 'payroll', 'invoices', 'users') or full event object
+ * @param {string|object} [eventOrPayload] - Event name or payload
+ * @param {object} [payloadObj] - Domain data payload
+ * @param {object} [options] - Optional envelope overrides
+ * @returns {Promise<{ ok: boolean, id?: string, error?: string }>}
+ */
+export async function broadcastAppEvent(env, topicOrEvent, eventOrPayload = {}, payloadObj = {}, options = {}) {
+  const syncHubBinding = env?.SYNC_HUB || env?.APP_SYNC_HUB;
+  if (!syncHubBinding) {
+    return { ok: false, error: 'SYNC_HUB binding not available' };
+  }
+
+  let envelope;
+  if (typeof topicOrEvent === 'object' && topicOrEvent !== null) {
+    envelope = {
+      id: topicOrEvent.id || `evt_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      seq: topicOrEvent.seq || 0,
+      topic: String(topicOrEvent.topic || 'system'),
+      event: String(topicOrEvent.event || topicOrEvent.topic || 'update'),
+      payload: topicOrEvent.payload !== undefined ? topicOrEvent.payload : {},
+      actorId: topicOrEvent.actorId !== undefined && topicOrEvent.actorId !== null ? Number(topicOrEvent.actorId) : null,
+      ...(Array.isArray(topicOrEvent.targetUserIds) && topicOrEvent.targetUserIds.length ? {
+        targetUserIds: topicOrEvent.targetUserIds.map(Number).filter(id => Number.isInteger(id) && id > 0)
+      } : {}),
+      timestamp: topicOrEvent.timestamp || new Date().toISOString(),
+    };
+  } else {
+    const topic = String(topicOrEvent);
+    let eventName, payload, opts;
+    if (typeof eventOrPayload === 'string') {
+      eventName = eventOrPayload;
+      payload = payloadObj || {};
+      opts = options || {};
+    } else {
+      eventName = options?.event || topic;
+      payload = eventOrPayload || {};
+      opts = payloadObj || {};
+    }
+
+    const eventId = opts.id || `evt_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const timestamp = opts.timestamp || new Date().toISOString();
+    const actorId = opts.actorId !== undefined && opts.actorId !== null ? Number(opts.actorId) : (opts.actor_id !== undefined && opts.actor_id !== null ? Number(opts.actor_id) : null);
+    const targetUserIds = Array.isArray(opts.targetUserIds || opts.target_user_ids)
+      ? (opts.targetUserIds || opts.target_user_ids).map(Number).filter(id => Number.isInteger(id) && id > 0)
+      : undefined;
+
+    envelope = {
+      id: eventId,
+      seq: opts.seq || 0,
+      topic,
+      event: String(eventName),
+      payload,
+      actorId,
+      actor_id: actorId,
+      ...(targetUserIds && targetUserIds.length ? { targetUserIds, target_user_ids: targetUserIds } : {}),
+      timestamp,
+    };
+  }
+
+  try {
+    const hubId = syncHubBinding.idFromName('global');
+    const hubStub = syncHubBinding.get(hubId);
+
+    if (typeof hubStub.broadcast === 'function') {
+      return await hubStub.broadcast(envelope);
+    }
+
+    const response = await hubStub.fetch('https://sync-hub.internal/broadcast', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(envelope),
+    });
+
+    if (!response.ok) {
+      console.warn(`[broadcastAppEvent] AppSyncHub returned HTTP ${response.status} for ${envelope.topic}:${envelope.event}`);
+      return { ok: false, status: response.status };
+    }
+    return await response.json().catch(() => ({ ok: true, id: envelope.id }));
+  } catch (error) {
+    console.warn(`[broadcastAppEvent] Broadcast failed for ${envelope?.topic}:${envelope?.event}:`, error?.message || error);
+    return { ok: false, error: error?.message || String(error) };
+  }
+}
+
 const CHAT_EMOJI_FALLBACK = ['😀','😁','😂','🤣','😊','😍','😘','😎','🤔','😭','😡','👍','👎','❤️','🎉','✅','🔥','👏','🙏','👀'];
 let _chatEmojiCache = { expiresAt: 0, emojis: CHAT_EMOJI_FALLBACK };
 async function getChatEmojis() {
@@ -3114,7 +3237,7 @@ export async function runAutoCheckout(env) {
       workMinutes -= overlap;
     }
     const workHours = Math.max(0, workMinutes) / 60;
-    const note = [record.note, 'quên checkout'].filter(Boolean).join(' - ').trim();
+    const note = [record.note, 'Tự động checkout'].filter(Boolean).join(' - ').trim();
     await env.DB.prepare(
       `UPDATE attendance
           SET checkout_time=?, checkout_ip='auto', work_hours=?, auto_checkout=1, status='ontime', early_minutes=0, note=?
@@ -3418,9 +3541,12 @@ async function ensureMyxteamTaskImportSchema(env) {
     'ALTER TABLE tasks ADD COLUMN external_metadata TEXT',
     'ALTER TABLE tasks ADD COLUMN import_position INTEGER',
     'ALTER TABLE tasks ADD COLUMN position REAL',
+    'ALTER TABLE subtasks ADD COLUMN external_source TEXT',
+    'ALTER TABLE subtasks ADD COLUMN external_id TEXT',
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_projects_external ON task_projects(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_groups_external ON task_groups(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_external ON tasks(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_subtasks_external ON subtasks(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL",
   ];
   for (const sql of statements) {
     try { await env.DB.exec(sql); } catch (_) {}
@@ -3429,6 +3555,19 @@ async function ensureMyxteamTaskImportSchema(env) {
 
 function myxteamExternalId(value) {
   return String(value ?? '').trim().slice(0, 120);
+}
+
+function myxteamParseDate(val) {
+  if (!val) return null;
+  if (typeof val === 'string') {
+    if (/^\d{4}-\d{2}-\d{2}/.test(val)) return val.slice(0, 10);
+    const m = val.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
+    if (m && m[3]) {
+      const year = Number(m[3]) < 100 ? 2000 + Number(m[3]) : Number(m[3]);
+      return `${String(year).padStart(4, '0')}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+    }
+  }
+  return null;
 }
 
 function myxteamDateRange(value) {
@@ -3453,6 +3592,51 @@ function myxteamDateRange(value) {
   const date = iso(match[1], match[2], firstYear);
   const dueDate = match[4] ? iso(match[4], match[5], match[6] || firstYear) : date;
   return { date, dueDate };
+}
+
+function myxteamDescription(task) {
+  const fields = [task.description, task.desc, task.detail, task.content, task.note, task.body];
+  for (const f of fields) {
+    if (typeof f === 'string' && f.trim()) return f.trim();
+  }
+  if (typeof task.text === 'string' && task.text.trim()) {
+    const text = task.text.trim();
+    if (!/^\d{1,2}\/\d{1,2}(\/\d{2,4})?(\s*-\s*\d{1,2}\/\d{1,2}(\/\d{2,4})?)?$/.test(text) &&
+        !/^\d+\/\d+$/.test(text) &&
+        !/^ngày\s+\d{1,2}\s+tháng\s+\d{1,2}\s+năm\s+\d{4}$/i.test(text)) {
+      return text;
+    }
+  }
+  return '';
+}
+
+function myxteamSubtasks(task) {
+  const list = [];
+  const candidates = [
+    task.checklists,
+    task.checklist,
+    task.subtasks,
+    task.sub_tasks,
+    task.todos,
+    task.items,
+  ];
+  for (const c of candidates) {
+    if (Array.isArray(c)) {
+      for (const item of c) {
+        if (!item) continue;
+        if (Array.isArray(item.items)) {
+          for (const subItem of item.items) {
+            if (subItem) list.push(subItem);
+          }
+        } else if (typeof item === 'string' && item.trim()) {
+          list.push({ name: item.trim() });
+        } else if (typeof item === 'object') {
+          list.push(item);
+        }
+      }
+    }
+  }
+  return list;
 }
 
 function myxteamPersonKey(value) {
@@ -3533,10 +3717,10 @@ async function importMyxteamProject(env, me, payload) {
     for (let taskIndex = 0; taskIndex < sourceTasks.length; taskIndex += 1) {
       const task = sourceTasks[taskIndex] || {};
       const taskExternalId = myxteamExternalId(task.externalId || `${groupExternalId}:task:${taskIndex}`);
-      const title = String(task.name || '').trim().slice(0, 1000);
+      const title = String(task.name || task.title || '').trim().slice(0, 1000);
       if (!taskExternalId || !title) continue;
       suppliedTasks += 1;
-      const assigneeNames = Array.isArray(task.assignees) ? task.assignees.map(String) : [];
+      const assigneeNames = Array.isArray(task.assignees) ? task.assignees.map(String) : (task.assignee ? [String(task.assignee)] : []);
       let assigneeId = null;
       for (const assigneeName of assigneeNames) {
         const key = myxteamPersonKey(assigneeName);
@@ -3550,6 +3734,7 @@ async function importMyxteamProject(env, me, payload) {
         }
       }
       const range = myxteamDateRange(task.text);
+      const description = myxteamDescription(task);
       const metadata = JSON.stringify({
         source: 'MyXteam', project_id: externalId, group_id: groupExternalId,
         pinned: !!task.pinned, source_text: String(task.text || '').slice(0, 4000), assignees: assigneeNames.slice(0, 50),
@@ -3560,13 +3745,17 @@ async function importMyxteamProject(env, me, payload) {
            workspace_id,team_project_id,group_id,external_source,external_id,external_metadata,import_position)
          VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)`
       ).bind(
-        title, '', assigneeId, me.id, department, range.date, range.dueDate,
+        title, description, assigneeId, me.id, department, range.date, range.dueDate,
         task.done ? 'done' : 'todo', 'normal', task.done ? '#10B981' : '#6366F1',
         project.id, groupId, source, taskExternalId, metadata, taskIndex,
       ));
+      if (description) {
+        taskBackfillStatements.push(env.DB.prepare(
+          `UPDATE tasks SET description=CASE WHEN description IS NULL OR description='' THEN ? ELSE description END
+            WHERE external_source=? AND external_id=?`
+        ).bind(description, source, taskExternalId));
+      }
       if (range.date || range.dueDate) {
-        // A re-run may safely fill dates that the first import could not parse,
-        // while never overwriting a date edited later in NetViet.
         taskBackfillStatements.push(env.DB.prepare(
           `UPDATE tasks SET date=COALESCE(date,?),due_date=COALESCE(due_date,?)
             WHERE external_source=? AND external_id=?`
@@ -3583,6 +3772,83 @@ async function importMyxteamProject(env, me, payload) {
   for (let offset = 0; offset < taskBackfillStatements.length; offset += 50) {
     await env.DB.batch(taskBackfillStatements.slice(offset, offset + 50));
   }
+
+  // Map tasks to their internal IDs to attach subtasks
+  const { results: importedTasks = [] } = await env.DB.prepare(
+    'SELECT id,external_id FROM tasks WHERE team_project_id=? AND external_source=?'
+  ).bind(project.id, source).all();
+  const tasksByExternalId = new Map(importedTasks.map(t => [String(t.external_id), Number(t.id)]));
+
+  const subtaskStatements = [];
+  const subtaskBackfillStatements = [];
+  let suppliedSubtasks = 0;
+
+  for (let groupIndex = 0; groupIndex < sourceGroups.length; groupIndex += 1) {
+    const sourceGroup = sourceGroups[groupIndex] || {};
+    const groupExternalId = myxteamExternalId(sourceGroup.externalId || `${externalId}:group:${groupIndex}`);
+    const sourceTasks = Array.isArray(sourceGroup.tasks) ? sourceGroup.tasks.slice(0, 2000) : [];
+    for (let taskIndex = 0; taskIndex < sourceTasks.length; taskIndex += 1) {
+      const task = sourceTasks[taskIndex] || {};
+      const taskExternalId = myxteamExternalId(task.externalId || `${groupExternalId}:task:${taskIndex}`);
+      const taskId = tasksByExternalId.get(taskExternalId);
+      if (!taskId) continue;
+
+      const rawSubtasks = myxteamSubtasks(task);
+      for (let subIndex = 0; subIndex < rawSubtasks.length; subIndex += 1) {
+        const sub = rawSubtasks[subIndex] || {};
+        const subTitle = String(sub.name || sub.title || sub.text || sub.content || '').trim().slice(0, 1000);
+        if (!subTitle) continue;
+        suppliedSubtasks += 1;
+        const subExternalId = myxteamExternalId(sub.externalId || sub.id || `${taskExternalId}:sub:${subIndex}`);
+        const subDesc = String(sub.description || sub.desc || sub.detail || '').trim();
+        const isDone = (sub.done || sub.is_done || sub.completed || sub.status === 'done') ? 1 : 0;
+        
+        let subAssigneeId = null;
+        const subAssignees = Array.isArray(sub.assignees) ? sub.assignees : (sub.assignee ? [sub.assignee] : (sub.assigned_to ? [sub.assigned_to] : []));
+        for (const sa of subAssignees) {
+          const saName = typeof sa === 'string' ? sa : (sa?.name || sa?.full_name || '');
+          const key = myxteamPersonKey(saName);
+          if (!key || key === 'netviet tv' || /deleted/i.test(key)) continue;
+          const user = usersByName.get(key);
+          if (user) {
+            matchedMemberIds.add(Number(user.id));
+            subAssigneeId = Number(user.id);
+            break;
+          }
+        }
+        const subDueDate = myxteamParseDate(sub.due_date || sub.dueDate || sub.due || sub.date);
+
+        subtaskStatements.push(env.DB.prepare(
+          `INSERT OR IGNORE INTO subtasks
+            (task_id,title,description,is_done,assigned_to,due_date,external_source,external_id)
+           VALUES (?,?,?,?,?,?,?,?)`
+        ).bind(taskId, subTitle, subDesc, isDone, subAssigneeId, subDueDate, source, subExternalId));
+
+        if (subDesc) {
+          subtaskBackfillStatements.push(env.DB.prepare(
+            `UPDATE subtasks SET description=CASE WHEN description IS NULL OR description='' THEN ? ELSE description END
+              WHERE external_source=? AND external_id=?`
+          ).bind(subDesc, source, subExternalId));
+        }
+        if (subDueDate) {
+          subtaskBackfillStatements.push(env.DB.prepare(
+            `UPDATE subtasks SET due_date=COALESCE(due_date,?)
+              WHERE external_source=? AND external_id=?`
+          ).bind(subDueDate, source, subExternalId));
+        }
+      }
+    }
+  }
+
+  let createdSubtasks = 0;
+  for (let offset = 0; offset < subtaskStatements.length; offset += 50) {
+    const results = await env.DB.batch(subtaskStatements.slice(offset, offset + 50));
+    createdSubtasks += results.reduce((sum, result) => sum + Number(result?.meta?.changes || 0), 0);
+  }
+  for (let offset = 0; offset < subtaskBackfillStatements.length; offset += 50) {
+    await env.DB.batch(subtaskBackfillStatements.slice(offset, offset + 50));
+  }
+
   for (const userId of matchedMemberIds) {
     const exists = await env.DB.prepare(
       'SELECT id FROM task_project_members WHERE project_id=? AND user_id=? LIMIT 1'
@@ -3599,6 +3865,8 @@ async function importMyxteamProject(env, me, payload) {
     groups_created: createdGroups,
     tasks_created: createdTasks,
     tasks_skipped: Math.max(0, suppliedTasks - createdTasks),
+    subtasks_created: createdSubtasks,
+    subtasks_supplied: suppliedSubtasks,
     matched_members: matchedMemberIds.size,
     unmatched_assignees: [...unmatchedNames].filter(Boolean).slice(0, 100),
   };
@@ -3947,6 +4215,15 @@ export async function handle(request, env) {
     return json(await currentIpInfo(env, request));
   }
 
+  // ── REAL-TIME SYNC HUB (WebSocket, SSE & Stats) ───────────────────
+  if (path === '/api/realtime/ws' || path === '/api/realtime/events' || path === '/api/realtime/stats') {
+    const hubBinding = env?.SYNC_HUB || env?.APP_SYNC_HUB;
+    if (!hubBinding) return json({ error: 'AppSyncHub chưa được cấu hình' }, 503);
+    const doId = hubBinding.idFromName('global');
+    const stub = hubBinding.get(doId);
+    return stub.fetch(request);
+  }
+
   // ── DEBUG: inspect auth headers ─────────────────────────────────
   // Never expose request credentials or platform identity in production.
   if (path === '/api/debug-auth') return json({ error: 'Không tìm thấy' }, 404);
@@ -4101,34 +4378,413 @@ export async function handle(request, env) {
 
   // Executive dashboard deliberately returns aggregates only.  It is an Admin
   // surface, so no salary, identity or private document data is exposed.
+  // Executive HR & Management Dashboard (Organization-wide metrics)
+  // Executive HR & Management Dashboard (Organization-wide metrics)
   if (path === '/api/dashboard/admin' && request.method === 'GET') {
-    if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
+    if (!isAdmin && !isManager && !isHcns(me)) return json({ error: 'Không có quyền' }, 403);
     const today = vnTodayStr();
     const [year, month] = today.slice(0, 7).split('-').map(Number);
-    const [peopleRow, attendanceRow, taskRow, taskDepartments, approvalRow, kpiRow, recruitmentRow, campaignRow, campaignItems, alerts] = await Promise.all([
-      env.DB.prepare(`SELECT COUNT(*) active, SUM(CASE WHEN employee_type='TTS' THEN 1 ELSE 0 END) interns, SUM(CASE WHEN lower(coalesce(lifecycle_status,'')) LIKE '%thử việc%' THEN 1 ELSE 0 END) probation, SUM(CASE WHEN hire_date LIKE ? THEN 1 ELSE 0 END) new_hires_month FROM users WHERE is_active=1`).bind(`${today.slice(0,7)}-%`).first(),
-      env.DB.prepare(`SELECT COUNT(DISTINCT u.id) eligible, COUNT(DISTINCT CASE WHEN a.checkin_time IS NOT NULL THEN u.id END) checked_in, COUNT(DISTINCT CASE WHEN coalesce(a.late_minutes,0)>0 THEN u.id END) late, COUNT(DISTINCT CASE WHEN l.id IS NOT NULL THEN u.id END) approved_leave, COUNT(DISTINCT CASE WHEN a.checkin_time IS NULL AND l.id IS NULL THEN u.id END) not_checked_in FROM users u LEFT JOIN attendance a ON a.user_id=u.id AND a.date=? LEFT JOIN leave_requests l ON l.employee_id=u.id AND l.status='approved' AND date(l.start_date)<=date(?) AND date(l.end_date)>=date(?) WHERE u.is_active=1`).bind(today,today,today).first(),
-      env.DB.prepare(`SELECT COUNT(*) open, SUM(CASE WHEN status='todo' THEN 1 ELSE 0 END) todo, SUM(CASE WHEN status='in_progress' THEN 1 ELSE 0 END) in_progress, SUM(CASE WHEN status='review' THEN 1 ELSE 0 END) review, SUM(CASE WHEN due_date<? AND status NOT IN ('done','cancelled') THEN 1 ELSE 0 END) overdue, SUM(CASE WHEN date(updated_at)>=date(?,'-6 day') AND status='done' THEN 1 ELSE 0 END) done_last_7_days FROM tasks`).bind(today,today).first(),
-      env.DB.prepare(`SELECT coalesce(u.department,t.department,'Chưa phân phòng') department, COUNT(*) count FROM tasks t LEFT JOIN users u ON u.id=t.assigned_to WHERE t.due_date<? AND t.status NOT IN ('done','cancelled') GROUP BY coalesce(u.department,t.department,'Chưa phân phòng') ORDER BY count DESC LIMIT 3`).bind(today).all(),
-      env.DB.prepare(`SELECT (SELECT COUNT(*) FROM leave_requests WHERE status='pending') leave_count, (SELECT COUNT(*) FROM overtime_requests WHERE status='pending') overtime_count, (SELECT COUNT(*) FROM employee_kpi_plans WHERE month=? AND year=? AND status='SUBMITTED') kpi_count`).bind(month,year).first(),
-      env.DB.prepare(`SELECT COUNT(*) eligible_employees, SUM(CASE WHEN p.id IS NOT NULL THEN 1 ELSE 0 END) with_plan, SUM(CASE WHEN p.status='DRAFT' THEN 1 ELSE 0 END) draft, SUM(CASE WHEN p.status='SUBMITTED' THEN 1 ELSE 0 END) submitted, SUM(CASE WHEN p.status='APPROVED' THEN 1 ELSE 0 END) approved, SUM(CASE WHEN p.status='RETURNED' THEN 1 ELSE 0 END) returned FROM users u LEFT JOIN employee_kpi_plans p ON p.employee_id=u.id AND p.month=? AND p.year=? WHERE u.is_active=1`).bind(month,year).first(),
-      env.DB.prepare(`SELECT SUM(CASE WHEN stage NOT IN ('hired','rejected') THEN 1 ELSE 0 END) active, SUM(CASE WHEN stage='received' THEN 1 ELSE 0 END) received, SUM(CASE WHEN stage='screening' THEN 1 ELSE 0 END) screening, SUM(CASE WHEN stage IN ('interview1','interview2') THEN 1 ELSE 0 END) interview, SUM(CASE WHEN stage='offer' THEN 1 ELSE 0 END) offer, SUM(CASE WHEN stage='hired' AND apply_date LIKE ? THEN 1 ELSE 0 END) hired_this_month FROM candidates`).bind(`${today.slice(0,7)}-%`).first(),
-      env.DB.prepare(`SELECT COUNT(*) active, COALESCE(SUM(budget),0) budget, COALESCE(SUM(spent),0) spent FROM campaigns WHERE status='active'`).first(),
-      env.DB.prepare(`SELECT id,name,budget,spent,goal_leads,goal_conversions FROM campaigns WHERE status='active' ORDER BY CASE WHEN budget>0 THEN spent*1.0/budget ELSE 0 END DESC,id DESC LIMIT 3`).all(),
-      buildEmployeeAlerts(env, 30),
-    ]);
-    const people = { active:Number(peopleRow?.active||0), interns:Number(peopleRow?.interns||0), probation:Number(peopleRow?.probation||0), new_hires_month:Number(peopleRow?.new_hires_month||0) };
-    const attendance = { date:today, eligible:Number(attendanceRow?.eligible||0), checked_in:Number(attendanceRow?.checked_in||0), late:Number(attendanceRow?.late||0), approved_leave:Number(attendanceRow?.approved_leave||0), not_checked_in:Number(attendanceRow?.not_checked_in||0) };
-    attendance.checkin_rate = attendance.eligible ? Number((attendance.checked_in / attendance.eligible * 100).toFixed(1)) : 0;
-    const tasks = { open:Number(taskRow?.open||0), todo:Number(taskRow?.todo||0), in_progress:Number(taskRow?.in_progress||0), review:Number(taskRow?.review||0), overdue:Number(taskRow?.overdue||0), done_last_7_days:Number(taskRow?.done_last_7_days||0), overdue_by_department:taskDepartments.results||[] };
-    const approvals = { leave:Number(approvalRow?.leave_count||0), overtime:Number(approvalRow?.overtime_count||0), kpi:Number(approvalRow?.kpi_count||0) }; approvals.total = approvals.leave + approvals.overtime + approvals.kpi;
-    const kpi = { month, year, eligible_employees:Number(kpiRow?.eligible_employees||0), with_plan:Number(kpiRow?.with_plan||0), draft:Number(kpiRow?.draft||0), submitted:Number(kpiRow?.submitted||0), approved:Number(kpiRow?.approved||0), returned:Number(kpiRow?.returned||0) }; kpi.without_plan=Math.max(0,kpi.eligible_employees-kpi.with_plan); kpi.coverage_percent=kpi.eligible_employees?Number((kpi.with_plan/kpi.eligible_employees*100).toFixed(1)):0;
-    const employee_alerts = { total:alerts.length, critical:alerts.filter(a=>a.severity==='danger').length, warning:alerts.filter(a=>a.severity==='warning').length };
-    const recruitment = Object.fromEntries(Object.entries(recruitmentRow||{}).map(([key,value])=>[key,Number(value||0)]));
-    const campaigns = { active:Number(campaignRow?.active||0), budget:Number(campaignRow?.budget||0), spent:Number(campaignRow?.spent||0), items:(campaignItems.results||[]).map(item=>({...item,budget:Number(item.budget||0),spent:Number(item.spent||0)})) }; campaigns.spent_percent=campaigns.budget?Number((campaigns.spent/campaigns.budget*100).toFixed(1)):null;
-    const action_items = [...alerts.filter(a=>a.severity==='danger'||a.severity==='warning').map(a=>({severity:a.severity,title:`${a.title}: ${a.employee_name}`,detail:a.message,action_url:a.action_url,action_label:a.action_label})), ...(approvals.leave?[{severity:'warning',title:`${approvals.leave} đơn nghỉ phép chờ duyệt`,detail:'Cần xử lý đơn nghỉ phép đang chờ.',action_url:'#/leave',action_label:'Xử lý'}]:[]), ...(approvals.kpi?[{severity:'warning',title:`${approvals.kpi} KPI chờ review`,detail:'Nhân viên đã gửi KPI để phê duyệt.',action_url:'#/kpis',action_label:'Review'}]:[]), ...(tasks.overdue?[{severity:'warning',title:`${tasks.overdue} việc quá hạn`,detail:'Theo dõi và cập nhật tiến độ các công việc quá hạn.',action_url:'#/tasks',action_label:'Xem công việc'}]:[])].slice(0,8);
-    const insights=[]; if (attendance.not_checked_in>=3) insights.push({severity:'warning',text:`${attendance.not_checked_in} nhân sự chưa check-in và không có đơn nghỉ được duyệt.`}); if(tasks.overdue){const top=tasks.overdue_by_department[0]; if(top&&Number(top.count)/tasks.overdue>=.4) insights.push({severity:'warning',text:`${top.department} chiếm ${Math.round(Number(top.count)/tasks.overdue*100)}% số việc quá hạn.`});} if(kpi.without_plan) insights.push({severity:'info',text:`${kpi.without_plan}/${kpi.eligible_employees} nhân sự chưa được thiết lập KPI tháng ${month}.`}); if(!insights.length) insights.push({severity:'success',text:'Hôm nay chưa phát hiện vấn đề vận hành cần ưu tiên.'});
-    return json({ generated_at: `${today} ${vnTimeStr()}`, people, attendance, tasks, approvals, employee_alerts, kpi, recruitment, campaigns, action_items, insights });
+
+    // Compute last 6 months list
+    const last6Months = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(year, month - 1 - i, 1);
+      const mStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      const label = `T${d.getMonth() + 1}`;
+      last6Months.push({ month: mStr, label });
+    }
+
+    try {
+      const [
+        peopleRow,
+        prevPeopleRow,
+        attendanceRow,
+        attTrendRows,
+        deptSalaryRows,
+        approvalRow,
+        kpiRow,
+        recruitmentRow,
+        campaignRow,
+        campaignItems,
+        alerts,
+        expiringContractsRows,
+        otFormsMonthRow,
+        otTodayRow,
+        monthLeaveRows
+      ] = await Promise.all([
+        // Current active headcount & hires
+        env.DB.prepare(`SELECT 
+          COUNT(*) active, 
+          SUM(CASE WHEN employee_type='TTS' THEN 1 ELSE 0 END) interns, 
+          SUM(CASE WHEN lower(coalesce(lifecycle_status,'')) LIKE '%thử việc%' THEN 1 ELSE 0 END) probation, 
+          SUM(CASE WHEN hire_date LIKE ? THEN 1 ELSE 0 END) new_hires_month,
+          (SELECT COUNT(*) FROM users WHERE is_active=0 OR lower(coalesce(lifecycle_status,'')) LIKE '%nghỉ việc%') departures_month
+        FROM users WHERE is_active=1`).bind(`${today.slice(0,7)}-%`).first().catch(() => ({ active: 0 })),
+
+        // Previous month active headcount (to compute growth %)
+        env.DB.prepare(`SELECT COUNT(*) total_prev FROM users WHERE is_active=1 AND (hire_date IS NULL OR hire_date < ?)`).bind(`${today.slice(0,7)}-01`).first().catch(() => ({ total_prev: 0 })),
+
+        // Today attendance breakdown
+        env.DB.prepare(`SELECT 
+          COUNT(DISTINCT u.id) eligible, 
+          COUNT(DISTINCT CASE WHEN a.checkin_time IS NOT NULL THEN u.id END) checked_in, 
+          COUNT(DISTINCT CASE WHEN a.checkin_time IS NOT NULL AND a.work_type='office' THEN u.id END) office,
+          COUNT(DISTINCT CASE WHEN a.checkin_time IS NOT NULL AND a.work_type='wfh' THEN u.id END) wfh,
+          COUNT(DISTINCT CASE WHEN a.checkin_time IS NOT NULL AND a.work_type='business' THEN u.id END) business,
+          COUNT(DISTINCT CASE WHEN coalesce(a.late_minutes,0)>0 THEN u.id END) late, 
+          COUNT(DISTINCT CASE WHEN l.id IS NOT NULL THEN u.id END) approved_leave, 
+          COUNT(DISTINCT CASE WHEN a.checkin_time IS NULL AND l.id IS NULL THEN u.id END) not_checked_in,
+          COUNT(DISTINCT CASE WHEN a.checkin_requires_review=1 OR a.checkin_review_status='pending' THEN u.id END) unreviewed_checkins
+        FROM users u 
+        LEFT JOIN attendance a ON a.user_id=u.id AND a.date=? 
+        LEFT JOIN leave_requests l ON l.employee_id=u.id AND l.status='approved' AND date(l.start_date)<=date(?) AND date(l.end_date)>=date(?) 
+        WHERE u.is_active=1`).bind(today,today,today).first().catch(() => ({})),
+
+        // 7-day attendance trend
+        env.DB.prepare(`SELECT a.date, COUNT(DISTINCT a.user_id) count
+        FROM attendance a 
+        WHERE a.date >= date(?,'-6 day') AND a.checkin_time IS NOT NULL
+        GROUP BY a.date ORDER BY a.date ASC`).bind(today).all().catch(() => ({ results: [] })),
+
+        // Department headcount & attendance metrics
+        env.DB.prepare(`SELECT 
+          coalesce(nullif(u.department,''), 'Chưa phân phòng') department, 
+          COUNT(DISTINCT u.id) headcount, 
+          COUNT(DISTINCT CASE WHEN a.checkin_time IS NOT NULL THEN u.id END) checked_in,
+          COUNT(DISTINCT CASE WHEN coalesce(a.late_minutes,0) > 0 THEN u.id END) late,
+          COUNT(DISTINCT CASE WHEN l.id IS NOT NULL THEN u.id END) approved_leave,
+          COUNT(DISTINCT CASE WHEN a.checkin_time IS NULL AND l.id IS NULL THEN u.id END) not_checked_in,
+          COALESCE(SUM(u.salary), 0) total_salary 
+        FROM users u 
+        LEFT JOIN attendance a ON a.user_id=u.id AND a.date=?
+        LEFT JOIN leave_requests l ON l.employee_id=u.id AND l.status='approved' AND date(l.start_date)<=date(?) AND date(l.end_date)>=date(?)
+        WHERE u.is_active=1 
+        GROUP BY coalesce(nullif(u.department,''), 'Chưa phân phòng') 
+        ORDER BY headcount DESC`).bind(today, today, today).all().catch(() => ({ results: [] })),
+
+        // Pending approvals
+        env.DB.prepare(`SELECT 
+          (SELECT COUNT(*) FROM leave_requests WHERE status='pending') leave_count, 
+          (SELECT (SELECT COUNT(*) FROM overtime_requests WHERE status='pending') + (SELECT COUNT(*) FROM overtime_forms WHERE status='pending')) overtime_count, 
+          (SELECT COUNT(*) FROM employee_kpi_plans WHERE month=? AND year=? AND status='SUBMITTED') kpi_count,
+          (SELECT COUNT(*) FROM evaluations WHERE status IN ('MENTOR_REVIEW','EMPLOYEE_REVISION_REQUESTED','CEO_REVISION_REQUESTED','PENDING_CEO_APPROVAL')) eval_count
+        `).bind(month,year).first().catch(() => ({})),
+
+        // KPI coverage
+        env.DB.prepare(`SELECT COUNT(*) eligible_employees, 
+          SUM(CASE WHEN p.id IS NOT NULL THEN 1 ELSE 0 END) with_plan, 
+          SUM(CASE WHEN p.status='DRAFT' THEN 1 ELSE 0 END) draft, 
+          SUM(CASE WHEN p.status='SUBMITTED' THEN 1 ELSE 0 END) submitted, 
+          SUM(CASE WHEN p.status='APPROVED' THEN 1 ELSE 0 END) approved, 
+          SUM(CASE WHEN p.status='RETURNED' THEN 1 ELSE 0 END) returned 
+        FROM users u 
+        LEFT JOIN employee_kpi_plans p ON p.employee_id=u.id AND p.month=? AND p.year=? 
+        WHERE u.is_active=1`).bind(month,year).first().catch(() => ({})),
+
+        // Recruitment pipeline
+        env.DB.prepare(`SELECT 
+          SUM(CASE WHEN stage NOT IN ('hired','rejected') THEN 1 ELSE 0 END) active, 
+          SUM(CASE WHEN stage='received' THEN 1 ELSE 0 END) received, 
+          SUM(CASE WHEN stage='screening' THEN 1 ELSE 0 END) screening, 
+          SUM(CASE WHEN stage IN ('interview1','interview2') THEN 1 ELSE 0 END) interview, 
+          SUM(CASE WHEN stage='offer' THEN 1 ELSE 0 END) offer, 
+          SUM(CASE WHEN stage='hired' AND apply_date LIKE ? THEN 1 ELSE 0 END) hired_this_month 
+        FROM candidates`).bind(`${today.slice(0,7)}-%`).first().catch(() => ({})),
+
+        // Campaigns
+        env.DB.prepare(`SELECT COUNT(*) active, COALESCE(SUM(budget),0) budget, COALESCE(SUM(spent),0) spent FROM campaigns WHERE status='active'`).first().catch(() => ({ active: 0 })),
+        env.DB.prepare(`SELECT id,name,budget,spent,goal_leads,goal_conversions FROM campaigns WHERE status='active' ORDER BY CASE WHEN budget>0 THEN spent*1.0/budget ELSE 0 END DESC,id DESC LIMIT 3`).all().catch(() => ({ results: [] })),
+        buildEmployeeAlerts(env, 30).catch(() => []),
+
+        // Expiring contracts within 30 days
+        env.DB.prepare(`SELECT id, full_name, employee_code, department, contract_end_date, contract_type
+        FROM users 
+        WHERE is_active=1 AND contract_end_date IS NOT NULL 
+          AND date(contract_end_date) BETWEEN date('now') AND date('now', '+30 day')
+        ORDER BY contract_end_date ASC LIMIT 8`).all().catch(() => ({ results: [] })),
+
+        // OT forms approved minutes in current month
+        env.DB.prepare(`SELECT 
+          COALESCE(SUM(i.approved_minutes), 0) approved_minutes,
+          COALESCE(SUM(i.requested_minutes), 0) requested_minutes,
+          COUNT(DISTINCT f.user_id) employee_count,
+          COUNT(DISTINCT f.id) form_count
+        FROM overtime_forms f 
+        JOIN overtime_form_items i ON i.form_id=f.id 
+        WHERE f.period_month=? AND f.status IN ('approved','partially_approved')`).bind(today.slice(0,7)).first().catch(() => ({})),
+
+        // OT today count (from overtime_requests and overtime_forms)
+        env.DB.prepare(`SELECT COUNT(DISTINCT user_id) count FROM overtime_forms f JOIN overtime_form_items i ON i.form_id=f.id WHERE f.status IN ('approved','partially_approved') AND date(i.start_at)=?`).bind(today).first().catch(() => ({ count: 0 })),
+
+        // Month total approved leaves
+        env.DB.prepare(`SELECT COUNT(*) total_leave_count FROM leave_requests WHERE status='approved' AND (start_date LIKE ? OR end_date LIKE ?)`).bind(`${today.slice(0,7)}-%`, `${today.slice(0,7)}-%`).first().catch(() => ({ total_leave_count: 0 }))
+      ]);
+
+      // 6-Month Fluctuation data
+      const fluctuationPromises = last6Months.map(async item => {
+        try {
+          const hires = await env.DB.prepare(`SELECT COUNT(*) c FROM users WHERE hire_date LIKE ?`).bind(`${item.month}-%`).first().catch(() => ({ c: 0 }));
+          const leaves = await env.DB.prepare(`SELECT COUNT(*) c FROM users WHERE is_active=0 AND created_at LIKE ?`).bind(`${item.month}-%`).first().catch(() => ({ c: 0 }));
+          return {
+            month: item.month,
+            label: item.label,
+            hires: Number(hires?.c || 0),
+            departures: Number(leaves?.c || 0)
+          };
+        } catch (_) {
+          return { month: item.month, label: item.label, hires: 0, departures: 0 };
+        }
+      });
+      const fluctuationData = await Promise.all(fluctuationPromises);
+
+      // Calculate People KPIs
+      const activeHeadcount = Number(peopleRow?.active || 0);
+      const prevTotal = Number(prevPeopleRow?.total_prev || activeHeadcount);
+      const growthPercent = prevTotal > 0 ? Number(((activeHeadcount - prevTotal) / prevTotal * 100).toFixed(1)) : 0;
+      const people = {
+        active: activeHeadcount,
+        prev_total: prevTotal,
+        growth_percent: growthPercent,
+        interns: Number(peopleRow?.interns || 0),
+        probation: Number(peopleRow?.probation || 0),
+        new_hires_month: Number(peopleRow?.new_hires_month || 0),
+        departures_month: Number(peopleRow?.departures_month || 0)
+      };
+
+      // Calculate Turnover Rate for current month
+      const turnoverRate = activeHeadcount > 0 ? Number((people.departures_month / activeHeadcount * 100).toFixed(2)) : 0;
+
+      // Monthly Attendance Trend (Excluding Sundays / non-working days)
+      const monthlyAttendancePromises = last6Months.map(async item => {
+        try {
+          const [y, m] = item.month.split('-').map(Number);
+          const isCurrentMonth = item.month === today.slice(0, 7);
+          const lastDay = isCurrentMonth ? Number(today.slice(8, 10)) : new Date(y, m, 0).getDate();
+          
+          let workingDaysCount = 0;
+          for (let d = 1; d <= lastDay; d++) {
+            const dayOfWeek = new Date(y, m - 1, d).getDay();
+            if (dayOfWeek !== 0) { // Exclude Sunday
+              workingDaysCount++;
+            }
+          }
+          workingDaysCount = Math.max(1, workingDaysCount);
+
+          const attCountRow = await env.DB.prepare(`
+            SELECT 
+              COUNT(DISTINCT a.user_id || '_' || a.date) as checkins,
+              COUNT(DISTINCT a.date) as active_dates
+            FROM attendance a
+            WHERE a.date LIKE ? 
+              AND a.checkin_time IS NOT NULL
+              AND strftime('%w', a.date) != '0'
+          `).bind(`${item.month}-%`).first().catch(() => ({ checkins: 0, active_dates: 0 }));
+
+          const checkins = Number(attCountRow?.checkins || 0);
+          const activeDates = Number(attCountRow?.active_dates || 0);
+          let rate = 0;
+          if (activeHeadcount > 0 && activeDates > 0) {
+            rate = Math.min(100, Math.round((checkins / (activeDates * activeHeadcount)) * 100));
+          } else if (activeHeadcount > 0 && isCurrentMonth) {
+            rate = Math.round(checkinRate);
+          }
+
+          return {
+            month: item.month,
+            label: item.label,
+            working_days: workingDaysCount,
+            active_dates: activeDates,
+            checkins,
+            rate: rate || (isCurrentMonth ? Math.round(checkinRate) : 0)
+          };
+        } catch (_) {
+          return { month: item.month, label: item.label, working_days: 26, checkins: 0, rate: 0 };
+        }
+      });
+      const monthlyAttendance = await Promise.all(monthlyAttendancePromises);
+
+      // Attendance Data
+      const checkedIn = Number(attendanceRow?.checked_in || 0);
+      const eligible = Number(attendanceRow?.eligible || activeHeadcount);
+      const checkinRate = eligible ? Number((checkedIn / eligible * 100).toFixed(1)) : 0;
+      const attendance = {
+        date: today,
+        eligible,
+        checked_in: checkedIn,
+        office: Number(attendanceRow?.office || (checkedIn - Number(attendanceRow?.wfh || 0))),
+        wfh: Number(attendanceRow?.wfh || 0),
+        business: Number(attendanceRow?.business || 0),
+        late: Number(attendanceRow?.late || 0),
+        approved_leave: Number(attendanceRow?.approved_leave || 0),
+        not_checked_in: Number(attendanceRow?.not_checked_in || Math.max(0, eligible - checkedIn - Number(attendanceRow?.approved_leave || 0))),
+        unreviewed_checkins: Number(attendanceRow?.unreviewed_checkins || 0),
+        checkin_rate: checkinRate,
+        monthly_trend: monthlyAttendance,
+        trend: (attTrendRows?.results || []).map(r => ({
+          date: r.date,
+          day: r.date.slice(8, 10),
+          checked_in: Number(r.count || 0),
+          rate: eligible > 0 ? Math.round(Number(r.count || 0) / eligible * 100) : 0
+        }))
+      };
+
+      // Department Headcount & Attendance Metrics
+      const depts = (deptSalaryRows?.results || []).map(d => {
+        const hc = Number(d.headcount || 0);
+        const ci = Number(d.checked_in || 0);
+        const rate = hc > 0 ? Math.round((ci / hc) * 100) : 0;
+        return {
+          department: d.department,
+          headcount: hc,
+          checked_in: ci,
+          late: Number(d.late || 0),
+          approved_leave: Number(d.approved_leave || 0),
+          not_checked_in: Number(d.not_checked_in || Math.max(0, hc - ci - Number(d.approved_leave || 0))),
+          checkin_rate: rate,
+          total_salary: Number(d.total_salary || 0),
+          headcount_percent: activeHeadcount > 0 ? Number((hc / activeHeadcount * 100).toFixed(1)) : 0
+        };
+      });
+      const totalPayroll = depts.reduce((sum, d) => sum + d.total_salary, 0);
+      depts.forEach(d => {
+        d.salary_percent = totalPayroll > 0 ? Number((d.total_salary / totalPayroll * 100).toFixed(1)) : 0;
+        d.avg_salary = d.headcount > 0 ? Math.round(d.total_salary / d.headcount) : 0;
+      });
+
+      // Approvals & Action Items
+      const approvals = {
+        leave: Number(approvalRow?.leave_count || 0),
+        overtime: Number(approvalRow?.overtime_count || 0),
+        kpi: Number(approvalRow?.kpi_count || 0),
+        eval: Number(approvalRow?.eval_count || 0)
+      };
+      approvals.total = approvals.leave + approvals.overtime + approvals.kpi + approvals.eval;
+
+      const expiringContracts = expiringContractsRows?.results || [];
+
+      // Action Center Items
+      const action_items = [];
+      if (approvals.leave > 0) {
+        action_items.push({
+          severity: 'danger',
+          icon: '🏖️',
+          title: `${approvals.leave} đơn nghỉ phép chờ duyệt`,
+          detail: 'Cần HCNS / Quản lý phê duyệt để cập nhật lịch công.',
+          action_url: '#/leave',
+          action_label: 'Duyệt nghỉ phép'
+        });
+      }
+      if (approvals.overtime > 0) {
+        action_items.push({
+          severity: 'warning',
+          icon: '⏱️',
+          title: `${approvals.overtime} yêu cầu & form OT chờ duyệt`,
+          detail: 'Phiếu làm thêm giờ cần xác nhận số giờ làm thực tế.',
+          action_url: '#/attendance',
+          action_label: 'Duyệt OT'
+        });
+      }
+      if (expiringContracts.length > 0) {
+        action_items.push({
+          severity: 'danger',
+          icon: '📝',
+          title: `${expiringContracts.length} hợp đồng sắp hết hạn trong 30 ngày`,
+          detail: `${expiringContracts.slice(0, 3).map(c => c.full_name).join(', ')}${expiringContracts.length > 3 ? '...' : ''}`,
+          action_url: '#/users',
+          action_label: 'Xem hợp đồng'
+        });
+      }
+      if (attendance.unreviewed_checkins > 0) {
+        action_items.push({
+          severity: 'warning',
+          icon: '📍',
+          title: `${attendance.unreviewed_checkins} chấm công cần duyệt vị trí`,
+          detail: 'Nhân viên check-in ngoài phạm vi văn phòng / địa điểm quy định.',
+          action_url: '#/attendance',
+          action_label: 'Xem vị trí'
+        });
+      }
+      if (attendance.not_checked_in > 0) {
+        action_items.push({
+          severity: 'info',
+          icon: '❓',
+          title: `${attendance.not_checked_in} nhân viên chưa chấm công hôm nay`,
+          detail: 'Chưa có check-in và không có đơn nghỉ phép được duyệt.',
+          action_url: '#/attendance',
+          action_label: 'Kiểm tra'
+        });
+      }
+      if (approvals.kpi > 0 || approvals.eval > 0) {
+        action_items.push({
+          severity: 'info',
+          icon: '🎯',
+          title: `${approvals.kpi + approvals.eval} đánh giá KPI & hiệu suất cần xử lý`,
+          detail: 'Kế hoạch KPI và phiếu đánh giá định kỳ đang chờ xác nhận.',
+          action_url: '#/kpis',
+          action_label: 'Xem KPI'
+        });
+      }
+
+      // Overtime Company Stats
+      const otStats = {
+        pending_count: approvals.overtime,
+        ot_today_count: Number(otTodayRow?.count || 0),
+        ot_month_hours: Number((Number(otFormsMonthRow?.approved_minutes || 0) / 60).toFixed(1)),
+        ot_month_requested_hours: Number((Number(otFormsMonthRow?.requested_minutes || 0) / 60).toFixed(1)),
+        ot_employee_count: Number(otFormsMonthRow?.employee_count || 0),
+        ot_form_count: Number(otFormsMonthRow?.form_count || 0)
+      };
+
+      // Leave Company Stats
+      const leaveStats = {
+        pending_count: approvals.leave,
+        today_leave_count: attendance.approved_leave,
+        month_total_approved: Number(monthLeaveRows?.total_leave_count || 0)
+      };
+
+      // Recruitment Stats
+      const recruitment = {
+        active: Number(recruitmentRow?.active || 0),
+        received: Number(recruitmentRow?.received || 0),
+        screening: Number(recruitmentRow?.screening || 0),
+        interview: Number(recruitmentRow?.interview || 0),
+        offer: Number(recruitmentRow?.offer || 0),
+        hired_this_month: Number(recruitmentRow?.hired_this_month || 0),
+        open_positions: Number(campaignRow?.active || 0)
+      };
+
+      const kpi = {
+        month,
+        year,
+        eligible_employees: Number(kpiRow?.eligible_employees || 0),
+        with_plan: Number(kpiRow?.with_plan || 0),
+        draft: Number(kpiRow?.draft || 0),
+        submitted: Number(kpiRow?.submitted || 0),
+        approved: Number(kpiRow?.approved || 0),
+        returned: Number(kpiRow?.returned || 0),
+        coverage_percent: Number(kpiRow?.eligible_employees ? (Number(kpiRow.with_plan) / Number(kpiRow.eligible_employees) * 100).toFixed(1) : 0)
+      };
+
+      return json({
+        generated_at: `${today} ${vnTimeStr()}`,
+        scope: 'organization',
+        people,
+        turnover_rate: turnoverRate,
+        attendance,
+        departments: depts,
+        total_payroll: totalPayroll,
+        fluctuation: fluctuationData,
+        ot_stats: otStats,
+        leave_stats: leaveStats,
+        recruitment,
+        kpi,
+        action_items,
+        expiring_contracts: expiringContracts
+      });
+    } catch (err) {
+      console.error('getAdminDashboard error:', err?.message || err);
+      return json({ error: err?.message || 'Lỗi xử lý dữ liệu dashboard' }, 500);
+    }
   }
 
   // Database Admin - UNRESTRICTED ACCESS for full control
@@ -4269,17 +4925,15 @@ export async function handle(request, env) {
     await ensureWorkLocationStandardization(env).catch(() => {});
     const hasHrScope = isAdmin || isHcns(me);
     const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
-    const pageSize = Math.min(100, Math.max(5, parseInt(url.searchParams.get('page_size') || '20', 10)));
-    const { where, binds } = buildEmployeeDirectoryFilter(url, me, hasHrScope);
-    const totalRow = await env.DB.prepare(`SELECT COUNT(*) AS total FROM users u${where}`).bind(...binds).first();
-    const { results: users = [] } = await env.DB.prepare(
+    const { results: allUsers = [] } = await env.DB.prepare(
       `SELECT u.id,u.employee_code,u.employee_type,u.full_name,u.email,u.department,u.position,
               u.avatar_color,u.avatar_initials,u.avatar_url,u.is_active,u.lifecycle_status,
               u.work_location,u.contract_type,u.contract_end_date,u.probation_end_date,u.national_id_expiry_date
-       FROM users u${where}
-       ORDER BY u.full_name COLLATE NOCASE,u.id
-       LIMIT ? OFFSET ?`
-    ).bind(...binds, pageSize, (page - 1) * pageSize).all();
+       FROM users u${where}`
+    ).bind(...binds).all();
+    const sortedUsers = sortVietnameseNames(allUsers, 'full_name');
+    const total = sortedUsers.length;
+    const users = sortedUsers.slice((page - 1) * pageSize, page * pageSize);
     const scopeWhere = hasHrScope ? '' : ' WHERE department=?';
     const scopeBinds = hasHrScope ? [] : [me.department || ''];
     const [departments, positions, workLocations, statuses] = await Promise.all([
@@ -4291,7 +4945,7 @@ export async function handle(request, env) {
     const values = result => (result.results || []).map(row => row.value).filter(Boolean);
     return json({
       users,
-      pagination: { page, page_size: pageSize, total: Number(totalRow?.total || 0), pages: Math.max(1, Math.ceil(Number(totalRow?.total || 0) / pageSize)) },
+      pagination: { page, page_size: pageSize, total, pages: Math.max(1, Math.ceil(total / pageSize)) },
       filter_options: {
         departments: values(departments),
         positions: values(positions),
@@ -4309,8 +4963,9 @@ export async function handle(request, env) {
       `SELECT u.employee_code,u.full_name,u.employee_type,u.email,u.phone,u.department,u.position,
               u.lifecycle_status,u.contract_type,u.hire_date,u.contract_end_date,u.salary,u.allowance,
               u.insurance_salary,u.dependent_count,u.bank_account,u.bank_name,u.social_insurance_number
-       FROM users u${where} ORDER BY u.full_name COLLATE NOCASE`
+       FROM users u${where}`
     ).bind(...binds).all();
+    const sortedRows = sortVietnameseNames(rows, 'full_name');
     const columns = [
       ['Mã nhân viên','employee_code'],['Họ và tên','full_name'],['Loại nhân sự','employee_type'],
       ['Email','email'],['Số điện thoại','phone'],['Phòng ban','department'],['Vị trí','position'],
@@ -4548,8 +5203,13 @@ export async function handle(request, env) {
 
   const mentionReadMatch = path.match(/^\/api\/notifications\/task-mentions\/(\d+)\/read$/);
   if (mentionReadMatch && request.method === 'PATCH') {
+    const notifId = parseInt(mentionReadMatch[1]);
     await env.DB.prepare('UPDATE task_mention_notifications SET is_read=1 WHERE id=? AND user_id=?')
-      .bind(parseInt(mentionReadMatch[1]), me.id).run();
+      .bind(notifId, me.id).run();
+    await broadcastAppEvent(env, 'notifications', 'notification:read', {
+      id: notifId,
+      user_id: me.id,
+    }, { actorId: me.id, targetUserIds: [me.id] });
     return json({ ok: true });
   }
 
@@ -4732,6 +5392,10 @@ export async function handle(request, env) {
       })),
     ];
     await env.DB.batch(statements);
+    await broadcastAppEvent(env, 'users', 'user:profile_updated', {
+      id: userId,
+      changed_fields: actualChanges.map(([field]) => field),
+    }, { actorId: me.id });
     return json({ ok: true, change_set_id: changeSetId, changed_fields: actualChanges.map(([field]) => field) });
   }
 
@@ -4753,6 +5417,11 @@ export async function handle(request, env) {
       try { await env.DB.prepare('DELETE FROM leave_requests WHERE user_id=? OR employee_id=?').bind(userId, userId).run(); } catch (_) {}
       try { await env.DB.prepare('DELETE FROM leave_balances WHERE user_id=? OR employee_id=?').bind(userId, userId).run(); } catch (_) {}
       try { await env.DB.prepare('DELETE FROM conversation_members WHERE user_id=?').bind(userId).run(); } catch (_) {}
+      await broadcastAppEvent(env, 'users', 'user:deleted', {
+        id: userId,
+        employee_code: target.employee_code,
+        full_name: target.full_name,
+      }, { actorId: me.id });
       return json({ ok: true, message: `Đã xóa tài khoản nhân viên ${target.full_name}` });
     } catch (err) {
       return json({ error: err?.message || 'Không thể xóa tài khoản nhân viên' }, 500);
@@ -4988,7 +5657,7 @@ export async function handle(request, env) {
       : 'id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,is_active,lifecycle_status,created_at,direct_manager_id,work_location,avatar_url';
     const stmt = env.DB.prepare(`SELECT ${baseFields} FROM users${hasHrScope ? '' : ' WHERE department=?'} ORDER BY id`);
     const { results } = hasHrScope ? await stmt.all() : await stmt.bind(me.department).all();
-    return json({ users: results });
+    return json({ users: sortVietnameseNames(results || [], 'full_name') });
   }
 
   if (path === '/api/users' && request.method === 'POST') {
@@ -5039,6 +5708,17 @@ export async function handle(request, env) {
         b.lifecycle_status || (isTts ? 'Thực tập' : 'Chính thức')
       ).run();
       const newUserId = r.meta.last_row_id;
+      await broadcastAppEvent(env, 'users', 'user:created', {
+        id: newUserId,
+        employee_code: code,
+        employee_type: empType,
+        full_name: fullName,
+        email,
+        department: dept,
+        position,
+        role: b.role || 'employee',
+        lifecycle_status: b.lifecycle_status || (isTts ? 'Thực tập' : 'Chính thức'),
+      }, { actorId: me.id });
       return json({ ok: true, id: newUserId, employee_code: code });
     } catch (e) {
       if (e.message && e.message.includes('UNIQUE') && e.message.includes('email')) {
@@ -5364,6 +6044,14 @@ export async function handle(request, env) {
           }),
         ] : []),
       ]);
+      await broadcastAppEvent(env, 'users', 'user:updated', {
+        id: uid,
+        full_name: b.full_name,
+        department: b.department,
+        position: b.position,
+        role: b.role,
+        is_active: b.is_active,
+      }, { actorId: me.id });
       return json({ ok: true, change_set_id: changeSetId });
     }
     if (request.method === 'DELETE') {
@@ -5378,7 +6066,7 @@ export async function handle(request, env) {
     const { results } = await env.DB.prepare(
       'SELECT id, full_name, department, position, lifecycle_status, is_active FROM users WHERE is_active=1 ORDER BY full_name'
     ).all();
-    return json({ users: results });
+    return json({ users: sortVietnameseNames(results || [], 'full_name') });
   }
 
   // ── LIFECYCLE STATUS (Vòng đời nhân sự) — only HCNS / Ban Giám Đốc may edit ──
@@ -5420,6 +6108,12 @@ export async function handle(request, env) {
         actor: me,
       }),
     ]);
+    await broadcastAppEvent(env, 'users', 'user:lifecycle_changed', {
+      id: luid,
+      from_status: fromStatus,
+      to_status: newStatus,
+      reason,
+    }, { actorId: me.id });
     return json({ ok: true });
   }
 
@@ -5690,7 +6384,7 @@ const attendanceRateTo =
                 : 'complete',
       };
     });
-    return json({ period: { from, to }, employees });
+    return json({ period: { from, to }, employees: sortVietnameseNames(employees, 'full_name') });
   }
 
   // Personal monthly compliance is intentionally scoped to the authenticated
@@ -5785,6 +6479,16 @@ const attendanceRateTo =
         "INSERT INTO attendance (user_id,date,work_type,shift,expected_start,expected_end,registered,status,note) VALUES (?,?,?,?,?,?,1,'registered',?)"
       ).bind(me.id, today, workType, shift, expectedStart, expectedEnd, note).run();
     }
+    await broadcastAppEvent(env, 'attendance', 'attendance:registered', {
+      user_id: me.id,
+      user_name: me.full_name,
+      employee_code: me.employee_code,
+      department: me.department,
+      date: today,
+      work_type: workType,
+      shift,
+      status: 'registered',
+    }, { actorId: me.id });
     return json({ ok: true });
   }
 
@@ -5835,6 +6539,19 @@ const attendanceRateTo =
     const reviewStatus = requiresReview ? 'pending' : 'none';
     await env.DB.prepare('UPDATE attendance SET checkin_time=?,checkin_ip=?,status=?,late_minutes=?,checkin_location_id=?,checkin_distance_meters=?,checkin_accuracy_meters=?,checkin_verification_method=?,checkin_lat=?,checkin_lng=?,checkin_geofence_status=?,checkin_requires_review=?,checkin_review_status=?,note=? WHERE id=?')
       .bind(timeStr, ipInfo.ip, status, lateMinutes, geo.location?.id||null, geo.location?.distance_meters||null, geo.accuracy_meters||null, geo.status === 'verified' ? 'geofence' : (geo.location?.id ? 'geofence' : (ipInfo.matched ? 'ip' : null)), geoLat, geoLng, geofenceStatus, requiresReview ? 1 : 0, reviewStatus, b.note || existing.note || '', existing.id).run();
+    await broadcastAppEvent(env, 'attendance', 'attendance:checkin', {
+      id: existing.id,
+      user_id: me.id,
+      user_name: me.full_name,
+      employee_code: me.employee_code,
+      department: me.department,
+      date: today,
+      checkin_time: timeStr,
+      status,
+      late_minutes: lateMinutes,
+      geofence_status: geofenceStatus,
+      requires_review: requiresReview,
+    }, { actorId: me.id });
     return json({ ok: true, status, time: timeStr, late_minutes: lateMinutes, geofence: geo, gps_constraint_enabled: gpsConstraintEnabled, distance_meters: geo.location?.distance_meters ?? null, inside_geofence: geo.inside_geofence ?? null, geofence_status: geofenceStatus, requires_location_review: requiresReview, location_review_status: reviewStatus });
   }
 
@@ -5902,6 +6619,18 @@ const attendanceRateTo =
     const reviewStatus = requiresReview ? 'pending' : 'none';
     await env.DB.prepare('UPDATE attendance SET checkout_time=?,checkout_ip=?,work_hours=?,early_minutes=?,checkout_location_id=?,checkout_distance_meters=?,checkout_accuracy_meters=?,checkout_verification_method=?,checkout_lat=?,checkout_lng=?,checkout_geofence_status=?,checkout_requires_review=?,checkout_review_status=? WHERE id=?')
       .bind(timeStr, ipInfo.ip, workHours, earlyMinutes, geo.location?.id||null, geo.location?.distance_meters||null, geo.accuracy_meters||null, geo.status === 'verified' ? 'geofence' : (geo.location?.id ? 'geofence' : (ipInfo.matched ? 'ip' : null)), geoLat, geoLng, geofenceStatus, requiresReview ? 1 : 0, reviewStatus, record.id).run();
+    await broadcastAppEvent(env, 'attendance', 'attendance:checkout', {
+      id: record.id,
+      user_id: me.id,
+      user_name: me.full_name,
+      employee_code: me.employee_code,
+      department: me.department,
+      date: today,
+      checkout_time: timeStr,
+      work_hours: workHours,
+      early_minutes: earlyMinutes,
+      status: record.status,
+    }, { actorId: me.id });
     return json({ ok: true, attendance_id: record.id, time: timeStr, work_hours: workHours, early_minutes: earlyMinutes, geofence: geo, gps_constraint_enabled: gpsConstraintEnabled, distance_meters: geo.location?.distance_meters ?? null, inside_geofence: geo.inside_geofence ?? null, geofence_status: geofenceStatus, requires_location_review: requiresReview, location_review_status: reviewStatus });
   }
 
@@ -5999,6 +6728,14 @@ const attendanceRateTo =
     const note = String(b.note || '').trim() || null;
     await env.DB.prepare("UPDATE attendance SET checkin_review_status=?, checkin_reviewed_by=?, checkin_review_note=?, checkin_reviewed_at=datetime('now','localtime') WHERE id=?")
       .bind(decision, me.id, note, aid).run();
+    await broadcastAppEvent(env, 'attendance', 'attendance:location_reviewed', {
+      id: aid,
+      user_id: row.user_id,
+      status: decision,
+      reviewed_by: me.id,
+      reviewed_by_name: me.full_name || '',
+      note,
+    }, { actorId: me.id });
     return json({ ok: true, attendance_id: aid, status: decision });
   }
 
@@ -6033,7 +6770,20 @@ const attendanceRateTo =
     try {
       const r = await env.DB.prepare('INSERT INTO overtime_requests (attendance_id,user_id,work_date,shift_end_time,checkout_time,requested_minutes,reason,status) VALUES (?,?,?,?,?,?,?,\'pending\')')
         .bind(record.id, me.id, record.date, bounds.end, record.checkout_time, requestedMinutes, reason).run();
-      return json({ ok: true, id: r.meta.last_row_id, requested_minutes: requestedMinutes });
+      const overtimeReqId = r.meta.last_row_id;
+      await broadcastAppEvent(env, 'attendance', 'overtime:requested', {
+        id: overtimeReqId,
+        attendance_id: record.id,
+        user_id: me.id,
+        user_name: me.full_name,
+        employee_code: me.employee_code,
+        department: me.department,
+        work_date: record.date,
+        requested_minutes: requestedMinutes,
+        reason,
+        status: 'pending',
+      }, { actorId: me.id });
+      return json({ ok: true, id: overtimeReqId, requested_minutes: requestedMinutes });
     } catch (e) {
       if (String(e.message || '').includes('UNIQUE')) return json({ error: 'Đã gửi yêu cầu làm thêm giờ cho checkout này' }, 400);
       throw e;
@@ -6060,6 +6810,16 @@ const attendanceRateTo =
       .bind(nextStatus, approvedMinutes, me.id, me.full_name || '', note || null, id).run();
     const d = new Date(`${requestRow.work_date}T00:00:00`);
     const ot = await refreshInvoiceOvertime(env, requestRow.user_id, d.getMonth() + 1, d.getFullYear(), me);
+    await broadcastAppEvent(env, 'attendance', action === 'approve' ? 'overtime:approved' : 'overtime:rejected', {
+      id,
+      user_id: requestRow.user_id,
+      status: nextStatus,
+      approved_minutes: approvedMinutes,
+      reviewer_id: me.id,
+      reviewer_name: me.full_name || '',
+      review_note: note || null,
+      overtime: ot,
+    }, { actorId: me.id });
     return json({ ok: true, status: nextStatus, approved_minutes: approvedMinutes, overtime: ot });
   }
 
@@ -6101,6 +6861,12 @@ const attendanceRateTo =
     await env.DB.batch(items.map(item => env.DB.prepare(
       'INSERT INTO overtime_form_items (form_id,start_at,end_at,requested_minutes,reason,time_category) VALUES (?,?,?,?,?,?)'
     ).bind(formId, item.start_at, item.end_at, item.requested_minutes, item.reason, item.time_category)));
+    await broadcastAppEvent(env, 'attendance', 'overtime_form:created', {
+      id: formId,
+      user_id: me.id,
+      period_month: periodMonth,
+      status,
+    }, { actorId: me.id });
     return json({ ok: true, id: formId, status });
   }
 
@@ -6120,6 +6886,11 @@ const attendanceRateTo =
       env.DB.prepare('DELETE FROM overtime_form_items WHERE form_id=?').bind(formId),
       ...items.map(item => env.DB.prepare('INSERT INTO overtime_form_items (form_id,start_at,end_at,requested_minutes,reason,time_category) VALUES (?,?,?,?,?,?)').bind(formId, item.start_at, item.end_at, item.requested_minutes, item.reason, item.time_category)),
     ]);
+    await broadcastAppEvent(env, 'attendance', 'overtime_form:updated', {
+      id: formId,
+      user_id: me.id,
+      period_month: periodMonth,
+    }, { actorId: me.id });
     return json({ ok: true });
   }
 
@@ -6130,6 +6901,11 @@ const attendanceRateTo =
     if (!form) return json({ error: 'Không tìm thấy form OT' }, 404);
     if (Number(form.user_id) !== Number(me.id) || form.status !== 'draft') return json({ error: 'Chỉ được gửi form OT nháp của chính bạn' }, 403);
     await env.DB.prepare("UPDATE overtime_forms SET status='pending',submitted_at=datetime('now','localtime'),updated_at=datetime('now','localtime') WHERE id=?").bind(formId).run();
+    await broadcastAppEvent(env, 'attendance', 'overtime_form:submitted', {
+      id: formId,
+      user_id: me.id,
+      status: 'pending',
+    }, { actorId: me.id });
     return json({ ok: true, status: 'pending' });
   }
 
@@ -6160,6 +6936,13 @@ const attendanceRateTo =
     await env.DB.batch(updates);
     const [year, month] = form.period_month.split('-').map(Number);
     const overtime = await refreshInvoiceOvertime(env, form.user_id, month, year, me);
+    await broadcastAppEvent(env, 'attendance', 'overtime_form:decided', {
+      id: formId,
+      user_id: form.user_id,
+      status: nextStatus,
+      approved_minutes: approvedTotal,
+      overtime,
+    }, { actorId: me.id });
     return json({ ok: true, status: nextStatus, approved_minutes: approvedTotal, overtime });
   }
 
@@ -6199,6 +6982,15 @@ const attendanceRateTo =
       await env.DB.prepare(
         'UPDATE attendance SET checkin_time=NULL,checkout_time=NULL,status=?,work_hours=0,late_minutes=0,early_minutes=0,auto_checkout=0,note=? WHERE id=?'
       ).bind(requestedStatus, String(b.note || '').slice(0, 2000), aid).run();
+      await broadcastAppEvent(env, 'attendance', 'attendance:updated', {
+        id: aid,
+        user_id: record.user_id,
+        date: record.date,
+        status: requestedStatus,
+        checkin_time: null,
+        checkout_time: null,
+        work_hours: 0,
+      }, { actorId: me.id });
       return json({ ok: true, status: requestedStatus, late_minutes: 0, early_minutes: 0, work_hours: 0 });
     }
 
@@ -6228,6 +7020,17 @@ const attendanceRateTo =
     await env.DB.prepare(
       'UPDATE attendance SET checkin_time=?,checkout_time=?,work_type=?,shift=?,status=?,work_hours=?,late_minutes=?,early_minutes=?,auto_checkout=0,note=? WHERE id=?'
     ).bind(checkinTime || null, checkoutTime || null, workType, shift, status, metrics.workHours, metrics.lateMinutes, metrics.earlyMinutes, String(b.note || '').slice(0, 2000), aid).run();
+    await broadcastAppEvent(env, 'attendance', 'attendance:updated', {
+      id: aid,
+      user_id: record.user_id,
+      date: record.date,
+      status,
+      checkin_time: checkinTime || null,
+      checkout_time: checkoutTime || null,
+      work_hours: metrics.workHours,
+      late_minutes: metrics.lateMinutes,
+      early_minutes: metrics.earlyMinutes,
+    }, { actorId: me.id });
     return json({ ok: true, status, late_minutes: metrics.lateMinutes, early_minutes: metrics.earlyMinutes, work_hours: metrics.workHours });
   }
 
@@ -6242,6 +7045,11 @@ const attendanceRateTo =
       env.DB.prepare('DELETE FROM overtime_requests WHERE attendance_id=?').bind(aid),
       env.DB.prepare('DELETE FROM attendance WHERE id=?').bind(aid),
     ]);
+    await broadcastAppEvent(env, 'attendance', 'attendance:deleted', {
+      id: aid,
+      user_id: record.user_id,
+      date: record.date,
+    }, { actorId: me.id });
     return json({ ok: true, deleted_id: aid });
   }
 
@@ -6395,6 +7203,11 @@ const attendanceRateTo =
         'INSERT INTO attendance (user_id,date,checkin_time,checkout_time,status,work_hours,note,work_type,shift,registered,late_minutes,early_minutes) VALUES (?,?,?,?,?,?,?,?,?,1,?,?)'
       ).bind(employeeId, iso, ci, co, status, workHours, note || null, workType, shift, timing.lateMinutes, timing.earlyMinutes).run());
     }
+    await broadcastAppEvent(env, 'attendance', 'attendance:batch_imported', {
+      user_id: employeeId,
+      created_dates: createdDates,
+      count: createdDates.length,
+    }, { actorId: me.id });
     return json({ ok: true, ...summary });
   }
 
@@ -6534,6 +7347,7 @@ const attendanceRateTo =
         .bind(projectId, uid, uid === managerId ? 'owner' : 'member', me.id).run();
     }
     await ensureDefaultTaskGroup(env, projectId, me.id);
+    await broadcastAppEvent(env, 'tasks', 'task_project:created', { id: projectId, name, department: b.department || '' }, { actorId: me.id });
     return json({ ok: true, id: projectId });
   }
 
@@ -6620,6 +7434,7 @@ const attendanceRateTo =
         b.end_date ?? project.end_date ?? null,
         projectId
       ).run();
+      await broadcastAppEvent(env, 'tasks', 'task_project:updated', { id: projectId, name: b.name || project.name, status }, { actorId: me.id });
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
@@ -6645,6 +7460,7 @@ const attendanceRateTo =
       } else {
         await env.DB.prepare("UPDATE task_projects SET status='archived',updated_at=datetime('now','localtime') WHERE id=?").bind(projectId).run();
       }
+      await broadcastAppEvent(env, 'tasks', 'task_project:deleted', { id: projectId, permanent }, { actorId: me.id });
       return json({ ok: true });
     }
   }
@@ -6673,6 +7489,7 @@ const attendanceRateTo =
       await env.DB.prepare('INSERT INTO task_project_members (project_id,user_id,role,added_by) VALUES (?,?,?,?)')
         .bind(projectId, uid, uid === Number(project.manager_id) ? 'owner' : 'member', me.id).run();
     }
+    await broadcastAppEvent(env, 'tasks', 'task_project:members_updated', { id: projectId, members: [...new Set(members)] }, { actorId: me.id });
     return json({ ok: true });
   }
 
@@ -6697,6 +7514,7 @@ const attendanceRateTo =
           .bind(p.id, uid, uid === Number(p.manager_id) ? 'owner' : 'member', me.id).run();
       }
     }
+    await broadcastAppEvent(env, 'tasks', 'task_project_group:members_updated', { department, count: groupProjects.length }, { actorId: me.id });
     return json({ ok: true, count: groupProjects.length });
   }
 
@@ -6729,7 +7547,9 @@ const attendanceRateTo =
     const r = await env.DB.prepare(
       'INSERT INTO task_groups (project_id,name,position,color,created_by) VALUES (?,?,?,?,?)'
     ).bind(projectId, name, position, color, me.id).run();
-    return json({ ok: true, id: r.meta.last_row_id });
+    const groupId = r.meta.last_row_id;
+    await broadcastAppEvent(env, 'tasks', 'task_group:created', { id: groupId, project_id: projectId, name, position, color }, { actorId: me.id });
+    return json({ ok: true, id: groupId });
   }
 
   const groupMatch = path.match(/^\/api\/task-groups\/(\d+)$/);
@@ -6748,10 +7568,12 @@ const attendanceRateTo =
       await env.DB.prepare(
         "UPDATE task_groups SET name=?,position=?,color=?,is_archived=?,updated_at=datetime('now','localtime') WHERE id=?"
       ).bind(name, position, color, b.is_archived ?? group.is_archived ?? 0, groupId).run();
+      await broadcastAppEvent(env, 'tasks', 'task_group:updated', { id: groupId, project_id: group.project_id, name, position, color, is_archived: b.is_archived ?? group.is_archived ?? 0 }, { actorId: me.id });
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
       await env.DB.prepare("UPDATE task_groups SET is_archived=1,updated_at=datetime('now','localtime') WHERE id=?").bind(groupId).run();
+      await broadcastAppEvent(env, 'tasks', 'task_group:deleted', { id: groupId, project_id: group.project_id }, { actorId: me.id });
       return json({ ok: true });
     }
   }
@@ -6825,6 +7647,31 @@ const attendanceRateTo =
         await env.DB.prepare('DELETE FROM task_labels WHERE id=?').bind(labelId).run();
       }
       return json({ ok: true });
+    }
+  }
+
+  if (path === '/api/tasks/completion-subscriptions' && request.method === 'GET') {
+    const { results = [] } = await env.DB.prepare(
+      'SELECT * FROM task_completion_subscriptions WHERE user_id = ?'
+    ).bind(me.id).all();
+    return json({ subscriptions: results });
+  }
+
+  if (path === '/api/tasks/completion-subscriptions/toggle' && request.method === 'POST') {
+    const b = await request.json().catch(() => ({}));
+    const department = String(b.department || '').trim();
+    const projectId = intOrNull(b.project_id) || 0;
+    const existing = await env.DB.prepare(
+      'SELECT id FROM task_completion_subscriptions WHERE user_id = ? AND department = ? AND project_id = ?'
+    ).bind(me.id, department, projectId).first();
+    if (existing) {
+      await env.DB.prepare('DELETE FROM task_completion_subscriptions WHERE id = ?').bind(existing.id).run();
+      return json({ ok: true, subscribed: false });
+    } else {
+      await env.DB.prepare(
+        'INSERT INTO task_completion_subscriptions (user_id, department, project_id) VALUES (?, ?, ?)'
+      ).bind(me.id, department, projectId).run();
+      return json({ ok: true, subscribed: true });
     }
   }
 
@@ -6935,6 +7782,12 @@ const attendanceRateTo =
     if (statements.length > 0) {
       await env.DB.batch(statements);
     }
+    await broadcastAppEvent(env, 'tasks', 'task:reordered', {
+      project_id: projectId,
+      moves: b.moves || null,
+      task_ids: b.task_ids || null,
+      group_id: b.group_id !== undefined ? intOrNull(b.group_id) : null,
+    }, { actorId: me.id });
     return json({ ok: true, updated: statements.length });
   }
 
@@ -6975,6 +7828,22 @@ const attendanceRateTo =
       const exists = await env.DB.prepare('SELECT id FROM task_followers WHERE task_id=? AND user_id=?').bind(taskId, followerId).first();
       if (!exists) await env.DB.prepare('INSERT INTO task_followers (task_id,user_id) VALUES (?,?)').bind(taskId, followerId).run();
     }
+    await broadcastAppEvent(env, 'tasks', 'task:created', {
+      id: taskId,
+      title: b.title,
+      description: b.description || '',
+      status,
+      priority,
+      assigned_to: b.assigned_to || null,
+      assigned_by: me.id,
+      department: b.department || '',
+      date: b.date || null,
+      due_date: b.due_date || null,
+      team_project_id: projectId,
+      group_id: groupId,
+      label_id: labelId,
+      label_color: labelColor,
+    }, { actorId: me.id });
     return json({ ok: true, id: taskId });
   }
 
@@ -7042,7 +7911,56 @@ const attendanceRateTo =
         if (!exists) await env.DB.prepare('INSERT INTO task_followers (task_id,user_id) VALUES (?,?)').bind(tid, followerId).run();
       }
       let activityAction = null;
-      if (task.status !== nextStatus && nextStatus === 'done') activityAction = 'task_completed';
+      if (task.status !== nextStatus && nextStatus === 'done') {
+        activityAction = 'task_completed';
+        // Dispatch notifications to HR users subscribed to this department group or project
+        try {
+          const project = nextProjectId ? await env.DB.prepare('SELECT name, department FROM task_projects WHERE id=?').bind(nextProjectId).first() : null;
+          const taskDept = b.department || task.department || project?.department || '';
+          const projectName = project?.name || 'Dự án';
+          const { results: subs = [] } = await env.DB.prepare(
+            `SELECT DISTINCT user_id FROM task_completion_subscriptions
+             WHERE (project_id = ? AND project_id > 0)
+                OR (department = ? AND department != '')`
+          ).bind(nextProjectId || 0, taskDept).all();
+
+          const recipientIds = subs.map(s => Number(s.user_id)).filter(uid => uid && uid !== Number(me.id));
+          for (const subUserId of recipientIds) {
+            await env.DB.prepare(
+              `INSERT INTO task_mention_notifications (user_id, task_id, comment_id, mentioned_by, mentioned_by_name, task_title, comment_snippet)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`
+            ).bind(
+              subUserId,
+              tid,
+              null,
+              me.id,
+              me.full_name || 'Hệ thống',
+              nextTitle,
+              `[Hoàn thành công việc] ${me.full_name || 'Nhân viên'} đã hoàn thành "${nextTitle}" trong nhóm "${taskDept || projectName}"`
+            ).run();
+          }
+
+          if (recipientIds.length > 0) {
+            await broadcastAppEvent(env, 'tasks', 'task:completed_notif', {
+              taskId: tid,
+              title: nextTitle,
+              completedBy: me.full_name,
+              department: taskDept,
+              projectName: projectName,
+            }, { targetUserIds: recipientIds });
+
+            await sendWebPushNotification(env, recipientIds, {
+              title: '✅ Công việc hoàn thành',
+              body: `${me.full_name || 'Nhân viên'} đã hoàn thành: ${nextTitle} (${taskDept || projectName})`,
+              icon: me.avatar_url || '/icon-192.png',
+              url: `/#/tasks?project=${nextProjectId || ''}&task=${tid}`,
+              tag: `task-done-${tid}`,
+            }).catch(() => {});
+          }
+        } catch (notifErr) {
+          console.error('Task completed notification error:', notifErr);
+        }
+      }
       if (task.status === 'done' && task.status !== nextStatus) activityAction = 'task_reopened';
       if (activityAction) {
         const assignee = await taskActivityAssignee(env, nextAssigneeId);
@@ -7053,6 +7971,22 @@ const attendanceRateTo =
           detail: `${activityAction === 'task_completed' ? 'Hoàn thành' : 'Mở lại'} công việc: ${nextTitle}`,
         });
       }
+      await broadcastAppEvent(env, 'tasks', 'task:updated', {
+        id: tid,
+        title: nextTitle,
+        description: b.description ?? task.description,
+        status: nextStatus,
+        priority: nextPriority,
+        assigned_to: nextAssigneeId,
+        department: b.department ?? task.department,
+        date: b.date ?? task.date,
+        due_date: b.due_date ?? task.due_date,
+        team_project_id: nextProjectId,
+        group_id: nextGroupId,
+        label_id: nextLabelId,
+        position: nextPosition,
+        activity_action: activityAction,
+      }, { actorId: me.id });
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
@@ -7069,6 +8003,7 @@ const attendanceRateTo =
       // Retain timeline snapshots for auditability even when the task itself
       // is removed. New rows carry project_id and entity_title explicitly.
       await env.DB.prepare('DELETE FROM task_followers WHERE task_id=?').bind(tid).run();
+      await broadcastAppEvent(env, 'tasks', 'task:deleted', { id: tid }, { actorId: me.id });
       return json({ ok: true });
     }
   }
@@ -7104,6 +8039,15 @@ const attendanceRateTo =
       assigneeId: assignee.id, assigneeName: assignee.name,
       detail: `Tạo công việc con: ${title}`,
     });
+    await broadcastAppEvent(env, 'tasks', 'subtask:created', {
+      id: subtaskId,
+      task_id: tid,
+      title,
+      description: b.description || null,
+      assigned_to: b.assigned_to || null,
+      due_date: b.due_date || null,
+      is_done: 0,
+    }, { actorId: me.id });
     return json({ ok: true, id: subtaskId });
   }
 
@@ -7136,11 +8080,20 @@ const attendanceRateTo =
           detail: `${activityAction === 'subtask_completed' ? 'Hoàn thành' : 'Mở lại'} công việc con: ${nextTitle}`,
         });
       }
+      await broadcastAppEvent(env, 'tasks', 'subtask:updated', {
+        id: sid,
+        task_id: subtask.task_id,
+        title: nextTitle,
+        description: b.description ?? subtask.description ?? null,
+        is_done: nextDone,
+        assigned_to: nextAssigneeId,
+        due_date: b.due_date ?? subtask.due_date ?? null,
+      }, { actorId: me.id });
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
       const owner = await env.DB.prepare(
-        `SELECT t.assigned_to AS task_assigned_to, t.assigned_by AS task_assigned_by
+        `SELECT s.task_id, t.assigned_to AS task_assigned_to, t.assigned_by AS task_assigned_by
            FROM subtasks s JOIN tasks t ON t.id=s.task_id WHERE s.id=?`
       ).bind(sid).first();
       if (!owner) return json({ error: 'Không tìm thấy công việc con' }, 404);
@@ -7148,6 +8101,7 @@ const attendanceRateTo =
         return json({ error: 'Không có quyền' }, 403);
       }
       await env.DB.prepare('DELETE FROM subtasks WHERE id=?').bind(sid).run();
+      await broadcastAppEvent(env, 'tasks', 'subtask:deleted', { id: sid, task_id: owner.task_id }, { actorId: me.id });
       return json({ ok: true });
     }
   }
@@ -7168,10 +8122,11 @@ const attendanceRateTo =
       const r = await env.DB.prepare('INSERT INTO task_comments (task_id,user_id,content,mentions) VALUES (?,?,?,?)')
         .bind(tid, me.id, b.content, mentions.length ? JSON.stringify(mentions) : null).run();
       const commentId = r.meta.last_row_id;
+      let taskTitle = '';
       // Create notifications for each mentioned user (skip self-mention)
       if (mentions.length) {
         const task = await env.DB.prepare('SELECT title FROM tasks WHERE id=?').bind(tid).first();
-        const taskTitle = task?.title || '';
+        taskTitle = task?.title || '';
         for (const m of mentions) {
           if (Number(m.user_id) === Number(me.id)) continue;
           await env.DB.prepare(
@@ -7193,8 +8148,33 @@ const attendanceRateTo =
           } catch (err) {
             console.warn('Task mention push error:', err);
           }
+
+          // Live notification event targeted to mentioned users
+          await broadcastAppEvent(env, 'notifications', 'notification:mention', {
+            id: commentId,
+            type: 'task_mention',
+            task_id: tid,
+            task_title: taskTitle,
+            mentioned_by: me.id,
+            mentioned_by_name: me.full_name || '',
+            snippet: b.content.slice(0, 120),
+          }, { actorId: me.id, targetUserIds: targetMentionIds });
         }
       }
+
+      // Broadcast comment creation to task watchers / subscribers
+      await broadcastAppEvent(env, 'tasks', 'comment:created', {
+        id: commentId,
+        task_id: tid,
+        user_id: me.id,
+        full_name: me.full_name,
+        avatar_color: me.avatar_color,
+        avatar_initials: me.avatar_initials,
+        content: b.content,
+        mentions,
+        created_at: new Date().toISOString(),
+      }, { actorId: me.id });
+
       return json({ ok: true, id: commentId });
     }
   }
@@ -7261,6 +8241,7 @@ const attendanceRateTo =
     if (!existingF) {
       await env.DB.prepare('INSERT INTO task_followers (task_id,user_id) VALUES (?,?)').bind(tid, uid2).run();
     }
+    await broadcastAppEvent(env, 'tasks', 'task:follower_added', { task_id: tid, user_id: uid2 }, { actorId: me.id });
     return json({ ok: true });
   }
   const followerDeleteMatch = path.match(/^\/api\/tasks\/(\d+)\/followers\/(\d+)$/);
@@ -7271,6 +8252,7 @@ const attendanceRateTo =
     const canManageFollowers = isTaskAdmin(me) || Number(task.assigned_by) === Number(me.id);
     if (followerId !== Number(me.id) && !canManageFollowers) return json({ error: 'Không có quyền bỏ người theo dõi' }, 403);
     await env.DB.prepare('DELETE FROM task_followers WHERE task_id=? AND user_id=?').bind(tid, followerId).run();
+    await broadcastAppEvent(env, 'tasks', 'task:follower_removed', { task_id: tid, user_id: followerId }, { actorId: me.id });
     return json({ ok: true });
   }
 
@@ -7320,6 +8302,15 @@ const attendanceRateTo =
     ).bind(invNum,b.user_id,b.month,b.year,base,bonus,allowance,deduction,tax,insurance,net,b.work_days||0,b.absent_days||0,b.late_days||0,b.standard_days||0,b.paid_leave_days||0,b.late_minutes||0,b.early_leave_minutes||0,b.missing_checkinout_days||0,overtime.approvedOvertimeMinutes,overtime.overtimePay,b.status||'draft',b.note||'').run();
     await env.DB.prepare('INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)')
       .bind(r.meta.last_row_id, null, b.status||'draft', me.id, me.full_name, 'Created invoice').run();
+    await broadcastAppEvent(env, 'invoices', 'invoice:created', {
+      id: r.meta.last_row_id,
+      invoice_number: invNum,
+      user_id: b.user_id,
+      month: b.month,
+      year: b.year,
+      net_salary: net,
+      status: b.status || 'draft',
+    }, { actorId: me.id });
     return json({ ok: true, id: r.meta.last_row_id, invoice_number: invNum });
   }
 
@@ -7340,6 +8331,11 @@ const attendanceRateTo =
     ).bind(iid).run();
     await env.DB.prepare('INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)')
       .bind(iid, inv.status || null, 'employee_confirmed', me.id, me.full_name || '', 'Employee confirmed payslip').run();
+    await broadcastAppEvent(env, 'invoices', 'invoice:confirmed', {
+      id: iid,
+      user_id: inv.user_id,
+      status: 'employee_confirmed',
+    }, { actorId: me.id });
     return json({ ok: true });
   }
 
@@ -7370,6 +8366,13 @@ const attendanceRateTo =
     ).bind(message, iid).run();
     await env.DB.prepare('INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)')
       .bind(iid, inv.status || null, 'review_requested', me.id, me.full_name || '', message).run();
+    await broadcastAppEvent(env, 'invoices', 'invoice:review_requested', {
+      id: iid,
+      user_id: inv.user_id,
+      status: 'review_requested',
+      category,
+      message,
+    }, { actorId: me.id });
     return json({ ok: true });
   }
 
@@ -7398,6 +8401,12 @@ const attendanceRateTo =
     ).bind(me.id, me.full_name || '', note, iid).run();
     await env.DB.prepare('INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)')
       .bind(iid, inv.status || null, nextStatus, me.id, me.full_name || '', note).run();
+    await broadcastAppEvent(env, 'invoices', 'invoice:review_resolved', {
+      id: iid,
+      user_id: inv.user_id,
+      status: nextStatus,
+      note,
+    }, { actorId: me.id });
     return json({ ok: true });
   }
 
@@ -7447,6 +8456,12 @@ const attendanceRateTo =
         await env.DB.prepare('INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)')
           .bind(iid, existingInv.status || null, nextStatus, me.id, me.full_name, b.status_note || b.note || null).run();
       }
+      await broadcastAppEvent(env, 'invoices', 'invoice:updated', {
+        id: iid,
+        user_id: existingInv.user_id,
+        status: nextStatus,
+        net_salary: net,
+      }, { actorId: me.id });
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
@@ -7458,6 +8473,10 @@ const attendanceRateTo =
       }
       if (existingInv && (existingInv.locked_at || existingInv.status === 'paid')) return json({ error: 'Phieu luong da khoa, khong the xoa' }, 400);
       await env.DB.prepare('DELETE FROM invoices WHERE id=?').bind(iid).run();
+      await broadcastAppEvent(env, 'invoices', 'invoice:deleted', {
+        id: iid,
+        user_id: existingInv?.user_id,
+      }, { actorId: me.id });
       return json({ ok: true });
     }
   }
@@ -7634,6 +8653,13 @@ const attendanceRateTo =
       env.DB.prepare('INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?)')
         .bind(userId, typeCode, year, delta, 'hr_adjustment', note, me.id, me.full_name || ''),
     ]);
+    await broadcastAppEvent(env, 'leave', 'leave_balance:updated', {
+      user_id: userId,
+      leave_type_code: typeCode,
+      balance_year: year,
+      delta_days: delta,
+      note,
+    }, { actorId: me.id });
     return json({ ok: true });
   }
 
@@ -7733,13 +8759,30 @@ const attendanceRateTo =
     const r = await env.DB.prepare(
       'INSERT INTO leave_requests (user_id,employee_id,type,start_date,end_date,reason,status,current_approver,approval_level,submitted_at,leave_session,total_days,handover_user_id,handover_user_name,approval_flow,balance_reserved_days) VALUES (?,?,?,?,?,?,?,?,?,datetime(\'now\',\'localtime\'),?,?,?,?,?,?)'
     ).bind(String(me.id), me.id, typeCode, b.start_date, b.end_date, reason, 'pending', currentApprover, 1, session, leaveDays, handoverUser?.id || null, handoverUser?.full_name || null, flow, balanceType ? leaveDays : 0).run();
+    const leaveRequestId = r.meta.last_row_id;
     if (balanceType) await env.DB.batch([
       env.DB.prepare("UPDATE leave_balances SET available_days=available_days-?,updated_at=datetime('now','localtime') WHERE user_id=? AND leave_type_code=? AND balance_year=?").bind(leaveDays, me.id, balanceType, balanceYear),
-      env.DB.prepare('INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,leave_request_id,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?,?)').bind(me.id, balanceType, balanceYear, r.meta.last_row_id, -leaveDays, 'pending_reservation', 'Giữ chỗ đơn nghỉ', me.id, me.full_name || ''),
+      env.DB.prepare('INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,leave_request_id,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?,?)').bind(me.id, balanceType, balanceYear, leaveRequestId, -leaveDays, 'pending_reservation', 'Giữ chỗ đơn nghỉ', me.id, me.full_name || ''),
     ]);
-    if (documentIds.length) await env.DB.prepare(`UPDATE leave_request_documents SET leave_request_id=? WHERE id IN (${documentIds.map(() => '?').join(',')})`).bind(r.meta.last_row_id, ...documentIds).run();
-    await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(r.meta.last_row_id, 0, me.id, me.full_name, 'submitted', needsBod ? 'Luồng cần Ban Giám đốc phê duyệt cuối' : 'Luồng Quản lý trực tiếp → HCNS').run();
-    return json({ ok: true, id: r.meta.last_row_id });
+    if (documentIds.length) await env.DB.prepare(`UPDATE leave_request_documents SET leave_request_id=? WHERE id IN (${documentIds.map(() => '?').join(',')})`).bind(leaveRequestId, ...documentIds).run();
+    await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(leaveRequestId, 0, me.id, me.full_name, 'submitted', needsBod ? 'Luồng cần Ban Giám đốc phê duyệt cuối' : 'Luồng Quản lý trực tiếp → HCNS').run();
+    await broadcastAppEvent(env, 'leave', 'leave:created', {
+      id: leaveRequestId,
+      user_id: me.id,
+      employee_id: me.id,
+      employee_name: me.full_name,
+      employee_code: me.employee_code,
+      department: me.department,
+      type: typeCode,
+      start_date: b.start_date,
+      end_date: b.end_date,
+      leave_session: session,
+      total_days: leaveDays,
+      status: 'pending',
+      current_approver: currentApprover,
+      approval_flow: flow,
+    }, { actorId: me.id });
+    return json({ ok: true, id: leaveRequestId });
     } catch (e) {
       console.error('Leave create failed', e);
       return json({ error: e.message || 'Không thể tạo yêu cầu nghỉ phép, vui lòng thử lại sau' }, 500);
@@ -7788,6 +8831,12 @@ const attendanceRateTo =
           ]);
         }
         await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(id, request.approval_level, me.id, me.full_name, 'rejected', String(b.note || '')).run();
+        await broadcastAppEvent(env, 'leave', 'leave:rejected', {
+          id,
+          user_id: request.employee_id,
+          status: 'rejected',
+          note: String(b.note || ''),
+        }, { actorId: me.id });
         return json({ ok: true });
       }
       if (b.status === 'approved') {
@@ -7798,6 +8847,15 @@ const attendanceRateTo =
         const finalApproved = nextLevel === 99;
         await env.DB.prepare('UPDATE leave_requests SET status=?,approval_level=?,current_approver=? WHERE id=?').bind(finalApproved ? 'approved' : 'pending', nextLevel, nextApprover, id).run();
         await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(id, request.approval_level, me.id, me.full_name, finalApproved ? 'approved' : 'forwarded', String(b.note || '')).run();
+        await broadcastAppEvent(env, 'leave', finalApproved ? 'leave:approved' : 'leave:forwarded', {
+          id,
+          user_id: request.employee_id,
+          status: finalApproved ? 'approved' : 'pending',
+          approval_level: nextLevel,
+          current_approver: nextApprover,
+          final: finalApproved,
+          note: String(b.note || ''),
+        }, { actorId: me.id });
         return json({ ok: true, final: finalApproved });
       }
       if (Number(request.employee_id) !== Number(me.id) || request.status !== 'pending') return json({ error: 'Chỉ được sửa đơn của bạn khi đang chờ duyệt' }, 403);
@@ -7805,6 +8863,11 @@ const attendanceRateTo =
       if (b.reason !== undefined) { const reason = String(b.reason).trim(); if (!reason) return json({ error: 'Vui lòng nhập lý do nghỉ' }, 400); updates.push('reason=?'); vals.push(reason); }
       if (!updates.length) return json({ error: 'Không có dữ liệu cập nhật' }, 400);
       vals.push(id); await env.DB.prepare(`UPDATE leave_requests SET ${updates.join(',')} WHERE id=?`).bind(...vals).run();
+      await broadcastAppEvent(env, 'leave', 'leave:updated', {
+        id,
+        user_id: request.employee_id,
+        updates: b,
+      }, { actorId: me.id });
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
@@ -7819,6 +8882,10 @@ const attendanceRateTo =
         ]);
       }
       await env.DB.prepare('DELETE FROM leave_requests WHERE id=?').bind(id).run();
+      await broadcastAppEvent(env, 'leave', 'leave:deleted', {
+        id,
+        user_id: request.employee_id,
+      }, { actorId: me.id });
       return json({ ok: true });
     }
   }
@@ -7833,31 +8900,35 @@ const attendanceRateTo =
     return json({ candidates: results });
   }
   if (path === '/api/candidates' && request.method === 'POST') {
+    if (!isAdmin && !isManager && !isHcns(me)) return json({ error: 'Không có quyền quản lý ứng viên' }, 403);
     const b = await request.json();
     if (!b.name) return json({ error: 'Thiếu tên ứng viên' }, 400);
+    const dept = b.department || b.department_id || '';
     const r = await env.DB.prepare(
-      'INSERT INTO candidates (user_id,name,position,department_id,apply_date,source,stage,notes) VALUES (?,?,?,?,?,?,?,?)'
-    ).bind(env.USER_ID, b.name, b.position||'', b.department_id||null, b.apply_date||null, b.source||'Khác', b.stage||'received', b.notes||'').run();
+      'INSERT INTO candidates (user_id,name,position,department,department_id,apply_date,source,stage,notes,email,phone) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
+    ).bind(env.USER_ID || me?.id, b.name, b.position||'', dept, b.department_id||null, b.apply_date||null, b.source||'Khác', b.stage||'received', b.notes||'', b.email||'', b.phone||'').run();
     return json({ ok: true, id: r.meta.last_row_id });
   }
   const candMatch = path.match(/^\/api\/candidates\/(\d+)$/);
   if (candMatch) {
     const id = parseInt(candMatch[1]);
     if (request.method === 'PUT') {
+      if (!isAdmin && !isManager && !isHcns(me)) return json({ error: 'Không có quyền chỉnh sửa ứng viên' }, 403);
       const b = await request.json();
       // Flexible update
-      const cols = ['name','position','apply_date','source','stage','notes'];
+      const cols = ['name','position','department','apply_date','source','stage','notes','email','phone'];
       const setStrs = []; const vals = [];
       for (const c of cols) {
         if (b[c] !== undefined) { setStrs.push(c + '=?'); vals.push(b[c]); }
       }
-      if (b.department !== undefined) { setStrs.push('department_id=?'); vals.push(b.department||null); }
+      if (b.department_id !== undefined) { setStrs.push('department_id=?'); vals.push(b.department_id||null); }
       if (!setStrs.length) return json({ error: 'Không có dữ liệu' }, 400);
       vals.push(id);
       await env.DB.prepare(`UPDATE candidates SET ${setStrs.join(',')} WHERE id=?`).bind(...vals).run();
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
+      if (!isAdmin && !isManager && !isHcns(me)) return json({ error: 'Không có quyền xóa ứng viên' }, 403);
       await env.DB.prepare('DELETE FROM candidates WHERE id=?').bind(id).run();
       return json({ ok: true });
     }
@@ -7980,6 +9051,11 @@ const attendanceRateTo =
       }
       applied++;
     }
+    await broadcastAppEvent(env, 'payroll', 'payroll:adjusted', {
+      month,
+      applied,
+      skipped,
+    }, { actorId: me.id });
     return json({ ok: true, month, applied, skipped, errors });
   }
 
@@ -8045,6 +9121,14 @@ const attendanceRateTo =
        VALUES (?,'draft',?,?,?,?,?,?,datetime('now','localtime'))
        ON CONFLICT(month) DO UPDATE SET total_employees=excluded.total_employees,complete_employees=excluded.complete_employees,missing_employees=excluded.missing_employees,estimated_total=excluded.estimated_total,updated_at=datetime('now','localtime')`
     ).bind(month, users.length, ready, missingSalary, estimatedTotal, me.id, me.full_name || '').run();
+    await broadcastAppEvent(env, 'payroll', 'payroll:loaded', {
+      month,
+      total: users.length,
+      created,
+      updated,
+      ready,
+      missing: missingSalary,
+    }, { actorId: me.id });
     return json({
       ok: true,
       loaded: true,
@@ -8103,6 +9187,14 @@ const attendanceRateTo =
        VALUES (?,'draft',?,?,?,?,?,?,datetime('now','localtime'))
        ON CONFLICT(month) DO UPDATE SET status='draft',total_employees=excluded.total_employees,complete_employees=excluded.complete_employees,missing_employees=excluded.missing_employees,estimated_total=excluded.estimated_total,updated_at=datetime('now','localtime')`
     ).bind(month, users.length, ready, missing, estimatedTotal, me.id, me.full_name || '').run();
+    await broadcastAppEvent(env, 'payroll', 'payroll:batch_synced', {
+      month,
+      total: users.length,
+      created,
+      updated,
+      ready,
+      missing,
+    }, { actorId: me.id });
     return json({ ok: true, status: 'draft', created, updated, missing, missing_salary_config: missing, complete: ready, total: users.length, month, estimated_total: estimatedTotal });
   }
   if (path === '/api/payroll/export-payslips' && request.method === 'POST') {
@@ -8206,6 +9298,18 @@ const attendanceRateTo =
         "UPDATE payroll_batches SET status='issued',updated_at=datetime('now','localtime') WHERE month=?"
       ).bind(month).run();
     }
+    await broadcastAppEvent(env, 'payroll', 'payroll:payslips_exported', {
+      month,
+      total: rows.length,
+      created,
+      updated,
+      skipped,
+    }, { actorId: me.id });
+    await broadcastAppEvent(env, 'invoices', 'invoices:batch_issued', {
+      month,
+      created,
+      updated,
+    }, { actorId: me.id });
     return json({ ok: true, month, total: rows.length, created, updated, skipped, skippedRows });
     } catch (e) {
       console.error('Export payslips failed', e);
@@ -8223,6 +9327,13 @@ const attendanceRateTo =
       const r = await env.DB.prepare(
         "INSERT INTO payroll (user_id,employee_id,employee_name,employee_code,department,month,base_salary,kpi_bonus,allowance,deduction,overtime_pay,tax,insurance,work_days,standard_days,note,net_salary,data_status,data_warnings,source_synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))"
       ).bind(String(me.id), b.employee_id||null, b.employee_name, b.employee_code||'', b.department||'', b.month, b.base_salary||0, b.kpi_bonus||0, b.allowance||0, b.deduction||0, b.overtime_pay||0, b.tax||0, b.insurance||0, b.work_days||0, b.standard_days||0, b.note||'', net, dataStatus, dataWarnings).run();
+      await broadcastAppEvent(env, 'payroll', 'payroll:created', {
+        id: r.meta.last_row_id,
+        month: b.month,
+        employee_name: b.employee_name,
+        employee_code: b.employee_code,
+        net_salary: net,
+      }, { actorId: me.id });
       return json({ ok: true, id: r.meta.last_row_id });
     }
     // Batch creation (legacy)
@@ -8235,6 +9346,10 @@ const attendanceRateTo =
           "INSERT INTO payroll (user_id,employee_id,employee_name,employee_code,department,month,base_salary,kpi_bonus,allowance,deduction,net_salary,data_status,data_warnings,source_synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))"
         ).bind(String(me.id), r.employee_id||null, r.employee_name||'', r.employee_code||'', r.department||'', b.month, r.base_salary||0, r.kpi_bonus||0, r.allowance||0, r.deduction||0, net, dataStatus, dataWarnings);
       }));
+      await broadcastAppEvent(env, 'payroll', 'payroll:batch_created', {
+        month: b.month,
+        count: b.rows.length,
+      }, { actorId: me.id });
       return json({ ok: true });
     }
     return json({ error: 'Thiếu dữ liệu' }, 400);
@@ -8280,6 +9395,11 @@ const attendanceRateTo =
             'INSERT INTO payroll_change_log (payroll_id,changed_by,changed_by_name,change_note,before_data,after_data) VALUES (?,?,?,?,?,?)'
           ).bind(id, me.id, me.full_name || '', `Điều chỉnh ${normalized.length} dòng lương`, JSON.stringify(current), JSON.stringify({ ...next, net_salary: net })),
         ]);
+        await broadcastAppEvent(env, 'payroll', 'payroll:updated', {
+          id,
+          net_salary: net,
+          changed_lines: normalized.length,
+        }, { actorId: me.id });
         return json({ ok: true, net_salary: net, changed_lines: normalized.length });
       }
       const changeNote = String(b.change_note || '').trim();
@@ -8299,6 +9419,10 @@ const attendanceRateTo =
         insurance: b.insurance||0, work_days: b.work_days||0, standard_days: b.standard_days||0,
         net_salary: net, note: b.note||''
       })).run();
+      await broadcastAppEvent(env, 'payroll', 'payroll:updated', {
+        id,
+        net_salary: net,
+      }, { actorId: me.id });
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
@@ -8314,6 +9438,9 @@ const attendanceRateTo =
       ).bind(id, me.id, me.full_name || '', 'Xóa dòng lương', JSON.stringify(current), '{}').run();
       await env.DB.prepare('UPDATE payroll_adjustments SET payroll_id=NULL,updated_at=datetime(\'now\',\'localtime\') WHERE payroll_id=?').bind(id).run();
       await env.DB.prepare('DELETE FROM payroll WHERE id=?').bind(id).run();
+      await broadcastAppEvent(env, 'payroll', 'payroll:deleted', {
+        id,
+      }, { actorId: me.id });
       return json({ ok: true });
     }
   }
@@ -9124,7 +10251,30 @@ const attendanceRateTo =
       await env.DB.prepare('INSERT INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?)')
         .bind(convId, uid, 'member').run();
     }
-    return json({ conversation_id: convId });
+    const allMemberIds = [Number(me.id), ...memberIds];
+    const convRow = await env.DB.prepare('SELECT * FROM conversations WHERE id = ?').bind(convId).first();
+    const members = await env.DB.prepare(
+      `SELECT cm.user_id, u.full_name, u.employee_code, u.avatar_url, cm.role, cm.last_read_message_id
+       FROM conversation_members cm JOIN users u ON u.id = cm.user_id WHERE cm.conversation_id = ?`
+    ).bind(convId).all().then(r => r.results || []);
+
+    const createdConv = {
+      ...convRow,
+      members,
+      member_count: members.length,
+      unread_count: 0,
+      last_message: null,
+    };
+
+    await broadcastAppEvent(env, 'chat', 'chat:conversation_created', {
+      conversation_id: convId,
+      conversation: createdConv,
+    }, {
+      actorId: me.id,
+      targetUserIds: allMemberIds,
+    });
+
+    return json({ conversation_id: convId, conversation: createdConv });
   }
 
   const convMatch = path.match(/^\/api\/conversations\/(\d+)$/);
@@ -9158,6 +10308,7 @@ const attendanceRateTo =
       'INSERT INTO dissolved_conversations (conversation_id,dissolved_by,dissolved_by_name) VALUES (?,?,?)'
     ).bind(convId, me.id, me.full_name || '').run();
     await broadcastChatUpdate(env, convId, { type: 'conversation:dissolved', conversation_id: convId });
+    await broadcastAppEvent(env, 'chat', 'chat:conversation_dissolved', { conversation_id: convId }, { actorId: me.id });
     return json({ ok: true, dissolved: true });
   }
 
@@ -9170,6 +10321,8 @@ const attendanceRateTo =
     if (!name) return json({ error: 'Tên không được để trống' }, 400);
     if (name.length > 200) return json({ error: 'Tên quá dài (tối đa 200 ký tự)' }, 400);
     await env.DB.prepare('UPDATE conversations SET name = ? WHERE id = ?').bind(name, convId).run();
+    await broadcastChatUpdate(env, convId, { type: 'conversation:update', conversation_id: convId, name });
+    await broadcastAppEvent(env, 'chat', 'chat:conversation_updated', { conversation_id: convId, name }, { actorId: me.id });
     return json({ ok: true, name });
   }
 
@@ -9322,11 +10475,12 @@ const attendanceRateTo =
     await broadcastChatUpdate(env, convId, { type: 'message:new', message });
 
     // Web Push Notification to conversation members (Lock screen / Background)
+    let recipientIds = [];
     try {
       const { results: memberRows = [] } = await env.DB.prepare(
         'SELECT user_id FROM conversation_members WHERE conversation_id = ?'
       ).bind(convId).all();
-      const recipientIds = memberRows
+      recipientIds = memberRows
         .map(r => Number(r.user_id))
         .filter(uid => uid && uid !== Number(me.id));
       if (recipientIds.length) {
@@ -9347,6 +10501,15 @@ const attendanceRateTo =
     } catch (pushErr) {
       console.warn('Failed to dispatch chat push notification:', pushErr);
     }
+
+    // App-wide event broadcast
+    await broadcastAppEvent(env, 'chat', 'chat:message_created', {
+      conversation_id: convId,
+      message,
+    }, {
+      actorId: me.id,
+      targetUserIds: recipientIds.concat(Number(me.id)),
+    });
 
     return json({ message, mentioned_user_ids: mentionedUserIds });
   }
@@ -9416,6 +10579,11 @@ const attendanceRateTo =
     }
     const updated = await getChatMessage(env, messageId, me.id);
     await broadcastChatUpdate(env, message.conversation_id, { type: 'poll:update', message_id: messageId, poll: updated?.poll });
+    await broadcastAppEvent(env, 'chat', 'chat:poll_updated', {
+      conversation_id: message.conversation_id,
+      message_id: messageId,
+      poll: updated?.poll,
+    }, { actorId: me.id });
     return json({ poll: updated?.poll || null });
   }
 
@@ -9430,6 +10598,11 @@ const attendanceRateTo =
       .bind(me.id, messageId).run();
     const updated = await getChatMessage(env, messageId, me.id);
     await broadcastChatUpdate(env, message.conversation_id, { type: 'poll:update', message_id: messageId, poll: updated?.poll });
+    await broadcastAppEvent(env, 'chat', 'chat:poll_updated', {
+      conversation_id: message.conversation_id,
+      message_id: messageId,
+      poll: updated?.poll,
+    }, { actorId: me.id });
     return json({ poll: updated?.poll || null });
   }
 
@@ -9455,6 +10628,11 @@ const attendanceRateTo =
       .bind(title, event.start_at, event.end_at || null, description || null, location || null, meetingUrl || null, messageId).run();
     const updated = await getChatMessage(env, messageId, me.id);
     await broadcastChatUpdate(env, message.conversation_id, { type: 'event:update', message_id: messageId, event: updated?.event });
+    await broadcastAppEvent(env, 'chat', 'chat:event_updated', {
+      conversation_id: message.conversation_id,
+      message_id: messageId,
+      event: updated?.event,
+    }, { actorId: me.id });
     return json({ event: updated?.event || null });
   }
 
@@ -9471,6 +10649,11 @@ const attendanceRateTo =
       .bind(response, messageId, me.id).run();
     const updated = await getChatMessage(env, messageId, me.id);
     await broadcastChatUpdate(env, message.conversation_id, { type: 'event:update', message_id: messageId, event: updated?.event });
+    await broadcastAppEvent(env, 'chat', 'chat:event_updated', {
+      conversation_id: message.conversation_id,
+      message_id: messageId,
+      event: updated?.event,
+    }, { actorId: me.id });
     return json({ event: updated?.event || null });
   }
 
@@ -9485,27 +10668,73 @@ const attendanceRateTo =
       .bind(me.id, messageId).run();
     const updated = await getChatMessage(env, messageId, me.id);
     await broadcastChatUpdate(env, message.conversation_id, { type: 'event:update', message_id: messageId, event: updated?.event });
+    await broadcastAppEvent(env, 'chat', 'chat:event_updated', {
+      conversation_id: message.conversation_id,
+      message_id: messageId,
+      event: updated?.event,
+    }, { actorId: me.id });
     return json({ event: updated?.event || null });
   }
 
   const msgMatch = path.match(/^\/api\/messages\/(\d+)$/);
   if (msgMatch && request.method === 'PUT') {
     const msgId = parseInt(msgMatch[1]);
+    const existing = await env.DB.prepare(
+      'SELECT conversation_id, sender_id FROM messages WHERE id = ? AND deleted_at IS NULL'
+    ).bind(msgId).first();
+    if (!existing) return json({ error: 'Không tìm thấy tin nhắn' }, 404);
+    if (Number(existing.sender_id) !== Number(me.id)) {
+      return json({ error: 'Chỉ người gửi mới được sửa tin nhắn' }, 403);
+    }
+
     const b = await request.json().catch(() => ({}));
     const content = String(b.content || '').trim();
     if (!content) return json({ error: 'Nội dung không được để trống' }, 400);
     const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+
     await env.DB.prepare('UPDATE messages SET content = ?, edited_at = ? WHERE id = ? AND sender_id = ?')
       .bind(content, now, msgId, me.id).run();
-    return json({ ok: true });
+
+    const updated = await getChatMessage(env, msgId, me.id);
+
+    // Dual-broadcast
+    await broadcastChatUpdate(env, existing.conversation_id, { type: 'message:edit', message: updated });
+    await broadcastAppEvent(env, 'chat', 'chat:message_edited', {
+      conversation_id: existing.conversation_id,
+      message_id: msgId,
+      message: updated,
+    }, { actorId: me.id });
+
+    return json({ ok: true, message: updated });
   }
 
   if (msgMatch && request.method === 'DELETE') {
     const msgId = parseInt(msgMatch[1]);
+    const existing = await env.DB.prepare(
+      'SELECT conversation_id, sender_id FROM messages WHERE id = ? AND deleted_at IS NULL'
+    ).bind(msgId).first();
+    if (!existing) return json({ error: 'Không tìm thấy tin nhắn' }, 404);
+    if (Number(existing.sender_id) !== Number(me.id) && me.role !== 'admin' && me.role !== 'director') {
+      return json({ error: 'Chỉ người gửi mới được xóa tin nhắn' }, 403);
+    }
+
     const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
-    await env.DB.prepare('UPDATE messages SET deleted_at = ? WHERE id = ? AND sender_id = ?')
-      .bind(now, msgId, me.id).run();
-    return json({ ok: true });
+    await env.DB.prepare('UPDATE messages SET deleted_at = ? WHERE id = ?')
+      .bind(now, msgId).run();
+
+    // Dual-broadcast
+    await broadcastChatUpdate(env, existing.conversation_id, {
+      type: 'message:delete',
+      message_id: msgId,
+      deleted_at: now,
+    });
+    await broadcastAppEvent(env, 'chat', 'chat:message_deleted', {
+      conversation_id: existing.conversation_id,
+      message_id: msgId,
+      deleted_at: now,
+    }, { actorId: me.id });
+
+    return json({ ok: true, message_id: msgId, deleted_at: now });
   }
 
   const msgPinMatch = path.match(/^\/api\/messages\/(\d+)\/pin$/);
@@ -9517,33 +10746,82 @@ const attendanceRateTo =
       'SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?'
     ).bind(message.conversation_id, me.id).first();
     if (!member) return json({ error: 'Không có quyền ghim tin nhắn này' }, 403);
-    if (request.method === 'POST') {
+
+    const isPinning = request.method === 'POST';
+    if (isPinning) {
       await env.DB.prepare('INSERT OR IGNORE INTO pinned_messages (conversation_id, message_id, pinned_by) VALUES (?, ?, ?)')
         .bind(message.conversation_id, messageId, me.id).run();
     } else {
       await env.DB.prepare('DELETE FROM pinned_messages WHERE conversation_id = ? AND message_id = ?')
         .bind(message.conversation_id, messageId).run();
     }
-    return json({ ok: true, pinned: request.method === 'POST' });
+
+    // Dual-broadcast
+    await broadcastChatUpdate(env, message.conversation_id, {
+      type: 'message:pin',
+      message_id: messageId,
+      conversation_id: message.conversation_id,
+      is_pinned: isPinning,
+      pinned_by: me.id,
+    });
+    await broadcastAppEvent(env, 'chat', 'chat:message_pinned', {
+      conversation_id: message.conversation_id,
+      message_id: messageId,
+      is_pinned: isPinning,
+      pinned_by: me.id,
+    }, { actorId: me.id });
+
+    return json({ ok: true, pinned: isPinning, message_id: messageId });
   }
 
   const msgReactionMatch = path.match(/^\/api\/messages\/(\d+)\/reactions$/);
-  if (msgReactionMatch && request.method === 'POST') {
+  if (msgReactionMatch && (request.method === 'POST' || request.method === 'DELETE')) {
     const msgId = parseInt(msgReactionMatch[1]);
-    const b = await request.json().catch(() => ({}));
-    const emoji = String(b.emoji || '');
-    if (!emoji) return json({ error: 'Emoji là bắt buộc' }, 400);
-    await env.DB.prepare('INSERT OR IGNORE INTO message_reactions (message_id, user_id, emoji) VALUES (?, ?, ?)')
-      .bind(msgId, me.id, emoji).run();
-    return json({ ok: true });
-  }
+    const message = await env.DB.prepare(
+      'SELECT id, conversation_id FROM messages WHERE id = ? AND deleted_at IS NULL'
+    ).bind(msgId).first();
+    if (!message) return json({ error: 'Không tìm thấy tin nhắn' }, 404);
 
-  if (msgReactionMatch && request.method === 'DELETE') {
-    const msgId = parseInt(msgReactionMatch[1]);
-    const emoji = url.searchParams.get('emoji') || '';
-    await env.DB.prepare('DELETE FROM message_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?')
-      .bind(msgId, me.id, emoji).run();
-    return json({ ok: true });
+    const isMember = await chatMember(env, message.conversation_id, me.id);
+    if (!isMember) return json({ error: 'Không có quyền truy cập hội thoại này' }, 403);
+
+    if (request.method === 'POST') {
+      const b = await request.json().catch(() => ({}));
+      const emoji = String(b.emoji || '').trim();
+      if (!emoji) return json({ error: 'Emoji là bắt buộc' }, 400);
+      await env.DB.prepare('INSERT OR IGNORE INTO message_reactions (message_id, user_id, emoji) VALUES (?, ?, ?)')
+        .bind(msgId, me.id, emoji).run();
+    } else {
+      const emoji = url.searchParams.get('emoji') || '';
+      if (emoji) {
+        await env.DB.prepare('DELETE FROM message_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?')
+          .bind(msgId, me.id, emoji).run();
+      } else {
+        await env.DB.prepare('DELETE FROM message_reactions WHERE message_id = ? AND user_id = ?')
+          .bind(msgId, me.id).run();
+      }
+    }
+
+    const { results: reactions = [] } = await env.DB.prepare(
+      `SELECT mr.emoji, mr.user_id, u.full_name AS user_name
+       FROM message_reactions mr JOIN users u ON u.id = mr.user_id
+       WHERE mr.message_id = ?`
+    ).bind(msgId).all();
+
+    // Dual-broadcast
+    await broadcastChatUpdate(env, message.conversation_id, {
+      type: 'reaction:update',
+      message_id: msgId,
+      conversation_id: message.conversation_id,
+      reactions,
+    });
+    await broadcastAppEvent(env, 'chat', 'chat:reaction_updated', {
+      conversation_id: message.conversation_id,
+      message_id: msgId,
+      reactions,
+    }, { actorId: me.id });
+
+    return json({ ok: true, reactions });
   }
 
   const msgReadMatch = path.match(/^\/api\/messages\/(\d+)\/read$/);

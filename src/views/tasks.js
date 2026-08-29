@@ -1,5 +1,7 @@
 import { api } from '../api.js';
-import { esc, taskStatusBadge, priorityBadge, toast, openModal, closeModal, loadingHTML, emptyHTML, today, normalizeVietnameseSearch } from '../utils.js';
+import { EventBus } from '../event-bus.js';
+import { esc, taskStatusBadge, priorityBadge, toast, openModal, closeModal, loadingHTML, emptyHTML, today, normalizeVietnameseSearch, isHcnsDepartment, sortVietnameseNames, compareVietnameseNames } from '../utils.js';
+import { icon } from '../icons.js';
 import { openTaskPanel } from '../app.js';
 
 const LABEL_COLORS = ['#6366F1', '#3B82F6', '#8B5CF6', '#10B981', '#F59E0B', '#F97316', '#EF4444', '#64748B'];
@@ -207,14 +209,14 @@ export async function renderTasks(el, me) {
   el.innerHTML = `
     <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
       <div>
-        <div class="page-title">📋 Công việc</div>
+        <div class="page-title">${icon('clipboardList', 'md')} Công việc</div>
         <div class="page-sub">Project → Nhóm công việc → Task → Subtask</div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
-        <button id="btn-toggle-project-nav" class="btn-secondary btn-sm" title="Ẩn / Hiện danh sách Dự án để mở rộng tối đa bảng Kanban">📁 Danh sách dự án</button>
-        ${canManage ? `<button id="btn-import-myxteam" class="btn-secondary btn-sm">Nhập MyXteam</button>` : ''}
-        ${canManage ? `<button id="btn-new-project" class="btn-secondary btn-sm">+ Project</button>` : ''}
-        <button id="btn-new-task" class="btn-primary btn-sm">+ Tạo việc</button>
+        <button id="btn-toggle-project-nav" class="btn-secondary btn-sm" title="Ẩn / Hiện danh sách Dự án để mở rộng tối đa bảng Kanban">${icon('panelLeft', 'xs')} <span id="btn-toggle-project-nav-text">Danh sách dự án</span></button>
+        ${canManage ? `<button id="btn-import-myxteam" class="btn-secondary btn-sm">${icon('download', 'xs')} Nhập MyXteam</button>` : ''}
+        ${canManage ? `<button id="btn-new-project" class="btn-secondary btn-sm">${icon('plus', 'xs')} Project</button>` : ''}
+        <button id="btn-new-task" class="btn-primary btn-sm">${icon('plus', 'xs')} Tạo việc</button>
       </div>
     </div>
 
@@ -226,10 +228,10 @@ export async function renderTasks(el, me) {
             <div class="card-title" style="font-size:14.5px;">Workspace NetViet HR</div>
             <div style="font-size:11.5px;color:var(--text-2);margin-top:2px;">Chọn Project để mở board nhóm việc.</div>
           </div>
-          <button type="button" id="btn-collapse-side-nav" class="btn-icon btn-xs" title="Thu gọn danh sách dự án" aria-label="Thu gọn danh sách dự án">◀</button>
+          <button type="button" id="btn-collapse-side-nav" class="btn-icon btn-xs" title="Thu gọn danh sách dự án" aria-label="Thu gọn danh sách dự án">${icon('chevronLeft', 'xs')}</button>
         </div>
         <div style="width:100%;">
-          <input type="text" id="project-search" placeholder="🔍 Tìm Project..." style="width:100%;height:36px;font-size:12.5px;box-sizing:border-box;"/>
+          <input type="text" id="project-search" placeholder="Tìm Project..." style="width:100%;height:36px;font-size:12.5px;box-sizing:border-box;"/>
         </div>
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:space-between;width:100%;">
           <div style="display:flex;gap:6px;align-items:center;">
@@ -266,8 +268,24 @@ export async function renderTasks(el, me) {
     try { localStorage.setItem(expandedDepartmentStorageKey, JSON.stringify([...expandedDepartments])); } catch (_) {}
   }
 
+  const isHr = !!me && (me.role === 'admin' || me.role === 'manager' || isHcnsDepartment(me.department));
   let mentionedTaskIds = new Set();
   let unreadMentionCountByProject = new Map();
+  let subscribedDepts = new Set();
+  let subscribedProjects = new Set();
+
+  async function refreshCompletionSubscriptions() {
+    if (!isHr) return;
+    try {
+      const res = await api.getTaskCompletionSubscriptions().catch(() => ({ subscriptions: [] }));
+      const subs = res?.subscriptions || [];
+      subscribedDepts = new Set(subs.filter(s => s.department && !s.project_id).map(s => s.department));
+      subscribedProjects = new Set(subs.filter(s => s.project_id).map(s => Number(s.project_id)));
+    } catch (_) {
+      subscribedDepts = new Set();
+      subscribedProjects = new Set();
+    }
+  }
 
   async function refreshUnreadMentionCount() {
     try {
@@ -318,6 +336,7 @@ export async function renderTasks(el, me) {
     const [res] = await Promise.all([
       api.getTaskProjects(params),
       refreshUnreadMentionCount(),
+      refreshCompletionSubscriptions(),
     ]);
     projects = res.projects || [];
     if (selectedProjectId && !projects.some(p => String(p.id) === String(selectedProjectId))) selectedProjectId = '';
@@ -366,7 +385,7 @@ export async function renderTasks(el, me) {
       if (sourceProjects.length > 100) { toast('Tối đa 100 Project mỗi lượt nhập', 'error'); return; }
       runButton.disabled = true;
       closeButton.disabled = true;
-      const totals = { projects: 0, groups: 0, tasks: 0, skipped: 0, failed: 0 };
+      const totals = { projects: 0, groups: 0, tasks: 0, skipped: 0, subtasks: 0, failed: 0 };
       const failures = [];
       for (let index = 0; index < sourceProjects.length; index += 1) {
         const project = sourceProjects[index];
@@ -378,6 +397,7 @@ export async function renderTasks(el, me) {
           totals.groups += Number(result.groups_created || 0);
           totals.tasks += Number(result.tasks_created || 0);
           totals.skipped += Number(result.tasks_skipped || 0);
+          totals.subtasks += Number(result.subtasks_created || 0);
         } catch (error) {
           totals.failed += 1;
           failures.push(`${project?.name || project?.id || `Project ${index + 1}`}: ${error.message}`);
@@ -385,7 +405,8 @@ export async function renderTasks(el, me) {
       }
       if (progress) progress.innerHTML = `
         <strong>Đã xử lý ${sourceProjects.length} Project.</strong><br>
-        Tạo mới: ${totals.projects} Project · ${totals.groups} nhóm · ${totals.tasks} task. Bỏ qua do đã có: ${totals.skipped} task.
+        Tạo mới: ${totals.projects} Project · ${totals.groups} nhóm · ${totals.tasks} task · ${totals.subtasks} việc con.<br>
+        Bỏ qua do đã có: ${totals.skipped} task (đã tự động cập nhật mô tả & việc con nếu thiếu).
         ${totals.failed ? `<br><span style="color:var(--danger);">Lỗi ${totals.failed} Project: ${esc(failures.slice(0, 5).join(' | '))}</span>` : ''}
       `;
       closeButton.disabled = false;
@@ -533,11 +554,11 @@ export async function renderTasks(el, me) {
         <div class="task-project-nav-department-head">
           <button type="button" class="task-project-nav-department-toggle" data-department-toggle="${esc(department)}" aria-expanded="${isExpanded}" aria-controls="${contentId}">
             <span class="task-project-nav-department-arrow" aria-hidden="true">${isExpanded ? '▾' : '▸'}</span>
-            <span class="task-project-nav-department-title">${esc(department)}</span>
+            <span class="task-project-nav-department-title">${esc(department)}${subscribedDepts.has(department) ? ` <span title="Đang nhận thông báo khi có task hoàn thành" style="color:var(--primary);display:inline-flex;align-items:center;vertical-align:middle;margin-left:4px;">${icon('bell', 'xs')}</span>` : ''}</span>
             ${deptMentionCount > 0 && !isExpanded ? `<span class="task-project-mention-badge" title="${deptMentionCount} việc cần chú ý / được nhắc">${deptMentionCount > 99 ? '99+' : deptMentionCount}</span>` : ''}
             <span class="task-project-nav-department-count">${departmentProjects.length}</span>
           </button>
-          ${canManage ? `
+          ${canManage || isHr ? `
             <div class="project-nav-menu-wrap">
               <button type="button" class="project-nav-gear-btn department-gear-btn" data-department-gear="${departmentIndex}" title="Tùy chọn nhóm dự án" aria-label="Tùy chọn nhóm dự án">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -546,18 +567,26 @@ export async function renderTasks(el, me) {
                 </svg>
               </button>
               <div class="project-nav-dropdown" id="department-menu-${departmentIndex}" hidden>
-                <button type="button" class="project-nav-dropdown-item" data-action-rename-dept="${esc(department)}">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                  <span>Đổi tên nhóm</span>
-                </button>
-                <button type="button" class="project-nav-dropdown-item" data-action-members-dept="${esc(department)}">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
-                  <span>Thêm thành viên vào nhóm</span>
-                </button>
-                <button type="button" class="project-nav-dropdown-item project-nav-dropdown-item--danger" data-action-delete-dept="${esc(department)}">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
-                  <span>Xóa nhóm dự án</span>
-                </button>
+                ${isHr ? `
+                  <button type="button" class="project-nav-dropdown-item" data-action-notify-dept="${esc(department)}">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="${subscribedDepts.has(department) ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.27 21a2 2 0 0 0 3.46 0"/><path d="M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.6 14.06 18 12.22 18 8a6 6 0 0 0-12 0c0 4.22-1.6 6.06-2.74 7.33"/></svg>
+                    <span>${subscribedDepts.has(department) ? 'Tắt thông báo hoàn thành' : 'Nhận thông báo khi hoàn thành task'}</span>
+                  </button>
+                ` : ''}
+                ${canManage ? `
+                  <button type="button" class="project-nav-dropdown-item" data-action-rename-dept="${esc(department)}">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    <span>Đổi tên nhóm</span>
+                  </button>
+                  <button type="button" class="project-nav-dropdown-item" data-action-members-dept="${esc(department)}">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+                    <span>Thêm thành viên vào nhóm</span>
+                  </button>
+                  <button type="button" class="project-nav-dropdown-item project-nav-dropdown-item--danger" data-action-delete-dept="${esc(department)}">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                    <span>Xóa nhóm dự án</span>
+                  </button>
+                ` : ''}
               </div>
             </div>
           ` : ''}
@@ -569,28 +598,36 @@ export async function renderTasks(el, me) {
           <div class="task-project-nav-row" data-project-row="${p.id}">
             <button type="button" class="task-project-nav-item ${String(selectedProjectId) === String(p.id) ? 'active' : ''}" data-project="${p.id}" title="${esc(p.description || '')}">
               <span class="task-project-nav-item-head">
-                <span class="task-project-nav-item-title">${esc(projectLabel(p))}</span>
+                <span class="task-project-nav-item-title">${esc(projectLabel(p))}${subscribedProjects.has(Number(p.id)) ? ` <span title="Đang nhận thông báo khi có task hoàn thành" style="color:var(--primary);display:inline-flex;align-items:center;vertical-align:middle;margin-left:4px;">${icon('bell', 'xs')}</span>` : ''}</span>
                 ${mentionCount > 0 ? `<span class="task-project-mention-badge" title="Công việc cần chú ý / được nhắc">${mentionCount > 99 ? '99+' : mentionCount}</span>` : ''}
               </span>
               <span class="task-project-nav-item-meta">${Number(p.task_count || 0)} việc · ${esc(projectStatusText(p.status))}</span>
             </button>
-            ${canManage ? `
+            ${canManage || isHr ? `
               <div class="project-nav-menu-wrap">
                 <button type="button" class="project-nav-gear-btn" data-project-gear="${p.id}" title="Tùy chọn dự án" aria-label="Tùy chọn dự án">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="3"/>
-                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
                   </svg>
                 </button>
                 <div class="project-nav-dropdown" id="project-nav-menu-${p.id}" hidden>
-                  <button type="button" class="project-nav-dropdown-item" data-action-edit-project="${p.id}">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                    <span>Sửa tên dự án</span>
-                  </button>
-                  <button type="button" class="project-nav-dropdown-item project-nav-dropdown-item--danger" data-action-delete-project="${p.id}">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
-                    <span>Xóa dự án</span>
-                  </button>
+                  ${isHr ? `
+                    <button type="button" class="project-nav-dropdown-item" data-action-notify-proj="${p.id}">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="${subscribedProjects.has(Number(p.id)) ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.27 21a2 2 0 0 0 3.46 0"/><path d="M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.6 14.06 18 12.22 18 8a6 6 0 0 0-12 0c0 4.22-1.6 6.06-2.74 7.33"/></svg>
+                      <span>${subscribedProjects.has(Number(p.id)) ? 'Tắt thông báo hoàn thành' : 'Nhận thông báo khi hoàn thành task'}</span>
+                    </button>
+                  ` : ''}
+                  ${canManage ? `
+                    <button type="button" class="project-nav-dropdown-item" data-action-edit-project="${p.id}">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                      <span>Sửa tên dự án</span>
+                    </button>
+                    <button type="button" class="project-nav-dropdown-item project-nav-dropdown-item--danger" data-action-delete-project="${p.id}">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                      <span>Xóa dự án</span>
+                    </button>
+                  ` : ''}
                 </div>
               </div>
             ` : ''}
@@ -617,6 +654,45 @@ export async function renderTasks(el, me) {
       document.querySelectorAll('.project-nav-dropdown').forEach(m => m.hidden = true);
       if (!isCurrentlyOpen && menu) {
         menu.hidden = false;
+      }
+    }));
+
+    list.querySelectorAll('[data-action-notify-dept]').forEach(btn => btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      document.querySelectorAll('.project-nav-dropdown').forEach(m => m.hidden = true);
+      const department = btn.dataset.actionNotifyDept;
+      try {
+        const res = await api.toggleTaskCompletionSubscription({ department });
+        if (res.subscribed) {
+          subscribedDepts.add(department);
+          toast(`Đã bật nhận thông báo khi hoàn thành task trong nhóm "${department}"`, 'success');
+        } else {
+          subscribedDepts.delete(department);
+          toast(`Đã tắt nhận thông báo hoàn thành task cho nhóm "${department}"`, 'info');
+        }
+        renderProjects();
+      } catch (err) {
+        toast(err.message || 'Không thể thay đổi cài đặt thông báo', 'error');
+      }
+    }));
+
+    list.querySelectorAll('[data-action-notify-proj]').forEach(btn => btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      document.querySelectorAll('.project-nav-dropdown').forEach(m => m.hidden = true);
+      const pid = Number(btn.dataset.actionNotifyProj);
+      const project = projects.find(cand => Number(cand.id) === pid);
+      try {
+        const res = await api.toggleTaskCompletionSubscription({ project_id: pid });
+        if (res.subscribed) {
+          subscribedProjects.add(pid);
+          toast(`Đã bật nhận thông báo khi hoàn thành task trong "${project?.name || 'Dự án'}"`, 'success');
+        } else {
+          subscribedProjects.delete(pid);
+          toast(`Đã tắt nhận thông báo hoàn thành task cho "${project?.name || 'Dự án'}"`, 'info');
+        }
+        renderProjects();
+      } catch (err) {
+        toast(err.message || 'Không thể thay đổi cài đặt thông báo', 'error');
       }
     }));
 
@@ -681,10 +757,6 @@ export async function renderTasks(el, me) {
       const project = projects.find(p => String(p.id) === btn.dataset.actionDeleteProject);
       if (project) confirmDeleteProject(project, refreshProjectsAfterMutation);
     }));
-
-    document.addEventListener('click', () => {
-      document.querySelectorAll('.project-nav-dropdown').forEach(m => m.hidden = true);
-    });
   }
 
   function renameDepartment(oldDepartmentName, onDone) {
@@ -740,8 +812,8 @@ export async function renderTasks(el, me) {
         <div style="font-size:15px;color:var(--text);margin-bottom:12px;line-height:1.5;">
           Bạn có chắc chắn muốn xóa toàn bộ nhóm dự án <strong>${esc(departmentName)}</strong>?
         </div>
-        <div class="notice notice-danger" style="font-size:13px;line-height:1.5;">
-          ⚠️ <strong>Cảnh báo:</strong> Toàn bộ <strong>${targets.length} dự án</strong> và <strong>${totalTasks} công việc</strong> trong nhóm này sẽ bị xóa hoàn toàn khỏi hệ thống.
+        <div class="notice notice-danger" style="font-size:13px;line-height:1.5;display:flex;align-items:flex-start;gap:8px;">
+          ${icon('triangleAlert', 'sm')} <div><strong>Cảnh báo:</strong> Toàn bộ <strong>${targets.length} dự án</strong> và <strong>${totalTasks} công việc</strong> trong nhóm này sẽ bị xóa hoàn toàn khỏi hệ thống.</div>
         </div>
       </div>
     `, `
@@ -787,8 +859,8 @@ export async function renderTasks(el, me) {
         <div style="font-size:15px;color:var(--text);margin-bottom:12px;line-height:1.5;">
           Bạn có chắc chắn muốn xóa vĩnh viễn dự án <strong>${esc(project.name)}</strong>?
         </div>
-        <div class="notice notice-danger" style="font-size:13px;line-height:1.5;">
-          ⚠️ <strong>Cảnh báo:</strong> Toàn bộ <strong>${Number(project.task_count || 0)} công việc</strong> và các nhóm công việc bên trong dự án này sẽ bị xóa hoàn toàn khỏi hệ thống.
+        <div class="notice notice-danger" style="font-size:13px;line-height:1.5;display:flex;align-items:flex-start;gap:8px;">
+          ${icon('triangleAlert', 'sm')} <div><strong>Cảnh báo:</strong> Toàn bộ <strong>${Number(project.task_count || 0)} công việc</strong> và các nhóm công việc bên trong dự án này sẽ bị xóa hoàn toàn khỏi hệ thống.</div>
         </div>
       </div>
     `, `
@@ -827,7 +899,7 @@ export async function renderTasks(el, me) {
     const board = el.querySelector('#project-board');
     board.innerHTML = `
       <div class="card">
-        ${emptyHTML('📁', canManage ? 'Chọn hoặc tạo Project để bắt đầu' : 'Chọn Project để xem công việc')}
+        ${emptyHTML(icon('folder', 'xl'), canManage ? 'Chọn hoặc tạo Project để bắt đầu' : 'Chọn Project để xem công việc')}
       </div>
     `;
   }
@@ -858,7 +930,7 @@ export async function renderTasks(el, me) {
     } catch (err) {
       console.error('loadBoard error:', err);
       if (board) {
-        board.innerHTML = `<div class="card" style="padding:24px 18px;"><div class="notice notice-danger" style="margin:0;">⚠️ <strong>Không thể tải công việc:</strong> ${esc(err.message || 'Lỗi kết nối máy chủ')}</div></div>`;
+        board.innerHTML = `<div class="card" style="padding:24px 18px;"><div class="notice notice-danger" style="margin:0;display:flex;align-items:center;gap:8px;">${icon('triangleAlert', 'sm')} <div><strong>Không thể tải công việc:</strong> ${esc(err.message || 'Lỗi kết nối máy chủ')}</div></div></div>`;
       }
       toast(err.message || 'Lỗi tải danh sách công việc', 'error');
     }
@@ -1040,8 +1112,7 @@ export async function renderTasks(el, me) {
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
               </button>
             </div>
-            ${canViewProjectTimeline(project) ? `<button id="btn-project-timeline" class="btn-secondary btn-sm">🕘 Timeline</button>` : ''}
-            ${canManage ? `<button id="btn-new-group" class="btn-primary btn-task-group-create btn-sm">+ Nhóm công việc</button>` : ''}
+            ${canViewProjectTimeline(project) ? `<button id="btn-project-timeline" class="btn-secondary btn-sm">${icon('history', 'xs')} Timeline</button>` : ''}
           </div>
         </div>
         <div class="filter-bar" id="task-status-bar" style="margin-top:8px;margin-bottom:0;">
@@ -1055,6 +1126,17 @@ export async function renderTasks(el, me) {
       </div>
       <div class="task-board-wrap" id="task-board-wrap-el" tabindex="0" aria-label="Bảng Kanban công việc">
         ${groups.map((group, index) => renderGroupColumn(group, index, defaultGroup)).join('')}
+        ${canManage ? `
+          <div class="task-group-add-slot">
+            <button type="button" class="btn-add-task-group-column" id="btn-new-group" title="Tạo nhóm công việc mới">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+              <span>+ Tạo nhóm công việc</span>
+            </button>
+          </div>
+        ` : ''}
       </div>
     `;
 
@@ -1444,7 +1526,7 @@ export async function renderTasks(el, me) {
     const isCollapsed = shell?.classList.contains('project-nav-collapsed');
     const btn = el.querySelector('#btn-toggle-project-nav');
     if (btn) {
-      btn.innerHTML = isCollapsed ? '📁 Hiện danh sách dự án' : '📁 Ẩn danh sách dự án';
+      btn.innerHTML = `${icon('panelLeft', 'xs')} <span>${isCollapsed ? 'Hiện danh sách dự án' : 'Ẩn danh sách dự án'}</span>`;
       btn.className = isCollapsed ? 'btn-primary btn-sm' : 'btn-secondary btn-sm';
     }
   };
@@ -1476,12 +1558,99 @@ export async function renderTasks(el, me) {
     openTaskForm(null, users, me, loadBoard, { project, groups, labels, selectedGroupId: groups[0]?.id || '', departments});
   });
 
-  document.addEventListener('task-copied', () => { if (selectedProjectId) loadBoard(); }, { once: false });
+  const abortController = new AbortController();
+  const { signal } = abortController;
+
+  const onDocClick = (e) => {
+    if (!e.target.closest('.project-nav-gear-btn') && !e.target.closest('.project-nav-dropdown')) {
+      el.querySelectorAll('.project-nav-dropdown').forEach(m => m.hidden = true);
+    }
+  };
+  document.addEventListener('click', onDocClick, { signal });
+
+  document.addEventListener('task-copied', () => { if (selectedProjectId) loadBoard(); }, { signal });
   document.addEventListener('task-mentions-read', async () => {
     await refreshUnreadMentionCount();
     renderProjects();
     if (selectedProjectId) await loadBoard();
-  }, { once: false });
+  }, { signal });
+
+  el._cleanup = () => {
+    abortController.abort();
+    if (searchTimer) clearTimeout(searchTimer);
+  };
+
+  function handleTaskEvent(data, topic = '') {
+    if (!data) return;
+    const eventType = topic || data.event || data.type || '';
+    const taskId = Number(data.taskId || data.id || data.task?.id || data.task_id || data.subtask?.task_id || data.comment?.task_id);
+    const projId = data.projectId || data.team_project_id || data.task?.team_project_id;
+
+    // If projects list changed
+    if (eventType === 'project:created' || eventType === 'project:updated' || eventType === 'project:deleted' || eventType === 'projects:changed') {
+      loadProjects();
+      return;
+    }
+
+    // Check if event targets a different project
+    if (projId && selectedProjectId && String(projId) !== String(selectedProjectId)) {
+      refreshUnreadMentionCount().then(() => renderProjects());
+      return;
+    }
+
+    // Surgical DOM updates for cards on the current board
+    if (taskId) {
+      const card = el.querySelector(`.task-card[data-tid="${taskId}"]`);
+      if (eventType.includes('delete')) {
+        if (card) card.remove();
+        tasks = tasks.filter(t => Number(t.id) !== taskId);
+        return;
+      }
+
+      if (eventType.includes('status') || eventType.includes('update')) {
+        const newStatus = data.status || data.task?.status;
+        if (card && newStatus) {
+          card.querySelectorAll('.task-status-action').forEach(b => {
+            const active = b.dataset.status === newStatus;
+            b.classList.toggle('active', active);
+            b.setAttribute('aria-pressed', String(active));
+          });
+          const badgeWrap = card.querySelector('.task-card-meta');
+          if (badgeWrap && data.status) {
+            const statusBadgeEl = badgeWrap.querySelector('.badge');
+            if (statusBadgeEl) {
+              const temp = document.createElement('div');
+              temp.innerHTML = taskStatusBadge(newStatus);
+              if (temp.firstElementChild) statusBadgeEl.replaceWith(temp.firstElementChild);
+            }
+          }
+          const taskInMem = tasks.find(t => Number(t.id) === taskId);
+          if (taskInMem) Object.assign(taskInMem, data.task || { status: newStatus });
+        } else {
+          loadBoard();
+        }
+        return;
+      }
+
+      if (eventType.startsWith('subtask:') || eventType.startsWith('comment:')) {
+        if (card) {
+          loadBoard();
+        }
+        return;
+      }
+    }
+
+    // General fallback: reload board
+    if (selectedProjectId) {
+      loadBoard();
+    }
+  }
+
+  EventBus.bindView(el, 'tasks', (data) => handleTaskEvent(data, 'tasks'));
+  EventBus.bindView(el, 'tasks:*', (data, topic) => handleTaskEvent(data, topic));
+  EventBus.bindView(el, 'task:*', (data, topic) => handleTaskEvent(data, topic));
+  EventBus.bindView(el, 'subtask:*', (data, topic) => handleTaskEvent(data, topic));
+  EventBus.bindView(el, 'comment:*', (data, topic) => handleTaskEvent(data, topic));
 
   await loadProjects();
 }
@@ -1742,7 +1911,7 @@ function openProjectForm(project, users, departments, projects, prefillGroup, on
       const aGrp = groupMemberIds.has(Number(a.id)) ? 1 : 0;
       const bGrp = groupMemberIds.has(Number(b.id)) ? 1 : 0;
       if (aGrp !== bGrp) return bGrp - aGrp;
-      return String(a.full_name || '').localeCompare(String(b.full_name || ''), 'vi');
+      return compareVietnameseNames(a.full_name, b.full_name);
     });
 
     const countEl = document.getElementById('pf-member-count');

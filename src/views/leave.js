@@ -1,5 +1,6 @@
 import { api } from '../api.js';
-import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, paginationHTML, paginateRows, bindPagination } from '../utils.js';
+import { EventBus } from '../event-bus.js';
+import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, paginationHTML, paginateRows, bindPagination, sortVietnameseNames, compareVietnameseNames } from '../utils.js';
 import { icon } from '../icons.js';
 
 const FALLBACK_TYPES = [
@@ -348,16 +349,16 @@ export async function renderLeave(el, me) {
       return true;
     });
 
-    const page = paginateRows(filtered, currentPage, 12);
+    const isReview = currentTab === 'review';
+    const displayRows = isReview ? sortVietnameseNames(filtered, 'employee_name') : filtered;
+    const page = paginateRows(displayRows, currentPage, 12);
     currentPage = page.page;
 
     if (!filtered.length) {
-      const emptyMsg = currentTab === 'review' ? 'Không có đơn nghỉ phép nào của nhân viên' : 'Bạn chưa có đơn nghỉ phép nào phù hợp';
+      const emptyMsg = isReview ? 'Không có đơn nghỉ phép nào của nhân viên' : 'Bạn chưa có đơn nghỉ phép nào phù hợp';
       list.innerHTML = emptyHTML('🏖️', emptyMsg, currentTab === 'mine' ? 'Nhấn “+ Tạo đơn nghỉ” để gửi đơn mới' : 'Thử thay đổi bộ lọc trạng thái hoặc từ khóa tìm kiếm.');
       return;
     }
-
-    const isReview = currentTab === 'review';
 
     list.innerHTML = `
       <div class="leave-table-card">
@@ -576,6 +577,11 @@ export async function renderLeave(el, me) {
       renderLeaveTable();
     });
   }
+
+  el._cleanup = () => {};
+
+  EventBus.bindView(el, 'leave', () => loadLeave());
+  EventBus.bindView(el, 'leave:*', () => loadLeave());
 
   loadLeave();
 }

@@ -1,5 +1,6 @@
 import { handle, handleScheduled } from './server.js';
 import { ChatRoom } from './src/chat-room.js';
+import { AppSyncHub } from './src/sync-hub.js';
 
 function secureAssetResponse(response, pathname) {
   const headers = new Headers(response.headers);
@@ -51,4 +52,4 @@ export default {
   },
 };
 
-export { ChatRoom };
+export { ChatRoom, AppSyncHub };
