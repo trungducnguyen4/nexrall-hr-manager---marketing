@@ -7672,27 +7672,68 @@ const attendanceRateTo =
   }
 
   if (path === '/api/tasks/completion-subscriptions' && request.method === 'GET') {
-    const { results = [] } = await env.DB.prepare(
-      'SELECT * FROM task_completion_subscriptions WHERE user_id = ?'
-    ).bind(me.id).all();
-    return json({ subscriptions: results });
+    try {
+      const { results = [] } = await env.DB.prepare(
+        'SELECT * FROM task_completion_subscriptions WHERE user_id = ?'
+      ).bind(me.id).all();
+      return json({ subscriptions: results });
+    } catch (_) {
+      try {
+        await env.DB.exec(`CREATE TABLE IF NOT EXISTS task_completion_subscriptions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          department TEXT DEFAULT '',
+          project_id INTEGER DEFAULT 0,
+          created_at TEXT DEFAULT (datetime('now','localtime'))
+        )`);
+        await env.DB.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_task_comp_sub ON task_completion_subscriptions(user_id, department, project_id)');
+      } catch (__) {}
+      return json({ subscriptions: [] });
+    }
   }
 
   if (path === '/api/tasks/completion-subscriptions/toggle' && request.method === 'POST') {
     const b = await request.json().catch(() => ({}));
     const department = String(b.department || '').trim();
     const projectId = intOrNull(b.project_id) || 0;
-    const existing = await env.DB.prepare(
-      'SELECT id FROM task_completion_subscriptions WHERE user_id = ? AND department = ? AND project_id = ?'
-    ).bind(me.id, department, projectId).first();
-    if (existing) {
-      await env.DB.prepare('DELETE FROM task_completion_subscriptions WHERE id = ?').bind(existing.id).run();
-      return json({ ok: true, subscribed: false });
-    } else {
-      await env.DB.prepare(
-        'INSERT INTO task_completion_subscriptions (user_id, department, project_id) VALUES (?, ?, ?)'
-      ).bind(me.id, department, projectId).run();
-      return json({ ok: true, subscribed: true });
+    try {
+      const existing = await env.DB.prepare(
+        'SELECT id FROM task_completion_subscriptions WHERE user_id = ? AND department = ? AND project_id = ?'
+      ).bind(me.id, department, projectId).first();
+      if (existing) {
+        await env.DB.prepare('DELETE FROM task_completion_subscriptions WHERE id = ?').bind(existing.id).run();
+        return json({ ok: true, subscribed: false });
+      } else {
+        await env.DB.prepare(
+          'INSERT INTO task_completion_subscriptions (user_id, department, project_id) VALUES (?, ?, ?)'
+        ).bind(me.id, department, projectId).run();
+        return json({ ok: true, subscribed: true });
+      }
+    } catch (_) {
+      try {
+        await env.DB.exec(`CREATE TABLE IF NOT EXISTS task_completion_subscriptions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          department TEXT DEFAULT '',
+          project_id INTEGER DEFAULT 0,
+          created_at TEXT DEFAULT (datetime('now','localtime'))
+        )`);
+        await env.DB.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_task_comp_sub ON task_completion_subscriptions(user_id, department, project_id)');
+        const existing = await env.DB.prepare(
+          'SELECT id FROM task_completion_subscriptions WHERE user_id = ? AND department = ? AND project_id = ?'
+        ).bind(me.id, department, projectId).first();
+        if (existing) {
+          await env.DB.prepare('DELETE FROM task_completion_subscriptions WHERE id = ?').bind(existing.id).run();
+          return json({ ok: true, subscribed: false });
+        } else {
+          await env.DB.prepare(
+            'INSERT INTO task_completion_subscriptions (user_id, department, project_id) VALUES (?, ?, ?)'
+          ).bind(me.id, department, projectId).run();
+          return json({ ok: true, subscribed: true });
+        }
+      } catch (err) {
+        return json({ error: 'Không thể cập nhật cài đặt thông báo' }, 500);
+      }
     }
   }
 

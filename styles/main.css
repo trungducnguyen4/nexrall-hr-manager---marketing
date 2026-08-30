@@ -396,12 +396,17 @@ body.sidebar-collapsed .sidebar-edge-icon-right,
   border-bottom: 1px solid var(--border);
   box-shadow: 0 1px 3px rgba(11,31,58,0.03);
   position: sticky; top: 0; z-index: 10; flex-shrink: 0;
+  contain: layout;
 }
-.header-title { flex: 1; min-width: 0; }
-.header-date { font-size: 11.5px; line-height: 15px; font-weight: 500; color: var(--text-2); }
-.header-clock { font-size: 16px; font-weight: 750; color: var(--text); letter-spacing: -.3px; }
-.avatar-btn { background: none; border: none; cursor: pointer; padding: 2px; border-radius: 50%; }
-.header-alert-button { position:relative; display:grid; width:38px; height:38px; place-items:center; border:1px solid var(--border); border-radius:10px; color:var(--text-2); background:var(--surface); cursor:pointer; transition: all .15s ease; }
+.header-title {
+  flex: 1; min-width: 140px; height: 38px;
+  display: flex; flex-direction: column; justify-content: center;
+}
+.header-date { font-size: 11.5px; line-height: 15px; font-weight: 500; color: var(--text-2); min-height: 15px; white-space: nowrap; }
+.header-clock { font-size: 16px; line-height: 20px; font-weight: 750; color: var(--text); letter-spacing: -.3px; min-height: 20px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.header-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; min-height: 38px; }
+.avatar-btn { background: none; border: none; cursor: pointer; padding: 0; width: 36px; height: 36px; flex: 0 0 36px; display: grid; place-items: center; border-radius: 50%; }
+.header-alert-button { position:relative; display:grid; width:38px; height:38px; flex:0 0 38px; place-items:center; border:1px solid var(--border); border-radius:10px; color:var(--text-2); background:var(--surface); cursor:pointer; transition: all .15s ease; contain: layout style; }
 .header-alert-button:hover,.header-alert-button:focus-visible { color:var(--primary-text); border-color:#efb9ad; outline:none; box-shadow:var(--shadow-glow); background: #FFF5F2; }
 .header-action-count { position:absolute; top:-5px; right:-6px; min-width:18px; height:18px; padding:0 4px; border:2px solid var(--surface); border-radius:9px; color:#fff; background:var(--primary); font-size:9.5px; font-weight:800; line-height:14px; box-shadow: 0 1px 4px rgba(238,77,45,0.4); }
 .header-chat-attention { display:flex; align-items:center; justify-content:flex-end; gap:6px; min-width:0; max-width:570px; }
@@ -411,7 +416,7 @@ body.sidebar-collapsed .sidebar-edge-icon-right,
 .header-attention-chip--soon { border-color:#f3d5a0; background:#fffaf0; color:#9a5b00; }.header-attention-chip--soon .app-icon { color:#bd7600; }
 .header-attention-chip--active { border-color:#f0baab; background:#fff5f2; color:#a43721; }.header-attention-chip--active .app-icon { color:var(--primary); }
 @media (max-width:920px) { .header-chat-attention { max-width:270px; } }
-@media (max-width:640px) { #header { gap:8px; }.header-chat-attention { display:none; }.header-alert-button { flex:0 0 auto; } }
+@media (max-width:640px) { #header { gap:8px; }.header-chat-attention { display:none; }.header-actions { gap:6px; } }
 
 /* ── Content ──────────────────────────────────── */
 #content {
@@ -439,6 +444,7 @@ body.sidebar-collapsed .sidebar-edge-icon-right,
 .card {
   background: var(--surface); border-radius: var(--radius); border: 1px solid var(--border);
   padding: 16px; box-shadow: var(--shadow);
+  contain: layout;
 }
 .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
 .card-title { font-size: 15px; line-height: 22px; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 7px; }
@@ -1479,7 +1485,10 @@ tr:hover td { background: var(--surface-2); }
 @media(max-width:680px){.attendance-gps-toggle{order:3;width:100%;grid-template-columns:34px auto;}.page-header:has(#gps-constraint-control){align-items:flex-start!important;}.page-header:has(#gps-constraint-control)>div:last-child{justify-content:flex-start;}}
 
 /* Tasks workspace: project navigator + Kanban board */
-.task-workspace-shell { display:grid; grid-template-columns:330px minmax(0,1fr); gap:14px; align-items:start; width:100%; }
+.task-workspace-shell {
+  display:grid; grid-template-columns:330px minmax(0,1fr); gap:14px; align-items:start; width:100%;
+  contain: layout; min-height: calc(100vh - var(--header-h) - 40px);
+}
 .task-workspace-shell.project-nav-collapsed { display:block !important; grid-template-columns:1fr !important; gap:0 !important; }
 .task-workspace-shell.project-nav-collapsed .task-project-navigator { display:none !important; }
 .task-workspace-shell.project-nav-collapsed .task-project-board { width:100% !important; max-width:100% !important; display:block !important; }
@@ -3224,9 +3233,79 @@ tr:hover td { background: var(--surface-2); }
   .leave-toolbar {
     flex-direction: column;
     align-items: stretch;
+    gap: 10px;
   }
   .leave-filters-right {
     max-width: 100%;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .leave-filters-right .input-icon-wrap,
+  .leave-filters-right .leave-type-select {
+    width: 100%;
+    min-width: 100%;
+  }
+  .leave-table-card {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+  }
+  .leave-table-wrap {
+    overflow-x: visible;
+  }
+  .leave-table,
+  .leave-table tbody {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0 !important;
+    width: 100% !important;
+  }
+  .leave-table thead {
+    display: none;
+  }
+  .leave-table tbody tr {
+    display: flex;
+    flex-direction: column;
+    padding: 14px 16px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface);
+    box-shadow: 0 1px 3px rgba(11, 31, 58, 0.04);
+    gap: 8px;
+  }
+  .leave-table td {
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    border: none !important;
+    width: 100%;
+  }
+  .leave-user-cell {
+    min-width: 0;
+    width: 100%;
+  }
+  .leave-type-cell {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 6px 0;
+    border-top: 1px dashed var(--divider);
+    border-bottom: 1px dashed var(--divider);
+  }
+  .leave-period-text {
+    font-size: 13px;
+    font-weight: 700;
+  }
+  .leave-status-cell {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    margin-top: 2px;
   }
 }
 
@@ -3252,6 +3331,7 @@ tr:hover td { background: var(--surface-2); }
     flex-shrink: 0;
     transition: width .25s cubic-bezier(.4, 0, .2, 1), min-width .25s cubic-bezier(.4, 0, .2, 1), opacity .2s ease;
   }
+  html.sidebar-collapsed #sidebar,
   #app.sidebar-collapsed #sidebar,
   body.sidebar-collapsed #sidebar,
   .sidebar-collapsed #sidebar {
@@ -4069,23 +4149,59 @@ html.native-private body::after { content: 'NetViet HR'; position: fixed; inset:
   .employee-detail-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }
 @media (max-width:820px) {
-  .employee-page-header { align-items:stretch; flex-direction:column; }
-  .employee-header-actions { width:100%; }.employee-header-actions button { flex:1; }
-  .employee-alert-summary { grid-template-columns:1fr; }.employee-alert-list { grid-template-columns:1fr 1fr; }
-  .employee-toolbar { grid-template-columns:1fr 1fr; }.employee-search { grid-column:1/-1; }.employee-filter-reset { width:100%; }
-  .employee-table-wrap { overflow:visible; border:0; background:transparent; }
-  .employee-data-table,.employee-data-table tbody { display:block; }
+  .employee-page-header { align-items:stretch; flex-direction:column; gap:12px; }
+  .employee-header-actions { width:100%; display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .employee-header-actions button { width:100%; justify-content:center; }
+  .employee-alert-summary { grid-template-columns:1fr; }
+  .employee-alert-list { grid-template-columns:1fr 1fr; }
+  .employee-toolbar { display:flex; flex-direction:column; padding:12px; gap:8px; }
+  .employee-search { width:100%; min-width:100%; }
+  .employee-toolbar select { width:100%; min-width:100%; }
+  .employee-filter-reset { width:100%; justify-content:center; }
+  .employee-table-wrap { overflow:visible; border:0; background:transparent; box-shadow:none; }
+  .employee-data-table,.employee-data-table tbody { display:flex; flex-direction:column; gap:10px; width:100%; }
   .employee-data-table thead { display:none; }
-  .employee-data-table tbody { display:grid; gap:10px; }
-  .employee-data-table tbody tr { display:grid; grid-template-columns:1fr 1fr; gap:0 16px; padding:15px; border:1px solid var(--border); border-radius:13px; background:var(--surface); }
-  .employee-data-table td { display:block; padding:9px 0; border-bottom:1px solid var(--divider); }
-  .employee-data-table td:before { content:attr(data-label); display:block; margin-bottom:5px; color:var(--text-3); font-size:10px; font-weight:700; }
-  .employee-data-table td:first-child { grid-column:1/-1; padding-top:0; }.employee-data-table td:first-child:before,.employee-data-table .employee-row-action { display:none; }
-  .employee-data-table td:nth-last-child(2) { border-bottom:0; }
-  .employee-profile-header { grid-template-columns:1fr; }.employee-profile-actions { grid-row:3; }.employee-profile-actions button { flex:1; }
+  .employee-data-table tbody tr {
+    display:flex;
+    flex-direction:column;
+    padding:14px 16px;
+    border:1px solid var(--border);
+    border-radius:14px;
+    background:var(--surface);
+    box-shadow:0 1px 3px rgba(11, 31, 58, 0.04);
+    gap:8px;
+    position:relative;
+    cursor:pointer;
+  }
+  .employee-data-table td { display:flex; align-items:center; padding:0; border:none!important; }
+  .employee-data-table td:before { display:none!important; }
+  .employee-data-table td:first-child { width:100%; padding-right:85px; }
+  .employee-data-table td[data-label="Loại nhân sự"] {
+    position:absolute;
+    top:14px;
+    right:14px;
+  }
+  .employee-data-table td[data-label="Phòng ban"],
+  .employee-data-table td[data-label="Vị trí"],
+  .employee-data-table td[data-label="Địa điểm làm việc"] {
+    display:inline-flex;
+    font-size:12.5px;
+    color:var(--text-2);
+  }
+  .employee-data-table .employee-row-action {
+    position:absolute;
+    bottom:14px;
+    right:14px;
+    color:var(--primary);
+  }
+  .employee-profile-header { grid-template-columns:1fr; }
+  .employee-profile-actions { grid-row:3; display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .employee-profile-actions button { width:100%; justify-content:center; }
   .employee-profile-status { grid-column:1; }
   .employee-detail-grid { gap:0 18px; }
-  .employee-document-row { grid-template-columns:auto minmax(0,1fr); }.employee-document-actions { grid-column:1/-1; padding-left:55px; }.employee-document-actions button { flex:1; }
+  .employee-document-row { grid-template-columns:auto minmax(0,1fr); }
+  .employee-document-actions { grid-column:1/-1; padding-left:55px; }
+  .employee-document-actions button { flex:1; }
   .emp-hero-body { flex-direction:column; align-items:stretch; gap:16px; padding:0 20px 20px; }
   .emp-hero-right { align-items:stretch; padding-top:14px; border-top:1px solid var(--divider); }
   .emp-completion-widget { width:100%; min-width:0; }
@@ -4093,30 +4209,41 @@ html.native-private body::after { content: 'NetViet HR'; position: fixed; inset:
   .emp-action-btn { flex:1; justify-content:center; }
 }
 @media (max-width:560px) {
-  #content { padding:14px; }
-  .employee-page-header h1,.employee-profile-header h1 { font-size:23px; }
-  .employee-header-actions,.employee-profile-actions { flex-direction:column; }.employee-header-actions button,.employee-profile-actions button { width:100%; }
-  .employee-alert-list { grid-template-columns:1fr; }
-  .employee-toolbar { grid-template-columns:1fr; }.employee-search { grid-column:1; }
-  .employee-data-table tbody tr { grid-template-columns:1fr; }.employee-data-table td:first-child { grid-column:1; }.employee-data-table td { border-bottom:1px solid var(--divider)!important; }.employee-data-table td:nth-last-child(2) { border-bottom:0!important; }
-  .employee-pagination { align-items:stretch; flex-direction:column; }.employee-pagination>div button { flex:1; }
-  .employee-profile-header,#employee-profile-content { padding:16px; border-radius:13px; }
-  .employee-profile-identity { align-items:flex-start; }.employee-profile-avatar .avatar-lg,.employee-profile-avatar .employee-avatar-wrap { width:58px; height:58px; font-size:17px; }
-  .employee-profile-meta { align-items:flex-start; flex-direction:column; gap:5px; }
+  #content { padding:12px; }
+  .employee-page-header h1,.employee-profile-header h1 { font-size:20px; }
+  .employee-toolbar { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .employee-search { grid-column:1/-1; }
+  .employee-toolbar select { height:38px; font-size:12px; }
+  .employee-filter-reset { grid-column:1/-1; height:36px; font-size:12px; }
+  .employee-pagination { align-items:stretch; flex-direction:column; gap:8px; }
+  .employee-pagination>div button { flex:1; }
+  .employee-profile-header,#employee-profile-content { padding:14px; border-radius:14px; }
+  .employee-profile-identity { align-items:flex-start; }
+  .employee-profile-avatar .avatar-lg,.employee-profile-avatar .employee-avatar-wrap { width:52px; height:52px; font-size:16px; }
+  .employee-profile-meta { align-items:flex-start; flex-direction:column; gap:4px; }
   .profile-mobile-break { display:block; }
-  .employee-profile-section-head { align-items:stretch; flex-direction:column; gap:12px; }.employee-profile-section-head button { width:100%; justify-content:center; }
-  .employee-detail-grid { grid-template-columns:1fr; }.employee-detail-item { padding:14px 0; }
-  .employee-document-actions { padding-left:0; }.employee-document-actions button { flex:1 1 calc(50% - 6px); }
-  .employee-timeline:before { left:7px; }.employee-timeline li { grid-template-columns:1fr; gap:7px; padding:14px 0 14px 28px; }.employee-timeline li:before { left:3px; }.employee-timeline-date { text-align:left; }
-  .employee-audit-list article { grid-template-columns:1fr; gap:10px; }.employee-audit-change { grid-template-columns:1fr; }.employee-audit-change>.app-icon { transform:rotate(90deg); margin:auto; }
-  .employee-edit-grid { grid-template-columns:1fr; }.employee-file-field { grid-column:1; }
+  .employee-profile-section-head { align-items:stretch; flex-direction:column; gap:10px; }
+  .employee-profile-section-head button { width:100%; justify-content:center; }
+  .employee-detail-grid { grid-template-columns:1fr; }
+  .employee-detail-item { padding:10px 0; }
+  .employee-document-actions { padding-left:0; }
+  .employee-document-actions button { flex:1 1 calc(50% - 6px); }
+  .employee-timeline:before { left:7px; }
+  .employee-timeline li { grid-template-columns:1fr; gap:7px; padding:12px 0 12px 26px; }
+  .employee-timeline li:before { left:3px; }
+  .employee-timeline-date { text-align:left; }
+  .employee-audit-list article { grid-template-columns:1fr; gap:8px; }
+  .employee-audit-change { grid-template-columns:1fr; }
+  .employee-audit-change>.app-icon { transform:rotate(90deg); margin:auto; }
+  .employee-edit-grid { grid-template-columns:1fr; }
+  .employee-file-field { grid-column:1; }
   .modal.modal--employee-editor,.modal.modal--employee-create { width:100vw; max-width:none; max-height:100dvh; border-radius:0; }
-  .emp-hero-left { flex-direction:column; align-items:flex-start; gap:12px; }
-  .emp-hero-avatar-wrap .avatar-lg, .emp-hero-avatar-wrap .avatar-xl, .emp-hero-avatar-wrap .employee-avatar-wrap { width:64px; height:64px; font-size:20px; border-radius:16px; }
-  .emp-hero-details { padding-top:6px; }
-  .emp-hero-fullname { font-size:20px; }
-  .emp-field-grid { grid-template-columns:1fr; gap:10px; }
-  .emp-info-card-header { flex-direction:column; align-items:flex-start; gap:12px; }
+  .emp-hero-left { flex-direction:column; align-items:flex-start; gap:10px; }
+  .emp-hero-avatar-wrap .avatar-lg, .emp-hero-avatar-wrap .avatar-xl, .emp-hero-avatar-wrap .employee-avatar-wrap { width:58px; height:58px; font-size:18px; border-radius:14px; }
+  .emp-hero-details { padding-top:4px; }
+  .emp-hero-fullname { font-size:18px; }
+  .emp-field-grid { grid-template-columns:1fr; gap:8px; }
+  .emp-info-card-header { flex-direction:column; align-items:flex-start; gap:10px; }
   .emp-info-card-action { width:100%; justify-content:center; }
   .emp-action-btn { flex:1 1 calc(50% - 6px); }
 }
@@ -5180,10 +5307,10 @@ html.native-private body::after { content: 'NetViet HR'; position: fixed; inset:
 #payroll-table .payroll-table tbody tr:nth-child(even) td { background: #FAFBFD; }
 #payroll-table .payroll-table tbody tr:hover td { background: #FFF7F4; }
 #payroll-table .payroll-row { cursor: pointer; transition: background 0.15s ease; }
-#payroll-table .payroll-row:focus-visible { outline: 3px solid rgba(238, 77, 45, 0.25); outline-offset: -3px; }
-
-#payroll-table .payroll-table .payroll-row { display: table-row; }
-#payroll-table .payroll-table .payroll-row td { display: table-cell; }
+@media (min-width: 768px) {
+  #payroll-table .payroll-table .payroll-row { display: table-row; }
+  #payroll-table .payroll-table .payroll-row td { display: table-cell; }
+}
 
 /* Employee cell in table */
 #payroll-table .payroll-employee {
@@ -5277,7 +5404,7 @@ html.native-private body::after { content: 'NetViet HR'; position: fixed; inset:
   border: 1px solid #E2E8F0;
 }
 
-/* Mobile: switch to cards */
+/* Mobile: switch to modern cards */
 @media (max-width: 767px) {
   .payroll-metrics-grid {
     grid-template-columns: 1fr;
@@ -5285,53 +5412,113 @@ html.native-private body::after { content: 'NetViet HR'; position: fixed; inset:
   .payroll-adjustments-kpis {
     grid-template-columns: 1fr;
   }
-  #payroll-table .payroll-table-wrap { border:0; background:transparent; }
+  #payroll-table .payroll-table-wrap { border: 0; background: transparent; box-shadow: none; overflow-x: visible; }
   #payroll-table .payroll-table,
-  #payroll-table .payroll-table tbody { display:block; min-width:0; width:100%; }
-  #payroll-table .payroll-table thead { display:none; }
-  #payroll-table .payroll-table tbody { display:grid; gap:10px; }
+  #payroll-table .payroll-table tbody { display: flex !important; flex-direction: column !important; gap: 10px; min-width: 0 !important; width: 100% !important; }
+  #payroll-table .payroll-table thead { display: none !important; }
+  #payroll-table .payroll-table .payroll-row,
   #payroll-table .payroll-table tbody tr {
-    display:grid;
-    grid-template-columns:1fr 1fr;
-    gap:10px 16px;
-    padding:15px;
-    border:1px solid var(--border);
-    border-radius:13px;
-    background:var(--surface);
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 8px;
+    padding: 14px 16px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface);
+    box-shadow: 0 1px 3px rgba(11, 31, 58, 0.04);
+    position: relative;
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  #payroll-table .payroll-table tbody tr:active {
+    transform: scale(0.99);
   }
   #payroll-table .payroll-table th,
   #payroll-table .payroll-table td,
-  #payroll-table .payroll-table th:first-child,
-  #payroll-table .payroll-table td:first-child,
-  #payroll-table .payroll-table th:last-child,
-  #payroll-table .payroll-table td:last-child {
-    position:static;
-    box-shadow:none;
-    z-index:auto;
-  }
-  #payroll-table .payroll-table td {
-    display:block;
-    padding:0;
-    height:auto;
-    border:0;
-    background:transparent !important;
+  #payroll-table .payroll-table .payroll-row td {
+    display: flex !important;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0;
+    height: auto;
+    border: 0;
+    background: transparent !important;
+    font-size: 13px;
+    width: 100%;
+    position: static;
+    box-shadow: none;
+    z-index: auto;
   }
   #payroll-table .payroll-table td:before {
-    content:attr(data-label);
-    display:block;
-    margin-bottom:5px;
-    color:var(--text-3);
-    font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.4px;
+    content: attr(data-label);
+    display: inline-block;
+    color: var(--text-3);
+    font-size: 12px;
+    font-weight: 600;
   }
-  #payroll-table .payroll-col-employee { grid-column:1/-1; }
-  #payroll-table .payroll-col-employee:before,
-  #payroll-table .payroll-col-actions:before { display:none; }
-  #payroll-table .payroll-col-actions { grid-column:1/-1; text-align:left; }
-  #payroll-table .payroll-col-money,
-  #payroll-table .payroll-col-dept { text-align:left; }
-  #payroll-table .payroll-employee { align-items:flex-start; }
+  #payroll-table .payroll-col-employee {
+    display: flex !important;
+    align-items: flex-start !important;
+    justify-content: flex-start !important;
+    padding-bottom: 8px !important;
+    padding-right: 90px !important;
+    border-bottom: 1px dashed var(--divider) !important;
+    width: 100%;
+  }
+  #payroll-table .payroll-col-employee:before {
+    display: none !important;
+  }
+  #payroll-table .payroll-employee {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  #payroll-table .payroll-employee-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  #payroll-table .payroll-employee-name {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text);
+    white-space: normal;
+  }
+  #payroll-table .payroll-badge {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    margin: 0;
+  }
+  #payroll-table .payroll-col-dept,
+  #payroll-table .payroll-col-money {
+    display: flex !important;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    font-size: 13px;
+    text-align: right;
+  }
+  #payroll-table .payroll-col-net {
+    padding-top: 8px !important;
+    margin-top: 2px;
+    border-top: 1px dashed var(--divider) !important;
+    font-size: 15px !important;
+    font-weight: 800;
+    color: var(--primary);
+  }
+  #payroll-table .payroll-col-net:before {
+    font-weight: 700;
+    color: var(--text);
+    font-size: 12.5px;
+  }
   #payroll-table .payroll-table tbody tr:nth-child(even) td,
-  #payroll-table .payroll-table tbody tr:hover td { background:transparent !important; }
+  #payroll-table .payroll-table tbody tr:hover td { background: transparent !important; }
 }
 
 /* ── Payroll Edit Modal ──────────────────────── */
@@ -6853,6 +7040,53 @@ html.native-private body::after { content: 'NetViet HR'; position: fixed; inset:
   border-radius: 8px;
   text-decoration: none;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+@media (max-width: 640px) {
+  .hr-panel-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .hr-panel-head > div:last-child {
+    width: 100%;
+    display: flex;
+    justify-content: flex-end;
+  }
+  .hr-panel-head > div:last-child > span {
+    display: none;
+  }
+  .hr-panel-title {
+    font-size: 14.5px;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .hr-action-list {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .hr-action-item {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    padding: 14px;
+    gap: 12px;
+  }
+  .hr-action-item .hr-action-title {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .hr-action-btn {
+    width: 100%;
+    justify-content: center;
+    padding: 10px 14px;
+    font-size: 13px;
+    font-weight: 650;
+    box-sizing: border-box;
+  }
 }
 
 /* Department & Salary Comparison Table */
