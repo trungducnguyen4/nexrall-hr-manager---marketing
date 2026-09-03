@@ -24,13 +24,13 @@ async function getView(name) {
     else if (name === 'taskpanel')   _viewModules[name] = await import('./views/taskpanel.js?v=20260826-taskpanel-mention-fix-v10');
     else if (name === 'departments') _viewModules[name] = await import('./views/departments.js');
     else if (name === 'recruitment') _viewModules[name] = await import('./views/recruitment.js');
-    else if (name === 'payroll')     _viewModules[name] = await import('./views/payroll.js?v=20260826-dumbbell-and-donut-v14');
+    else if (name === 'payroll')     _viewModules[name] = await import('./views/payroll.js?v=20260903-fix-v1');
     else if (name === 'leave')       _viewModules[name] = await import('./views/leave.js?v=20260826-leave-annual-policy-v6');
     else if (name === 'campaigns')   _viewModules[name] = await import('./views/campaigns.js?v=20260811-hr-access-v1');
-    else if (name === 'evaluation')  _viewModules[name] = await import('./views/evaluation.js?v=20260811-penalty-policy-v1');
+    else if (name === 'evaluation')  _viewModules[name] = await import('./views/evaluation.js?v=20260903-fix-v1');
     else if (name === 'kpis')        _viewModules[name] = await import('./views/kpis.js?v=20260730-manual-kpi');
     else if (name === 'notifications') _viewModules[name] = await import('./views/notifications.js?v=20260826-notification-tabs-count-v15');
-    else if (name === 'assets')      _viewModules[name] = await import('./views/assets.js?v=20260804-project-handover-v1');
+    else if (name === 'assets')      _viewModules[name] = await import('./views/assets.js?v=20260903-fix-v1');
     else if (name === 'db-admin')    _viewModules[name] = await import('./views/dbadmin.js');
     else if (name === 'chat')        _viewModules[name] = await import('./views/chat.js?v=20260826-audio-notification-chimes-v20');
   }
