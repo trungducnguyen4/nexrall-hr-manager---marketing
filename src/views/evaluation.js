@@ -157,10 +157,13 @@ export async function renderEvaluation(el, me) {
     <div id="eval-workflow"></div>
   `;
 
+  el.innerHTML = policyCardHtml;
+
   // Collapse/expand toggle
   const toggleBtn = document.getElementById('eval-toggle');
   const bodyEl = document.getElementById('eval-policy-body');
-  toggleBtn.addEventListener('click', () => {
+  toggleBtn?.addEventListener('click', () => {
+    if (!bodyEl) return;
     const collapsed = bodyEl.classList.toggle('hidden');
     toggleBtn.textContent = collapsed ? 'Mở rộng' : 'Thu gọn';
     toggleBtn.setAttribute('aria-expanded', String(!collapsed));

@@ -840,9 +840,6 @@ export async function renderPayroll(el, me) {
               </div>
             </div>
           `;
-          renderDumbbellChart(departmentStats);
-        } else {
-          chartsEl.innerHTML = '';
         }
       }
 

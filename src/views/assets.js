@@ -216,8 +216,6 @@ function openAssetDetail(asset, me, onRefresh = noop) {
   const canReveal = isOwner || isMentor || isHr;
 
   openModal(asset.asset_name, `
-
-  openModal(asset.asset_name, `
     <div class="detail-grid">
       <div class="detail-item"><div class="detail-label">Loại</div><div class="detail-val">${esc(asset.asset_type || '—')}</div></div>
       <div class="detail-item"><div class="detail-label">Nền tảng</div><div class="detail-val">${esc(asset.platform || '—')}</div></div>
