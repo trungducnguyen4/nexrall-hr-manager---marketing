@@ -7737,6 +7737,34 @@ const attendanceRateTo =
     }
   }
 
+  if (path === '/api/tasks/completion-subscriptions/save' && request.method === 'POST') {
+    const b = await request.json().catch(() => ({}));
+    const projectIds = Array.isArray(b.project_ids) ? b.project_ids.map(Number).filter(id => id > 0) : [];
+    const depts = Array.isArray(b.departments) ? b.departments.map(d => String(d || '').trim()).filter(Boolean) : [];
+    try {
+      await env.DB.exec(`CREATE TABLE IF NOT EXISTS task_completion_subscriptions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        department TEXT DEFAULT '',
+        project_id INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now','localtime'))
+      )`);
+      await env.DB.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_task_comp_sub ON task_completion_subscriptions(user_id, department, project_id)');
+
+      await env.DB.prepare('DELETE FROM task_completion_subscriptions WHERE user_id = ?').bind(me.id).run();
+
+      for (const dept of depts) {
+        await env.DB.prepare('INSERT OR IGNORE INTO task_completion_subscriptions (user_id, department, project_id) VALUES (?, ?, 0)').bind(me.id, dept).run();
+      }
+      for (const pid of projectIds) {
+        await env.DB.prepare('INSERT OR IGNORE INTO task_completion_subscriptions (user_id, department, project_id) VALUES (?, "", ?)').bind(me.id, pid).run();
+      }
+      return json({ ok: true, count: projectIds.length + depts.length });
+    } catch (err) {
+      return json({ error: err.message || 'Không thể lưu cài đặt thông báo' }, 500);
+    }
+  }
+
   if (path === '/api/tasks' && request.method === 'GET') {
     const date = url.searchParams.get('date');
     const assignee = url.searchParams.get('assignee');

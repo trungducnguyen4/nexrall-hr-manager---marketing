@@ -78,7 +78,7 @@
         <label>Mật khẩu</label>
         <div class="pw-wrap">
           <input id="login-pw" type="password" placeholder="Nhập mật khẩu" autocomplete="new-password"/>
-          <button type="button" id="pw-eye" class="pw-eye-btn" aria-label="Hiện mật khẩu">👁</button>
+          <button type="button" id="pw-eye" class="pw-eye-btn" aria-label="Hiện mật khẩu"><span data-icon="eye" data-icon-size="sm"></span></button>
         </div>
       </div>
       <div id="login-error" class="login-error hidden"></div>
@@ -100,7 +100,7 @@
         <img class="brand-logo-img" src="https://pub-84c3902526ad4c82b488275b43b39e3a.r2.dev/agent-assets/c2523c17-d234-4f27-8357-3fa41ad984f6/b3e0a752-24e6-4465-a2e3-f6f6286c520e.jpg" alt="NetViet HR"/>
         <div class="brand-sub">Marketing Pro</div>
       </div>
-      <button class="sidebar-close" id="sidebar-close" onclick="window.closeMobileSidebar?.(event)" title="Đóng menu">✕</button>
+      <button class="sidebar-close" id="sidebar-close" onclick="window.closeMobileSidebar?.(event)" title="Đóng menu" aria-label="Đóng menu"><span data-icon="x" data-icon-size="sm"></span></button>
     </div>
 
     <a id="sidebar-profile-link" class="sidebar-profile" href="#/users" aria-label="Mở hồ sơ cá nhân">
@@ -204,7 +204,7 @@
 
     <!-- Header -->
     <header id="header">
-      <button id="btn-menu" class="btn-icon" onclick="window.toggleSidebar(event)" aria-label="Ẩn / Hiện menu" title="Ẩn / Hiện menu (Ctrl + B)">☰</button>
+      <button id="btn-menu" class="btn-icon" onclick="window.toggleSidebar(event)" aria-label="Ẩn / Hiện menu" title="Ẩn / Hiện menu (Ctrl + B)"><span data-icon="menu" data-icon-size="md"></span></button>
       <div class="header-title">
         <div id="header-date" class="header-date"></div>
         <div id="header-clock" class="header-clock"></div>
@@ -295,7 +295,7 @@
   <div id="modal" class="modal" role="dialog" aria-modal="true">
     <div class="modal-header">
       <h3 id="modal-title">—</h3>
-      <button id="modal-close" class="btn-icon" aria-label="Đóng">✕</button>
+      <button id="modal-close" class="btn-icon" aria-label="Đóng"><span data-icon="x" data-icon-size="sm"></span></button>
     </div>
     <div id="modal-body" class="modal-body"></div>
     <div id="modal-footer" class="modal-footer"></div>

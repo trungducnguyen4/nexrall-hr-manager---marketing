@@ -276,7 +276,7 @@ export async function renderAttendance(el, me, route = {}) {
       const acc = mine.checkin_accuracy_meters != null ? ` · Độ chính xác GPS ±${Math.round(Number(mine.checkin_accuracy_meters))} m` : '';
       const inRange = mine.inside_geofence !== false;
       const flag = !inRange && mine.requires_location_review ? ' · cần xem xét' : '';
-      statusEl.innerHTML = `<b>${inRange ? '🔵' : '🔴'} Vị trí check-in của bạn</b>: ghi nhận lúc ${esc(mine.checkin_time || '—')} · khoảng cách ${Math.round(Number(mine.distance_m))} m · ${inRange ? 'Trong phạm vi' : 'Ngoài phạm vi'}${flag}${acc}`;
+      statusEl.innerHTML = `<b>${icon(inRange ? 'circleCheck' : 'circleAlert', 'xs')} Vị trí check-in của bạn</b>: ghi nhận lúc ${esc(mine.checkin_time || '—')} · khoảng cách ${Math.round(Number(mine.distance_m))} m · ${inRange ? 'Trong phạm vi' : 'Ngoài phạm vi'}${flag}${acc}`;
     } else if (data?.office) {
       statusEl.textContent = 'Bạn chưa có điểm check-in GPS trong ngày đang xem. GPS: Không có dữ liệu.';
     }
@@ -358,23 +358,31 @@ export async function renderAttendance(el, me, route = {}) {
         ? 'Chưa ghi nhận đi trễ. Bạn được miễn tối đa 2 lần/tháng.'
         : lateCount <= 2
           ? `Lần thứ ${lateCount}; còn miễn ${Number(data.late_free_remaining || 0)} lần trong tháng.`
-          : `Lần thứ ${lateCount}; ${Number(data.late_penalty_count || 0)} lần vượt mức, đề xuất ${Number(data.late_penalty_amount || 0).toLocaleString('vi-VN')}đ sau xác nhận HCNS.`;
+          : `Đã vượt định mức miễn (${lateCount} lần). Từ lần 3, mỗi lần trừ 50.000đ vào thu nhập.`;
       const missingDetail = missingCount === 0
-        ? 'Chưa có vi phạm đã chốt. Ngày hôm nay chưa được tính.'
-        : `${missingCount} lần đã chốt qua ngày kế tiếp; đề xuất ${Number(data.missing_penalty_amount || 0).toLocaleString('vi-VN')}đ (50.000đ/lần) sau xác nhận HCNS.`;
-      target.innerHTML =
-        complianceTile('Đi trễ', lateCount ? `Lần thứ ${lateCount}` : '0 lần', lateDetail, lateCount > 2 ? 'rgba(198,47,47,.27)' : 'rgba(255,255,255,.12)') +
-        complianceTile('Quên check-in/out', `${missingCount} lần`, missingDetail, missingCount ? 'rgba(198,47,47,.27)' : 'rgba(255,255,255,.12)');
+        ? 'Không có lỗi quên check in/out. Mỗi tháng được miễn 1 lần giải trình.'
+        : missingCount === 1
+          ? 'Đã dùng 1 lần giải trình miễn trừ trong tháng.'
+          : `Phát sinh ${missingCount} lần lỗi check in/out. Từ lần 2 trừ 50.000đ/lần.`;
+      const penaltyTotal = Number(data.penalty_total || 0);
+      const penaltyDetail = penaltyTotal > 0
+        ? `Dự kiến giảm trừ: ${penaltyTotal.toLocaleString('vi-VN')} đ (sẽ trừ vào kỳ lương ${esc(data.period_month || closingMonth)}).`
+        : 'Chưa phát sinh giảm trừ chế tài trong kỳ.';
+      target.innerHTML = [
+        complianceTile('Đi trễ tháng', `${lateCount} lần`, lateDetail, lateCount > 2 ? 'rgba(239,68,68,.24)' : 'rgba(255,255,255,.12)'),
+        complianceTile('Quên check in/out', `${missingCount} lần`, missingDetail, missingCount > 1 ? 'rgba(239,68,68,.24)' : 'rgba(255,255,255,.12)'),
+        complianceTile('Giảm trừ dự kiến', `${penaltyTotal.toLocaleString('vi-VN')} đ`, penaltyDetail, penaltyTotal > 0 ? 'rgba(239,68,68,.28)' : 'rgba(255,255,255,.12)'),
+      ].join('');
     } catch (_) {
-      target.innerHTML = complianceTile('Tuân thủ tháng này', 'Chưa tải được', 'Vui lòng tải lại để xem số liệu chế tài.');
+      target.innerHTML = complianceTile('Tuân thủ tháng này', '—', 'Không tải được dữ liệu tuân thủ');
     }
   }
 
-  function lateEarlyLine(rec) {
-    const parts = [];
-    if (rec.late_minutes > 0) parts.push(`<span style="color:#FFB88C">⏰ Trễ ${rec.late_minutes} phút</span>`);
-    if (rec.early_minutes > 0) parts.push(`<span style="color:#FFD08A">🏃 Về sớm ${rec.early_minutes} phút</span>`);
-    return parts.length ? `<div style="font-size:12px;margin-top:4px;">${parts.join(' · ')}</div>` : '';
+  function lateEarlyLine(r) {
+    const bits = [];
+    if (r.late_minutes > 0) bits.push(`<span style="color:#d97706">${icon('clock3', 'xs')} Đi trễ ${r.late_minutes} phút</span>`);
+    if (r.early_minutes > 0) bits.push(`<span style="color:#f59e0b">${icon('clock3', 'xs')} Về sớm ${r.early_minutes} phút</span>`);
+    return bits.length ? `<div style="font-size:12px;margin-top:2px;">${bits.join(' · ')}</div>` : '';
   }
 
   function renderClockState() {
@@ -389,14 +397,14 @@ export async function renderAttendance(el, me, route = {}) {
 
   if (!todayRecord || !todayRecord.registered) {
     // Chưa đăng ký: hiện form đăng ký + nút "Đăng ký & Check In"
-    statusLine.innerHTML = `<span class="badge badge-gray" style="font-size:12px;">📝 Chưa đăng ký hôm nay</span>`;
+    statusLine.innerHTML = `<span class="badge badge-gray" style="font-size:12px;">${icon('fileText', 'xs')} Chưa đăng ký hôm nay</span>`;
     btnOut.disabled = true;
     noteWrap.style.display = 'none';
     regWrap.style.display = 'block';
   } else if (todayRecord.checkin_time && todayRecord.checkout_time) {
     // Đã check-out: khóa tất cả
     statusLine.innerHTML = `
-      <span class="badge badge-success" style="font-size:12px;">✅ Đã hoàn thành</span>
+      <span class="badge badge-success" style="font-size:12px;">${icon('circleCheck', 'xs')} Đã hoàn thành</span>
       <span style="font-size:12px;opacity:.8">${todayRecord.checkin_time} → ${todayRecord.checkout_time} (${(todayRecord.work_hours||0).toFixed(1)}h)</span>
       ${infoLine}${lateEarlyLine(todayRecord)}`;
     btnOut.disabled = true;
@@ -405,7 +413,7 @@ export async function renderAttendance(el, me, route = {}) {
   } else if (todayRecord.checkin_time) {
     // Đã check-in: mở check-out
     statusLine.innerHTML = `
-      <span class="badge badge-warning" style="font-size:12px;">🔄 Đang làm</span>
+      <span class="badge badge-warning" style="font-size:12px;">${icon('clock3', 'xs')} Đang làm</span>
       <span style="font-size:12px;opacity:.8">Vào lúc ${todayRecord.checkin_time}</span>
       ${infoLine}${lateEarlyLine(todayRecord)}`;
     btnOut.disabled = false;
@@ -445,7 +453,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
   const workTypeLabel = WORK_TYPE_LABEL[regWorkType] || regWorkType;
   const actionLabel = needsRegistration ? 'Đăng ký & Check In' : 'Check In';
   const confirmMsg = needsRegistration
-    ? `Xác nhận ${actionLabel}?\n\n📌 Hình thức: ${workTypeLabel}\n🕐 Ca làm: ${shiftLabel}`
+    ? `Xác nhận ${actionLabel}?\n\nHình thức: ${workTypeLabel}\nCa làm: ${shiftLabel}`
     : `Xác nhận Check In lúc này?`;
   if (!confirm(confirmMsg)) return;
 
@@ -472,7 +480,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
     } else if (result.geofence_status === 'outside') {
       const dist = Math.round(Number(result.distance_meters ?? gf?.location?.distance_meters) || 0);
       const lim = Math.round(Number(gf?.location?.radius_meters) || 0);
-      toast(`Check-in đã được ghi nhận · ⚠ Bạn đang ngoài phạm vi ${gf?.location?.name || 'văn phòng'} — Khoảng cách: ${dist} m · Bán kính cho phép: ${lim} m — Lượt chấm công này sẽ được gửi để quản trị viên xem xét.`, 'warning', 6500);
+      toast(`Check-in đã được ghi nhận · Bạn đang ngoài phạm vi ${gf?.location?.name || 'văn phòng'} — Khoảng cách: ${dist} m · Bán kính cho phép: ${lim} m — Lượt chấm công này sẽ được gửi để quản trị viên xem xét.`, 'warning', 6500);
     } else if (result.requires_location_review) {
       toast(`Check-in đã được ghi nhận · Vị trí đang ở sát biên hoặc độ chính xác GPS chưa đủ — Lượt chấm công này sẽ được gửi để quản trị viên xem xét.`, 'warning', 6500);
     } else {
@@ -532,14 +540,14 @@ document.getElementById('btn-register').addEventListener('click', async () => {
         const canDecide = canManageAttendance && form.status === 'pending';
         const canSubmit = Number(form.user_id) === Number(me.id) && form.status === 'draft';
         return `<tr><td><b>${esc(form.full_name)}</b><br><small>${esc(form.employee_code || '')}</small></td><td style="min-width:260px">${detail}</td><td>${minutes}</td><td>${formStatus(form.status)}${form.review_note ? `<br><small>${esc(form.review_note)}</small>` : ''}</td><td>${canDecide ? `<button class="btn-secondary btn-sm ot-form-decide" data-id="${form.id}">Duyệt</button>` : ''}${canSubmit ? `<button class="btn-primary btn-sm ot-form-submit" data-id="${form.id}">Gửi</button>` : ''}${form.reviewer_name ? `<small>${esc(form.reviewer_name)}</small>` : ''}</td></tr>`;
-      }).join('')}</tbody></table></div>${paginationHTML(pageData)}` : emptyHTML('📝', 'Chưa có form làm thêm giờ trong kỳ này');
+      }).join('')}</tbody></table></div>${paginationHTML(pageData)}` : emptyHTML('fileText', 'Chưa có form làm thêm giờ trong kỳ này');
       bindPagination(list, page => { otFormPage = page; loadOvertimeForms(); });
       list.querySelectorAll('.ot-form-decide').forEach(button => button.addEventListener('click', () => openOvertimeFormDecision(Number(button.dataset.id))));
       list.querySelectorAll('.ot-form-submit').forEach(button => button.addEventListener('click', async () => {
         try { await api.submitOvertimeForm(button.dataset.id); toast('Đã gửi form OT chờ duyệt', 'success'); loadOvertimeForms(); }
         catch (error) { toast(error.message, 'error'); }
       }));
-    } catch (error) { list.innerHTML = emptyHTML('⚠️', error.message || 'Không thể tải form OT'); }
+    } catch (error) { list.innerHTML = emptyHTML('triangleAlert', error.message || 'Không thể tải form OT'); }
   }
 
   function openOvertimeFormCreator() {
@@ -644,9 +652,9 @@ document.getElementById('btn-register').addEventListener('click', async () => {
       const month = document.getElementById('att-month-filter')?.value || closingMonth;
       const status = document.getElementById('ot-status-filter')?.value || '';
       const { overtime_requests: rows = [] } = await api.getOvertimeRequests({ month, status });
-      list.innerHTML = rows.length ? `<div class="table-wrap"><table><thead><tr><th>Nhân viên</th><th>Ngày</th><th>Checkout / hết ca</th><th>Đề nghị</th><th>Lý do</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>${rows.map(r => `<tr><td><b>${esc(r.full_name)}</b><br><small>${esc(r.employee_code || '')}</small></td><td>${esc(r.work_date)}</td><td>${esc(r.checkout_time)} / ${esc(r.shift_end_time)}</td><td>${r.requested_minutes} phút${r.approved_minutes != null ? `<br><small>Duyệt: ${r.approved_minutes} phút</small>` : ''}</td><td style="max-width:220px;">${esc(r.reason)}</td><td>${r.status === 'pending' ? '<span class="badge badge-warning">Chờ duyệt</span>' : r.status === 'approved' ? '<span class="badge badge-success">Đã duyệt</span>' : '<span class="badge badge-danger">Từ chối</span>'}${r.status === 'rejected' && r.review_note ? `<br><small style="color:var(--danger)">Lý do: ${esc(r.review_note)}</small>` : ''}</td><td>${r.status === 'pending' ? `<button class="btn-secondary btn-sm ot-decide" data-id="${r.id}" data-minutes="${r.requested_minutes}" data-action="approve">Duyệt</button> <button class="btn-danger btn-sm ot-decide" data-id="${r.id}" data-action="reject">Từ chối</button>` : esc(r.reviewer_name || '—')}</td></tr>`).join('')}</tbody></table></div>` : emptyHTML('⏱️', 'Không có yêu cầu làm thêm giờ');
+      list.innerHTML = rows.length ? `<div class="table-wrap"><table><thead><tr><th>Nhân viên</th><th>Ngày</th><th>Checkout / hết ca</th><th>Đề nghị</th><th>Lý do</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>${rows.map(r => `<tr><td><b>${esc(r.full_name)}</b><br><small>${esc(r.employee_code || '')}</small></td><td>${esc(r.work_date)}</td><td>${esc(r.checkout_time)} / ${esc(r.shift_end_time)}</td><td>${r.requested_minutes} phút${r.approved_minutes != null ? `<br><small>Duyệt: ${r.approved_minutes} phút</small>` : ''}</td><td style="max-width:220px;">${esc(r.reason)}</td><td>${r.status === 'pending' ? '<span class="badge badge-warning">Chờ duyệt</span>' : r.status === 'approved' ? '<span class="badge badge-success">Đã duyệt</span>' : '<span class="badge badge-danger">Từ chối</span>'}${r.status === 'rejected' && r.review_note ? `<br><small style="color:var(--danger)">Lý do: ${esc(r.review_note)}</small>` : ''}</td><td>${r.status === 'pending' ? `<button class="btn-secondary btn-sm ot-decide" data-id="${r.id}" data-minutes="${r.requested_minutes}" data-action="approve">Duyệt</button> <button class="btn-danger btn-sm ot-decide" data-id="${r.id}" data-action="reject">Từ chối</button>` : esc(r.reviewer_name || '—')}</td></tr>`).join('')}</tbody></table></div>` : emptyHTML('clock3', 'Không có yêu cầu làm thêm giờ');
       list.querySelectorAll('.ot-decide').forEach(btn => btn.addEventListener('click', () => openOvertimeDecision(btn.dataset)));
-    } catch (e) { list.innerHTML = emptyHTML('⚠️', e.message || 'Không thể tải yêu cầu OT'); }
+    } catch (e) { list.innerHTML = emptyHTML('triangleAlert', e.message || 'Không thể tải yêu cầu OT'); }
   }
 
   function openOvertimeDecision(data) {
@@ -677,7 +685,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
 
   function statusWithMinutes(a) {
     const awaitingCheckin = Number(a.registered) === 1 && !a.checkin_time && !['absent', 'leave', 'cancelled', 'rejected'].includes(a.status);
-    const badge = awaitingCheckin ? '<span class="badge badge-info">📝 Đã đăng ký · chưa check-in</span>' : statusBadge(a.status);
+    const badge = awaitingCheckin ? `<span class="badge badge-info">${icon('fileText', 'xs')} Đã đăng ký · chưa check-in</span>` : statusBadge(a.status);
     const bits = [];
     if (a.late_minutes > 0) bits.push(`Trễ ${a.late_minutes}p`);
     if (a.early_minutes > 0) bits.push(`Sớm ${a.early_minutes}p`);
@@ -738,7 +746,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
         </tbody></table></div>`;
     } catch (error) {
       const content = document.getElementById('att-monthly-board-content');
-      if (content) content.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">${esc(error.message || 'Không thể tải bảng chấm công tổng hợp')}</div></div>`;
+      if (content) content.innerHTML = emptyHTML('triangleAlert', error.message || 'Không thể tải bảng chấm công tổng hợp');
     }
   }
 
@@ -755,7 +763,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
       if (!content) return;
 
       if (!forms.length) {
-        content.innerHTML = emptyHTML('📝', `Chưa có dữ liệu làm thêm giờ trong tháng ${String(month).padStart(2, '0')}/${year}`);
+        content.innerHTML = emptyHTML('fileText', `Chưa có dữ liệu làm thêm giờ trong tháng ${String(month).padStart(2, '0')}/${year}`);
         return;
       }
 
@@ -893,8 +901,8 @@ document.getElementById('btn-register').addEventListener('click', async () => {
                   <tr class="ot-summary-detail-row" id="ot-detail-row-${u.userId}" style="display:none;background:var(--surface-2);">
                     <td colspan="10" style="padding:12px 16px;">
                       <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;">
-                        <div style="font-weight:650;font-size:13px;margin-bottom:8px;color:var(--text);">
-                          📋 Chi tiết ${u.forms.length} form OT của ${esc(u.fullName)} (${esc(u.employeeCode)})
+                        <div style="font-weight:650;font-size:13px;margin-bottom:8px;color:var(--text);display:flex;align-items:center;gap:6px;">
+                          ${icon('clipboardList', 'xs')} Chi tiết ${u.forms.length} form OT của ${esc(u.fullName)} (${esc(u.employeeCode)})
                         </div>
                         <table style="width:100%;font-size:12px;border-collapse:collapse;">
                           <thead>
@@ -972,7 +980,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
 
     } catch (error) {
       const content = document.getElementById('ot-summary-board-content');
-      if (content) content.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">${esc(error.message || 'Không thể tải bảng tổng hợp làm thêm giờ')}</div></div>`;
+      if (content) content.innerHTML = emptyHTML('triangleAlert', error.message || 'Không thể tải bảng tổng hợp làm thêm giờ');
     }
   }
 
@@ -999,7 +1007,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
         filteredEmployees = sortVietnameseNames(filteredEmployees, 'full_name');
         const pageData = paginateRows(filteredEmployees, historyPage);
         historyPage = pageData.page;
-        if (!filteredEmployees.length) { listEl.innerHTML = emptyHTML('👥', 'Không có nhân viên phù hợp'); return; }
+        if (!filteredEmployees.length) { listEl.innerHTML = emptyHTML('users', 'Không có nhân viên phù hợp'); return; }
         listEl.innerHTML = `
           <div class="table-wrap">
             <table>
@@ -1036,7 +1044,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
       let filteredAttendance = attendance || [];
       const pageData = paginateRows(filteredAttendance, historyPage);
       historyPage = pageData.page;
-      if (!filteredAttendance.length) { listEl.innerHTML = emptyHTML('📅', 'Không có dữ liệu chấm công'); return; }
+      if (!filteredAttendance.length) { listEl.innerHTML = emptyHTML('calendarDays', 'Không có dữ liệu chấm công'); return; }
 
       // Load personal summary for the overview section
       let summaryHTML = '';
@@ -1090,7 +1098,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
       `;
       bindPagination(listEl, page => { historyPage = page; loadHistory(); });
     } catch(e) {
-      listEl.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">${esc(e.message)}</div></div>`;
+      listEl.innerHTML = emptyHTML('triangleAlert', e.message);
     }
   }
 
@@ -1144,7 +1152,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
         };
         document.getElementById('att-detail-rows').innerHTML = rows.length ? rows.map(r => {
           const awaitingCheckin = Number(r.registered) === 1 && !r.checkin_time && !['absent', 'leave', 'cancelled', 'rejected'].includes(r.status);
-          const displayStatus = awaitingCheckin ? '<span class="badge badge-info">📝 Chưa check-in</span>' : statusBadge(r.status);
+          const displayStatus = awaitingCheckin ? `<span class="badge badge-info">${icon('fileText', 'xs')} Chưa check-in</span>` : statusBadge(r.status);
           const checkinValid = r.checkin_time && r.late_minutes === 0;
           const checkoutValid = r.checkout_time && r.early_minutes === 0;
           // Location-review (ngoài phạm vi GPS) indicator + admin action.
@@ -1159,7 +1167,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
           const actions = [];
           if (isManager) actions.push(`<button class="btn-icon att-summary-edit" data-id="${r.id}" data-checkin="${esc(r.checkin_time || '')}" data-checkout="${esc(r.checkout_time || '')}" data-status="${esc(r.status)}" data-note="${esc(r.note || '')}" data-work-type="${esc(r.work_type || 'office')}" data-shift="${esc(r.shift || 'full')}" data-expected-start="${esc(r.expected_start || '')}" data-expected-end="${esc(r.expected_end || '')}" title="Sửa">${icon('pencil', 'xs')}</button>`);
           if (isManager && Number(r.checkin_requires_review) && r.checkin_review_status !== 'approved' && r.checkin_review_status !== 'rejected') {
-            actions.push(`<button class="btn-secondary btn-xs att-review-btn" data-id="${r.id}" data-decision="approved">✓ Xác nhận</button><button class="btn-danger btn-xs att-review-btn" data-id="${r.id}" data-decision="rejected">✕ Không hợp lệ</button>`);
+            actions.push(`<button class="btn-secondary btn-xs att-review-btn" data-id="${r.id}" data-decision="approved" style="display:inline-flex;align-items:center;gap:4px;">${icon('check', 'xs')} <span>Xác nhận</span></button><button class="btn-danger btn-xs att-review-btn" data-id="${r.id}" data-decision="rejected" style="display:inline-flex;align-items:center;gap:4px;">${icon('x', 'xs')} <span>Không hợp lệ</span></button>`);
           }
           return `<tr><td>${esc(r.date)}</td><td>${esc(new Date(r.date + 'T00:00:00').toLocaleDateString('vi-VN', { weekday: 'short' }))}</td><td>${esc(WORK_TYPE_LABEL[r.work_type] || WORK_TYPE_LABEL.office)}</td><td>${esc(SHIFT_LABEL_SHORT[r.shift] || SHIFT_LABEL_SHORT.full)}</td><td>${timeCell(r.checkin_time, checkinValid)}</td><td>${timeCell(r.checkout_time, checkoutValid)}</td><td>${r.work_hours ? Number(r.work_hours).toFixed(1) + 'h' : '—'}</td><td>${r.late_minutes ? r.late_minutes + 'p' : '—'}</td><td>${r.early_minutes ? r.early_minutes + 'p' : '—'}</td><td>${displayStatus}${locReviewHtml}</td><td>${formatAttendanceNote(r.note)}</td>${isManager ? `<td style="white-space:nowrap">${actions.join(' ')}</td>` : ''}</tr>`;
         }).join('') : `<tr><td colspan="${isManager ? 12 : 11}" class="att-summary-empty">Không có bản ghi phù hợp.</td></tr>`;
@@ -1179,7 +1187,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
       renderRows();
     }).catch(error => {
       const content = document.getElementById('att-summary-content');
-      if (content) content.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">${esc(error.message || 'Không thể tải tổng kết chấm công')}</div></div>`;
+      if (content) content.innerHTML = `<div class="empty-state"><div class="empty-icon">${icon('triangleAlert', 'lg')}</div><div class="empty-text">${esc(error.message || 'Không thể tải tổng kết chấm công')}</div></div>`;
     });
   }
 
@@ -1199,9 +1207,9 @@ document.getElementById('btn-register').addEventListener('click', async () => {
       <div class="field"><label>Check out</label><input type="time" id="edit-co" value="${esc(data.checkout||'')}"/></div>
       <div class="field"><label>Hình thức làm việc</label>
         <select id="edit-worktype">
-          <option value="office" ${data.workType==='office'?'selected':''}>🏢 Làm tại công ty</option>
-          <option value="wfh" ${data.workType==='wfh'?'selected':''}>🏠 WFH</option>
-          <option value="business" ${data.workType==='business'?'selected':''}>✈️ Công tác</option>
+          <option value="office" ${data.workType==='office'?'selected':''}>Làm tại công ty</option>
+          <option value="wfh" ${data.workType==='wfh'?'selected':''}>WFH</option>
+          <option value="business" ${data.workType==='business'?'selected':''}>Công tác</option>
         </select>
       </div>
       <div class="field"><label>Ca làm việc</label>
@@ -1222,7 +1230,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
       <div id="edit-att-rule" style="padding:9px 10px;border-radius:8px;background:#FFF7ED;border:1px solid #FED7AA;color:#9A3412;font-size:12px;line-height:1.45;">Chọn <b>Đúng giờ</b> chỉ khi check-in không muộn hơn <b>${esc(lateAfter)}</b> và check-out không sớm hơn <b>${esc(allowedCheckout)}</b> (được sớm 10 phút). Hệ thống sẽ tự tính lại phút đi muộn/về sớm theo giờ đã nhập.</div>
       <div class="field"><label>Ghi chú</label><input type="text" id="edit-anote" value="${esc(data.note||'')}"/></div>
     `, `
-      <button class="btn-danger" id="delete-att-btn">🗑 Xóa</button>
+      <button class="btn-danger" id="delete-att-btn" style="display:inline-flex;align-items:center;gap:4px;">${icon('trash2', 'xs')} <span>Xóa</span></button>
       <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Hủy</button>
       <button class="btn-primary" id="save-att-btn">Lưu</button>
     `);

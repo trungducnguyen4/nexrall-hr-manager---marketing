@@ -29,7 +29,7 @@ export async function renderWifi(el, me) {
       <div style="font-size:13px;color:var(--text-2);">Hệ thống kiểm tra Public IP mà backend nhận được, không thể đọc tên Wi-Fi/SSID từ trình duyệt. Nếu IP công khai thay đổi, việc chấm công tại văn phòng có thể bị gián đoạn.</div>
       <div id="wifi-ip-result" style="font-size:12px;color:var(--text-3);margin-top:6px;"></div>
     </div>
-    <details class="card"><summary style="cursor:pointer;font-weight:700;">📡 Mạng/IP văn phòng (tín hiệu phụ)</summary><div id="wifi-list" style="margin-top:12px;">${loadingHTML()}</div></details>
+    <details class="card"><summary style="cursor:pointer;font-weight:700;display:inline-flex;align-items:center;gap:6px;">${icon('wifi', 'sm')} <span>Mạng/IP văn phòng (tín hiệu phụ)</span></summary><div id="wifi-list" style="margin-top:12px;">${loadingHTML()}</div></details>
   `;
 
   async function loadWifi() {
@@ -38,19 +38,19 @@ export async function renderWifi(el, me) {
     listEl.innerHTML = loadingHTML();
     try {
       const { whitelist } = await api.getWifi();
-      if (!whitelist.length) { listEl.innerHTML = emptyHTML('📡', 'Chưa có mạng văn phòng nào được phép chấm công'); return; }
+      if (!whitelist.length) { listEl.innerHTML = emptyHTML('wifi', 'Chưa có mạng văn phòng nào được phép chấm công'); return; }
       listEl.innerHTML = whitelist.map(w => `
         <div class="card" style="margin-bottom:10px;">
           <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">
             <div style="flex:1;">
-              <div style="font-weight:700;font-size:15px;margin-bottom:4px;">📶 ${esc(w.wifi_name||'Không tên')}</div>
+              <div style="font-weight:700;font-size:15px;margin-bottom:4px;display:flex;align-items:center;gap:6px;">${icon('wifi', 'xs')} <span>${esc(w.wifi_name||'Không tên')}</span></div>
               <div style="font-size:13px;color:var(--text-2);margin-bottom:4px;">IP: <code style="background:var(--bg);padding:2px 6px;border-radius:4px;">${esc(w.ip_range||'*')}</code></div>
               ${w.description ? `<div style="font-size:12px;color:var(--text-2);">${esc(w.description)}</div>` : ''}
             </div>
             <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
-              <span class="badge ${w.is_active ? 'badge-success' : 'badge-gray'}">${w.is_active?'✅ Hoạt động':'⛔ Tắt'}</span>
-              <button class="btn-icon wifi-edit" data-wid="${w.id}" data-name="${esc(w.wifi_name||'')}" data-ip="${esc(w.ip_range||'')}" data-desc="${esc(w.description||'')}" data-active="${w.is_active}" title="Sửa">✏️</button>
-              <button class="btn-icon wifi-del" data-wid="${w.id}" title="Xóa" style="color:var(--danger)">🗑</button>
+              <span class="badge ${w.is_active ? 'badge-success' : 'badge-gray'}">${w.is_active ? `${icon('circleCheck', 'xs')} Hoạt động` : 'Tắt'}</span>
+              <button class="btn-icon wifi-edit" data-wid="${w.id}" data-name="${esc(w.wifi_name||'')}" data-ip="${esc(w.ip_range||'')}" data-desc="${esc(w.description||'')}" data-active="${w.is_active}" title="Sửa">${icon('pencil', 'xs')}</button>
+              <button class="btn-icon wifi-del" data-wid="${w.id}" title="Xóa" style="color:var(--danger)">${icon('trash2', 'xs')}</button>
             </div>
           </div>
         </div>
@@ -65,14 +65,14 @@ export async function renderWifi(el, me) {
           catch(e) { toast(e.message, 'error'); }
         });
       });
-    } catch(e) { listEl.innerHTML = emptyHTML('⚠️', e.message); }
+    } catch(e) { listEl.innerHTML = emptyHTML('triangleAlert', e.message); }
   }
 
   async function loadLocations() {
     const list = el.querySelector('#attendance-location-list');
     try {
       const { locations } = await api.getAttendanceLocations();
-      if (!locations.length) { list.innerHTML = emptyHTML('📍','Chưa có địa điểm chấm công','Thêm văn phòng HCM/Hà Nội để bật xác minh GPS.'); return; }
+      if (!locations.length) { list.innerHTML = emptyHTML('mapPin','Chưa có địa điểm chấm công','Thêm văn phòng HCM/Hà Nội để bật xác minh GPS.'); return; }
       list.innerHTML = locations.map(location => `<article class="card attendance-location-card"><div class="attendance-location-map" id="loc-map-${location.id}"></div><div style="font-weight:800">${esc(location.name)}</div><div class="attendance-location-meta">${esc(location.address || location.code || 'Chưa có địa chỉ')}<br>Bán kính ${Number(location.radius_meters)} m · GPS tối đa ±${Number(location.max_accuracy_meters)} m</div><div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;"><span class="badge ${location.is_active ? 'badge-success':'badge-gray'}">${location.is_active?'● Hoạt động':'Tạm tắt'}</span><span><button class="btn-secondary btn-xs location-test" data-id="${location.id}">Kiểm tra vị trí</button><button class="btn-secondary btn-xs location-edit" data-id="${location.id}">Sửa</button></span></div></article>`).join('');
       // This page is OFFICE CONFIGURATION only — deliberately NO employee check-in markers.
       locations.forEach(location => {
@@ -90,7 +90,7 @@ export async function renderWifi(el, me) {
       });
       list.querySelectorAll('.location-edit').forEach(button => button.addEventListener('click', () => openLocationForm(locations.find(x => Number(x.id) === Number(button.dataset.id)), loadLocations)));
       list.querySelectorAll('.location-test').forEach(button => button.addEventListener('click', () => testLocation()));
-    } catch (error) { list.innerHTML = emptyHTML('⚠️', error.message); }
+    } catch (error) { list.innerHTML = emptyHTML('triangleAlert', error.message); }
   }
   async function loadGpsConstraint() {
     const control = el.querySelector('#gps-constraint-control');

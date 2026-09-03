@@ -236,7 +236,7 @@ export function assetStatusBadge(s) {
 // Single source of truth cho trang Đánh giá hiệu suất — không hard-code lại nơi khác.
 export const EVAL_GROUPS = [
   {
-    key: 'chuyen_mon', label: 'Nhóm 1 – Kết quả và năng lực thực hiện công việc', maxScore: 60, color: '#EE4D2D', icon: '🎯', evidenceHeader: 'Căn cứ đánh giá',
+    key: 'chuyen_mon', label: 'Nhóm 1 – Kết quả và năng lực thực hiện công việc', maxScore: 60, color: '#EE4D2D', icon: 'target', evidenceHeader: 'Căn cứ đánh giá',
     criteria: [
       { code: 'HS01', name: 'Hoàn thành KPI/Mục tiêu tháng', desc: 'Mức độ hoàn thành các mục tiêu, KPI được giao trong tháng.', max: 15, scale: '15: ≥110% KPI; 13–14: 100–<110%; 10–12: 80–<100%; 6–9: 60–<80%; 1–5: <60%; 0: Không thực hiện', note: 'Số liệu KPI thực tế' },
       { code: 'HS02', name: 'Chất lượng sản phẩm/đầu ra', desc: 'Độ chính xác, hoàn thiện và mức độ đáp ứng yêu cầu của công việc bàn giao.', max: 10, scale: '9–10: Chất lượng xuất sắc, hầu như không có lỗi; 7–8: Đáp ứng tốt, có lỗi nhỏ; 4–6: Còn nhiều điểm cần sửa; 1–3: Chất lượng thấp; 0: Không đạt yêu cầu', note: 'Sản phẩm bàn giao, tỷ lệ lỗi, phản hồi của quản lý' },
@@ -247,7 +247,7 @@ export const EVAL_GROUPS = [
     ],
   },
   {
-    key: 'van_hoa', label: 'Nhóm 2 – Văn hóa, thái độ, kỷ luật', maxScore: 25, color: '#1D4ED8', icon: '🤝', evidenceHeader: 'Ghi chú/Minh chứng',
+    key: 'van_hoa', label: 'Nhóm 2 – Văn hóa, thái độ, kỷ luật', maxScore: 25, color: '#1D4ED8', icon: 'handshake', evidenceHeader: 'Ghi chú/Minh chứng',
     criteria: [
       { code: 'VH01', name: 'Tinh thần trách nhiệm và thái độ làm việc', desc: 'Chủ động, tích cực, nghiêm túc và chịu trách nhiệm đối với công việc được giao.', max: 7, scale: '7: Luôn chủ động, trách nhiệm cao; 5–6: Thực hiện tốt, ít cần nhắc nhở; 3–4: Đáp ứng cơ bản nhưng đôi lúc thiếu chủ động; 1–2: Thường xuyên cần nhắc nhở; 0: Thiếu trách nhiệm nghiêm trọng', note: 'Nhận xét của quản lý, kết quả thực hiện công việc' },
       { code: 'VH02', name: 'Phối hợp và hỗ trợ đồng nghiệp', desc: 'Hợp tác, chia sẻ thông tin và hỗ trợ các thành viên để hoàn thành mục tiêu chung.', max: 6, scale: '6: Phối hợp rất tốt, chủ động hỗ trợ; 4–5: Hợp tác tốt; 2–3: Phối hợp chưa thường xuyên hoặc còn bị động; 1: Khó phối hợp; 0: Không hợp tác, gây ảnh hưởng công việc chung', note: 'Phản hồi của đồng nghiệp, quản lý và các bộ phận liên quan' },
@@ -256,7 +256,7 @@ export const EVAL_GROUPS = [
     ],
   },
   {
-    key: 'sang_tao', label: 'Nhóm 3 – Sáng tạo, cải tiến, chủ động', maxScore: 15, color: '#047857', icon: '💡', evidenceHeader: 'Căn cứ đánh giá',
+    key: 'sang_tao', label: 'Nhóm 3 – Sáng tạo, cải tiến, chủ động', maxScore: 15, color: '#047857', icon: 'lightbulb', evidenceHeader: 'Căn cứ đánh giá',
     criteria: [
       { code: 'SK01', name: 'Sáng kiến và đề xuất cải tiến', desc: 'Đưa ra ý tưởng, giải pháp cải tiến quy trình, sản phẩm hoặc phương pháp làm việc.', max: 5, scale: '5: Có sáng kiến giá trị, được áp dụng và tạo hiệu quả; 4: Có đề xuất thiết thực, có khả năng áp dụng; 2–3: Có ý tưởng nhưng tính ứng dụng hoặc hiệu quả còn hạn chế; 1: Ít đề xuất; 0: Không có đề xuất', note: 'Nội dung đề xuất, kết quả áp dụng và xác nhận của quản lý' },
       { code: 'SK02', name: 'Tự học và nâng cao năng lực', desc: 'Chủ động học hỏi, cập nhật kiến thức và phát triển kỹ năng phục vụ công việc.', max: 4, scale: '4: Chủ động học tập và áp dụng hiệu quả; 3: Có học hỏi thường xuyên, có tiến bộ; 1–2: Có học nhưng chưa đều hoặc ít áp dụng; 0: Không có tinh thần học hỏi', note: 'Khóa học, chứng chỉ, nội dung tự học và kết quả áp dụng' },
@@ -368,10 +368,56 @@ export function closeModal() {
   document.getElementById('modal-overlay')?.classList.add('hidden');
 }
 
+const EMOJI_TO_ICON = {
+  '⚠️': 'triangleAlert',
+  '⚠': 'triangleAlert',
+  '🎯': 'target',
+  '🔍': 'search',
+  '🔎': 'search',
+  '💰': 'banknote',
+  '🏖️': 'plane',
+  '🏖': 'plane',
+  '📝': 'fileText',
+  '👥': 'users',
+  '👤': 'user',
+  '📅': 'calendarDays',
+  '⏱️': 'clock3',
+  '⏱': 'clock3',
+  '⏰': 'clock3',
+  '🕘': 'clock3',
+  '🗂️': 'folder',
+  '🗂': 'folder',
+  '📡': 'wifi',
+  '📶': 'wifi',
+  '📣': 'megaphone',
+  '🔄': 'refreshCw',
+  '✅': 'circleCheck',
+  '❌': 'circleX',
+  '🔗': 'link',
+  '📍': 'mapPin',
+  'ℹ️': 'circleInfo',
+  'ℹ': 'circleInfo',
+  '✨': 'sparkles',
+  '🔔': 'bell',
+  '🏢': 'building2',
+};
+
 /** Loading/empty helpers */
 export function loadingHTML() {
   return `<div class="loading-state"><div class="spinner"></div>Đang tải...</div>`;
 }
-export function emptyHTML(icon, text, hint = '') {
-  return `<div class="empty-state"><div class="empty-icon">${icon}</div><div class="empty-text">${esc(text)}</div>${hint ? `<div class="empty-hint">${esc(hint)}</div>` : ''}</div>`;
+export function emptyHTML(iconNameOrSvg, text, hint = '') {
+  let iconHtml = '';
+  if (typeof iconNameOrSvg === 'string') {
+    if (iconNameOrSvg.startsWith('<svg')) {
+      iconHtml = iconNameOrSvg;
+    } else if (EMOJI_TO_ICON[iconNameOrSvg]) {
+      iconHtml = icon(EMOJI_TO_ICON[iconNameOrSvg], 'xl');
+    } else {
+      iconHtml = icon(iconNameOrSvg, 'xl');
+    }
+  } else {
+    iconHtml = icon('circleHelp', 'xl');
+  }
+  return `<div class="empty-state"><div class="empty-icon">${iconHtml}</div><div class="empty-text">${esc(text)}</div>${hint ? `<div class="empty-hint">${esc(hint)}</div>` : ''}</div>`;
 }

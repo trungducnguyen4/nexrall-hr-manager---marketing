@@ -66,12 +66,12 @@ export async function renderDbAdmin(el, me) {
       tableSelect.innerHTML = tables.map(t => `<option value="${esc(t.name)}">${esc(t.label)} (${esc(t.name)})</option>`).join('');
       currentTable = tables[0]?.name || '';
       if (!currentTable) {
-        content.innerHTML = emptyHTML('🗂️', 'Không có bảng nào có thể quản trị');
+        content.innerHTML = emptyHTML('fileText', 'Không có bảng nào có thể quản trị');
         return;
       }
       await loadRows();
     } catch (e) {
-      content.innerHTML = emptyHTML('⚠️', e.message);
+      content.innerHTML = emptyHTML('triangleAlert', e.message);
     }
   }
 
@@ -87,7 +87,7 @@ export async function renderDbAdmin(el, me) {
       renderMeta();
       renderRows();
     } catch (e) {
-      content.innerHTML = emptyHTML('⚠️', e.message);
+      content.innerHTML = emptyHTML('triangleAlert', e.message);
     }
   }
 
@@ -101,7 +101,7 @@ export async function renderDbAdmin(el, me) {
   function renderRows() {
     const content = document.getElementById('db-content');
     if (!rows.length) {
-      content.innerHTML = emptyHTML('🗂️', 'Không có dữ liệu phù hợp');
+      content.innerHTML = emptyHTML('fileText', 'Không có dữ liệu phù hợp');
       return;
     }
     const cols = currentMeta.columns;
@@ -119,8 +119,8 @@ export async function renderDbAdmin(el, me) {
               <tr>
                 ${cols.map(c => `<td>${formatCell(row[c.name])}</td>`).join('')}
                 <td style="white-space:nowrap;">
-                  <button class="btn-xs btn-secondary db-edit" data-idx="${idx}">✏️</button>
-                  <button class="btn-xs btn-danger db-delete" data-idx="${idx}">🗑</button>
+                  <button class="btn-xs btn-secondary db-edit" data-idx="${idx}" title="Sửa">${icon('pencil', 'xs')}</button>
+                  <button class="btn-xs btn-danger db-delete" data-idx="${idx}" title="Xóa">${icon('trash2', 'xs')}</button>
                 </td>
               </tr>
             `).join('')}
@@ -128,9 +128,9 @@ export async function renderDbAdmin(el, me) {
         </table>
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;">
-        <button id="db-prev" class="btn-secondary btn-sm" ${offset <= 0 ? 'disabled' : ''}>← Trước</button>
+        <button id="db-prev" class="btn-secondary btn-sm" ${offset <= 0 ? 'disabled' : ''} style="display:inline-flex;align-items:center;gap:4px;">${icon('arrowLeft', 'xs')} <span>Trước</span></button>
         <div style="font-size:12px;color:var(--text-2);font-weight:600;">${offset + 1}-${Math.min(offset + rows.length, total)} / ${total}</div>
-        <button id="db-next" class="btn-secondary btn-sm" ${offset + rows.length >= total ? 'disabled' : ''}>Sau →</button>
+        <button id="db-next" class="btn-secondary btn-sm" ${offset + rows.length >= total ? 'disabled' : ''} style="display:inline-flex;align-items:center;gap:4px;"><span>Sau</span> ${icon('arrowRight', 'xs')}</button>
       </div>
     `;
     content.querySelectorAll('.db-edit').forEach(btn => {

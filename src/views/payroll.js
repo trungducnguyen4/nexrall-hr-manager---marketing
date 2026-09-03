@@ -762,7 +762,7 @@ export async function renderPayroll(el, me) {
             <div class="payroll-chart-card payroll-dumbbell-card">
               <div class="payroll-chart-header">
                 <div class="payroll-chart-title-wrap">
-                  <div class="payroll-chart-icon" style="background:#EFF6FF;color:#2563EB;">${icon('chartLine', 'sm') || '📊'}</div>
+                  <div class="payroll-chart-icon" style="background:#EFF6FF;color:#2563EB;">${icon('chartLine', 'sm')}</div>
                   <div>
                     <h3 class="payroll-chart-title">So sánh % Nhân sự ↔ % Quỹ lương</h3>
                     <p class="payroll-chart-sub">Dumbbell Chart tương quan quy mô nhân sự & chi phí tháng ${formatMonth(month)}</p>
@@ -840,32 +840,18 @@ export async function renderPayroll(el, me) {
               </div>
             </div>
           `;
-
-          // Bind clicking on department legend to filter table
-          chartsEl.querySelectorAll('[data-filter-dept]').forEach(item => {
-            item.addEventListener('click', () => {
-              const deptName = item.getAttribute('data-filter-dept');
-              const select = document.getElementById('payroll-dept-filter');
-              if (select) {
-                select.value = select.value === deptName ? '' : deptName;
-                currentPage = 1;
-                loadPayroll({ keepStatus: true });
-              }
-            });
-          });
+          renderDumbbellChart(departmentStats);
+        } else {
+          chartsEl.innerHTML = '';
         }
       }
 
       if (!payrolls.length) {
-        if (statusEl && !options.keepStatus) statusEl.textContent = `Chưa có dữ liệu bảng lương tháng ${formatMonth(month)}.`;
+        if (statusEl && !options.keepStatus) statusEl.textContent = `Chưa có dữ liệu bảng lương tháng ${month}.`;
         tableEl.innerHTML = `
-          <div style="padding:48px 24px;text-align:center;">
-            <div style="width:56px;height:56px;margin:0 auto 16px;display:grid;place-items:center;background:#FFF5F2;color:var(--primary);border-radius:16px;">${icon('banknote', 'xl')}</div>
-            <h3 style="font-size:16px;font-weight:800;margin:0 0 8px;color:var(--text);">Chưa khởi tạo bảng lương tháng ${formatMonth(month)}</h3>
-            <p style="font-size:13.5px;color:var(--text-2);max-width:520px;margin:0 auto 18px;line-height:1.5;">
-              Tháng này chưa có danh sách bảng lương. Bạn hãy nhấn nút bên dưới để hệ thống tự động tổng hợp danh sách <strong>toàn bộ nhân sự đang hoạt động</strong> và mức lương cấu hình.
-            </p>
-            ${canEditPayroll ? `<button id="btn-empty-sync-payroll" class="btn-primary" style="padding:11px 22px;font-weight:700;font-size:14px;border-radius:10px;">${icon('refreshCw', 'sm')} <span>Khởi tạo bảng lương tháng ${formatMonth(month)} ngay</span></button>` : ''}
+          <div style="padding:32px 16px;text-align:center;">
+            ${emptyHTML('creditCard', `Chưa có bảng lương tháng ${formatMonth(month)}`, 'Bấm nút "Đồng bộ bảng lương" để tự động tính lương từ chấm công & hợp đồng.')}
+            ${isAdmin ? `<button class="btn-primary" id="btn-empty-sync-payroll" style="margin-top:14px;">${icon('refreshCw', 'xs')} <span>Đồng bộ bảng lương tháng ${formatMonth(month)}</span></button>` : ''}
           </div>
         `;
         document.getElementById('btn-empty-sync-payroll')?.addEventListener('click', openCreatePayrollBatchConfirm);
@@ -873,7 +859,7 @@ export async function renderPayroll(el, me) {
       }
       if (!filtered.length) {
         if (statusEl && !options.keepStatus) statusEl.textContent = `Không tìm thấy dòng lương phù hợp với bộ lọc.`;
-        tableEl.innerHTML = `<div style="padding:24px 16px;">${emptyHTML('🔍', `Không có dòng lương phù hợp`, 'Thử đổi từ khóa tìm kiếm hoặc chọn phòng ban khác')}</div>`;
+        tableEl.innerHTML = `<div style="padding:24px 16px;">${emptyHTML('search', `Không có dòng lương phù hợp`, 'Thử đổi từ khóa tìm kiếm hoặc chọn phòng ban khác')}</div>`;
         return;
       }
       if (statusEl && !options.keepStatus) statusEl.textContent = `Đã tải ${payrolls.length} dòng bảng lương tháng ${month}. Đang hiển thị ${filtered.length} dòng phù hợp.`;
@@ -939,7 +925,7 @@ export async function renderPayroll(el, me) {
       bindPagination(tableEl, page => { currentPage = page; loadPayroll({ keepStatus: true }); });
     } catch (e) {
       if (statusEl) statusEl.textContent = `Lỗi tải dữ liệu: ${e.message || 'Không xác định'}`;
-      tableEl.innerHTML = `<div style="padding:16px;">${emptyHTML('⚠️', e.message)}</div>`;
+      tableEl.innerHTML = `<div style="padding:16px;">${emptyHTML('triangleAlert', e.message)}</div>`;
     } finally {
     }
   }
@@ -1238,13 +1224,13 @@ function openPayrollLineForm(pay, onRefresh = noop, currentMonth = '', options =
     const saveBtn = document.getElementById('pf-save');
 
     if (v.base <= 0 && !isReady) {
-      warningHtml += `<div class="payedit-warn"><span>⚠️</span> Nhân viên chưa có lương cơ bản. Cần <a href="#/users${pay ? '/' + pay.employee_id : ''}" target="_blank">cấu hình lương</a> trước khi chốt bảng lương.</div>`;
+      warningHtml += `<div class="payedit-warn"><span style="display:inline-flex;align-items:center;">${icon('triangleAlert', 'xs')}</span> Nhân viên chưa có lương cơ bản. Cần <a href="#/users${pay ? '/' + pay.employee_id : ''}" target="_blank">cấu hình lương</a> trước khi chốt bảng lương.</div>`;
     }
     if (net < 0) {
-      warningHtml += `<div class="payedit-warn payedit-warn--error"><span>❌</span> Thực nhận đang âm. Vui lòng kiểm tra lại lương cơ bản hoặc khoản khấu trừ.</div>`;
+      warningHtml += `<div class="payedit-warn payedit-warn--error"><span style="display:inline-flex;align-items:center;">${icon('circleAlert', 'xs')}</span> Thực nhận đang âm. Vui lòng kiểm tra lại lương cơ bản hoặc khoản khấu trừ.</div>`;
     }
     if (v.deduct > totalIncome && totalIncome > 0) {
-      warningHtml += `<div class="payedit-warn"><span>⚠️</span> Khấu trừ lớn hơn tổng thu nhập.</div>`;
+      warningHtml += `<div class="payedit-warn"><span style="display:inline-flex;align-items:center;">${icon('triangleAlert', 'xs')}</span> Khấu trừ lớn hơn tổng thu nhập.</div>`;
     }
 
     warnings.innerHTML = warningHtml;

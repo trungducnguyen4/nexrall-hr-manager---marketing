@@ -4,13 +4,13 @@ import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtMoney, no
 import { icon } from '../icons.js';
 
 const CAMPAIGN_TYPES = [
-  { value: 'social',    label: 'Social Media',    icon: '📱', color: '#6366F1' },
-  { value: 'seo',       label: 'SEO/SEM',          icon: '🔍', color: '#10B981' },
-  { value: 'email',     label: 'Email Marketing',  icon: '📧', color: '#3B82F6' },
-  { value: 'content',   label: 'Content Marketing',icon: '📝', color: '#F59E0B' },
-  { value: 'pr',        label: 'PR & Events',       icon: '🤝', color: '#8B5CF6' },
-  { value: 'performance',label:'Performance Ads',   icon: '📊', color: '#EF4444' },
-  { value: 'other',     label: 'Khác',             icon: '🎯', color: '#64748B' },
+  { value: 'social',      label: 'Social Media',      icon: 'smartPhone', color: '#6366F1' },
+  { value: 'seo',         label: 'SEO/SEM',          icon: 'search',     color: '#10B981' },
+  { value: 'email',       label: 'Email Marketing',  icon: 'mail',       color: '#3B82F6' },
+  { value: 'content',     label: 'Content Marketing',icon: 'fileText',   color: '#F59E0B' },
+  { value: 'pr',          label: 'PR & Events',       icon: 'handshake',  color: '#8B5CF6' },
+  { value: 'performance', label: 'Performance Ads',   icon: 'barChart3',  color: '#EF4444' },
+  { value: 'other',       label: 'Khác',             icon: 'target',     color: '#64748B' },
 ];
 
 const CAMPAIGN_STATUS = [
@@ -21,7 +21,7 @@ const CAMPAIGN_STATUS = [
   { value: 'cancelled',label: 'Hủy',            cls: 'badge-danger'  },
 ];
 
-function campaignType(v) { return CAMPAIGN_TYPES.find(t => t.value === v) || { label: v, icon: '🎯', color: '#64748B' }; }
+function campaignType(v) { return CAMPAIGN_TYPES.find(t => t.value === v) || { label: v, icon: 'target', color: '#64748B' }; }
 function campaignStatus(v) { return CAMPAIGN_STATUS.find(s => s.value === v) || { label: v||'—', cls:'badge-gray' }; }
 
 export async function renderCampaigns(el, me) {
@@ -50,7 +50,7 @@ export async function renderCampaigns(el, me) {
     <!-- Type filter -->
     <div class="filter-bar" id="campaign-type-filter">
       <span class="filter-chip active" data-type="">Mọi loại</span>
-      ${CAMPAIGN_TYPES.map(t => `<span class="filter-chip" data-type="${t.value}">${t.icon} ${t.label}</span>`).join('')}
+      ${CAMPAIGN_TYPES.map(t => `<span class="filter-chip" data-type="${t.value}">${icon(t.icon, 'xs')} ${t.label}</span>`).join('')}
     </div>
 
     <div id="campaign-list">${loadingHTML()}</div>
@@ -95,22 +95,22 @@ export async function renderCampaigns(el, me) {
           const totalSpent = allCampaigns.reduce((s, c) => s + (c.spent||0), 0);
           statsEl.innerHTML = `
             <div class="stat-card" style="--stat-color:#6366F1;--stat-bg:#EEF2FF;">
-              <div class="stat-icon-wrap">📣</div>
+              <div class="stat-icon-wrap">${icon('megaphone', 'sm')}</div>
               <div class="stat-val">${allCampaigns.length}</div>
               <div class="stat-label">Tổng chiến dịch</div>
             </div>
             <div class="stat-card" style="--stat-color:#10B981;--stat-bg:#D1FAE5;">
-              <div class="stat-icon-wrap">▶️</div>
+              <div class="stat-icon-wrap">${icon('play', 'sm')}</div>
               <div class="stat-val">${active}</div>
               <div class="stat-label">Đang chạy</div>
             </div>
             <div class="stat-card" style="--stat-color:#3B82F6;--stat-bg:#DBEAFE;">
-              <div class="stat-icon-wrap">💰</div>
+              <div class="stat-icon-wrap">${icon('banknote', 'sm')}</div>
               <div class="stat-val" style="font-size:14px;">${fmtMoney(totalBud)}</div>
               <div class="stat-label">Tổng ngân sách</div>
             </div>
             <div class="stat-card" style="--stat-color:#F59E0B;--stat-bg:#FEF3C7;">
-              <div class="stat-icon-wrap">📊</div>
+              <div class="stat-icon-wrap">${icon('barChart3', 'sm')}</div>
               <div class="stat-val">${done}</div>
               <div class="stat-label">Đã hoàn thành</div>
             </div>
@@ -126,7 +126,7 @@ export async function renderCampaigns(el, me) {
       if (typeFilter)   filtered = filtered.filter(c => c.type   === typeFilter);
 
       if (!filtered.length) {
-        listEl.innerHTML = emptyHTML('📣', 'Không có chiến dịch nào', isAdmin ? 'Nhấn "+ Tạo chiến dịch" để bắt đầu' : '');
+        listEl.innerHTML = emptyHTML('megaphone', 'Không có chiến dịch nào', isAdmin ? 'Nhấn "+ Tạo chiến dịch" để bắt đầu' : '');
         return;
       }
 
@@ -140,7 +140,7 @@ export async function renderCampaigns(el, me) {
         return `
           <div class="campaign-card" data-cid="${c.id}">
             <div style="display:flex;align-items:flex-start;gap:12px;">
-              <div style="width:46px;height:46px;border-radius:12px;background:${ct.color}20;display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;">${ct.icon}</div>
+              <div style="width:46px;height:46px;border-radius:12px;background:${ct.color}20;color:${ct.color};display:flex;align-items:center;justify-content:center;flex-shrink:0;">${icon(ct.icon, 'md')}</div>
               <div style="flex:1;min-width:0;">
                 <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
                   <span class="campaign-name">${esc(c.name)}</span>
@@ -148,8 +148,8 @@ export async function renderCampaigns(el, me) {
                 </div>
                 <div class="campaign-meta">
                   <span style="font-size:11px;background:${ct.color}15;color:${ct.color};padding:3px 8px;border-radius:5px;font-weight:600;">${ct.label}</span>
-                  ${c.owner_name ? `<span style="font-size:12px;color:var(--text-2);">👤 ${esc(c.owner_name)}</span>` : ''}
-                  ${c.start_date ? `<span style="font-size:11px;color:var(--text-3);">📅 ${esc(c.start_date)} → ${esc(c.end_date||'—')}</span>` : ''}
+                  ${c.owner_name ? `<span style="font-size:12px;color:var(--text-2);display:inline-flex;align-items:center;gap:4px;">${icon('user', 'xs')} ${esc(c.owner_name)}</span>` : ''}
+                  ${c.start_date ? `<span style="font-size:11px;color:var(--text-3);display:inline-flex;align-items:center;gap:4px;">${icon('calendarDays', 'xs')} ${esc(c.start_date)} → ${esc(c.end_date||'—')}</span>` : ''}
                 </div>
                 ${c.description ? `<div style="font-size:12px;color:var(--text-3);margin-bottom:8px;">${esc(c.description)}</div>` : ''}
                 ${budget > 0 ? `
@@ -163,16 +163,16 @@ export async function renderCampaigns(el, me) {
                 ` : ''}
                 ${(c.goal_reach||c.goal_leads||c.goal_conversions) ? `
                   <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap;">
-                    ${c.goal_reach ? `<div style="font-size:11px;color:var(--text-2);">👁️ Reach: <strong>${Number(c.goal_reach).toLocaleString()}</strong></div>` : ''}
-                    ${c.goal_leads ? `<div style="font-size:11px;color:var(--text-2);">🎯 Leads: <strong>${Number(c.goal_leads).toLocaleString()}</strong></div>` : ''}
-                    ${c.goal_conversions ? `<div style="font-size:11px;color:var(--text-2);">✅ Conv: <strong>${Number(c.goal_conversions).toLocaleString()}</strong></div>` : ''}
+                    ${c.goal_reach ? `<div style="font-size:11px;color:var(--text-2);display:inline-flex;align-items:center;gap:4px;">${icon('eye', 'xs')} Reach: <strong>${Number(c.goal_reach).toLocaleString()}</strong></div>` : ''}
+                    ${c.goal_leads ? `<div style="font-size:11px;color:var(--text-2);display:inline-flex;align-items:center;gap:4px;">${icon('target', 'xs')} Leads: <strong>${Number(c.goal_leads).toLocaleString()}</strong></div>` : ''}
+                    ${c.goal_conversions ? `<div style="font-size:11px;color:var(--text-2);display:inline-flex;align-items:center;gap:4px;">${icon('circleCheck', 'xs')} Conv: <strong>${Number(c.goal_conversions).toLocaleString()}</strong></div>` : ''}
                   </div>
                 ` : ''}
               </div>
               ${isAdmin ? `
                 <div style="display:flex;flex-direction:column;gap:5px;flex-shrink:0;">
-                  <button class="btn-xs btn-secondary camp-edit" data-cid="${c.id}">✏️</button>
-                  <button class="btn-xs btn-danger camp-del" data-cid="${c.id}">🗑</button>
+                  <button class="btn-xs btn-secondary camp-edit" data-cid="${c.id}" title="Sửa">${icon('pencil', 'xs')}</button>
+                  <button class="btn-xs btn-danger camp-del" data-cid="${c.id}" title="Xóa">${icon('trash2', 'xs')}</button>
                 </div>
               ` : ''}
             </div>
@@ -202,7 +202,7 @@ export async function renderCampaigns(el, me) {
         });
       }
     } catch(e) {
-      listEl.innerHTML = emptyHTML('⚠️', e.message);
+      listEl.innerHTML = emptyHTML('triangleAlert', e.message);
     }
   }
 
@@ -224,7 +224,7 @@ function openCampaignForm(c, onRefresh = noop) {
     <div class="input-row">
       <div class="field"><label>Loại</label>
         <select id="campf-type">
-          ${CAMPAIGN_TYPES.map(t => `<option value="${t.value}" ${c?.type===t.value?'selected':''}>${t.icon} ${t.label}</option>`).join('')}
+          ${CAMPAIGN_TYPES.map(t => `<option value="${t.value}" ${c?.type===t.value?'selected':''}>${t.label}</option>`).join('')}
         </select>
       </div>
       <div class="field"><label>Trạng thái</label>

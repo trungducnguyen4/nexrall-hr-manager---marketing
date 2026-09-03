@@ -102,8 +102,8 @@ export async function renderSettings(el, me) {
 
         <div class="sound-toggle-hero" style="background:${isPushActive ? '#f0fdf4' : (pushPermission === 'denied' ? '#fff1f2' : 'var(--surface-2, #f8fafc)')}; border-color:${isPushActive ? '#bbf7d0' : (pushPermission === 'denied' ? '#fecdd3' : 'var(--border)')};">
           <div style="display:flex;align-items:center;gap:14px;">
-            <div style="width:44px;height:44px;border-radius:12px;display:grid;place-items:center;background:${isPushActive ? '#dcfce7' : (pushPermission === 'denied' ? '#ffe4e6' : '#f1f5f9')};color:${isPushActive ? '#16a34a' : (pushPermission === 'denied' ? '#e11d48' : 'var(--text-3)')};font-size:22px;">
-              ${isPushActive ? '🔔' : (pushPermission === 'denied' ? '🚫' : '📱')}
+            <div style="width:44px;height:44px;border-radius:12px;display:grid;place-items:center;background:${isPushActive ? '#dcfce7' : (pushPermission === 'denied' ? '#ffe4e6' : '#f1f5f9')};color:${isPushActive ? '#16a34a' : (pushPermission === 'denied' ? '#e11d48' : 'var(--text-3)')};">
+              ${isPushActive ? icon('bell', 'md') : (pushPermission === 'denied' ? icon('bellOff', 'md') : icon('smartPhone', 'md'))}
             </div>
             <div>
               <div style="font-weight:700;font-size:14.5px;color:var(--text-1);">
@@ -128,15 +128,15 @@ export async function renderSettings(el, me) {
 
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
             ${isPushActive ? `
-              <button type="button" id="btn-test-push-action" class="btn-primary" style="min-width:140px;font-weight:600;">
-                🚀 Gửi thử thông báo
+              <button type="button" id="btn-test-push-action" class="btn-primary" style="min-width:140px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:6px;">
+                ${icon('send', 'xs')} <span>Gửi thử thông báo</span>
               </button>
               <button type="button" id="btn-disable-push-action" class="btn-secondary btn-sm" style="color:var(--danger);">
                 Tắt trên máy này
               </button>
             ` : (pushPermission !== 'denied' ? `
-              <button type="button" id="btn-enable-push-action" class="btn-primary" style="min-width:170px;font-weight:600;">
-                🔔 Kích hoạt thông báo
+              <button type="button" id="btn-enable-push-action" class="btn-primary" style="min-width:170px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:6px;">
+                ${icon('bell', 'xs')} <span>Kích hoạt thông báo</span>
               </button>
             ` : '')}
           </div>
@@ -144,16 +144,16 @@ export async function renderSettings(el, me) {
 
         ${isIos && !isStandalone ? `
           <div style="margin-top:14px;padding:14px 16px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;font-size:13px;color:#92400e;line-height:1.6;">
-            <strong>⚠️ Để app xuất hiện trong mục "Cài đặt ➔ Thông báo" của iPhone:</strong><br/>
+            <strong>Để app xuất hiện trong mục "Cài đặt ➔ Thông báo" của iPhone:</strong><br/>
             1. Bấm nút <strong>Chia sẻ (Share - biểu tượng ⎋ / ô vuông có mũi tên lên)</strong> ở thanh dưới Safari.<br/>
             2. Chọn <strong>"Thêm vào MH chính" (Add to Home Screen)</strong>.<br/>
             3. <strong>Mở app từ icon NetViet HR trên màn hình chính</strong> (không mở từ tab Safari).<br/>
-            4. Vào lại <strong>Cài đặt</strong> ➔ Bấm <strong>"🔔 Kích hoạt thông báo"</strong> và chọn <strong>Cho phép (Allow)</strong>.<br/>
-            👉 <em>Khi đó iPhone sẽ tự động thêm "NetViet HR" vào danh sách Thông báo hệ thống!</em>
+            4. Vào lại <strong>Cài đặt</strong> ➔ Bấm <strong>"Kích hoạt thông báo"</strong> và chọn <strong>Cho phép (Allow)</strong>.<br/>
+            <em>Khi đó iPhone sẽ tự động thêm "NetViet HR" vào danh sách Thông báo hệ thống!</em>
           </div>
         ` : `
           <div style="margin-top:14px;padding:12px 14px;background:#f8fafc;border:1px dashed #cbd5e1;border-radius:10px;font-size:12.5px;color:#475569;line-height:1.5;">
-            <strong>💡 Mẹo:</strong> Sau khi bấm <strong>"Kích hoạt thông báo"</strong> và chọn <strong>Cho phép</strong>, ứng dụng sẽ được hệ điều hành lưu vào mục <em>Cài đặt ➔ Thông báo</em> để bạn tùy chỉnh biểu ngữ, âm thanh và hiển thị trên màn hình khóa.
+            <strong>Mẹo:</strong> Sau khi bấm <strong>"Kích hoạt thông báo"</strong> và chọn <strong>Cho phép</strong>, ứng dụng sẽ được hệ điều hành lưu vào mục <em>Cài đặt ➔ Thông báo</em> để bạn tùy chỉnh biểu ngữ, âm thanh và hiển thị trên màn hình khóa.
           </div>
         `}
       </div>
@@ -187,14 +187,14 @@ export async function renderSettings(el, me) {
             </div>
           </div>
 
-          <button type="button" id="btn-toggle-sound-action" class="${soundEnabled ? 'btn-secondary' : 'btn-primary'}" style="min-width:130px;font-weight:600;">
-            ${soundEnabled ? '🔇 Tắt âm thanh' : '🔊 Bật âm thanh'}
+          <button type="button" id="btn-toggle-sound-action" class="${soundEnabled ? 'btn-secondary' : 'btn-primary'}" style="min-width:130px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:6px;">
+            ${soundEnabled ? `${icon('volumeX', 'xs')} <span>Tắt âm thanh</span>` : `${icon('volume2', 'xs')} <span>Bật âm thanh</span>`}
           </button>
         </div>
 
         <div style="margin-top:20px;">
-          <div style="font-weight:700;font-size:13.5px;color:var(--text-1);margin-bottom:4px;">
-            🎵 Nghe thử các kiểu chuông hệ thống
+          <div style="font-weight:700;font-size:13.5px;color:var(--text-1);margin-bottom:4px;display:flex;align-items:center;gap:6px;">
+            ${icon('music', 'xs')} Nghe thử các kiểu chuông hệ thống
           </div>
           <div style="font-size:12.5px;color:var(--text-2);margin-bottom:12px;">
             Bấm vào từng mục để kiểm tra âm thanh trực tiếp trên thiết bị của bạn:
@@ -203,31 +203,31 @@ export async function renderSettings(el, me) {
           <div class="sound-test-grid">
             <div class="sound-test-item">
               <div>
-                <div style="font-weight:600;font-size:13.5px;color:var(--text-1);">💬 Tin nhắn mới</div>
+                <div style="font-weight:600;font-size:13.5px;color:var(--text-1);display:flex;align-items:center;gap:6px;">${icon('messageSquare', 'xs')} Tin nhắn mới</div>
                 <div style="font-size:12px;color:var(--text-3);margin-top:2px;">Chuông êm 2 nốt</div>
               </div>
-              <button type="button" id="btn-test-chat" class="btn-secondary btn-sm" title="Phát thử">
-                ▶ Phát
+              <button type="button" id="btn-test-chat" class="btn-secondary btn-sm" title="Phát thử" style="display:inline-flex;align-items:center;gap:4px;">
+                ${icon('play', 'xs')} <span>Phát</span>
               </button>
             </div>
 
             <div class="sound-test-item">
               <div>
-                <div style="font-weight:600;font-size:13.5px;color:var(--text-1);">✨ Nhắc tên (Mention)</div>
+                <div style="font-weight:600;font-size:13.5px;color:var(--text-1);display:flex;align-items:center;gap:6px;">${icon('sparkles', 'xs')} Nhắc tên (Mention)</div>
                 <div style="font-size:12px;color:var(--text-3);margin-top:2px;">Chuông 3 nốt cao</div>
               </div>
-              <button type="button" id="btn-test-mention" class="btn-secondary btn-sm" title="Phát thử">
-                ▶ Phát
+              <button type="button" id="btn-test-mention" class="btn-secondary btn-sm" title="Phát thử" style="display:inline-flex;align-items:center;gap:4px;">
+                ${icon('play', 'xs')} <span>Phát</span>
               </button>
             </div>
 
             <div class="sound-test-item">
               <div>
-                <div style="font-weight:600;font-size:13.5px;color:var(--text-1);">🔔 Tag công việc</div>
+                <div style="font-weight:600;font-size:13.5px;color:var(--text-1);display:flex;align-items:center;gap:6px;">${icon('bell', 'xs')} Tag công việc</div>
                 <div style="font-size:12px;color:var(--text-3);margin-top:2px;">Chuông nhiệm vụ C-G-C</div>
               </div>
-              <button type="button" id="btn-test-task" class="btn-secondary btn-sm" title="Phát thử">
-                ▶ Phát
+              <button type="button" id="btn-test-task" class="btn-secondary btn-sm" title="Phát thử" style="display:inline-flex;align-items:center;gap:4px;">
+                ${icon('play', 'xs')} <span>Phát</span>
               </button>
             </div>
           </div>
@@ -256,7 +256,7 @@ export async function renderSettings(el, me) {
             <label>Mật khẩu hiện tại</label>
             <div class="pw-wrap">
               <input type="password" id="pw-old" placeholder="Nhập mật khẩu hiện tại" autocomplete="current-password"/>
-              <button type="button" id="pw-eye-old" class="pw-eye-btn" aria-label="Hiện mật khẩu">👁</button>
+              <button type="button" id="pw-eye-old" class="pw-eye-btn" aria-label="Hiện mật khẩu">${icon('eye', 'sm')}</button>
             </div>
           </div>
 
@@ -264,7 +264,7 @@ export async function renderSettings(el, me) {
             <label>Mật khẩu mới</label>
             <div class="pw-wrap">
               <input type="password" id="pw-new" placeholder="Tạo mật khẩu mới an toàn" autocomplete="new-password"/>
-              <button type="button" id="pw-eye-new" class="pw-eye-btn" aria-label="Hiện mật khẩu">👁</button>
+              <button type="button" id="pw-eye-new" class="pw-eye-btn" aria-label="Hiện mật khẩu">${icon('eye', 'sm')}</button>
             </div>
             <ul id="pw-rules" class="password-rules" style="margin-top:8px;" aria-live="polite">
               <li data-rule="length">Từ 8 đến 20 ký tự</li>
@@ -439,7 +439,7 @@ export async function renderSettings(el, me) {
           renderFrame();
         } catch (err) {
           toast(err.message, 'error');
-          if (btn) { btn.disabled = false; btn.textContent = '🔔 Kích hoạt thông báo'; }
+          if (btn) { btn.disabled = false; btn.innerHTML = `${icon('bell', 'xs')} <span>Kích hoạt thông báo</span>`; }
         }
       });
 
@@ -464,20 +464,22 @@ export async function renderSettings(el, me) {
         } catch (err) {
           toast(err.message, 'error');
         } finally {
-          if (btn) { btn.disabled = false; btn.textContent = '🚀 Gửi thử thông báo'; }
+          if (btn) { btn.disabled = false; btn.innerHTML = `${icon('send', 'xs')} <span>Gửi thử thông báo</span>`; }
         }
       });
     }
 
     if (_activeSettingsTab === 'security') {
       // Toggle password visibility
-      document.getElementById('pw-eye-old')?.addEventListener('click', () => togglePw('pw-old'));
-      document.getElementById('pw-eye-new')?.addEventListener('click', () => togglePw('pw-new'));
+      document.getElementById('pw-eye-old')?.addEventListener('click', () => togglePw('pw-old', 'pw-eye-old'));
+      document.getElementById('pw-eye-new')?.addEventListener('click', () => togglePw('pw-new', 'pw-eye-new'));
 
-      function togglePw(id) {
+      function togglePw(id, eyeId) {
         const inp = document.getElementById(id);
+        const eye = document.getElementById(eyeId);
         if (!inp) return;
         inp.type = inp.type === 'password' ? 'text' : 'password';
+        if (eye) eye.innerHTML = inp.type === 'password' ? icon('eye', 'sm') : icon('eyeOff', 'sm');
       }
 
       function renderPasswordRules(value) {
@@ -693,8 +695,8 @@ export async function renderSettings(el, me) {
                     </span>
                   </td>
                   <td style="text-align:right;">
-                    <button class="btn-icon holiday-edit" data-id="${h.id}" data-date="${esc(h.holiday_date)}" data-name="${esc(h.name)}" data-active="${Number(h.is_active)}" title="Sửa">✏️</button>
-                    <button class="btn-icon holiday-delete" data-id="${h.id}" title="Xóa">🗑️</button>
+                    <button class="btn-icon holiday-edit" data-id="${h.id}" data-date="${esc(h.holiday_date)}" data-name="${esc(h.name)}" data-active="${Number(h.is_active)}" title="Sửa">${icon('pencil', 'xs')}</button>
+                    <button class="btn-icon holiday-delete" data-id="${h.id}" title="Xóa">${icon('trash2', 'xs')}</button>
                   </td>
                 </tr>
               `).join('') : `

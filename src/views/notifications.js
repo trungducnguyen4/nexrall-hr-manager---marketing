@@ -52,7 +52,7 @@ export async function renderNotifications(el) {
       <header class="notification-page-head">
         <div>
           <p class="employee-page-kicker">Trung tâm xử lý</p>
-          <h1>🔔 Thông báo & Cảnh báo</h1>
+          <h1 style="display:flex;align-items:center;gap:8px;">${icon('bell', 'md')} <span>Thông báo & Cảnh báo</span></h1>
           <p>Theo dõi các vấn đề cần xử lý, cảnh báo hồ sơ nhân sự và bất thường chấm công.</p>
         </div>
         <div class="notification-head-actions">
@@ -76,8 +76,8 @@ export async function renderNotifications(el) {
                 <option value="90">90 ngày</option>
               </select>
             </div>
-            <button type="button" class="btn-secondary btn-sm" id="notification-filter-toggle">
-              <span>⚙️ Bộ lọc</span>
+            <button type="button" class="btn-secondary btn-sm" id="notification-filter-toggle" style="display:inline-flex;align-items:center;gap:4px;">
+              ${icon('settings', 'xs')} <span>Bộ lọc</span>
               <span id="notification-active-filter-badge" class="filter-count-badge" style="display:none;">0</span>
             </button>
             <button type="button" class="btn-secondary btn-sm" id="notification-reset" title="Xóa toàn bộ bộ lọc">
@@ -89,9 +89,9 @@ export async function renderNotifications(el) {
         <!-- Quick Severity Tabs with Direct Counts -->
         <div class="notification-tabs-row" id="notification-severity-tabs">
           <button type="button" class="notif-tab-pill active" data-severity=""><span>Tất cả</span></button>
-          <button type="button" class="notif-tab-pill danger" data-severity="danger"><span>🚨 Khẩn cấp</span></button>
-          <button type="button" class="notif-tab-pill warning" data-severity="warning"><span>🕒 Cần xử lý</span></button>
-          <button type="button" class="notif-tab-pill info" data-severity="info"><span>ℹ️ Thông tin</span></button>
+          <button type="button" class="notif-tab-pill danger" data-severity="danger"><span style="display:inline-flex;align-items:center;gap:4px;">${icon('circleAlert', 'xs')} <span>Khẩn cấp</span></span></button>
+          <button type="button" class="notif-tab-pill warning" data-severity="warning"><span style="display:inline-flex;align-items:center;gap:4px;">${icon('clock3', 'xs')} <span>Cần xử lý</span></span></button>
+          <button type="button" class="notif-tab-pill info" data-severity="info"><span style="display:inline-flex;align-items:center;gap:4px;">${icon('circleInfo', 'xs')} <span>Thông tin</span></span></button>
         </div>
 
         <!-- Collapsible Advanced Filter Drawer -->
@@ -155,9 +155,9 @@ export async function renderNotifications(el) {
       const infoBtn = tabs.querySelector('[data-severity="info"]');
 
       if (allBtn) allBtn.innerHTML = `<span>Tất cả</span> <span class="notif-pill-count">${total}</span>`;
-      if (dangerBtn) dangerBtn.innerHTML = `<span>🚨 Khẩn cấp</span> <span class="notif-pill-count">${danger}</span>`;
-      if (warningBtn) warningBtn.innerHTML = `<span>🕒 Cần xử lý</span> <span class="notif-pill-count">${warning}</span>`;
-      if (infoBtn) infoBtn.innerHTML = `<span>ℹ️ Thông tin</span> <span class="notif-pill-count">${info}</span>`;
+      if (dangerBtn) dangerBtn.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;">${icon('circleAlert', 'xs')} <span>Khẩn cấp</span></span> <span class="notif-pill-count">${danger}</span>`;
+      if (warningBtn) warningBtn.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;">${icon('clock3', 'xs')} <span>Cần xử lý</span></span> <span class="notif-pill-count">${warning}</span>`;
+      if (infoBtn) infoBtn.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;">${icon('circleInfo', 'xs')} <span>Thông tin</span></span> <span class="notif-pill-count">${info}</span>`;
     }
   }
 
@@ -177,7 +177,7 @@ export async function renderNotifications(el) {
     if (!host) return;
     const items = data.notifications || [];
     if (!items.length) {
-      host.innerHTML = emptyHTML('', 'Không có thông báo nào phù hợp', 'Hãy thử thay đổi từ khóa hoặc bộ lọc thời gian.');
+      host.innerHTML = emptyHTML('bell', 'Không có thông báo nào phù hợp', 'Hãy thử thay đổi từ khóa hoặc bộ lọc thời gian.');
       return;
     }
     const pagination = data.pagination || {};
@@ -198,7 +198,7 @@ export async function renderNotifications(el) {
                 <div class="notification-item-meta">
                   ${item.module_label ? `<span class="notif-module-badge">${esc(item.module_label)}</span>` : ''}
                   <span class="notif-severity-badge ${esc(sev)}">${esc(sevLabel)}</span>
-                  ${item.occurred_on || item.due_date ? `<span class="notif-time-badge">📅 ${esc(fmtDate(item.occurred_on || item.due_date))}</span>` : ''}
+                  ${item.occurred_on || item.due_date ? `<span class="notif-time-badge" style="display:inline-flex;align-items:center;gap:4px;">${icon('calendarDays', 'xs')} ${esc(fmtDate(item.occurred_on || item.due_date))}</span>` : ''}
                 </div>
                 <h2 class="notification-item-title">${esc(item.title || TYPE_LABELS[item.type] || 'Thông báo')}</h2>
                 <p class="notification-item-desc">${esc(item.message || '')}</p>
@@ -222,8 +222,8 @@ export async function renderNotifications(el) {
       <footer class="employee-pagination">
         <span>${Number(pagination.total || 0)} thông báo · Trang ${Number(pagination.page || 1)} / ${Number(pagination.pages || 1)}</span>
         <div style="display:flex;gap:6px;">
-          <button class="btn-secondary btn-sm" id="notification-prev" ${Number(pagination.page || 1) <= 1 ? 'disabled' : ''}>← Trước</button>
-          <button class="btn-secondary btn-sm" id="notification-next" ${Number(pagination.page || 1) >= Number(pagination.pages || 1) ? 'disabled' : ''}>Sau →</button>
+          <button class="btn-secondary btn-sm" id="notification-prev" ${Number(pagination.page || 1) <= 1 ? 'disabled' : ''} style="display:inline-flex;align-items:center;gap:4px;">${icon('arrowLeft', 'xs')} <span>Trước</span></button>
+          <button class="btn-secondary btn-sm" id="notification-next" ${Number(pagination.page || 1) >= Number(pagination.pages || 1) ? 'disabled' : ''} style="display:inline-flex;align-items:center;gap:4px;"><span>Sau</span> ${icon('arrowRight', 'xs')}</button>
         </div>
       </footer>`;
 

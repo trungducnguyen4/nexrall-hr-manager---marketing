@@ -163,7 +163,7 @@ function richEditorHTML(value = '') {
         <button type="button" data-cmd="insertOrderedList" title="Danh sách số">1.</button>
         <button type="button" data-cmd="formatBlock" data-value="blockquote" title="Trích dẫn">“</button>
         <span class="toolbar-sep"></span>
-        <button type="button" data-cmd="createLink" title="Chèn link">🔗</button>
+        <button type="button" data-cmd="createLink" title="Chèn link">${icon('link', 'xs')}</button>
         <button type="button" data-cmd="removeFormat" title="Xóa định dạng">Tx</button>
       </div>
       <div id="tf-desc" class="rich-editor-body" contenteditable="true" data-placeholder="Nhập mô tả, checklist, ghi chú hoặc yêu cầu công việc...">${content}</div>
@@ -214,6 +214,7 @@ export async function renderTasks(el, me) {
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
         <button id="btn-toggle-project-nav" class="btn-secondary btn-sm" title="Ẩn / Hiện danh sách Dự án để mở rộng tối đa bảng Kanban">${icon('panelLeft', 'xs')} <span id="btn-toggle-project-nav-text">Danh sách dự án</span></button>
+        <button id="btn-manage-notif-top" class="btn-secondary btn-sm" title="Quản lý nhận thông báo hoàn thành task">${icon('bell', 'xs')} <span>Quản lý thông báo</span></button>
         ${canManage ? `<button id="btn-import-myxteam" class="btn-secondary btn-sm">${icon('download', 'xs')} Nhập MyXteam</button>` : ''}
         ${canManage ? `<button id="btn-new-project" class="btn-secondary btn-sm">${icon('plus', 'xs')} Project</button>` : ''}
         <button id="btn-new-task" class="btn-primary btn-sm">${icon('plus', 'xs')} Tạo việc</button>
@@ -470,7 +471,7 @@ export async function renderTasks(el, me) {
       const list = document.getElementById('project-timeline-list');
       if (!list) return;
       if (!events.length) {
-        list.innerHTML = emptyHTML('🕘', 'Chưa có hoạt động phù hợp', 'Timeline bắt đầu ghi chính xác từ lúc tính năng được triển khai.');
+        list.innerHTML = emptyHTML('clock3', 'Chưa có hoạt động phù hợp', 'Timeline bắt đầu ghi chính xác từ lúc tính năng được triển khai.');
         return;
       }
       const groupsByDay = new Map();
@@ -517,7 +518,7 @@ export async function renderTasks(el, me) {
         renderMore();
       } catch (error) {
         if (error.status === 403) toast('Bạn không có quyền xem Timeline của Project này', 'error');
-        list.innerHTML = emptyHTML('⚠️', 'Không thể tải Timeline', error.message || 'Vui lòng thử lại.');
+        list.innerHTML = emptyHTML('triangleAlert', 'Không thể tải Timeline', error.message || 'Vui lòng thử lại.');
       }
     };
     document.getElementById('project-timeline-filter')?.addEventListener('change', event => {
@@ -558,35 +559,27 @@ export async function renderTasks(el, me) {
             ${deptMentionCount > 0 && !isExpanded ? `<span class="task-project-mention-badge" title="${deptMentionCount} việc cần chú ý / được nhắc">${deptMentionCount > 99 ? '99+' : deptMentionCount}</span>` : ''}
             <span class="task-project-nav-department-count">${departmentProjects.length}</span>
           </button>
-          ${canManage || isHr ? `
+          ${canManage ? `
             <div class="project-nav-menu-wrap">
               <button type="button" class="project-nav-gear-btn department-gear-btn" data-department-gear="${departmentIndex}" title="Tùy chọn nhóm dự án" aria-label="Tùy chọn nhóm dự án">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <circle cx="12" cy="12" r="3"/>
-                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
                 </svg>
               </button>
               <div class="project-nav-dropdown" id="department-menu-${departmentIndex}" hidden>
-                ${isHr ? `
-                  <button type="button" class="project-nav-dropdown-item" data-action-notify-dept="${esc(department)}">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="${subscribedDepts.has(department) ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.27 21a2 2 0 0 0 3.46 0"/><path d="M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.6 14.06 18 12.22 18 8a6 6 0 0 0-12 0c0 4.22-1.6 6.06-2.74 7.33"/></svg>
-                    <span>${subscribedDepts.has(department) ? 'Tắt thông báo hoàn thành' : 'Nhận thông báo khi hoàn thành task'}</span>
-                  </button>
-                ` : ''}
-                ${canManage ? `
-                  <button type="button" class="project-nav-dropdown-item" data-action-rename-dept="${esc(department)}">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                    <span>Đổi tên nhóm</span>
-                  </button>
-                  <button type="button" class="project-nav-dropdown-item" data-action-members-dept="${esc(department)}">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
-                    <span>Thêm thành viên vào nhóm</span>
-                  </button>
-                  <button type="button" class="project-nav-dropdown-item project-nav-dropdown-item--danger" data-action-delete-dept="${esc(department)}">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
-                    <span>Xóa nhóm dự án</span>
-                  </button>
-                ` : ''}
+                <button type="button" class="project-nav-dropdown-item" data-action-rename-dept="${esc(department)}">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  <span>Đổi tên nhóm</span>
+                </button>
+                <button type="button" class="project-nav-dropdown-item" data-action-members-dept="${esc(department)}">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+                  <span>Thêm thành viên vào nhóm</span>
+                </button>
+                <button type="button" class="project-nav-dropdown-item project-nav-dropdown-item--danger" data-action-delete-dept="${esc(department)}">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                  <span>Xóa nhóm dự án</span>
+                </button>
               </div>
             </div>
           ` : ''}
@@ -603,7 +596,7 @@ export async function renderTasks(el, me) {
               </span>
               <span class="task-project-nav-item-meta">${Number(p.task_count || 0)} việc · ${esc(projectStatusText(p.status))}</span>
             </button>
-            ${canManage || isHr ? `
+            ${canManage ? `
               <div class="project-nav-menu-wrap">
                 <button type="button" class="project-nav-gear-btn" data-project-gear="${p.id}" title="Tùy chọn dự án" aria-label="Tùy chọn dự án">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -612,22 +605,14 @@ export async function renderTasks(el, me) {
                   </svg>
                 </button>
                 <div class="project-nav-dropdown" id="project-nav-menu-${p.id}" hidden>
-                  ${isHr ? `
-                    <button type="button" class="project-nav-dropdown-item" data-action-notify-proj="${p.id}">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="${subscribedProjects.has(Number(p.id)) ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.27 21a2 2 0 0 0 3.46 0"/><path d="M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.6 14.06 18 12.22 18 8a6 6 0 0 0-12 0c0 4.22-1.6 6.06-2.74 7.33"/></svg>
-                      <span>${subscribedProjects.has(Number(p.id)) ? 'Tắt thông báo hoàn thành' : 'Nhận thông báo khi hoàn thành task'}</span>
-                    </button>
-                  ` : ''}
-                  ${canManage ? `
-                    <button type="button" class="project-nav-dropdown-item" data-action-edit-project="${p.id}">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                      <span>Sửa tên dự án</span>
-                    </button>
-                    <button type="button" class="project-nav-dropdown-item project-nav-dropdown-item--danger" data-action-delete-project="${p.id}">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
-                      <span>Xóa dự án</span>
-                    </button>
-                  ` : ''}
+                  <button type="button" class="project-nav-dropdown-item" data-action-edit-project="${p.id}">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    <span>Sửa tên dự án</span>
+                  </button>
+                  <button type="button" class="project-nav-dropdown-item project-nav-dropdown-item--danger" data-action-delete-project="${p.id}">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                    <span>Xóa dự án</span>
+                  </button>
                 </div>
               </div>
             ` : ''}
@@ -654,45 +639,6 @@ export async function renderTasks(el, me) {
       document.querySelectorAll('.project-nav-dropdown').forEach(m => m.hidden = true);
       if (!isCurrentlyOpen && menu) {
         menu.hidden = false;
-      }
-    }));
-
-    list.querySelectorAll('[data-action-notify-dept]').forEach(btn => btn.addEventListener('click', async e => {
-      e.stopPropagation();
-      document.querySelectorAll('.project-nav-dropdown').forEach(m => m.hidden = true);
-      const department = btn.dataset.actionNotifyDept;
-      try {
-        const res = await api.toggleTaskCompletionSubscription({ department });
-        if (res.subscribed) {
-          subscribedDepts.add(department);
-          toast(`Đã bật nhận thông báo khi hoàn thành task trong nhóm "${department}"`, 'success');
-        } else {
-          subscribedDepts.delete(department);
-          toast(`Đã tắt nhận thông báo hoàn thành task cho nhóm "${department}"`, 'info');
-        }
-        renderProjects();
-      } catch (err) {
-        toast(err.message || 'Không thể thay đổi cài đặt thông báo', 'error');
-      }
-    }));
-
-    list.querySelectorAll('[data-action-notify-proj]').forEach(btn => btn.addEventListener('click', async e => {
-      e.stopPropagation();
-      document.querySelectorAll('.project-nav-dropdown').forEach(m => m.hidden = true);
-      const pid = Number(btn.dataset.actionNotifyProj);
-      const project = projects.find(cand => Number(cand.id) === pid);
-      try {
-        const res = await api.toggleTaskCompletionSubscription({ project_id: pid });
-        if (res.subscribed) {
-          subscribedProjects.add(pid);
-          toast(`Đã bật nhận thông báo khi hoàn thành task trong "${project?.name || 'Dự án'}"`, 'success');
-        } else {
-          subscribedProjects.delete(pid);
-          toast(`Đã tắt nhận thông báo hoàn thành task cho "${project?.name || 'Dự án'}"`, 'info');
-        }
-        renderProjects();
-      } catch (err) {
-        toast(err.message || 'Không thể thay đổi cài đặt thông báo', 'error');
       }
     }));
 
@@ -899,7 +845,7 @@ export async function renderTasks(el, me) {
     const board = el.querySelector('#project-board');
     board.innerHTML = `
       <div class="card">
-        ${emptyHTML(icon('folder', 'xl'), canManage ? 'Chọn hoặc tạo Project để bắt đầu' : 'Chọn Project để xem công việc')}
+        ${emptyHTML('folder', canManage ? 'Chọn hoặc tạo Project để bắt đầu' : 'Chọn Project để xem công việc')}
       </div>
     `;
   }
@@ -995,8 +941,8 @@ export async function renderTasks(el, me) {
         <input type="text" id="project-member-search" placeholder="Tìm tên, mã NV, email, phòng ban..." style="width:100%;height:38px;padding:0 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;outline:none;box-sizing:border-box;background:var(--surface);"/>
       </div>
       <div id="project-member-modal-list" class="task-project-member-list"></div>
-      <div style="margin-top:10px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:11.5px;color:var(--text-2);line-height:1.4;">
-        ℹ️ Danh sách thành viên được tích sẵn theo nhóm dự án "${esc(normDept)}". Bạn có thể tích chọn thêm hoặc bỏ bớt thành viên cho riêng Project này.
+      <div style="margin-top:10px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:11.5px;color:var(--text-2);line-height:1.4;display:flex;align-items:flex-start;gap:6px;">
+        <span style="display:inline-flex;align-items:center;margin-top:2px;">${icon('circleInfo', 'xs')}</span> <span>Danh sách thành viên được tích sẵn theo nhóm dự án "${esc(normDept)}". Bạn có thể tích chọn thêm hoặc bỏ bớt thành viên cho riêng Project này.</span>
       </div>
     `, `<button type="button" class="btn-secondary" id="project-member-close">Đóng</button>${canManage ? '<button type="button" class="btn-primary" id="project-member-save">Lưu thành viên</button>' : ''}`);
 
@@ -1078,6 +1024,225 @@ export async function renderTasks(el, me) {
         if (saveBtn) saveBtn.disabled = false;
       }
     });
+  }
+
+  async function openNotificationManagementModal(onSaved) {
+    let currentSubs = [];
+    try {
+      const res = await api.getTaskCompletionSubscriptions();
+      currentSubs = res?.subscriptions || [];
+    } catch (_) {}
+
+    const activeProjects = projects.filter(p => !p.archived);
+    let selectedProjects = new Set(currentSubs.filter(s => s.project_id).map(s => Number(s.project_id)));
+    let selectedDepts = new Set(currentSubs.filter(s => s.department && !s.project_id).map(s => s.department));
+
+    // Group active projects by department
+    const deptsMap = new Map();
+    activeProjects.forEach(p => {
+      const dept = (p.department || 'Chung').trim();
+      if (!deptsMap.has(dept)) deptsMap.set(dept, []);
+      deptsMap.get(dept).push(p);
+    });
+
+    selectedDepts.forEach(dept => {
+      if (dept && !deptsMap.has(dept)) deptsMap.set(dept, []);
+    });
+
+    const sortedDepts = [...deptsMap.keys()].sort((a, b) => compareVietnameseNames(a, b));
+
+    let searchQuery = '';
+
+    openModal('Quản lý nhận thông báo hoàn thành task', `
+      <div class="task-notif-modal-wrap" style="display:flex;flex-direction:column;gap:12px;max-height:75vh;">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;font-size:12.5px;color:var(--text-2);line-height:1.5;display:flex;align-items:center;gap:10px;">
+          <span style="color:var(--primary);flex-shrink:0;display:inline-flex;">${icon('circleInfo', 'md')}</span>
+          <div>Chọn các dự án hoặc nhóm dự án mà bạn muốn nhận thông báo khi có người <strong>hoàn thành task / subtask</strong>. Bạn có thể chọn nhanh tất cả hoặc từng nhóm riêng biệt.</div>
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;">
+          <div style="position:relative;flex:1;min-width:220px;">
+            <input type="text" id="notif-manage-search" placeholder="Tìm kiếm dự án hoặc nhóm dự án..." style="width:100%;height:38px;padding:0 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;outline:none;background:var(--surface);box-sizing:border-box;"/>
+          </div>
+          <label style="display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer;user-select:none;padding:8px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface);box-shadow:0 1px 2px rgba(0,0,0,0.03);">
+            <input type="checkbox" id="notif-select-all" style="width:16px;height:16px;cursor:pointer;accent-color:var(--primary);"/>
+            <span>Chọn tất cả (<strong id="notif-selected-count" style="color:var(--primary);">0</strong>/<span id="notif-total-count">0</span> dự án)</span>
+          </label>
+        </div>
+
+        <div id="notif-manage-project-list" style="max-height:48vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding-right:4px;"></div>
+      </div>
+    `, `
+      <button type="button" class="btn-secondary" id="notif-modal-cancel">Đóng</button>
+      <button type="button" class="btn-primary" id="notif-modal-save" style="display:inline-flex;align-items:center;gap:6px;">
+        ${icon('check', 'xs')} <span>Lưu cài đặt</span>
+      </button>
+    `);
+
+    const listEl = document.getElementById('notif-manage-project-list');
+    const searchInput = document.getElementById('notif-manage-search');
+    const selectAllCb = document.getElementById('notif-select-all');
+    const countEl = document.getElementById('notif-selected-count');
+    const totalCountEl = document.getElementById('notif-total-count');
+
+    function renderList() {
+      if (!listEl) return;
+      const q = normalizeVietnameseSearch(searchQuery);
+      let totalVisible = 0;
+      let selectedVisible = 0;
+
+      let html = '';
+      sortedDepts.forEach(dept => {
+        const deptProjects = deptsMap.get(dept) || [];
+        const filteredProjects = q
+          ? deptProjects.filter(p => normalizeVietnameseSearch(p.name || '').includes(q) || normalizeVietnameseSearch(dept).includes(q))
+          : deptProjects;
+
+        if (!filteredProjects.length && q && !normalizeVietnameseSearch(dept).includes(q)) return;
+
+        const allDeptSelected = filteredProjects.length > 0 && filteredProjects.every(p => selectedProjects.has(Number(p.id)));
+        const someDeptSelected = filteredProjects.some(p => selectedProjects.has(Number(p.id))) || selectedDepts.has(dept);
+
+        totalVisible += filteredProjects.length;
+        filteredProjects.forEach(p => {
+          if (selectedProjects.has(Number(p.id))) selectedVisible++;
+        });
+
+        html += `
+          <div class="card" style="padding:10px 14px;border:1px solid var(--border);border-radius:10px;background:var(--surface);">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding-bottom:${filteredProjects.length ? '8px' : '0'};${filteredProjects.length ? 'border-bottom:1px solid var(--border);' : ''}margin-bottom:${filteredProjects.length ? '8px' : '0'};">
+              <label style="display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:13px;cursor:pointer;user-select:none;color:var(--text);">
+                <input type="checkbox" class="notif-dept-cb" data-dept="${esc(dept)}" ${allDeptSelected || selectedDepts.has(dept) ? 'checked' : ''} ${!allDeptSelected && someDeptSelected ? 'data-indeterminate="1"' : ''} style="width:15px;height:15px;accent-color:var(--primary);cursor:pointer;"/>
+                <span>${esc(dept)}</span>
+              </label>
+              <span style="font-size:11.5px;color:var(--text-3);background:var(--surface-2);padding:2px 8px;border-radius:99px;font-weight:600;">${filteredProjects.length} dự án</span>
+            </div>
+            ${filteredProjects.length ? `
+              <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));gap:6px;">
+                ${filteredProjects.map(p => {
+                  const isChecked = selectedProjects.has(Number(p.id));
+                  return `
+                    <label style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer;user-select:none;background:${isChecked ? 'rgba(238, 77, 45, 0.06)' : 'var(--surface-2)'};border:1px solid ${isChecked ? 'rgba(238, 77, 45, 0.3)' : 'transparent'};transition:all 0.15s ease;">
+                      <input type="checkbox" class="notif-proj-cb" data-proj-id="${p.id}" data-dept="${esc(dept)}" ${isChecked ? 'checked' : ''} style="width:14px;height:14px;accent-color:var(--primary);cursor:pointer;"/>
+                      <span style="font-size:12.5px;color:var(--text);font-weight:${isChecked ? '600' : '400'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(p.name)}">${esc(projectLabel(p))}</span>
+                    </label>
+                  `;
+                }).join('')}
+              </div>
+            ` : '<div style="font-size:12px;color:var(--text-3);padding:4px 0;">Không có dự án trong nhóm này.</div>'}
+          </div>
+        `;
+      });
+
+      if (!html) {
+        html = emptyHTML('search', 'Không tìm thấy dự án phù hợp', 'Thử tìm kiếm với từ khóa khác.');
+      }
+
+      listEl.innerHTML = html;
+
+      // Set indeterminate state on dept checkboxes
+      listEl.querySelectorAll('.notif-dept-cb[data-indeterminate="1"]').forEach(cb => {
+        cb.indeterminate = true;
+      });
+
+      // Update counter and select all checkbox
+      if (countEl) countEl.textContent = selectedVisible;
+      if (totalCountEl) totalCountEl.textContent = totalVisible;
+      if (selectAllCb) {
+        selectAllCb.checked = totalVisible > 0 && selectedVisible === totalVisible;
+        selectAllCb.indeterminate = selectedVisible > 0 && selectedVisible < totalVisible;
+      }
+
+      // Bind Dept Checkbox changes
+      listEl.querySelectorAll('.notif-dept-cb').forEach(cb => {
+        cb.addEventListener('change', () => {
+          const dept = cb.dataset.dept;
+          const deptProjects = deptsMap.get(dept) || [];
+          if (cb.checked) {
+            deptProjects.forEach(p => selectedProjects.add(Number(p.id)));
+            selectedDepts.add(dept);
+          } else {
+            deptProjects.forEach(p => selectedProjects.delete(Number(p.id)));
+            selectedDepts.delete(dept);
+          }
+          renderList();
+        });
+      });
+
+      // Bind Project Checkbox changes
+      listEl.querySelectorAll('.notif-proj-cb').forEach(cb => {
+        cb.addEventListener('change', () => {
+          const pid = Number(cb.dataset.projId);
+          const dept = cb.dataset.dept;
+          if (cb.checked) {
+            selectedProjects.add(pid);
+          } else {
+            selectedProjects.delete(pid);
+            selectedDepts.delete(dept);
+          }
+          const deptProjects = deptsMap.get(dept) || [];
+          if (deptProjects.length && deptProjects.every(p => selectedProjects.has(Number(p.id)))) {
+            selectedDepts.add(dept);
+          }
+          renderList();
+        });
+      });
+    }
+
+    // Select all click handler
+    selectAllCb?.addEventListener('change', () => {
+      const q = normalizeVietnameseSearch(searchQuery);
+      const visibleProjects = [];
+      sortedDepts.forEach(dept => {
+        const deptProjects = deptsMap.get(dept) || [];
+        const filtered = q
+          ? deptProjects.filter(p => normalizeVietnameseSearch(p.name || '').includes(q) || normalizeVietnameseSearch(dept).includes(q))
+          : deptProjects;
+        visibleProjects.push(...filtered);
+        if (selectAllCb.checked) {
+          selectedDepts.add(dept);
+        } else {
+          selectedDepts.delete(dept);
+        }
+      });
+
+      if (selectAllCb.checked) {
+        visibleProjects.forEach(p => selectedProjects.add(Number(p.id)));
+      } else {
+        visibleProjects.forEach(p => selectedProjects.delete(Number(p.id)));
+      }
+      renderList();
+    });
+
+    // Search input handler
+    searchInput?.addEventListener('input', e => {
+      searchQuery = e.target.value || '';
+      renderList();
+    });
+
+    document.getElementById('notif-modal-cancel')?.addEventListener('click', closeModal);
+
+    // Save handler
+    document.getElementById('notif-modal-save')?.addEventListener('click', async () => {
+      const saveBtn = document.getElementById('notif-modal-save');
+      if (saveBtn) { saveBtn.disabled = true; saveBtn.innerHTML = `${icon('refreshCw', 'xs', 'spin')} <span>Đang lưu...</span>`; }
+      try {
+        await api.saveTaskCompletionSubscriptions({
+          project_ids: [...selectedProjects],
+          departments: [...selectedDepts]
+        });
+        toast('Đã cập nhật cài đặt nhận thông báo hoàn thành task', 'success');
+        closeModal();
+        if (typeof onSaved === 'function') {
+          await onSaved();
+        }
+      } catch (err) {
+        toast(err.message || 'Không thể lưu cài đặt thông báo', 'error');
+        if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = `${icon('check', 'xs')} <span>Lưu cài đặt</span>`; }
+      }
+    });
+
+    renderList();
   }
 
   function renderBoard() {
@@ -1536,6 +1701,12 @@ export async function renderTasks(el, me) {
     el.querySelector('.task-workspace-shell')?.classList.toggle('project-nav-collapsed');
     updateToggleBtnState();
   });
+  el.querySelector('#btn-manage-notif-top')?.addEventListener('click', () => {
+    openNotificationManagementModal(async () => {
+      await refreshCompletionSubscriptions();
+      renderProjects();
+    });
+  });
   el.querySelector('#btn-collapse-side-nav')?.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -1878,8 +2049,8 @@ function openProjectForm(project, users, departments, projects, prefillGroup, on
           <input type="text" id="pf-member-search" placeholder="Tìm tên, mã NV, email, phòng ban..." style="width:100%;height:36px;padding:0 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;outline:none;background:var(--surface);box-sizing:border-box;"/>
         </div>
         <div id="pf-member-list" class="member-picker-list"></div>
-        <div style="margin-top:10px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:11.5px;color:var(--text-2);line-height:1.4;">
-          ℹ️ Thành viên của nhóm dự án được <strong>tích sẵn mặc định</strong>. Bạn có thể tự do <strong>tích chọn thêm hoặc bỏ bớt</strong> thành viên cho riêng Project này.
+        <div style="margin-top:10px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:11.5px;color:var(--text-2);line-height:1.4;display:flex;align-items:flex-start;gap:6px;">
+          <span style="display:inline-flex;align-items:center;margin-top:2px;">${icon('circleInfo', 'xs')}</span> <span>Thành viên của nhóm dự án được <strong>tích sẵn mặc định</strong>. Bạn có thể tự do <strong>tích chọn thêm hoặc bỏ bớt</strong> thành viên cho riêng Project này.</span>
         </div>
       </div>
     </div>

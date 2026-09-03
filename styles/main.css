@@ -215,7 +215,7 @@ input[type="checkbox"], input[type="radio"] {
 }
 .pw-wrap { position: relative; }
 .pw-wrap input { padding-right: 44px; }
-.pw-eye-btn { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 16px; color: var(--text-2); padding: 4px; }
+.pw-eye-btn { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font-size: 16px; color: var(--text-2); padding: 4px; }
 .password-rules { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px 16px; margin:10px 0 0; padding:10px 12px; border-radius:10px; background:var(--surface-2); color:var(--text-3); font-size:12px; list-style:none; }
 .password-rules li::before { content:'○ '; }.password-rules li.is-valid { color:#138a62; }.password-rules li.is-valid::before { content:'✓ '; }.password-rules li.is-invalid { color:#c2410c; }
 @media(max-width:560px){.password-rules{grid-template-columns:1fr}}
@@ -223,7 +223,7 @@ input[type="checkbox"], input[type="radio"] {
 
 /* ── Instant Auth Display ─────────────────────── */
 html.has-auth-token #login-screen { display: none !important; }
-html.has-auth-token #app { display: flex !important; }
+html.has-auth-token #app { display: flex; }
 
 /* ── Login Screen ─────────────────────────────── */
 #login-screen {
@@ -485,6 +485,7 @@ body.sidebar-collapsed .sidebar-edge-icon-right,
 .stat-icon-wrap {
   width: 40px; height: 40px; border-radius: 10px;
   background: var(--stat-bg, var(--primary-light));
+  color: var(--stat-color, var(--primary));
   display: flex; align-items: center; justify-content: center;
   font-size: 20px; margin-bottom: 10px;
 }
@@ -1989,7 +1990,8 @@ tr:hover td { background: var(--surface-2); }
 
 /* ── Empty / Loading States ───────────────────── */
 .empty-state { text-align: center; padding: 44px 20px; color: var(--text-2); }
-.empty-icon { font-size: 44px; margin-bottom: 12px; }
+.empty-icon { display: flex; align-items: center; justify-content: center; font-size: 40px; margin-bottom: 12px; color: var(--text-3); }
+.empty-icon .app-icon { width: 40px; height: 40px; }
 .empty-text { font-size: 14px; font-weight: 500; }
 .empty-hint { font-size: 12px; color: var(--text-3); margin-top: 5px; }
 
@@ -2904,6 +2906,27 @@ tr:hover td { background: var(--surface-2); }
 .leave-seg-dot.pending { background: #F59E0B; }
 .leave-seg-dot.approved { background: #10B981; }
 .leave-seg-dot.rejected { background: #EF4444; }
+
+.leave-seg-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 6px;
+  min-width: 18px;
+  border-radius: 99px;
+  background: var(--surface-3, rgba(0, 0, 0, 0.06));
+  color: var(--text-2);
+  line-height: 1.25;
+  margin-left: 2px;
+  transition: all 0.15s ease;
+}
+
+.leave-status-seg-btn.active .leave-seg-count {
+  background: var(--primary-light, #FFF5F2);
+  color: var(--primary);
+}
 
 .leave-filters-right {
   display: flex;
@@ -5735,8 +5758,11 @@ html.native-private body::after { content: 'NetViet HR'; position: fixed; inset:
 .admin-att-status-badge.warn { background:rgba(245,158,11,0.12); color:#d97706; }
 .admin-att-stats-col { display:flex; flex-direction:column; gap:12px; min-width:0; }
 .admin-att-stats-grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:10px; }
-.admin-att-stat-item { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:10px; background:var(--surface); border:1px solid var(--border); }
-.admin-att-stat-icon { font-size:20px; line-height:1; }
+.admin-att-stat-icon { display:flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:8px; font-size:14px; flex-shrink:0; }
+.admin-att-stat-item.is-checkin .admin-att-stat-icon { color:#10b981; background:rgba(16,185,129,0.12); }
+.admin-att-stat-item.is-late .admin-att-stat-icon { color:#d97706; background:rgba(245,158,11,0.12); }
+.admin-att-stat-item.is-leave .admin-att-stat-icon { color:#6366f1; background:rgba(99,102,241,0.12); }
+.admin-att-stat-item.is-missing .admin-att-stat-icon { color:#ef4444; background:rgba(239,68,68,0.12); }
 .admin-att-stat-body { display:flex; flex-direction:column; min-width:0; }
 .admin-att-stat-val { font-size:17px; font-weight:700; color:var(--text); line-height:1.2; }
 .admin-att-stat-item.is-checkin .admin-att-stat-val { color:#10b981; }
@@ -6041,13 +6067,16 @@ html.native-private body::after { content: 'NetViet HR'; position: fixed; inset:
     width: 100%;
     height: 100%;
     margin: 0;
+    padding: 0;
     overflow: hidden;
     overscroll-behavior: none;
   }
 
-  #app {
-    display: flex;
-    flex-direction: column;
+  #app,
+  html.has-auth-token #app {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
     width: 100%;
     height: 100vh;
     height: 100dvh;
@@ -6056,8 +6085,12 @@ html.native-private body::after { content: 'NetViet HR'; position: fixed; inset:
   }
 
   .main-wrap {
-    flex: 1 1 auto;
+    grid-row: 1;
+    grid-column: 1;
+    width: 100%;
+    height: 100%;
     min-height: 0;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -6070,6 +6103,7 @@ html.native-private body::after { content: 'NetViet HR'; position: fixed; inset:
     height: calc(56px + env(safe-area-inset-top, 0px));
     padding: env(safe-area-inset-top, 0px) max(12px, env(safe-area-inset-right, 0px)) 0 max(12px, env(safe-area-inset-left, 0px));
     gap: 8px;
+    position: static;
   }
   #btn-menu {
     width: 40px;
@@ -6271,16 +6305,23 @@ html.native-private body::after { content: 'NetViet HR'; position: fixed; inset:
     padding-bottom: 0;
   }
 
-  /* ── Mobile Bottom Navigation Bar ── */
+  /* ── Mobile Bottom Navigation Bar (Grid Row 2) ── */
   .bottom-nav {
-    flex: 0 0 auto;
+    grid-row: 2;
+    grid-column: 1;
+    position: relative;
+    left: auto;
+    right: auto;
+    top: auto;
+    bottom: auto;
+    width: 100%;
+    min-height: calc(56px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    box-sizing: border-box;
     display: flex;
     align-items: stretch;
     justify-content: space-around;
-    width: 100%;
-    height: 56px;
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-    box-sizing: content-box;
+    flex-shrink: 0;
     background: rgba(255, 255, 255, 0.98);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);

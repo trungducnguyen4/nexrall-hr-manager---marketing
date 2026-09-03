@@ -88,17 +88,17 @@ export async function renderRecruitment(el, me) {
           const hired     = allCandidates.filter(c => c.stage === 'hired').length;
           statsEl.innerHTML = `
             <div class="stat-card" style="--stat-color:#6366F1;--stat-bg:#EEF2FF;padding:14px;">
-              <div class="stat-icon-wrap" style="width:36px;height:36px;margin-bottom:8px;">🎯</div>
+              <div class="stat-icon-wrap" style="width:36px;height:36px;margin-bottom:8px;">${icon('target', 'sm')}</div>
               <div class="stat-val" style="font-size:22px;">${total}</div>
               <div class="stat-label">Tổng ứng viên</div>
             </div>
             <div class="stat-card" style="--stat-color:#F59E0B;--stat-bg:#FEF3C7;padding:14px;">
-              <div class="stat-icon-wrap" style="width:36px;height:36px;margin-bottom:8px;">🔄</div>
+              <div class="stat-icon-wrap" style="width:36px;height:36px;margin-bottom:8px;">${icon('refreshCw', 'sm')}</div>
               <div class="stat-val" style="font-size:22px;">${active}</div>
               <div class="stat-label">Đang xử lý</div>
             </div>
             <div class="stat-card" style="--stat-color:#10B981;--stat-bg:#D1FAE5;padding:14px;">
-              <div class="stat-icon-wrap" style="width:36px;height:36px;margin-bottom:8px;">✅</div>
+              <div class="stat-icon-wrap" style="width:36px;height:36px;margin-bottom:8px;">${icon('circleCheck', 'sm')}</div>
               <div class="stat-val" style="font-size:22px;">${hired}</div>
               <div class="stat-label">Đã tuyển</div>
             </div>
@@ -117,7 +117,7 @@ export async function renderRecruitment(el, me) {
       const pageData = paginateRows(filtered, currentPage);
       currentPage = pageData.page;
       if (!filtered.length) {
-        listEl.innerHTML = emptyHTML('🎯', 'Không có ứng viên nào', 'Hãy thêm ứng viên mới');
+        listEl.innerHTML = emptyHTML('target', 'Không có ứng viên nào', 'Hãy thêm ứng viên mới');
         return;
       }
 
@@ -125,7 +125,7 @@ export async function renderRecruitment(el, me) {
         const stage = stageInfo(c.stage);
         return `
           <div class="list-item" data-cid="${c.id}">
-            <div style="width:44px;height:44px;border-radius:12px;background:${stage.bg};display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0;">🧑</div>
+            <div style="width:44px;height:44px;border-radius:12px;background:${stage.bg};color:${stage.color};display:flex;align-items:center;justify-content:center;flex-shrink:0;">${icon('user', 'md')}</div>
             <div class="list-item-content">
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                 <span class="list-item-title">${esc(c.name)}</span>
@@ -133,7 +133,7 @@ export async function renderRecruitment(el, me) {
               </div>
               <div class="list-item-sub">${esc(c.position||'—')} · ${esc(c.department||'—')}</div>
               <div style="font-size:11px;color:var(--text-3);margin-top:2px;">
-                📅 ${esc(c.apply_date||'—')} · Nguồn: ${esc(c.source||'—')}
+                ${icon('calendarDays', 'xs')} ${esc(c.apply_date||'—')} · Nguồn: ${esc(c.source||'—')}
               </div>
             </div>
             ${isAdmin ? `
@@ -142,8 +142,8 @@ export async function renderRecruitment(el, me) {
                   ${STAGES.map(s => `<option value="${s.key}" ${c.stage===s.key?'selected':''}>${s.label}</option>`).join('')}
                 </select>
                 <div style="display:flex;gap:4px;">
-                  <button class="btn-xs btn-secondary cand-edit" data-cid="${c.id}">✏️</button>
-                  <button class="btn-xs btn-danger cand-del" data-cid="${c.id}">🗑</button>
+                  <button class="btn-xs btn-secondary cand-edit" data-cid="${c.id}" title="Sửa">${icon('pencil', 'xs')}</button>
+                  <button class="btn-xs btn-danger cand-del" data-cid="${c.id}" title="Xóa">${icon('trash2', 'xs')}</button>
                 </div>
               </div>
             ` : ''}
@@ -185,7 +185,7 @@ export async function renderRecruitment(el, me) {
       }
       bindPagination(listEl, page => { currentPage = page; loadCandidates(); });
     } catch(e) {
-      listEl.innerHTML = emptyHTML('⚠️', e.message);
+      listEl.innerHTML = emptyHTML('triangleAlert', e.message);
     }
   }
 

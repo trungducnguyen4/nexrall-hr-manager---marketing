@@ -32,9 +32,9 @@ function evalStatusLabel(ev) {
 
 function getTimeGreeting() {
   const h = new Date().getHours();
-  if (h < 12) return { text: 'Chào buổi sáng', icon: '☀️' };
-  if (h < 18) return { text: 'Chào buổi chiều', icon: '🌤️' };
-  return { text: 'Chào buổi tối', icon: '🌙' };
+  if (h < 12) return { text: 'Chào buổi sáng', icon: 'sun' };
+  if (h < 18) return { text: 'Chào buổi chiều', icon: 'sun' };
+  return { text: 'Chào buổi tối', icon: 'moon' };
 }
 
 function getInitials(name) {
@@ -79,7 +79,7 @@ async function renderEmployeeDashboard(el, me, isSwitched = false) {
       <header class="emp-hero">
         <div class="emp-hero-info">
           <div class="emp-hero-greeting">
-            <span class="emp-greeting-pill">${getTimeGreeting().icon} ${getTimeGreeting().text}</span>
+            <span class="emp-greeting-pill">${icon(getTimeGreeting().icon, 'xs')} ${getTimeGreeting().text}</span>
             <span class="emp-date-pill">${todayFormatted}</span>
           </div>
           <div class="emp-user-card">
@@ -87,8 +87,8 @@ async function renderEmployeeDashboard(el, me, isSwitched = false) {
             <div>
               <h1>${esc(displayName)}</h1>
               <div class="emp-meta-pills">
-                <span class="emp-meta-pill dept-pill">🏢 ${esc(department)}</span>
-                <span class="emp-meta-pill pos-pill">💼 ${esc(position)}</span>
+                <span class="emp-meta-pill dept-pill">${icon('building2', 'xs')} ${esc(department)}</span>
+                <span class="emp-meta-pill pos-pill">${icon('briefcaseBusiness', 'xs')} ${esc(position)}</span>
                 <span class="emp-meta-pill">${lifecycleBadge(me.lifecycle_status || 'Chính thức')}</span>
               </div>
             </div>
@@ -97,14 +97,14 @@ async function renderEmployeeDashboard(el, me, isSwitched = false) {
 
         <div class="emp-clock-widget">
           <div class="emp-clock-head">
-            <span>⏱️</span>
+            <span>${icon('clock3', 'sm')}</span>
             <span>Chấm công hôm nay</span>
           </div>
           <div class="emp-clock-status" id="emp-clock-status">
             <span class="dot amber"></span> Đang kết nối GPS...
           </div>
           <div class="emp-clock-action" id="emp-clock-action">
-            <a href="#/attendance" class="emp-clock-btn emp-clock-btn--checkin">⚡ Chấm công ngay</a>
+            <a href="#/attendance" class="emp-clock-btn emp-clock-btn--checkin">${icon('zap', 'xs')} Chấm công ngay</a>
           </div>
         </div>
       </header>
@@ -115,7 +115,7 @@ async function renderEmployeeDashboard(el, me, isSwitched = false) {
         <article class="emp-panel emp-tasks-panel">
           <header class="emp-panel-head">
             <div>
-              <h2>📊 Tiến độ & Khối lượng công việc</h2>
+              <h2>${icon('barChart3', 'sm')} Tiến độ & Khối lượng công việc</h2>
               <p>Tổng hợp công việc theo 5 trạng thái</p>
             </div>
             <a href="#/tasks" class="emp-link-subtle">Xem bảng việc →</a>
@@ -129,7 +129,7 @@ async function renderEmployeeDashboard(el, me, isSwitched = false) {
         <article class="emp-panel emp-att-panel">
           <header class="emp-panel-head">
             <div>
-              <h2>🗓️ Tổng quan kỳ công T${currentMonth}/${currentYear}</h2>
+              <h2>${icon('calendarDays', 'sm')} Tổng quan kỳ công T${currentMonth}/${currentYear}</h2>
               <p>Chuyên cần & ngày công thực tế</p>
             </div>
             <a href="#/attendance" class="emp-link-subtle">Lịch sử →</a>
@@ -143,7 +143,7 @@ async function renderEmployeeDashboard(el, me, isSwitched = false) {
         <article class="emp-panel emp-tasks-panel">
           <header class="emp-panel-head">
             <div>
-              <h2>📋 Công việc của tôi</h2>
+              <h2>${icon('clipboardList', 'sm')} Công việc của tôi</h2>
               <p>Nhiệm vụ được giao & bạn đang theo dõi</p>
             </div>
             <div class="emp-panel-actions">
@@ -169,7 +169,7 @@ async function renderEmployeeDashboard(el, me, isSwitched = false) {
         <article class="emp-panel emp-requests-panel">
           <header class="emp-panel-head">
             <div>
-              <h2>🏖️ Đơn nghỉ phép & Tăng ca (OT)</h2>
+              <h2>${icon('plane', 'sm')} Đơn nghỉ phép & Tăng ca (OT)</h2>
               <p>Tiến độ duyệt đơn trong tháng ${currentMonth}/${currentYear}</p>
             </div>
             <div style="display:flex;gap:6px;">
@@ -200,14 +200,14 @@ async function renderEmployeeDashboard(el, me, isSwitched = false) {
       if (myRow && myRow.checkin_time) {
         if (myRow.checkout_time) {
           statusEl.innerHTML = `<span class="dot green"></span> Đã hoàn thành ca: <b>${esc(myRow.checkin_time)} - ${esc(myRow.checkout_time)}</b>`;
-          actionEl.innerHTML = `<a href="#/attendance" class="emp-clock-btn emp-clock-btn--done">✓ Đã chấm công về (${esc(myRow.checkout_time)})</a>`;
+          actionEl.innerHTML = `<a href="#/attendance" class="emp-clock-btn emp-clock-btn--done">${icon('circleCheck', 'xs')} Đã chấm công về (${esc(myRow.checkout_time)})</a>`;
         } else {
           statusEl.innerHTML = `<span class="dot green"></span> Đang làm việc · Vào lúc <b>${esc(myRow.checkin_time)}</b>`;
           actionEl.innerHTML = `<a href="#/attendance" class="emp-clock-btn emp-clock-btn--checkout">Chấm công về (Check-out)</a>`;
         }
       } else {
         statusEl.innerHTML = `<span class="dot amber"></span> Chưa chấm công hôm nay`;
-        actionEl.innerHTML = `<a href="#/attendance" class="emp-clock-btn emp-clock-btn--checkin">⚡ Chấm công ngay (GPS)</a>`;
+        actionEl.innerHTML = `<a href="#/attendance" class="emp-clock-btn emp-clock-btn--checkin">${icon('zap', 'xs')} Chấm công ngay (GPS)</a>`;
       }
     } catch (_) {
       statusEl.innerHTML = `<span class="dot gray"></span> Chưa có dữ liệu chấm công`;
@@ -332,7 +332,7 @@ async function renderEmployeeDashboard(el, me, isSwitched = false) {
     if (!filtered.length) {
       listEl.innerHTML = `
         <div style="text-align:center;padding:32px 16px;color:var(--text-3);">
-          <div style="font-size:28px;margin-bottom:8px;">✨</div>
+          <div class="empty-icon" style="margin-bottom:8px;">${icon('sparkles', 'xl')}</div>
           <strong style="color:var(--text);display:block;margin-bottom:4px;">
             ${currentTab === 'done' ? 'Chưa có công việc hoàn thành gần đây.' : 'Tuyệt vời! Bạn không có việc nào tồn đọng.'}
           </strong>
@@ -350,9 +350,9 @@ async function renderEmployeeDashboard(el, me, isSwitched = false) {
         if (isDone) {
           dueBadge = `<span class="emp-due-badge future">Hạn: ${task.due_date}</span>`;
         } else if (task.due_date < todayStr) {
-          dueBadge = `<span class="emp-due-badge overdue">⚠️ Quá hạn ${task.due_date}</span>`;
+          dueBadge = `<span class="emp-due-badge overdue">${icon('triangleAlert', 'xs')} Quá hạn ${task.due_date}</span>`;
         } else if (task.due_date === todayStr) {
-          dueBadge = `<span class="emp-due-badge today">🔥 Hạn hôm nay</span>`;
+          dueBadge = `<span class="emp-due-badge today">${icon('flame', 'xs')} Hạn hôm nay</span>`;
         } else {
           dueBadge = `<span class="emp-due-badge future">Hạn: ${task.due_date}</span>`;
         }
@@ -372,15 +372,15 @@ async function renderEmployeeDashboard(el, me, isSwitched = false) {
       return `
         <div class="emp-task-item ${task.priority === 'urgent' && !isDone ? 'is-urgent' : ''}" data-task-id="${task.id}">
           <button type="button" class="emp-task-check ${isDone ? 'checked' : ''}" data-action="toggle-task" data-task-id="${task.id}" title="${isDone ? 'Chuyển về đang làm' : 'Đánh dấu hoàn thành'}">
-            ${isDone ? '✓' : ''}
+            ${isDone ? icon('check', 'xs') : ''}
           </button>
           <div class="emp-task-content" data-action="open-task" data-task-id="${task.id}">
             <div class="emp-task-title" style="${isDone ? 'text-decoration:line-through;color:var(--text-3);' : ''}">${esc(task.title)}</div>
             <div class="emp-task-meta">
-              ${task.project_name ? `<span>📁 ${esc(task.project_name)}</span>` : ''}
+              ${task.project_name ? `<span>${icon('folder', 'xs')} ${esc(task.project_name)}</span>` : ''}
               ${task.group_name ? `<span>${esc(task.group_name)}</span>` : ''}
               ${dueBadge}
-              ${task.subtask_total ? `<span>☑️ ${task.subtask_done}/${task.subtask_total} việc con</span>` : ''}
+              ${task.subtask_total ? `<span>${icon('clipboardCheck', 'xs')} ${task.subtask_done}/${task.subtask_total} việc con</span>` : ''}
             </div>
           </div>
           <span class="emp-task-status-pill ${st.cls}">${st.label}</span>
@@ -471,14 +471,14 @@ async function renderEmployeeDashboard(el, me, isSwitched = false) {
       host.innerHTML = `
         <div class="emp-requests-summary">
           <div class="emp-req-summary-pill">
-            <span>🏖️ Đơn nghỉ phép</span>
+            <span>${icon('plane', 'xs')} Đơn nghỉ phép</span>
             <strong>
               <span class="highlight-pending">${pendingLeaves.length} chờ duyệt</span> ·
               <span class="highlight-approved">${approvedLeaves.length} đã duyệt</span>
             </strong>
           </div>
           <div class="emp-req-summary-pill">
-            <span>⏰ Tăng ca (OT)</span>
+            <span>${icon('clock3', 'xs')} Tăng ca (OT)</span>
             <strong>
               <span class="highlight-pending">${pendingOtCount} chờ duyệt</span> ·
               <span class="highlight-approved">${approvedOtCount} đã duyệt</span>
@@ -490,24 +490,24 @@ async function renderEmployeeDashboard(el, me, isSwitched = false) {
           <div class="emp-requests-list">
             ${unifiedItems.slice(0, 6).map(item => {
               const statusMap = {
-                pending: { label: '⏳ Chờ duyệt', cls: 'badge-warning' },
-                approved: { label: '✅ Đã duyệt', cls: 'badge-success' },
-                rejected: { label: '❌ Từ chối', cls: 'badge-danger' },
+                pending: { label: `${icon('hourglass', 'xs')} Chờ duyệt`, cls: 'badge-warning' },
+                approved: { label: `${icon('circleCheck', 'xs')} Đã duyệt`, cls: 'badge-success' },
+                rejected: { label: `${icon('circleX', 'xs')} Từ chối`, cls: 'badge-danger' },
                 draft: { label: 'Nháp', cls: 'badge-gray' },
               };
               const st = statusMap[item.status] || { label: item.status, cls: 'badge-gray' };
-              const icon = item.type === 'leave' ? '🏖️' : '⏰';
+              const itemIcon = item.type === 'leave' ? 'plane' : 'clock3';
 
               return `
                 <a href="${item.link}" class="emp-req-item">
                   <div class="emp-req-info">
                     <div class="emp-req-head">
-                      <span>${icon}</span>
+                      <span>${icon(itemIcon, 'sm')}</span>
                       <span class="emp-req-type">${esc(item.title)}</span>
                       <span class="badge ${st.cls}" style="font-size:10px;padding:2px 6px;">${st.label}</span>
                     </div>
                     <div class="emp-req-meta">
-                      📅 ${esc(item.dateStr)} · ${esc(item.detail)}
+                      ${icon('calendarDays', 'xs')} ${esc(item.dateStr)} · ${esc(item.detail)}
                     </div>
                   </div>
                   <span style="color:var(--primary);font-size:12px;font-weight:700;">→</span>
@@ -517,7 +517,7 @@ async function renderEmployeeDashboard(el, me, isSwitched = false) {
           </div>
         ` : `
           <div style="text-align:center;padding:18px 12px;background:var(--surface-2);border-radius:10px;border:1px solid var(--border);">
-            <div style="font-size:24px;margin-bottom:4px;">✨</div>
+            <div class="empty-icon" style="margin-bottom:4px;">${icon('sparkles', 'lg')}</div>
             <strong style="display:block;font-size:13px;color:var(--text);">Chưa có đơn nghỉ phép hay tăng ca nào</strong>
             <p style="font-size:11.5px;color:var(--text-3);margin:4px 0 10px;">Tháng ${currentMonth}/${currentYear} chưa phát sinh yêu cầu mới.</p>
             <div style="display:flex;justify-content:center;gap:8px;">
@@ -586,10 +586,10 @@ async function renderEmployeeDashboard(el, me, isSwitched = false) {
         </div>
 
         <div class="emp-att-details-pills">
-          <span class="emp-att-detail-pill">🏢 Văn phòng: <b>${officeDays}</b></span>
-          <span class="emp-att-detail-pill">🏠 WFH: <b>${wfhDays}</b></span>
-          <span class="emp-att-detail-pill" style="${lateDays > 0 ? 'color:#d97706;border-color:rgba(245,158,11,0.3);' : ''}">⏰ Đi muộn: <b>${lateDays} lần</b></span>
-          <span class="emp-att-detail-pill">🏖️ Nghỉ phép: <b>${paidLeaveDays} ngày</b></span>
+          <span class="emp-att-detail-pill">${icon('building2', 'xs')} Văn phòng: <b>${officeDays}</b></span>
+          <span class="emp-att-detail-pill">${icon('home', 'xs')} WFH: <b>${wfhDays}</b></span>
+          <span class="emp-att-detail-pill" style="${lateDays > 0 ? 'color:#d97706;border-color:rgba(245,158,11,0.3);' : ''}">${icon('clock3', 'xs')} Đi muộn: <b>${lateDays} lần</b></span>
+          <span class="emp-att-detail-pill">${icon('plane', 'xs')} Nghỉ phép: <b>${paidLeaveDays} ngày</b></span>
         </div>
 
         <a href="#/attendance" class="btn-secondary btn-sm" style="display:flex;align-items:center;justify-content:center;gap:6px;margin-top:10px;text-decoration:none;">Xem lịch sử chấm công →</a>
@@ -696,7 +696,7 @@ async function renderAdminDashboard(el, me) {
 
   const missingPeople = a.missing_people || [];
   const missingChips = missingPeople.length
-    ? missingPeople.slice(0, 6).map(x => `<span class="admin-att-missing-chip">👤 ${esc(x.full_name)} <small>(${esc(x.department || 'Chưa phân phòng')})</small></span>`).join('')
+    ? missingPeople.slice(0, 6).map(x => `<span class="admin-att-missing-chip">${icon('user', 'xs')} ${esc(x.full_name)} <small>(${esc(x.department || 'Chưa phân phòng')})</small></span>`).join('')
     : '';
 
   el.innerHTML = `
@@ -730,14 +730,14 @@ async function renderAdminDashboard(el, me) {
             </div>
             <div class="admin-att-ring-label">
               <strong>Tỷ lệ Check-in</strong>
-              <span class="admin-att-status-badge ${checkinRate >= 80 ? 'good' : 'warn'}">${checkinRate >= 80 ? '🟢 Tốt' : '🟡 Cần lưu ý'}</span>
+              <span class="admin-att-status-badge ${checkinRate >= 80 ? 'good' : 'warn'}">${checkinRate >= 80 ? 'Tốt' : 'Cần lưu ý'}</span>
             </div>
           </div>
 
           <div class="admin-att-stats-col">
             <div class="admin-att-stats-grid">
               <div class="admin-att-stat-item is-checkin">
-                <span class="admin-att-stat-icon">🏢</span>
+                <span class="admin-att-stat-icon">${icon('building2', 'sm')}</span>
                 <div class="admin-att-stat-body">
                   <strong class="admin-att-stat-val">${number(checkedIn)}</strong>
                   <span class="admin-att-stat-lbl">Đã check-in (${percent(checkinRate)})</span>
@@ -745,7 +745,7 @@ async function renderAdminDashboard(el, me) {
               </div>
 
               <div class="admin-att-stat-item ${a.late > 0 ? 'is-late' : ''}">
-                <span class="admin-att-stat-icon">⏰</span>
+                <span class="admin-att-stat-icon">${icon('clock3', 'sm')}</span>
                 <div class="admin-att-stat-body">
                   <strong class="admin-att-stat-val">${number(a.late)}</strong>
                   <span class="admin-att-stat-lbl">Đi muộn</span>
@@ -753,7 +753,7 @@ async function renderAdminDashboard(el, me) {
               </div>
 
               <div class="admin-att-stat-item is-leave">
-                <span class="admin-att-stat-icon">🏖️</span>
+                <span class="admin-att-stat-icon">${icon('plane', 'sm')}</span>
                 <div class="admin-att-stat-body">
                   <strong class="admin-att-stat-val">${number(a.approved_leave)}</strong>
                   <span class="admin-att-stat-lbl">Nghỉ phép</span>
@@ -761,7 +761,7 @@ async function renderAdminDashboard(el, me) {
               </div>
 
               <div class="admin-att-stat-item ${a.not_checked_in > 0 ? 'is-missing' : ''}">
-                <span class="admin-att-stat-icon">❌</span>
+                <span class="admin-att-stat-icon">${icon('circleX', 'sm')}</span>
                 <div class="admin-att-stat-body">
                   <strong class="admin-att-stat-val">${number(a.not_checked_in)}</strong>
                   <span class="admin-att-stat-lbl">Chưa check-in</span>
@@ -773,7 +773,7 @@ async function renderAdminDashboard(el, me) {
             <div class="admin-att-missing-section">
               <span class="admin-att-missing-title">Chưa check-in:</span>
               <div class="admin-att-missing-chips">
-                ${missingChips ? missingChips : '<span class="admin-att-missing-empty">✅ Tất cả nhân sự đã check-in hoặc có đơn nghỉ phép</span>'}
+                ${missingChips ? missingChips : '<span class="admin-att-missing-empty">Tất cả nhân sự đã check-in hoặc có đơn nghỉ phép</span>'}
                 ${missingPeople.length > 6 ? `<span class="admin-att-missing-more">+${missingPeople.length - 6} người khác</span>` : ''}
               </div>
             </div>
@@ -793,11 +793,11 @@ async function renderAdminDashboard(el, me) {
       <article class="admin-dash-panel admin-att-unified-panel">
         <header class="admin-att-unified-head">
           <div class="admin-att-unified-title">
-            <h2>📍 Vị trí & Bản đồ radar check-in GPS hôm nay</h2>
+            <h2>${icon('mapPin', 'sm')} Vị trí & Bản đồ radar check-in GPS hôm nay</h2>
             <p>Bản đồ check-in GPS đa địa điểm (TP.HCM, Hà Nội, Phim trường Q9...)</p>
           </div>
           <div class="admin-att-unified-controls">
-            <button type="button" id="dash-geo-refresh" class="admin-geo-btn-refresh">🔄 Làm mới</button>
+            <button type="button" id="dash-geo-refresh" class="admin-geo-btn-refresh">${icon('refreshCw', 'xs')} Làm mới</button>
             <select id="dash-geo-office" class="admin-geo-select-office"><option value="all">Tất cả địa điểm</option></select>
             <a href="#/attendance" class="admin-att-link">Xem bảng công →</a>
           </div>
@@ -972,9 +972,9 @@ async function renderHrDashboard(el, me, activeTab = 'org') {
   };
 
   const getActionSeverityTag = (sev) => {
-    if (sev === 'danger') return '<span class="hr-action-tag" style="background:#FEE2E2;color:#DC2626;border-color:#FCA5A5;">🔴 Khẩn cấp</span>';
-    if (sev === 'warning') return '<span class="hr-action-tag" style="background:#FEF3C7;color:#D97706;border-color:#FCD34D;">🟡 Cần phê duyệt</span>';
-    return '<span class="hr-action-tag" style="background:#E0E7FF;color:#4F46E5;border-color:#C7D2FE;">🔵 Cần xử lý</span>';
+    if (sev === 'danger') return '<span class="hr-action-tag" style="background:#FEE2E2;color:#DC2626;border-color:#FCA5A5;">Khẩn cấp</span>';
+    if (sev === 'warning') return '<span class="hr-action-tag" style="background:#FEF3C7;color:#D97706;border-color:#FCD34D;">Cần phê duyệt</span>';
+    return '<span class="hr-action-tag" style="background:#E0E7FF;color:#4F46E5;border-color:#C7D2FE;">Cần xử lý</span>';
   };
 
   el.innerHTML = `
@@ -1070,7 +1070,7 @@ async function renderHrDashboard(el, me, activeTab = 'org') {
                   </div>
                   <div class="hr-dept-ring-meta">
                     <span class="badge ${rate >= 80 ? 'badge-success' : rate >= 50 ? 'badge-warning' : rate > 0 ? 'badge-danger' : 'badge-gray'}">
-                      ${rate === 100 ? '🟢 Đủ 100%' : rate >= 80 ? '🟢 Tốt' : rate > 0 ? `🟡 Vắng ${d.not_checked_in}` : '⚪ Chưa chấm'}
+                      ${rate === 100 ? 'Đủ 100%' : rate >= 80 ? 'Tốt' : rate > 0 ? `Vắng ${d.not_checked_in}` : 'Chưa chấm'}
                     </span>
                   </div>
                 </div>
@@ -1135,8 +1135,8 @@ async function renderHrDashboard(el, me, activeTab = 'org') {
                 ${number(lv.today_leave_count)} <small style="font-size:12px;font-weight:550;color:var(--text-2);">hôm nay</small>
               </div>
               <div style="font-size:11.5px;color:var(--text-2);display:flex;flex-direction:column;gap:3px;">
-                <span>⏳ <strong>${number(lv.pending_count)}</strong> đơn chờ duyệt</span>
-                <span>📅 <strong>${number(lv.month_total_approved)}</strong> lượt nghỉ tháng này</span>
+                <span>${icon('hourglass', 'xs')} <strong>${number(lv.pending_count)}</strong> đơn chờ duyệt</span>
+                <span>${icon('calendarDays', 'xs')} <strong>${number(lv.month_total_approved)}</strong> lượt nghỉ tháng này</span>
               </div>
             </div>
 
@@ -1149,8 +1149,8 @@ async function renderHrDashboard(el, me, activeTab = 'org') {
                 ${number(ot.ot_month_hours)}h <small style="font-size:12px;font-weight:550;color:var(--text-2);">tháng này</small>
               </div>
               <div style="font-size:11.5px;color:var(--text-2);display:flex;flex-direction:column;gap:3px;">
-                <span>⏳ <strong>${number(ot.pending_count)}</strong> phiếu chờ duyệt</span>
-                <span>👥 <strong>${number(ot.ot_employee_count)}</strong> nhân sự làm OT (${ot.ot_form_count} form)</span>
+                <span>${icon('hourglass', 'xs')} <strong>${number(ot.pending_count)}</strong> phiếu chờ duyệt</span>
+                <span>${icon('users', 'xs')} <strong>${number(ot.ot_employee_count)}</strong> nhân sự làm OT (${ot.ot_form_count} form)</span>
               </div>
             </div>
           </div>
@@ -1280,12 +1280,12 @@ async function renderAdminGeoPanel(el, me) {
     // Render cards scaffolding
     container.innerHTML = targetLocations.map(loc => {
       const isStudio = String(loc.name || '').toLowerCase().includes('phim trường') || String(loc.name || '').toLowerCase().includes('studio');
-      const icon = isStudio ? '🎬' : '🏢';
+      const locIconName = isStudio ? 'video' : 'building2';
       return `
         <div class="admin-dash-geo-card" data-office-id="${loc.id}">
           <div class="admin-dash-geo-card-head">
             <div class="admin-dash-geo-card-title">
-              <span style="font-size:18px;">${icon}</span>
+              <span style="display:flex;align-items:center;color:var(--primary);">${icon(locIconName, 'sm')}</span>
               <div>
                 <strong>${esc(loc.name)}</strong>
                 ${loc.address ? `<div style="font-size:11px;color:var(--text-3);font-weight:normal;margin-top:1px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(loc.address)}">${esc(loc.address)}</div>` : ''}

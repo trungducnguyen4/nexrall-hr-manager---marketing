@@ -26,7 +26,7 @@ export async function renderAssetSection(el, me) {
   try {
     assets = (await api.getAssets()).assets || [];
   } catch (e) {
-    el.innerHTML = `<div class="card"><div class="card-header"><div class="card-title">${icon('keyRound', 'sm')} <span>Bàn giao tài sản</span></div></div>${emptyHTML('⚠️', 'Không thể tải dữ liệu tài sản')}</div>`;
+    el.innerHTML = `<div class="card"><div class="card-header"><div class="card-title">${icon('keyRound', 'sm')} <span>Bàn giao tài sản</span></div></div>${emptyHTML('triangleAlert', 'Không thể tải dữ liệu tài sản')}</div>`;
     return;
   }
 
@@ -86,7 +86,7 @@ function renderPersonalSummary(ownAssets) {
     { label: 'Đã bàn giao', value: count(a => a.status === 'handed_over'), color: '#047857' },
   ];
   return `
-    <div class="card-header"><div class="card-title">📊 Tổng quan tài sản của tôi</div></div>
+    <div class="card-header"><div class="card-title" style="display:flex;align-items:center;gap:6px;">${icon('barChart3', 'sm')} <span>Tổng quan tài sản của tôi</span></div></div>
     <div class="stats-grid" style="grid-template-columns:repeat(5,1fr);gap:8px;">
       ${stats.map(s => `
         <div class="stat-card" style="--stat-color:${s.color};padding:10px 8px;">
@@ -104,8 +104,8 @@ function renderManageSection(assets) {
     .map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('');
   return `
     <div class="card-header">
-      <div class="card-title">🗂️ Quản lý bàn giao tài sản</div>
-      <button class="btn-secondary btn-sm" id="asset-add-hr">+ Thêm hộ</button>
+      <div class="card-title" style="display:flex;align-items:center;gap:6px;">${icon('notebookTabs', 'sm')} <span>Quản lý bàn giao tài sản</span></div>
+      <button class="btn-secondary btn-sm" id="asset-add-hr" style="display:inline-flex;align-items:center;gap:4px;">${icon('plus', 'xs')} <span>Thêm hộ</span></button>
     </div>
     <div class="search-bar"><input type="text" id="asset-search" placeholder="Tìm theo tên hoặc mã nhân sự..."/></div>
     <div class="input-row" style="margin-bottom:10px;">
@@ -129,13 +129,13 @@ function renderManageSection(assets) {
 }
 
 function renderAssetList(list, mode) {
-  if (!list.length) return emptyHTML('🗂️', mode === 'mentor' ? 'Không có tài sản cần xác nhận' : 'Chưa có tài sản nào');
+  if (!list.length) return emptyHTML('keyRound', mode === 'mentor' ? 'Không có tài sản cần xác nhận' : 'Chưa có tài sản nào');
   return list.map(a => `
     <div class="list-item" data-aid="${a.id}">
       <div class="list-item-content">
         <div class="list-item-title">${esc(a.asset_name)}${a.asset_type ? ` <span style="font-size:11px;color:var(--text-3);font-weight:400;">· ${esc(a.asset_type)}</span>` : ''}</div>
-        <div class="list-item-sub">${a.owner_name ? `👤 ${esc(a.owner_name)}${a.owner_code ? ` (${esc(a.owner_code)})` : ''}` : ''}${a.owner_department ? ` · ${esc(a.owner_department)}` : ''}${a.platform ? ` · ${esc(a.platform)}` : ''}${a.mentor_name ? ` · Mentor: ${esc(a.mentor_name)}` : ''}</div>
-        <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">${assetStatusBadge(a.status)}${a.owner_lifecycle_status ? lifecycleBadge(a.owner_lifecycle_status) : ''}${a.expected_handover_date ? `<span style="font-size:11px;color:var(--text-3);">📅 Dự kiến: ${fmtDate(a.expected_handover_date)}</span>` : ''}</div>
+        <div class="list-item-sub">${a.owner_name ? `<span style="display:inline-flex;align-items:center;gap:3px;">${icon('user', 'xs')} ${esc(a.owner_name)}${a.owner_code ? ` (${esc(a.owner_code)})` : ''}</span>` : ''}${a.owner_department ? ` · ${esc(a.owner_department)}` : ''}${a.platform ? ` · ${esc(a.platform)}` : ''}${a.mentor_name ? ` · Mentor: ${esc(a.mentor_name)}` : ''}</div>
+        <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">${assetStatusBadge(a.status)}${a.owner_lifecycle_status ? lifecycleBadge(a.owner_lifecycle_status) : ''}${a.expected_handover_date ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:11px;color:var(--text-3);">${icon('calendarDays', 'xs')} Dự kiến: ${fmtDate(a.expected_handover_date)}</span>` : ''}</div>
       </div>
     </div>
   `).join('');
@@ -216,6 +216,8 @@ function openAssetDetail(asset, me, onRefresh = noop) {
   const canReveal = isOwner || isMentor || isHr;
 
   openModal(asset.asset_name, `
+
+  openModal(asset.asset_name, `
     <div class="detail-grid">
       <div class="detail-item"><div class="detail-label">Loại</div><div class="detail-val">${esc(asset.asset_type || '—')}</div></div>
       <div class="detail-item"><div class="detail-label">Nền tảng</div><div class="detail-val">${esc(asset.platform || '—')}</div></div>
@@ -229,18 +231,18 @@ function openAssetDetail(asset, me, onRefresh = noop) {
       <label>Tài khoản đăng nhập</label>
       <div style="display:flex;gap:8px;align-items:center;">
         <div id="asset-cred-val" style="flex:1;font-size:13px;font-family:monospace;background:var(--surface-2);padding:8px 10px;border-radius:8px;">${asset.has_credential ? '••••••••' : '—'}</div>
-        ${asset.has_credential && canReveal ? `<button class="btn-secondary btn-sm" id="asset-cred-reveal">👁 Xem</button>` : ''}
+        ${asset.has_credential && canReveal ? `<button class="btn-secondary btn-sm" id="asset-cred-reveal" style="display:inline-flex;align-items:center;gap:4px;">${icon('eye', 'xs')} <span>Xem</span></button>` : ''}
       </div>
     </div>
     ${asset.note ? `<div class="field"><label>Ghi chú</label><div class="detail-val" style="font-weight:400;">${esc(asset.note)}</div></div>` : ''}
     <div class="field"><label>Lịch sử bàn giao</label><div id="asset-history" class="reference-empty">Đang tải lịch sử...</div></div>
   `, `
     <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Đóng</button>
-    ${canConfirm ? `<button class="btn-primary" id="asset-confirm">✅ Xác nhận</button>` : ''}
-    ${canConfirm ? `<button class="btn-secondary" id="asset-request-update">↩ Yêu cầu bổ sung</button>` : ''}
-    ${canHandover ? `<button class="btn-primary" id="asset-handover">📦 Đã bàn giao</button>` : ''}
+    ${canConfirm ? `<button class="btn-primary" id="asset-confirm" style="display:inline-flex;align-items:center;gap:4px;">${icon('circleCheck', 'xs')} <span>Xác nhận</span></button>` : ''}
+    ${canConfirm ? `<button class="btn-secondary" id="asset-request-update" style="display:inline-flex;align-items:center;gap:4px;">${icon('arrowLeft', 'xs')} <span>Yêu cầu bổ sung</span></button>` : ''}
+    ${canHandover ? `<button class="btn-primary" id="asset-handover" style="display:inline-flex;align-items:center;gap:4px;">${icon('check', 'xs')} <span>Đã bàn giao</span></button>` : ''}
     ${canDelete ? `<button class="btn-danger" id="asset-del">Xóa</button>` : ''}
-    ${canEditFields ? `<button class="btn-primary" id="asset-edit">✏️ Sửa</button>` : ''}
+    ${canEditFields ? `<button class="btn-primary" id="asset-edit" style="display:inline-flex;align-items:center;gap:4px;">${icon('pencil', 'xs')} <span>Sửa</span></button>` : ''}
   `);
 
   document.getElementById('asset-cred-reveal')?.addEventListener('click', async (e) => {

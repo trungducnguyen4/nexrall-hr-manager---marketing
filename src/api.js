@@ -427,6 +427,7 @@ export const api = {
   addComment:  (taskId, content, mentions) => req('POST', `/api/tasks/${taskId}/comments`, { content, mentions: mentions || [] }).then(r => { inv('/api/tasks'); return r; }),
   getTaskCompletionSubscriptions: () => req('GET', '/api/tasks/completion-subscriptions'),
   toggleTaskCompletionSubscription: (d) => req('POST', '/api/tasks/completion-subscriptions/toggle', d),
+  saveTaskCompletionSubscriptions: (d) => req('POST', '/api/tasks/completion-subscriptions/save', d),
   addTaskFollower: (taskId, userId) => req('POST', `/api/tasks/${taskId}/followers`, userId ? { user_id: userId } : {}).then(r => { inv('/api/tasks'); return r; }),
   removeTaskFollower: (taskId, userId) => req('DELETE', `/api/tasks/${taskId}/followers/${userId}`).then(r => { inv('/api/tasks'); return r; }),
   getUnreadMentionCount: () => req('GET', '/api/notifications/task-mentions/unread-count'),

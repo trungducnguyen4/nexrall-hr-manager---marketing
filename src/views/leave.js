@@ -55,23 +55,23 @@ async function previewLeaveDocument(leaveId, docId, docName = 'tai-lieu', conten
     const isPdf = mime.includes('pdf') || /\.pdf$/i.test(docName);
 
     if (isImage) {
-      openModal(`📎 ${esc(docName)}`, `
+      openModal(docName, `
         <div style="text-align:center;max-height:70vh;overflow:auto;padding:12px 0;">
           <img src="${blobUrl}" style="max-width:100%;max-height:65vh;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,0.12);" alt="${esc(docName)}" />
         </div>
       `, `
         <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Đóng</button>
-        <a href="${blobUrl}" download="${esc(docName)}" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none;">⬇ Tải về máy</a>
+        <a href="${blobUrl}" download="${esc(docName)}" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none;">${icon('download', 'xs')} <span>Tải về máy</span></a>
       `);
     } else if (isPdf) {
-      openModal(`📄 ${esc(docName)}`, `
+      openModal(docName, `
         <div style="width:100%;height:68vh;">
           <iframe src="${blobUrl}" style="width:100%;height:100%;border:none;border-radius:8px;"></iframe>
         </div>
       `, `
         <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Đóng</button>
-        <a href="${blobUrl}" target="_blank" class="btn-secondary" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none;">↗ Mở tab mới</a>
-        <a href="${blobUrl}" download="${esc(docName)}" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none;">⬇ Tải về</a>
+        <a href="${blobUrl}" target="_blank" class="btn-secondary" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none;">${icon('externalLink', 'xs')} <span>Mở tab mới</span></a>
+        <a href="${blobUrl}" download="${esc(docName)}" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none;">${icon('download', 'xs')} <span>Tải về</span></a>
       `);
     } else {
       const a = document.createElement('a');
@@ -134,38 +134,6 @@ export async function renderLeave(el, me) {
       </div>
     </div>
 
-    <!-- KPI Summary Metric Cards -->
-    <div class="leave-metrics-grid" id="leave-metrics">
-      <div class="leave-metric-card leave-metric-card--pending" data-metric-status="pending" title="Nhấn để lọc đơn chờ duyệt">
-        <div class="leave-metric-icon pending">${icon('clock3', 'lg')}</div>
-        <div class="leave-metric-info">
-          <span class="leave-metric-value" id="kpi-pending-val">0</span>
-          <span class="leave-metric-label">Chờ duyệt</span>
-        </div>
-      </div>
-      <div class="leave-metric-card leave-metric-card--approved" data-metric-status="approved" title="Nhấn để lọc đơn đã duyệt">
-        <div class="leave-metric-icon approved">${icon('circleCheck', 'lg')}</div>
-        <div class="leave-metric-info">
-          <span class="leave-metric-value" id="kpi-approved-val">0</span>
-          <span class="leave-metric-label">Đã duyệt</span>
-        </div>
-      </div>
-      <div class="leave-metric-card leave-metric-card--rejected" data-metric-status="rejected" title="Nhấn để lọc đơn từ chối">
-        <div class="leave-metric-icon rejected">${icon('circleX', 'lg')}</div>
-        <div class="leave-metric-info">
-          <span class="leave-metric-value" id="kpi-rejected-val">0</span>
-          <span class="leave-metric-label">Từ chối</span>
-        </div>
-      </div>
-      <div class="leave-metric-card leave-metric-card--balance" id="kpi-fourth-card">
-        <div class="leave-metric-icon balance">${icon('bookmark', 'lg')}</div>
-        <div class="leave-metric-info">
-          <span class="leave-metric-value" id="kpi-fourth-val">${annualBalance}</span>
-          <span class="leave-metric-label" id="kpi-fourth-label">Phép năm còn lại</span>
-        </div>
-      </div>
-    </div>
-
     <!-- Navigation & Filter Toolbar -->
     <div class="leave-main-nav">
       ${canReview ? `
@@ -188,16 +156,16 @@ export async function renderLeave(el, me) {
     <div class="leave-toolbar">
       <div class="leave-status-segmented" id="leave-status-filters">
         <button type="button" class="leave-status-seg-btn ${currentStatus === '' ? 'active' : ''}" data-status="">
-          <span>Tất cả</span>
+          <span>Tất cả</span><span class="leave-seg-count" id="leave-count-all">0</span>
         </button>
         <button type="button" class="leave-status-seg-btn ${currentStatus === 'pending' ? 'active' : ''}" data-status="pending">
-          <span class="leave-seg-dot pending"></span><span>Chờ duyệt</span>
+          <span class="leave-seg-dot pending"></span><span>Chờ duyệt</span><span class="leave-seg-count" id="leave-count-pending">0</span>
         </button>
         <button type="button" class="leave-status-seg-btn ${currentStatus === 'approved' ? 'active' : ''}" data-status="approved">
-          <span class="leave-seg-dot approved"></span><span>Đã duyệt</span>
+          <span class="leave-seg-dot approved"></span><span>Đã duyệt</span><span class="leave-seg-count" id="leave-count-approved">0</span>
         </button>
         <button type="button" class="leave-status-seg-btn ${currentStatus === 'rejected' ? 'active' : ''}" data-status="rejected">
-          <span class="leave-seg-dot rejected"></span><span>Từ chối</span>
+          <span class="leave-seg-dot rejected"></span><span>Từ chối</span><span class="leave-seg-count" id="leave-count-rejected">0</span>
         </button>
       </div>
 
@@ -225,29 +193,12 @@ export async function renderLeave(el, me) {
   }));
   el.querySelector('#leave-balance')?.addEventListener('click', () => openBalanceAdjustment());
 
-  // Bind Metric cards click to filter
-  el.querySelectorAll('#leave-metrics .leave-metric-card[data-metric-status]').forEach(card => {
-    card.addEventListener('click', () => {
-      const st = card.dataset.metricStatus;
-      currentStatus = (currentStatus === st) ? '' : st;
-      syncFilterButtons();
-      currentPage = 1;
-      renderLeaveTable();
-    });
-  });
-
   // Bind Scope tabs
   el.querySelector('#leave-scope-tabs')?.addEventListener('click', event => {
     const btn = event.target.closest('[data-tab]');
     if (!btn) return;
     currentTab = btn.dataset.tab;
     el.querySelectorAll('#leave-scope-tabs .leave-scope-tab').forEach(x => x.classList.toggle('active', x === btn));
-    
-    // Update fourth metric card label
-    const fourthLabel = el.querySelector('#kpi-fourth-label');
-    if (fourthLabel) {
-      fourthLabel.textContent = currentTab === 'review' ? 'Tổng số đơn' : 'Phép năm còn lại';
-    }
     currentPage = 1;
     loadLeave();
   });
@@ -265,9 +216,6 @@ export async function renderLeave(el, me) {
   function syncFilterButtons() {
     el.querySelectorAll('#leave-status-filters .leave-status-seg-btn').forEach(btn => {
       btn.classList.toggle('active', (btn.dataset.status || '') === currentStatus);
-    });
-    el.querySelectorAll('#leave-metrics .leave-metric-card[data-metric-status]').forEach(card => {
-      card.classList.toggle('is-active', (card.dataset.metricStatus || '') === currentStatus);
     });
   }
 
@@ -310,27 +258,26 @@ export async function renderLeave(el, me) {
       const res = await api.getLeave(params);
       cachedLeaveList = res.leave || [];
 
-      // Update KPI Metric Cards
+      // Update status filter counts
       const pendingCount = cachedLeaveList.filter(x => x.status === 'pending').length;
       const approvedCount = cachedLeaveList.filter(x => x.status === 'approved').length;
       const rejectedCount = cachedLeaveList.filter(x => x.status === 'rejected').length;
+      const totalCount = cachedLeaveList.length;
 
-      const pVal = el.querySelector('#kpi-pending-val');
-      const aVal = el.querySelector('#kpi-approved-val');
-      const rVal = el.querySelector('#kpi-rejected-val');
-      const fVal = el.querySelector('#kpi-fourth-val');
+      const cAll = el.querySelector('#leave-count-all');
+      const cPending = el.querySelector('#leave-count-pending');
+      const cApproved = el.querySelector('#leave-count-approved');
+      const cRejected = el.querySelector('#leave-count-rejected');
 
-      if (pVal) pVal.textContent = pendingCount;
-      if (aVal) aVal.textContent = approvedCount;
-      if (rVal) rVal.textContent = rejectedCount;
-      if (fVal) {
-        fVal.textContent = currentTab === 'review' ? cachedLeaveList.length : annualBalance;
-      }
+      if (cAll) cAll.textContent = totalCount;
+      if (cPending) cPending.textContent = pendingCount;
+      if (cApproved) cApproved.textContent = approvedCount;
+      if (cRejected) cRejected.textContent = rejectedCount;
 
       updatePendingBadge();
       renderLeaveTable();
     } catch (error) {
-      list.innerHTML = emptyHTML('⚠️', error.message || 'Không thể tải danh sách đơn nghỉ phép.');
+      list.innerHTML = emptyHTML('triangleAlert', error.message || 'Không thể tải danh sách đơn nghỉ phép.');
     }
   }
 
@@ -356,7 +303,7 @@ export async function renderLeave(el, me) {
 
     if (!filtered.length) {
       const emptyMsg = isReview ? 'Không có đơn nghỉ phép nào của nhân viên' : 'Bạn chưa có đơn nghỉ phép nào phù hợp';
-      list.innerHTML = emptyHTML('🏖️', emptyMsg, currentTab === 'mine' ? 'Nhấn “+ Tạo đơn nghỉ” để gửi đơn mới' : 'Thử thay đổi bộ lọc trạng thái hoặc từ khóa tìm kiếm.');
+      list.innerHTML = emptyHTML('plane', emptyMsg, currentTab === 'mine' ? 'Nhấn “+ Tạo đơn nghỉ” để gửi đơn mới' : 'Thử thay đổi bộ lọc trạng thái hoặc từ khóa tìm kiếm.');
       return;
     }
 
@@ -422,7 +369,7 @@ export async function renderLeave(el, me) {
                       </div>
                       ${row.handover_user_name ? `
                         <div class="leave-handover-text">
-                          <span style="opacity:0.8;">🤝 Bàn giao:</span> <strong>${esc(row.handover_user_name)}</strong>
+                          <span style="display:inline-flex;align-items:center;gap:4px;opacity:0.8;">${icon('handshake', 'xs')} <span>Bàn giao:</span></span> <strong>${esc(row.handover_user_name)}</strong>
                         </div>
                       ` : ''}
                       ${docs.length ? `
@@ -506,12 +453,12 @@ export async function renderLeave(el, me) {
         if (documents.length === 1) {
           await previewLeaveDocument(leaveId, documents[0].id, documents[0].original_filename, documents[0].content_type);
         } else {
-          openModal('📎 Danh sách tệp đính kèm', `
+          openModal('Danh sách tệp đính kèm', `
             <div style="display:flex;flex-direction:column;gap:8px;padding:8px 0;">
               ${documents.map(d => `
                 <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--surface-2);border-radius:8px;border:1px solid var(--border);">
                   <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1;">
-                    <span style="font-size:16px;">📎</span>
+                    <span style="display:flex;align-items:center;color:var(--text-2);">${icon('paperclip', 'sm')}</span>
                     <div style="min-width:0;">
                       <strong style="font-size:13px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(d.original_filename)}</strong>
                       <small style="color:var(--text-3);">${formatDocSize(d.byte_size)}</small>
@@ -627,8 +574,8 @@ async function openLeaveForm(me, types, refresh = noop) {
             ${esc(type.policy_description || type.short_description || 'Theo chính sách công ty.')}
           </div>
           ${!isOfficial && balanceCode === 'annual' ? `
-            <div style="font-size:12px;color:#d97706;margin-top:8px;padding:8px 12px;background:#FEF3C7;border-radius:8px;font-weight:600;line-height:1.4;">
-              ⚠️ Chế độ phép năm chỉ áp dụng cho nhân viên chính thức (12 ngày/năm). Thực tập sinh và nhân viên thử việc vui lòng chọn hình thức nghỉ khác (ví dụ: Nghỉ không lương).
+            <div style="display:flex;align-items:flex-start;gap:6px;font-size:12px;color:#d97706;margin-top:8px;padding:8px 12px;background:#FEF3C7;border-radius:8px;font-weight:600;line-height:1.4;">
+              ${icon('triangleAlert', 'xs')} <span>Chế độ phép năm chỉ áp dụng cho nhân viên chính thức (12 ngày/năm). Thực tập sinh và nhân viên thử việc vui lòng chọn hình thức nghỉ khác (ví dụ: Nghỉ không lương).</span>
             </div>
           ` : balanceCode ? `<div style="font-size:12.5px;color:var(--text);margin-top:6px;">Số dư hiện có: <strong style="color:var(--primary);">${balanceOf(balanceCode)} ngày</strong></div>` : ''}
           <div style="font-size:11.5px;color:var(--text-3);margin-top:6px;padding-top:6px;border-top:1px dashed rgba(238,77,45,0.15);">

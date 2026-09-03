@@ -487,8 +487,8 @@ function renderConversation(conv) {
 
 function renderComposer() {
   const groupOnlyActions = activeConversation?.type === 'direct' ? '' : `
-    <button type="button" class="chat-mobile-action" data-composer-action="poll">▥<span>Bình chọn</span></button>
-    <button type="button" class="chat-mobile-action" data-composer-action="event">◷<span>Đặt lịch</span></button>`;
+    <button type="button" class="chat-mobile-action" data-composer-action="poll">${icon('barChart3', 'md')}<span>Bình chọn</span></button>
+    <button type="button" class="chat-mobile-action" data-composer-action="event">${icon('calendarDays', 'md')}<span>Đặt lịch</span></button>`;
   return `
     <div class="chat-composer" id="chat-composer">
       <div class="chat-composer-reply" id="chat-composer-reply" style="display:none">
@@ -501,8 +501,8 @@ function renderComposer() {
         <button type="button" class="chat-composer-btn chat-composer-tool" data-composer-action="emoji" aria-label="Biểu cảm">${icon('smile', 'md')}</button>
         <button type="button" class="chat-composer-btn chat-composer-tool" data-composer-action="task" aria-label="Gắn task">${icon('clipboardList', 'md')}</button>
         <button type="button" class="chat-composer-btn chat-composer-tool" data-composer-action="mention" aria-label="Tag thành viên">${icon('atSign', 'md')}</button>
-        <button type="button" class="chat-composer-btn chat-composer-tool" data-composer-action="poll" aria-label="Tạo bình chọn">▥</button>
-        <button type="button" class="chat-composer-btn chat-composer-tool" data-composer-action="event" aria-label="Đặt lịch hẹn">◷</button>
+        <button type="button" class="chat-composer-btn chat-composer-tool" data-composer-action="poll" aria-label="Tạo bình chọn">${icon('barChart3', 'md')}</button>
+        <button type="button" class="chat-composer-btn chat-composer-tool" data-composer-action="event" aria-label="Đặt lịch hẹn">${icon('calendarDays', 'md')}</button>
         <button type="button" class="chat-composer-btn chat-composer-actions-trigger" id="chat-actions-btn" aria-label="Thêm công cụ" aria-expanded="false">${icon('plus', 'md')}</button>
         <textarea class="chat-composer-input" id="chat-input" rows="1" placeholder="Nhập tin nhắn..."></textarea>
         <button class="chat-composer-send" id="chat-send-btn" aria-label="Gửi">${icon('send', 'md')}</button>
@@ -584,7 +584,7 @@ function renderMessages() {
     if (msg.task_id && !deleted) {
       taskHtml = `<div class="chat-task-card" data-task-id="${msg.task_id}">
         <div class="chat-task-code">#TASK-${msg.task_id}</div>
-        <div class="chat-task-title">📋 Xem task</div>
+        <div class="chat-task-title" style="display:flex;align-items:center;gap:4px;">${icon('clipboardList', 'xs')} <span>Xem task</span></div>
       </div>`;
     }
 
@@ -782,7 +782,7 @@ function renderEventCard(message, isOwner) {
     <div class="chat-event-details-box">
       ${event.location ? `
       <div class="chat-event-info-row">
-        <span class="chat-event-icon-pin">📍</span>
+        <span class="chat-event-icon-pin" style="display:inline-flex;align-items:center;">${icon('mapPin', 'xs')}</span>
         ${isLocUrl ? `
         <a href="${esc(locHref)}" target="_blank" rel="noopener noreferrer" class="chat-event-location-link">
           <span>${esc(event.location)}</span>
@@ -1329,18 +1329,18 @@ function renderPendingAttachments() {
       return `
         <div class="chat-pending-card chat-pending-image" data-pending-id="${item.id}">
           <img src="${item.previewUrl}" alt="${esc(item.file.name)}" class="chat-pending-thumb" />
-          <button type="button" class="chat-pending-remove" data-remove-pending="${item.id}" title="Xóa ảnh">✕</button>
+          <button type="button" class="chat-pending-remove" data-remove-pending="${item.id}" title="Xóa ảnh">${icon('x', 'xs')}</button>
         </div>
       `;
     }
     return `
       <div class="chat-pending-card chat-pending-file" data-pending-id="${item.id}">
-        <span class="chat-pending-file-icon">${icon('paperclip', 'sm') || '📎'}</span>
+        <span class="chat-pending-file-icon">${icon('paperclip', 'sm')}</span>
         <div class="chat-pending-file-info">
           <span class="chat-pending-file-name" title="${esc(item.file.name)}">${esc(item.file.name)}</span>
           <span class="chat-pending-file-size">${formatSize(item.file.size)}</span>
         </div>
-        <button type="button" class="chat-pending-remove" data-remove-pending="${item.id}" title="Xóa tệp">✕</button>
+        <button type="button" class="chat-pending-remove" data-remove-pending="${item.id}" title="Xóa tệp">${icon('x', 'xs')}</button>
       </div>
     `;
   }).join('');
@@ -2160,7 +2160,7 @@ function renderLightbox() {
       <div class="chat-lightbox-header">
         <div class="chat-lightbox-header-left">
           <button type="button" class="chat-lightbox-btn" id="chat-lightbox-close" title="Đóng (Esc)">
-            ${icon('x', 'md') || '✕'}
+            ${icon('x', 'md')}
           </button>
           <div class="chat-lightbox-meta">
             <div class="chat-lightbox-title">${esc(current.file_name || 'Hình ảnh')}</div>

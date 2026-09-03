@@ -176,7 +176,7 @@ export async function renderUsers(el, me, route = {}) {
 async function renderEmployeeDirectory(el, me) {
   const canOpen = me.role === 'admin' || me.role === 'manager' || isHcnsDepartment(me.department);
   if (!canOpen) {
-    el.innerHTML = emptyHTML('', 'Bạn không có quyền truy cập danh sách nhân viên');
+    el.innerHTML = emptyHTML('lock', 'Bạn không có quyền truy cập danh sách nhân viên');
     return;
   }
 
@@ -248,7 +248,7 @@ async function renderEmployeeDirectory(el, me) {
       syncFilterOptions();
       renderRows(response.users || [], response.pagination || {});
     } catch (error) {
-      if (requestId === state.request) result.innerHTML = emptyHTML('', error.message, 'Thử tải lại trang hoặc kiểm tra quyền truy cập.');
+      if (requestId === state.request) result.innerHTML = emptyHTML('triangleAlert', error.message, 'Thử tải lại trang hoặc kiểm tra quyền truy cập.');
     } finally {
       if (requestId === state.request) {
         state.loading = false;
@@ -261,7 +261,7 @@ async function renderEmployeeDirectory(el, me) {
     const result = document.getElementById('employee-directory-result');
     if (!result) return;
     if (!users.length) {
-      result.innerHTML = emptyHTML('', 'Không tìm thấy nhân viên', 'Hãy thay đổi từ khóa hoặc bộ lọc.');
+      result.innerHTML = emptyHTML('users', 'Không tìm thấy nhân viên', 'Hãy thay đổi từ khóa hoặc bộ lọc.');
       return;
     }
     result.innerHTML = `
@@ -422,10 +422,10 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
               </div>
               <h1 class="emp-hero-fullname">${esc(user.full_name)}</h1>
               <div class="emp-hero-meta-items">
-                <span class="emp-meta-item">🏢 <strong>${esc(user.department || 'Chưa phân phòng')}</strong></span>
+                <span class="emp-meta-item" style="display:inline-flex;align-items:center;gap:4px;">${icon('building2', 'xs')} <strong>${esc(user.department || 'Chưa phân phòng')}</strong></span>
                 <span class="emp-meta-dot">•</span>
-                <span class="emp-meta-item">💼 ${esc(user.position || 'Chưa cập nhật vị trí')}</span>
-                ${user.work_location ? `<span class="emp-meta-dot">•</span><span class="emp-meta-item">📍 ${esc(user.work_location)}</span>` : ''}
+                <span class="emp-meta-item" style="display:inline-flex;align-items:center;gap:4px;">${icon('briefcaseBusiness', 'xs')} <span>${esc(user.position || 'Chưa cập nhật vị trí')}</span></span>
+                ${user.work_location ? `<span class="emp-meta-dot">•</span><span class="emp-meta-item" style="display:inline-flex;align-items:center;gap:4px;">${icon('mapPin', 'xs')} <span>${esc(user.work_location)}</span></span>` : ''}
               </div>
             </div>
           </div>
@@ -440,7 +440,7 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
                 <div class="emp-completion-track">
                   <div class="emp-completion-bar ${completionColorClass}" style="width: ${completion}%;"></div>
                 </div>
-                <span class="emp-completion-hint">${completion === 100 ? '✅ Đã hoàn tất thông tin' : 'Cần bổ sung các mục còn thiếu'}</span>
+                <span class="emp-completion-hint" style="display:inline-flex;align-items:center;gap:4px;">${completion === 100 ? `${icon('circleCheck', 'xs')} <span>Đã hoàn tất thông tin</span>` : 'Cần bổ sung các mục còn thiếu'}</span>
               </div>
             `}
 
@@ -1069,7 +1069,7 @@ function openCreateEmployee(users, departments, onSaved) {
   openModal('Thêm nhân viên mới', `
     <div class="employee-create-form" style="display:flex;flex-direction:column;gap:16px;">
       <div style="background:#FFF5F2;border:1px solid #FED7AA;border-radius:12px;padding:12px 14px;display:flex;align-items:flex-start;gap:10px;">
-        <span style="color:var(--primary);margin-top:2px;">${icon('info', 'sm') || 'ℹ️'}</span>
+        <span style="color:var(--primary);margin-top:2px;">${icon('circleInfo', 'sm')}</span>
         <div style="font-size:12.5px;color:var(--text-2);line-height:1.45;">
           Chỉ cần nhập <strong>Mã nhân viên</strong> và <strong>Họ và tên đầy đủ</strong> để khởi tạo tài khoản nhanh. Mật khẩu đăng nhập mặc định là <strong style="color:var(--primary);">Pass@123</strong>.
         </div>

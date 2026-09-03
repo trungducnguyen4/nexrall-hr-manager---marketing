@@ -85,7 +85,7 @@ export async function renderInvoices(el, me) {
       }
       const pageData = paginateRows(filteredInvoices, currentPage);
       currentPage = pageData.page;
-      if (!filteredInvoices.length) { listEl.innerHTML = emptyHTML('💰', 'Không có phiếu lương nào'); return; }
+      if (!filteredInvoices.length) { listEl.innerHTML = emptyHTML('banknote', 'Không có phiếu lương nào'); return; }
       listEl.innerHTML = pageData.rows.map(inv => `
         <div class="invoice-card" data-inv="${inv.id}">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;">
@@ -107,7 +107,7 @@ export async function renderInvoices(el, me) {
       });
       bindPagination(listEl, page => { currentPage = page; loadInvoices(); });
     } catch(e) {
-      listEl.innerHTML = emptyHTML('⚠️', e.message);
+      listEl.innerHTML = emptyHTML('triangleAlert', e.message);
     }
   }
 
@@ -287,9 +287,9 @@ function openInvoiceDetail(invId, isManager, users, onRefresh = noop, me = null)
         <span class="source-tag">Hợp đồng <span class="badge-auto">Tự động</span></span>
         <span class="source-tag">Đánh giá <span class="badge-auto">Tự động</span></span>
       </div>
-      <button class="btn-secondary btn-sm" id="inv-view-attendance" style="margin-bottom:4px;">📅 Xem chi tiết chấm công</button>
-      ${inv.bank_account ? `<div style="font-size:12px;color:var(--text-2);background:var(--bg);padding:10px;border-radius:8px;margin-top:6px;">🏦 ${esc(inv.bank_name||'')} · ${esc(inv.bank_account)}</div>` : ''}
-      ${inv.note ? `<div style="font-size:12px;color:var(--text-2);margin-top:8px;">📝 ${esc(inv.note)}</div>` : ''}
+      <button class="btn-secondary btn-sm" id="inv-view-attendance" style="margin-bottom:4px;display:inline-flex;align-items:center;gap:4px;">${icon('calendarDays', 'xs')} <span>Xem chi tiết chấm công</span></button>
+      ${inv.bank_account ? `<div style="font-size:12px;color:var(--text-2);background:var(--bg);padding:10px;border-radius:8px;margin-top:6px;display:flex;align-items:center;gap:6px;">${icon('banknote', 'xs')} <span>${esc(inv.bank_name||'')} · ${esc(inv.bank_account)}</span></div>` : ''}
+      ${inv.note ? `<div style="font-size:12px;color:var(--text-2);margin-top:8px;display:flex;align-items:center;gap:6px;">${icon('fileText', 'xs')} <span>${esc(inv.note)}</span></div>` : ''}
 
       <div class="modal-section-title">Quy trình xử lý</div>
       <div>
@@ -359,7 +359,7 @@ function openInvoiceDetail(invId, isManager, users, onRefresh = noop, me = null)
       document.getElementById('modal-footer').innerHTML = `<button class="btn-secondary w-full" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Đóng</button>`;
     }
   }).catch(e => {
-    document.getElementById('modal-body').innerHTML = emptyHTML('⚠️', e.message);
+    document.getElementById('modal-body').innerHTML = emptyHTML('triangleAlert', e.message);
   });
 }
 
@@ -434,13 +434,13 @@ function openCreateInvoiceModal(users, onRefresh = noop) {
           <span>Nửa ngày: <strong style="color:var(--text);">${s.halfDays}</strong></span>
           <span>Đi muộn: <strong style="color:var(--text);">${s.lateMinutes}p</strong></span>
           <span>Về sớm: <strong style="color:var(--text);">${s.earlyLeaveMinutes}p</strong></span>
-          ${s.incompleteDays > 0 ? `<span style="color:var(--danger);font-weight:600;width:100%;">⚠️ ${s.incompleteDays} ngày thiếu check-in/out — Cần HCNS kiểm tra</span>` : ''}
+          ${s.incompleteDays > 0 ? `<span style="color:var(--danger);font-weight:600;width:100%;display:inline-flex;align-items:center;gap:4px;">${icon('triangleAlert', 'xs')} <span>${s.incompleteDays} ngày thiếu check-in/out — Cần HCNS kiểm tra</span></span>` : ''}
         </div>`;
       }
     } catch (e) {
       attSummary = null;
       if (disp) disp.value = '—';
-      if (box) box.innerHTML = `<span style="color:var(--danger);">⚠️ Không thể tải dữ liệu chấm công</span> <button type="button" class="btn-xs btn-secondary" id="ci-att-retry">Thử lại</button>`;
+      if (box) box.innerHTML = `<span style="color:var(--danger);display:inline-flex;align-items:center;gap:4px;">${icon('triangleAlert', 'xs')} <span>Không thể tải dữ liệu chấm công</span></span> <button type="button" class="btn-xs btn-secondary" id="ci-att-retry">Thử lại</button>`;
       document.getElementById('ci-att-retry')?.addEventListener('click', loadAttendanceSummary);
     }
     attLoading = false;

@@ -3,7 +3,8 @@ import { api } from '../api.js';
 import { EventBus } from '../event-bus.js';
 import { icon } from '../icons.js';
 
-const REWARD_POLICY = [
+// Chính sách thưởng/phạt
+const REWARD_ITEMS = [
   '90-100 điểm: thưởng 1-2 triệu đồng',
   '80-89 điểm: thưởng 500.000đ',
   'Không vi phạm deadline cả tháng: +2 điểm',
@@ -12,7 +13,7 @@ const REWARD_POLICY = [
   'Top hiệu suất tuần: thưởng nóng 200-500k',
   'Được chọn tham gia dự án lớn',
 ];
-const PENALTY_POLICY = [
+const PENALTY_ITEMS = [
   'Đi trễ: được miễn 2 lần/tháng (gồm có/không xin phép)',
   'Từ lần đi trễ thứ 3: phạt 20.000đ/lần, trừ vào lương sau khi HCNS xác nhận',
   'Trễ deadline 3 lần/tháng: trừ 5 điểm',
@@ -23,25 +24,27 @@ const PENALTY_POLICY = [
 ];
 
 function rewardPenaltyPolicyHtml() {
-  const list = (items, color) => `
-    <ul style="margin:0;padding:18px 22px 18px 34px;display:grid;gap:12px;font-size:14px;line-height:1.45;color:var(--text);">
-      ${items.map(item => `<li style="padding-left:4px;"><span style="color:${color};font-weight:800;">${esc(item)}</span></li>`).join('')}
-    </ul>`;
   return `
-    <div class="section-title">Cơ chế thưởng - phạt</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-bottom:18px;">
-      <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#fff;">
-        <div style="background:#FF9416;color:#fff;text-align:center;font-weight:800;font-size:18px;padding:12px;">THƯỞNG</div>
-        ${list(REWARD_POLICY, '#9A5A00')}
+    <div class="eval-policy-block" style="margin-bottom:18px;">
+      <div class="section-title">Cơ chế thưởng - phạt</div>
+      <div class="eval-reward-penalty-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="border-radius:10px;overflow:hidden;border:1px solid #FF9416;background:var(--surface);">
+          <div style="background:#FF9416;color:#fff;text-align:center;font-weight:800;font-size:18px;padding:12px;">THƯỞNG</div>
+          <ul style="padding:12px 16px 12px 28px;margin:0;font-size:13px;line-height:1.8;color:var(--text);">
+            ${REWARD_ITEMS.map(i => `<li>${esc(i)}</li>`).join('')}
+          </ul>
+        </div>
+        <div style="border-radius:10px;overflow:hidden;border:1px solid #C9252D;background:var(--surface);">
+          <div style="background:#C9252D;color:#fff;text-align:center;font-weight:800;font-size:18px;padding:12px;">PHẠT</div>
+          <ul style="padding:12px 16px 12px 28px;margin:0;font-size:13px;line-height:1.8;color:var(--text);">
+            ${PENALTY_ITEMS.map(i => `<li>${esc(i)}</li>`).join('')}
+          </ul>
+        </div>
       </div>
-      <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#fff;">
-        <div style="background:#C9252D;color:#fff;text-align:center;font-weight:800;font-size:18px;padding:12px;">PHẠT</div>
-        ${list(PENALTY_POLICY, '#7F1D1D')}
+      <div class="policy-note" style="margin-top:8px;">
+        Các khoản thưởng/phạt tiền được đưa sang bảng lương dưới dạng <strong>đề xuất</strong>; HCNS kiểm tra và xác nhận trước khi cộng/trừ.
+        Các khoản cộng/trừ điểm chỉ lưu audit, không sửa ngược phiếu đánh giá đã khóa.
       </div>
-    </div>
-    <div class="policy-note" style="margin-bottom:18px;">
-      Các khoản thưởng/phạt tiền được đưa sang bảng lương dưới dạng <strong>đề xuất</strong>; HCNS kiểm tra và xác nhận trước khi cộng/trừ.
-      Các khoản cộng/trừ điểm chỉ lưu audit, không sửa ngược phiếu đánh giá đã khóa.
     </div>
   `;
 }
@@ -52,38 +55,38 @@ function rewardPenaltyPolicyHtml() {
 //  2) Workflow TTS: Mentor + Trưởng phòng (song song) → TTS xác nhận →
 //     TGĐ phê duyệt → HCNS tiếp nhận & khóa. See server.js /api/evaluations*.
 // ════════════════════════════════════════════════
-
 export async function renderEvaluation(el, me) {
+  el.innerHTML = loadingHTML();
+
   const totalMax = EVAL_GROUPS.reduce((s, g) => s + g.maxScore, 0);
-  const activeGroup = EVAL_GROUPS[0].key;
+  let activeGroup = EVAL_GROUPS[0].key;
 
-  el.innerHTML = `
-    <div class="page-header">
-      <div class="page-header-left">
-        <div class="page-title">${icon('barChart3', 'lg')} <span>Đánh giá hiệu suất</span></div>
-        <div class="page-sub">Quy định &amp; tiêu chí đánh giá áp dụng cho nhân viên chính thức và TTS</div>
+  const policyCardHtml = `
+    <div class="card" id="eval-policy-card" style="margin-bottom:16px;">
+      <div class="page-header" style="margin-bottom:12px;">
+        <div class="page-header-left">
+          <div class="page-title">${icon('barChart3', 'lg')} <span>Đánh giá hiệu suất</span></div>
+          <div class="page-sub">Quy định &amp; tiêu chí đánh giá áp dụng cho nhân viên chính thức và TTS</div>
+        </div>
       </div>
-    </div>
 
-    <div class="card" style="margin-bottom:16px;">
-      <div class="card-header">
+      <div class="card-header" style="cursor:pointer;" id="eval-policy-header">
         <div class="card-title">${icon('clipboardCheck', 'sm')} <span>Quy định &amp; Tiêu chí đánh giá</span></div>
         <button id="eval-toggle" class="btn-secondary btn-sm" aria-expanded="false">Mở rộng</button>
       </div>
-
-      <div id="eval-policy-body" class="hidden">
+      <div id="eval-policy-body" style="display:none;margin-top:14px;">
         <!-- 1. Tổng quan chính sách -->
         <div class="section-title">Tổng quan chính sách</div>
         <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:18px;">
           ${EVAL_GROUPS.map(g => `
             <div class="stat-card" style="--stat-color:${g.color};--stat-bg:${g.color}1A;">
-              <div class="stat-icon-wrap" style="color:${g.color};">${g.icon}</div>
+              <div class="stat-icon-wrap" style="color:${g.color};">${icon(g.icon, 'sm')}</div>
               <div class="stat-val" style="color:${g.color};">${g.maxScore} điểm</div>
               <div class="stat-label">${esc(g.label)}</div>
             </div>
           `).join('')}
           <div class="stat-card" style="--stat-color:var(--primary);--stat-bg:var(--primary-light);grid-column:1 / -1;">
-            <div class="stat-icon-wrap">🏁</div>
+            <div class="stat-icon-wrap">${icon('flag', 'sm')}</div>
             <div class="stat-val">${totalMax} điểm</div>
             <div class="stat-label">Tổng điểm đánh giá</div>
           </div>
@@ -107,9 +110,8 @@ export async function renderEvaluation(el, me) {
             </tbody>
           </table>
         </div>
-        <div class="policy-note">
-          ⚠️ Không tự động phạt, cảnh cáo hoặc cho nghỉ. Trường hợp <strong>Dưới chuẩn</strong>/<strong>Yếu</strong> phải qua giải trình,
-          HCNS kiểm tra và người có thẩm quyền phê duyệt.
+        <div class="policy-note" style="display:flex;align-items:flex-start;gap:8px;">
+          ${icon('triangleAlert', 'xs')} <span>Không tự động phạt, cảnh cáo hoặc cho nghỉ. Trường hợp <strong>Dưới chuẩn</strong>/<strong>Yếu</strong> phải qua giải trình, HCNS kiểm tra và người có thẩm quyền phê duyệt.</span>
         </div>
 
         <!-- 3. Checklist 14 tiêu chí -->
@@ -255,7 +257,7 @@ async function renderWorkflowSection(el, me) {
     periods = pR.periods || [];
     if (hr || ceo) basicUsers = sortVietnameseNames((await api.getUsersBasic()).users || [], 'full_name');
   } catch (e) {
-    el.innerHTML = `<div class="card">${emptyHTML('⚠️', 'Không thể tải dữ liệu đánh giá hiệu suất')}</div>`;
+    el.innerHTML = `<div class="card">${emptyHTML('triangleAlert', 'Không thể tải dữ liệu đánh giá hiệu suất')}</div>`;
     return;
   }
 
@@ -298,7 +300,7 @@ function adminSectionHtml(periods, evaluations, basicUsers, latestPeriod) {
   return `
   <div class="card" style="margin-bottom:16px;">
     <div class="card-header">
-      <div class="card-title">🗓️ Kỳ đánh giá hiệu suất</div>
+      <div class="card-title" style="display:flex;align-items:center;gap:6px;">${icon('calendarDays', 'sm')} <span>Kỳ đánh giá hiệu suất</span></div>
       <button class="btn-secondary btn-sm" id="eval-period-new-btn">+ Mở kỳ mới</button>
     </div>
     ${latestPeriod ? `
@@ -322,7 +324,7 @@ function adminSectionHtml(periods, evaluations, basicUsers, latestPeriod) {
 
   ${latestPeriod ? `
   <div class="card" style="margin-bottom:16px;">
-    <div class="card-header"><div class="card-title">🧭 Phân công đánh giá — Tháng ${latestPeriod.month}/${latestPeriod.year}</div></div>
+    <div class="card-header"><div class="card-title" style="display:flex;align-items:center;gap:6px;">${icon('users', 'sm')} <span>Phân công đánh giá — Tháng ${latestPeriod.month}/${latestPeriod.year}</span></div></div>
     ${unassigned.length ? `
       <div class="input-row">
         <div class="field"><label>TTS</label><select id="asg-tts"><option value="">-- Chọn TTS --</option>${unassigned.map(u => `<option value="${u.id}">${esc(u.full_name)}</option>`).join('')}</select></div>
@@ -334,7 +336,7 @@ function adminSectionHtml(periods, evaluations, basicUsers, latestPeriod) {
   </div>` : ''}
 
   <div class="card" style="margin-bottom:16px;">
-    <div class="card-header"><div class="card-title">📑 Tất cả phiếu đánh giá</div></div>
+    <div class="card-header"><div class="card-title" style="display:flex;align-items:center;gap:6px;">${icon('fileText', 'sm')} <span>Tất cả phiếu đánh giá</span></div></div>
     <div class="table-wrap">
       <table>
         <thead><tr><th>TTS</th><th>Kỳ</th><th>Mentor</th><th>Trưởng phòng</th><th>Trạng thái</th></tr></thead>
@@ -358,7 +360,7 @@ function adminSectionHtml(periods, evaluations, basicUsers, latestPeriod) {
 function assignedSectionHtml(list) {
   return `
   <div class="card" style="margin-bottom:16px;">
-    <div class="card-header"><div class="card-title">📋 Đánh giá được phân công</div></div>
+    <div class="card-header"><div class="card-title" style="display:flex;align-items:center;gap:6px;">${icon('clipboardCheck', 'sm')} <span>Đánh giá được phân công</span></div></div>
     <div class="table-wrap">
       <table>
         <thead><tr><th>TTS</th><th>Mã NV</th><th>Phòng ban</th><th>Vị trí</th><th>Kỳ</th><th>Thời hạn</th><th>Trạng thái</th></tr></thead>
@@ -385,7 +387,7 @@ function ttsSectionHtml(ev) {
   const daysLeft = ev && ev.period_end ? Math.ceil((new Date(ev.period_end) - new Date()) / 86400000) : null;
   return `
   <div class="card" style="margin-bottom:16px;">
-    <div class="card-header"><div class="card-title">📈 Đánh giá hiệu suất tháng</div></div>
+    <div class="card-header"><div class="card-title" style="display:flex;align-items:center;gap:6px;">${icon('chartLine', 'sm')} <span>Đánh giá hiệu suất tháng</span></div></div>
     ${ev ? `
       <div class="detail-grid">
         <div class="detail-item"><div class="detail-label">Tháng đánh giá</div><div class="detail-val">${ev.period_month}/${ev.period_year}</div></div>
@@ -567,16 +569,14 @@ function renderEvalModal(ev, history, me, onRefresh = noop) {
     </div>
 
     ${ev.status === 'EMPLOYEE_REVISION_REQUESTED' && ev.employee_revision_reason ? `
-      <div class="policy-note" style="border-left:3px solid var(--warning);">
-        ⚠️ <strong>TTS yêu cầu xem xét lại:</strong> ${esc(ev.employee_revision_reason)}
-        ${ev.employee_revision_evidence ? `<br>Minh chứng: <a href="${esc(ev.employee_revision_evidence)}" target="_blank" rel="noopener">${esc(ev.employee_revision_evidence)}</a>` : ''}
+      <div class="policy-note" style="border-left:3px solid var(--warning);display:flex;align-items:flex-start;gap:6px;">
+        ${icon('triangleAlert', 'xs')} <div><strong>TTS yêu cầu xem xét lại:</strong> ${esc(ev.employee_revision_reason)}${ev.employee_revision_evidence ? `<br>Minh chứng: <a href="${esc(ev.employee_revision_evidence)}" target="_blank" rel="noopener">${esc(ev.employee_revision_evidence)}</a>` : ''}</div>
       </div>` : ''}
     ${ev.status === 'CEO_REVISION_REQUESTED' && ev.ceo_revision_reason ? `
-      <div class="policy-note" style="border-left:3px solid var(--warning);">⚠️ <strong>Ban Giám đốc yêu cầu đánh giá lại:</strong> ${esc(ev.ceo_revision_reason)}</div>` : ''}
+      <div class="policy-note" style="border-left:3px solid var(--warning);display:flex;align-items:flex-start;gap:6px;">${icon('triangleAlert', 'xs')} <div><strong>Ban Giám đốc yêu cầu đánh giá lại:</strong> ${esc(ev.ceo_revision_reason)}</div></div>` : ''}
     ${(mentorReadyButBlocked || deptReadyButBlocked) ? `
-      <div class="policy-note" style="border-left:3px solid var(--warning);">
-        ⏰ Ngoài thời gian đánh giá của kỳ này (${esc(ev.period_start || '')} → ${esc(ev.period_end || '')}).
-        ${hr || ceo ? `<button class="btn-secondary btn-sm" id="ev-reopen" style="margin-top:6px;">Mở lại để chấm điểm</button>` : 'Vui lòng liên hệ HCNS/Ban Giám đốc để được mở lại.'}
+      <div class="policy-note" style="border-left:3px solid var(--warning);display:flex;align-items:flex-start;gap:6px;">
+        ${icon('clock3', 'xs')} <div>Ngoài thời gian đánh giá của kỳ này (${esc(ev.period_start || '')} → ${esc(ev.period_end || '')}).${hr || ceo ? `<br><button class="btn-secondary btn-sm" id="ev-reopen" style="margin-top:6px;">Mở lại để chấm điểm</button>` : '<br>Vui lòng liên hệ HCNS/Ban Giám đốc để được mở lại.'}</div>
       </div>` : ''}
 
     ${buildCriteriaTable(mentorScores, mentorComments, deptScores, deptComments, canEditMentor, canEditDept)}
@@ -618,7 +618,7 @@ function renderEvalModal(ev, history, me, onRefresh = noop) {
           <div class="list-item-sub">${esc(h.changed_by_name || '—')} · ${fmtDateTime(h.created_at)}${h.note ? ' · ' + esc(h.note) : ''}</div>
         </div>
       </div>
-    `).join('') : emptyHTML('🕒', 'Chưa có lịch sử xử lý')}
+    `).join('') : emptyHTML('clock3', 'Chưa có lịch sử xử lý')}
   `;
 
   const footer = [];
@@ -692,11 +692,11 @@ function renderEvalModal(ev, history, me, onRefresh = noop) {
 }
 
 // ════════════════════════════════════════════════
-//  REPORT: Bảng tổng hợp điểm hiệu suất (HCNS/BGD)
+//  REPORT: Bảng tổng hợp điểm hiệu suất NetViet
 // ════════════════════════════════════════════════
 export async function renderEvalReport(el, me, latestPeriod = null, reportPage = 1) {
   el.innerHTML = loadingHTML();
-  let report = [], periods = [], selected = null;
+  let report, periods, selected;
   try {
     const periodId = latestPeriod?.id || '';
     const [rR, pR] = await Promise.all([
@@ -708,21 +708,21 @@ export async function renderEvalReport(el, me, latestPeriod = null, reportPage =
     periods = (rR.periods || pR.periods || []);
     selected = rR.selectedPeriod || null;
   } catch (e) {
-    el.innerHTML = `<div class="card" style="margin-bottom:16px;">${emptyHTML('⚠️', 'Không thể tải báo cáo đánh giá')}</div>`;
+    el.innerHTML = `<div class="card" style="margin-bottom:16px;">${emptyHTML('triangleAlert', 'Không thể tải báo cáo đánh giá')}</div>`;
     return;
   }
 
-  const policyNote = '⚠️ Chính sách mới: Nhóm 1=60đ | Nhóm 2=25đ | Nhóm 3=15đ | Áp dụng đồng nhất CHÍNH THỨC & THỰC TẬP SINH';
+  const policyNote = 'Chính sách mới: Nhóm 1=60đ | Nhóm 2=25đ | Nhóm 3=15đ | Áp dụng đồng nhất CHÍNH THỨC & THỰC TẬP SINH';
 
   el.innerHTML = `
     <div class="card" style="margin-bottom:16px;">
       <div class="card-header" style="flex-wrap:wrap;gap:8px;">
-        <div class="card-title">📊 BẢNG TỔNG HỢP ĐIỂM HIỆU SUẤT – NETVIET | Nhóm 1: 60đ | Nhóm 2: 25đ | Nhóm 3: 15đ</div>
+        <div class="card-title" style="display:flex;align-items:center;gap:6px;">${icon('barChart3', 'sm')} <span>BẢNG TỔNG HỢP ĐIỂM HIỆU SUẤT – NETVIET | Nhóm 1: 60đ | Nhóm 2: 25đ | Nhóm 3: 15đ</span></div>
         <select id="eval-report-period" class="btn-secondary btn-sm" style="min-width:180px;">
           ${periods.map(p => `<option value="${p.id}" ${selected && p.id === selected.id ? 'selected' : ''}>Tháng ${p.month}/${p.year}</option>`).join('')}
         </select>
       </div>
-      ${selected ? `<div class="policy-note" style="margin-bottom:12px;">${esc(policyNote)}</div>` : `<div class="policy-note" style="margin-bottom:12px;">${emptyHTML('📅', 'Chọn kỳ đánh giá để xem báo cáo')}</div>`}
+      ${selected ? `<div class="policy-note" style="margin-bottom:12px;">${esc(policyNote)}</div>` : `<div class="policy-note" style="margin-bottom:12px;">${emptyHTML('calendarDays', 'Chọn kỳ đánh giá để xem báo cáo')}</div>`}
       ${report.length ? `
       <div class="table-wrap">
         <table id="eval-report-table">
@@ -753,7 +753,7 @@ export async function renderEvalReport(el, me, latestPeriod = null, reportPage =
                 <td style="font-weight:700;color:#047857;">${r.has_evaluation ? r.n3 : '—'}</td>
                 <td style="font-weight:800;font-size:15px;color:#6366F1;">${r.total != null ? r.total : '—'}</td>
                 <td style="font-size:12px;">${r.prev_total != null ? r.prev_total : '—'}</td>
-                <td><span class="badge ${r.rating_cls}">${r.rating_label === 'Xuất sắc' ? '⭐ ' : ''}${esc(r.rating_label)}</span></td>
+                <td><span class="badge ${r.rating_cls}">${r.rating_label === 'Xuất sắc' ? `${icon('star', 'xs')} ` : ''}${esc(r.rating_label)}</span></td>
                 <td style="font-size:12px;max-width:200px;">${esc(r.action)}</td>
               </tr>
             `).join('')}
@@ -777,7 +777,7 @@ export async function renderEvalReport(el, me, latestPeriod = null, reportPage =
       const fakePeriod = selectedPeriod ? { id: selectedPeriod.id, month: selectedPeriod.month, year: selectedPeriod.year } : null;
       renderEvalReport(el, me, fakePeriod);
     } catch (err) {
-      el.innerHTML = `<div class="card">${emptyHTML('⚠️', 'Lỗi tải báo cáo: ' + esc(err.message))}</div>`;
+      el.innerHTML = `<div class="card">${emptyHTML('triangleAlert', 'Lỗi tải báo cáo: ' + esc(err.message))}</div>`;
     }
   });
 }
@@ -798,7 +798,7 @@ export async function renderEvalDashboard(el, me, latestPeriod = null) {
     periods = dR.periods || pR.periods || [];
     periodData = dashboard?.period || null;
   } catch (e) {
-    el.innerHTML = `<div class="card" style="margin-bottom:16px;">${emptyHTML('⚠️', 'Không thể tải dashboard đánh giá')}</div>`;
+    el.innerHTML = `<div class="card" style="margin-bottom:16px;">${emptyHTML('triangleAlert', 'Không thể tải dashboard đánh giá')}</div>`;
     return;
   }
 
@@ -809,12 +809,12 @@ export async function renderEvalDashboard(el, me, latestPeriod = null) {
 
   const periodLabel = periodData ? `Tháng ${periodData.month}/${periodData.year}` : '';
   const { total_employees, xuatsac, tot, dat, duoi_chuan, yeu, chua_danh_gia, avg_score, policy, hr_note, hr_note_by } = dashboard;
-  const policyNote = '⚠️ Chính sách mới: Nhóm 1=60đ | Nhóm 2=25đ | Nhóm 3=15đ | Áp dụng đồng nhất CHÍNH THỨC & THỰC TẬP SINH';
+  const policyNote = 'Chính sách mới: Nhóm 1=60đ | Nhóm 2=25đ | Nhóm 3=15đ | Áp dụng đồng nhất CHÍNH THỨC & THỰC TẬP SINH';
 
   el.innerHTML = `
     <div class="card" style="margin-bottom:16px;">
       <div class="card-header" style="flex-wrap:wrap;gap:8px;">
-        <div class="card-title">📈 DASHBOARD BÁO CÁO HIỆU SUẤT NHÂN SỰ – BAN GIÁM ĐỐC | NETVIET</div>
+        <div class="card-title" style="display:flex;align-items:center;gap:6px;">${icon('chartLine', 'sm')} <span>DASHBOARD BÁO CÁO HIỆU SUẤT NHÂN SỰ – BAN GIÁM ĐỐC | NETVIET</span></div>
         <select id="eval-dash-period" class="btn-secondary btn-sm" style="min-width:180px;">
           ${periods.map(p => `<option value="${p.id}" ${periodData && p.id === (latestPeriod?.id || periodData?.id) ? 'selected' : ''}>Tháng ${p.month}/${p.year}</option>`).join('')}
         </select>
@@ -876,7 +876,7 @@ export async function renderEvalDashboard(el, me, latestPeriod = null) {
         <textarea id="eval-hr-note" rows="4" style="width:100%;" placeholder="Nhập ghi chú & kiến nghị gửi Ban Giám Đốc...">${esc(hr_note || '')}</textarea>
       </div>
       ${hr_note_by ? `<div style="font-size:12px;color:var(--text-3);margin-bottom:10px;">Đã gửi bởi ${esc(hr_note_by)}</div>` : ''}
-      <button class="btn-primary btn-sm" id="eval-hr-note-save">💾 Lưu ghi chú</button>
+      <button class="btn-primary btn-sm" id="eval-hr-note-save" style="display:inline-flex;align-items:center;gap:6px;">${icon('save', 'xs')} <span>Lưu ghi chú</span></button>
     </div>
   `;
 
@@ -889,7 +889,7 @@ export async function renderEvalDashboard(el, me, latestPeriod = null) {
       // Re-render
       await renderEvalDashboardInternal(el, me, fakePeriod);
     } catch (err) {
-      el.innerHTML = `<div class="card">${emptyHTML('⚠️', 'Lỗi: ' + esc(err.message))}</div>`;
+      el.innerHTML = `<div class="card">${emptyHTML('triangleAlert', 'Lỗi: ' + esc(err.message))}</div>`;
     }
   });
 

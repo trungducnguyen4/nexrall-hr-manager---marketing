@@ -5,7 +5,7 @@ import { api, setToken, loadToken, getToken, clearCache } from './api.js?v=20260
 import { realtime } from './realtime.js';
 import { EventBus } from './event-bus.js';
 import { initNativeShell, verifyBiometricIfAvailable } from './native.js';
-import { setAvatar, toast, initials, avatarColor, closeModal, isHcnsDepartment, roleLabel, yieldToMain } from './utils.js?v=20260826-role-label-fix-v1';
+import { setAvatar, toast, initials, avatarColor, closeModal, isHcnsDepartment, roleLabel, yieldToMain, emptyHTML } from './utils.js?v=20260826-role-label-fix-v1';
 import { icon } from './icons.js';
 import { playChatSound, playMentionSound, playTaskSound, isSoundEnabled, toggleSound } from './sound.js';
 import { autoSyncPushSubscription } from './push.js';
@@ -68,7 +68,7 @@ const pwEye      = document.getElementById('pw-eye');
 
 pwEye.addEventListener('click', () => {
   loginPw.type = loginPw.type === 'password' ? 'text' : 'password';
-  pwEye.textContent = loginPw.type === 'password' ? '👁' : '🙈';
+  pwEye.innerHTML = loginPw.type === 'password' ? icon('eye', 'sm') : icon('eyeOff', 'sm');
 });
 
 loginForm.addEventListener('submit', async (e) => {
@@ -355,7 +355,7 @@ function setupRealtimeBusListeners() {
     refreshTaskMentionBadge();
     if (topic === 'task:completed_notif' && data?.title) {
       refreshEmployeeAlertBadge();
-      toast(`✅ Hoàn thành: ${data.title} (${data.completedBy || 'Nhân viên'})`, 'info', 4000);
+      toast(`Hoàn thành: ${data.title} (${data.completedBy || 'Nhân viên'})`, 'info', 4000);
     }
   }));
 
@@ -679,7 +679,7 @@ async function route() {
     const viewNode = document.createElement('div');
     viewNode.className = 'view-container';
     viewNode.dataset.view = routeKey;
-    viewNode.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
+    viewNode.innerHTML = emptyHTML('triangleAlert', e.message);
 
     if (_activeViewCleanup) {
       try { _activeViewCleanup(); } catch (_) {}

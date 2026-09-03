@@ -107,7 +107,7 @@ export async function renderDepartments(el, me) {
       currentUsers = usersRes.status === 'fulfilled' ? sortVietnameseNames(usersRes.value.users || [], 'full_name') : [];
       renderDeptDashboard();
     } catch (e) {
-      gridEl.innerHTML = emptyHTML('⚠️', e.message);
+      gridEl.innerHTML = emptyHTML('triangleAlert', e.message);
     }
   }
 
@@ -193,7 +193,7 @@ export async function renderDepartments(el, me) {
     }
 
     if (!filtered.length) {
-      gridEl.innerHTML = emptyHTML('🏢', 'Không tìm thấy phòng ban phù hợp', isAdmin ? 'Nhấn “+ Thêm phòng ban” để tạo mới.' : '');
+      gridEl.innerHTML = emptyHTML('building2', 'Không tìm thấy phòng ban phù hợp', isAdmin ? 'Nhấn “+ Thêm phòng ban” để tạo mới.' : '');
       if (unassignedEl) unassignedEl.innerHTML = '';
       return;
     }
@@ -252,7 +252,7 @@ export async function renderDepartments(el, me) {
           <div class="dept-unassigned-card">
             <div class="dept-unassigned-head">
               <div class="dept-unassigned-title-group">
-                <span class="dept-unassigned-icon">⚠️</span>
+                <span class="dept-unassigned-icon" style="display:inline-flex;align-items:center;color:#f59e0b;">${icon('triangleAlert', 'md')}</span>
                 <div>
                   <h3 class="dept-unassigned-title">Nhân sự chưa phân bổ phòng ban (${unassignedUsers.length} người)</h3>
                   <p class="dept-unassigned-sub">Nhấn vào nhân sự để cập nhật phòng ban công tác</p>
