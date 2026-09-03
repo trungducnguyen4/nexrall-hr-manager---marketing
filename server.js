@@ -3965,7 +3965,7 @@ function canManageLeaveRequest(me, request) {
 
 function canAdvanceLeaveApproval(me, request) {
   if (me?.role === 'admin') return true;
-  if (Number(request.approval_level || 1) === 1) return me?.role === 'manager' && me.department === request.department;
+  if (Number(request.approval_level || 1) === 1) return me?.role === 'manager' && normalizeDeptName(me?.department) === normalizeDeptName(request?.department);
   if (Number(request.approval_level) === 2) return isHcns(me);
   if (Number(request.approval_level) === 3) return isBgd(me);
   return false;
@@ -8908,38 +8908,38 @@ const attendanceRateTo =
     const id = parseInt(leaveMatch[1]);
     if (request.method === 'PUT') {
       const b = await request.json();
-      const request = await env.DB.prepare('SELECT lr.*,u.department FROM leave_requests lr LEFT JOIN users u ON u.id=lr.employee_id WHERE lr.id=?').bind(id).first();
-      if (!request) return json({ error: 'Không tìm thấy đơn nghỉ' }, 404);
+      const leaveReq = await env.DB.prepare('SELECT lr.*,u.department FROM leave_requests lr LEFT JOIN users u ON u.id=lr.employee_id WHERE lr.id=?').bind(id).first();
+      if (!leaveReq) return json({ error: 'Không tìm thấy đơn nghỉ' }, 404);
       if (b.status === 'rejected') {
-        if (!canAdvanceLeaveApproval(me, request)) return json({ error: 'Chưa đến bước phê duyệt của bạn' }, 403);
+        if (!canAdvanceLeaveApproval(me, leaveReq)) return json({ error: 'Chưa đến bước phê duyệt của bạn' }, 403);
         await env.DB.prepare("UPDATE leave_requests SET status='rejected',current_approver=NULL WHERE id=?").bind(id).run();
-        if (request.balance_reserved_days > 0) {
-          const type = request.type === 'annual' ? 'annual' : 'compensatory', year = Number(String(request.start_date).slice(0,4));
+        if (leaveReq.balance_reserved_days > 0) {
+          const type = leaveReq.type === 'annual' ? 'annual' : 'compensatory', year = Number(String(leaveReq.start_date).slice(0,4));
           await env.DB.batch([
-            env.DB.prepare("UPDATE leave_balances SET available_days=available_days+?,updated_at=datetime('now','localtime') WHERE user_id=? AND leave_type_code=? AND balance_year=?").bind(request.balance_reserved_days, request.employee_id, type, year),
-            env.DB.prepare('INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,leave_request_id,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?,?)').bind(request.employee_id, type, year, id, request.balance_reserved_days, 'reservation_release', String(b.note || 'Từ chối đơn'), me.id, me.full_name || ''),
+            env.DB.prepare("UPDATE leave_balances SET available_days=available_days+?,updated_at=datetime('now','localtime') WHERE user_id=? AND leave_type_code=? AND balance_year=?").bind(leaveReq.balance_reserved_days, leaveReq.employee_id, type, year),
+            env.DB.prepare('INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,leave_request_id,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?,?)').bind(leaveReq.employee_id, type, year, id, leaveReq.balance_reserved_days, 'reservation_release', String(b.note || 'Từ chối đơn'), me.id, me.full_name || ''),
           ]);
         }
-        await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(id, request.approval_level, me.id, me.full_name, 'rejected', String(b.note || '')).run();
+        await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(id, leaveReq.approval_level, me.id, me.full_name, 'rejected', String(b.note || '')).run();
         await broadcastAppEvent(env, 'leave', 'leave:rejected', {
           id,
-          user_id: request.employee_id,
+          user_id: leaveReq.employee_id,
           status: 'rejected',
           note: String(b.note || ''),
         }, { actorId: me.id });
         return json({ ok: true });
       }
       if (b.status === 'approved') {
-        if (!canAdvanceLeaveApproval(me, request)) return json({ error: 'Chưa đến bước phê duyệt của bạn' }, 403);
-        const flow = request.approval_flow || 'manager_hr'; let nextLevel = Number(request.approval_level || 1) + 1, nextApprover = null;
+        if (!canAdvanceLeaveApproval(me, leaveReq)) return json({ error: 'Chưa đến bước phê duyệt của bạn' }, 403);
+        const flow = leaveReq.approval_flow || 'manager_hr'; let nextLevel = Number(leaveReq.approval_level || 1) + 1, nextApprover = null;
         if (me.role === 'admin' || (nextLevel === 3 && flow !== 'manager_hr_bgd') || nextLevel > 3) nextLevel = 99;
         if (nextLevel === 2) nextApprover = 'HCNS'; else if (nextLevel === 3) nextApprover = 'Ban Giám đốc';
         const finalApproved = nextLevel === 99;
         await env.DB.prepare('UPDATE leave_requests SET status=?,approval_level=?,current_approver=? WHERE id=?').bind(finalApproved ? 'approved' : 'pending', nextLevel, nextApprover, id).run();
-        await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(id, request.approval_level, me.id, me.full_name, finalApproved ? 'approved' : 'forwarded', String(b.note || '')).run();
+        await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(id, leaveReq.approval_level, me.id, me.full_name, finalApproved ? 'approved' : 'forwarded', String(b.note || '')).run();
         await broadcastAppEvent(env, 'leave', finalApproved ? 'leave:approved' : 'leave:forwarded', {
           id,
-          user_id: request.employee_id,
+          user_id: leaveReq.employee_id,
           status: finalApproved ? 'approved' : 'pending',
           approval_level: nextLevel,
           current_approver: nextApprover,
@@ -8948,33 +8948,33 @@ const attendanceRateTo =
         }, { actorId: me.id });
         return json({ ok: true, final: finalApproved });
       }
-      if (Number(request.employee_id) !== Number(me.id) || request.status !== 'pending') return json({ error: 'Chỉ được sửa đơn của bạn khi đang chờ duyệt' }, 403);
+      if (Number(leaveReq.employee_id) !== Number(me.id) || leaveReq.status !== 'pending') return json({ error: 'Chỉ được sửa đơn của bạn khi đang chờ duyệt' }, 403);
       const updates = [], vals = [];
       if (b.reason !== undefined) { const reason = String(b.reason).trim(); if (!reason) return json({ error: 'Vui lòng nhập lý do nghỉ' }, 400); updates.push('reason=?'); vals.push(reason); }
       if (!updates.length) return json({ error: 'Không có dữ liệu cập nhật' }, 400);
       vals.push(id); await env.DB.prepare(`UPDATE leave_requests SET ${updates.join(',')} WHERE id=?`).bind(...vals).run();
       await broadcastAppEvent(env, 'leave', 'leave:updated', {
         id,
-        user_id: request.employee_id,
+        user_id: leaveReq.employee_id,
         updates: b,
       }, { actorId: me.id });
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
-      const request = await env.DB.prepare('SELECT * FROM leave_requests WHERE id=?').bind(id).first();
-      if (!request || (Number(request.employee_id) !== Number(me.id) && !isHcns(me))) return json({ error: 'Không có quyền xóa đơn nghỉ' }, 403);
-      if (request.status !== 'pending') return json({ error: 'Chỉ được xóa đơn đang chờ duyệt' }, 400);
-      if (request.balance_reserved_days > 0) {
-        const type = request.type === 'annual' ? 'annual' : 'compensatory', year = Number(String(request.start_date).slice(0,4));
+      const leaveReq = await env.DB.prepare('SELECT * FROM leave_requests WHERE id=?').bind(id).first();
+      if (!leaveReq || (Number(leaveReq.employee_id) !== Number(me.id) && !isHcns(me))) return json({ error: 'Không có quyền xóa đơn nghỉ' }, 403);
+      if (leaveReq.status !== 'pending') return json({ error: 'Chỉ được xóa đơn đang chờ duyệt' }, 400);
+      if (leaveReq.balance_reserved_days > 0) {
+        const type = leaveReq.type === 'annual' ? 'annual' : 'compensatory', year = Number(String(leaveReq.start_date).slice(0,4));
         await env.DB.batch([
-          env.DB.prepare("UPDATE leave_balances SET available_days=available_days+?,updated_at=datetime('now','localtime') WHERE user_id=? AND leave_type_code=? AND balance_year=?").bind(request.balance_reserved_days, request.employee_id, type, year),
-          env.DB.prepare('INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,leave_request_id,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?,?)').bind(request.employee_id, type, year, id, request.balance_reserved_days, 'reservation_release', 'Hủy đơn nghỉ', me.id, me.full_name || ''),
+          env.DB.prepare("UPDATE leave_balances SET available_days=available_days+?,updated_at=datetime('now','localtime') WHERE user_id=? AND leave_type_code=? AND balance_year=?").bind(leaveReq.balance_reserved_days, leaveReq.employee_id, type, year),
+          env.DB.prepare('INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,leave_request_id,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?,?)').bind(leaveReq.employee_id, type, year, id, leaveReq.balance_reserved_days, 'reservation_release', 'Hủy đơn nghỉ', me.id, me.full_name || ''),
         ]);
       }
       await env.DB.prepare('DELETE FROM leave_requests WHERE id=?').bind(id).run();
       await broadcastAppEvent(env, 'leave', 'leave:deleted', {
         id,
-        user_id: request.employee_id,
+        user_id: leaveReq.employee_id,
       }, { actorId: me.id });
       return json({ ok: true });
     }

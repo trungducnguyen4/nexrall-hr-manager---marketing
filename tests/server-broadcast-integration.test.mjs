@@ -855,6 +855,20 @@ console.log('\n=== REAL-TIME BROADCAST INTEGRATION & FAULT TOLERANCE TEST HARNES
   assert.strictEqual(broadcast.payload.status, 'pending');
 
   ok('POST /api/leave broadcasts topic "leave", event "leave:created" with date interval, total days, and status');
+
+  // Verify leave approval (PUT /api/leave/:id)
+  capturedBroadcasts.length = 0;
+  const approveRes = await apiCall('PUT', `/api/leave/${createdLeaveId}`, {
+    status: 'approved',
+  });
+  assert.strictEqual(approveRes.status, 200, `Expected 200 but got ${approveRes.status}: ${JSON.stringify(approveRes.json)}`);
+  assert.strictEqual(approveRes.json.ok, true);
+
+  const approveBroadcast = capturedBroadcasts.find(b => b.topic === 'leave' && b.event === 'leave:approved');
+  assert.ok(approveBroadcast, 'broadcastAppEvent must be invoked for leave:approved');
+  assert.strictEqual(approveBroadcast.payload.id, createdLeaveId);
+  assert.strictEqual(approveBroadcast.payload.status, 'approved');
+  ok('PUT /api/leave/:id approves leave and broadcasts event "leave:approved"');
 }
 
 // ──────────────────────────────────────────────────────────────────────────
