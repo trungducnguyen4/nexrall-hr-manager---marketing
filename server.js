@@ -8016,7 +8016,7 @@ const attendanceRateTo =
                 OR (department = ? AND department != '')`
           ).bind(nextProjectId || 0, taskDept).all();
 
-          const recipientIds = subs.map(s => Number(s.user_id)).filter(uid => uid && uid !== Number(me.id));
+          const recipientIds = [...new Set(subs.map(s => Number(s.user_id)).filter(Boolean))];
           for (const subUserId of recipientIds) {
             await env.DB.prepare(
               `INSERT INTO task_mention_notifications (user_id, task_id, comment_id, mentioned_by, mentioned_by_name, task_title, comment_snippet)
@@ -8024,7 +8024,7 @@ const attendanceRateTo =
             ).bind(
               subUserId,
               tid,
-              null,
+              0,
               me.id,
               me.full_name || 'Hệ thống',
               nextTitle,
@@ -8045,6 +8045,7 @@ const attendanceRateTo =
               title: '✅ Công việc hoàn thành',
               body: `${me.full_name || 'Nhân viên'} đã hoàn thành: ${nextTitle} (${taskDept || projectName})`,
               icon: me.avatar_url || '/icon-192.png',
+              badge: '/icon-192.png',
               url: `/#/tasks?project=${nextProjectId || ''}&task=${tid}`,
               tag: `task-done-${tid}`,
             }).catch(() => {});
@@ -8184,7 +8185,7 @@ const attendanceRateTo =
                 OR (department = ? AND department != '')`
           ).bind(subtask.team_project_id || 0, taskDept).all();
 
-          const recipientIds = subs.map(s => Number(s.user_id)).filter(uid => uid && uid !== Number(me.id));
+          const recipientIds = [...new Set(subs.map(s => Number(s.user_id)).filter(Boolean))];
           for (const subUserId of recipientIds) {
             await env.DB.prepare(
               `INSERT INTO task_mention_notifications (user_id, task_id, comment_id, mentioned_by, mentioned_by_name, task_title, comment_snippet)
@@ -8192,7 +8193,7 @@ const attendanceRateTo =
             ).bind(
               subUserId,
               subtask.task_id,
-              null,
+              0,
               me.id,
               me.full_name || 'Hệ thống',
               nextTitle,
@@ -8215,6 +8216,7 @@ const attendanceRateTo =
               title: '✅ Subtask hoàn thành',
               body: `${me.full_name || 'Nhân viên'} đã hoàn thành subtask: ${nextTitle} (Task: ${parentTitle})`,
               icon: me.avatar_url || '/icon-192.png',
+              badge: '/icon-192.png',
               url: `/#/tasks?project=${subtask.team_project_id || ''}&task=${subtask.task_id}`,
               tag: `subtask-done-${sid}`,
             }).catch(() => {});

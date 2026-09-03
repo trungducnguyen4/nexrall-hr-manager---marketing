@@ -883,7 +883,7 @@ console.log('\n=== REAL-TIME BROADCAST INTEGRATION & FAULT TOLERANCE TEST HARNES
 // TEST 5B: POST /api/tasks/completion-subscriptions/save -> saves subscriptions
 // ──────────────────────────────────────────────────────────────────────────
 {
-  const { apiCall } = await setupTestEnvironment();
+  const { apiCall, db } = await setupTestEnvironment();
   const res = await apiCall('POST', '/api/tasks/completion-subscriptions/save', {
     departments: ['Phòng Marketing', 'Phòng Kỹ Thuật'],
     project_ids: [1, 2],
@@ -896,6 +896,51 @@ console.log('\n=== REAL-TIME BROADCAST INTEGRATION & FAULT TOLERANCE TEST HARNES
   assert.strictEqual(getRes.status, 200);
   assert.strictEqual(getRes.json.subscriptions.length, 4);
   ok('POST /api/tasks/completion-subscriptions/save successfully saves subscriptions without D1 SQL error');
+
+  // Test Task completion notification dispatch
+  capturedBroadcasts.length = 0;
+  const taskRes = await apiCall('POST', '/api/tasks', {
+    title: 'Test completion task',
+    department: 'Phòng Marketing',
+    status: 'todo',
+  });
+  assert.strictEqual(taskRes.status, 200);
+  const taskId = taskRes.json.id;
+
+  // Mark task as done
+  capturedBroadcasts.length = 0;
+  const updateTaskRes = await apiCall('PUT', `/api/tasks/${taskId}`, {
+    status: 'done',
+  });
+  assert.strictEqual(updateTaskRes.status, 200);
+
+  const completedNotifBroadcast = capturedBroadcasts.find(b => b.topic === 'tasks' && b.event === 'task:completed_notif');
+  assert.ok(completedNotifBroadcast, 'Broadcast task:completed_notif should be sent');
+  assert.deepStrictEqual(completedNotifBroadcast.targetUserIds, [1], 'targetUserIds should include subscribed user 1');
+
+  // Verify task_mention_notifications record was created without NOT NULL constraint error
+  const notifRow = db.prepare('SELECT * FROM task_mention_notifications WHERE task_id = ?').get(taskId);
+  assert.ok(notifRow, 'task_mention_notifications record should exist');
+  assert.strictEqual(notifRow.comment_id, 0, 'comment_id must be 0 to satisfy NOT NULL constraint');
+  ok('PUT /api/tasks/:id dispatches task completion notifications and Web Push without SQL errors');
+
+  // Test Subtask completion notification dispatch
+  const subtaskRes = await apiCall('POST', `/api/tasks/${taskId}/subtasks`, {
+    title: 'Test subtask item',
+  });
+  assert.strictEqual(subtaskRes.status, 200);
+  const subtaskId = subtaskRes.json.id;
+
+  capturedBroadcasts.length = 0;
+  const updateSubtaskRes = await apiCall('PUT', `/api/subtasks/${subtaskId}`, {
+    is_done: 1,
+  });
+  assert.strictEqual(updateSubtaskRes.status, 200);
+
+  const subtaskCompletedBroadcast = capturedBroadcasts.find(b => b.topic === 'tasks' && b.event === 'task:subtask_completed_notif');
+  assert.ok(subtaskCompletedBroadcast, 'Broadcast task:subtask_completed_notif should be sent');
+  assert.deepStrictEqual(subtaskCompletedBroadcast.targetUserIds, [1], 'targetUserIds should include subscribed user 1');
+  ok('PUT /api/subtasks/:id dispatches subtask completion notifications and Web Push without SQL errors');
 }
 
 // ──────────────────────────────────────────────────────────────────────────
