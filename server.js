@@ -288,9 +288,9 @@ async function encryptWebPushPayload(subscriber, payloadObj) {
 }
 
 export async function sendWebPushNotification(env, userIds, payloadObj) {
-  if (!env.DB) return;
+  if (!env.DB) return { sent: 0, failed: 0, total: 0 };
   const ids = (Array.isArray(userIds) ? userIds : [userIds]).map(Number).filter(Boolean);
-  if (!ids.length) return;
+  if (!ids.length) return { sent: 0, failed: 0, total: 0 };
 
   await ensurePushSchema(env);
 
@@ -300,8 +300,9 @@ export async function sendWebPushNotification(env, userIds, payloadObj) {
   ).bind(...ids).all();
 
   console.log(`[WebPush] Found ${subscriptions.length} subscription(s) for userIds=[${ids.join(',')}]`);
-  if (!subscriptions.length) return;
+  if (!subscriptions.length) return { sent: 0, failed: 0, total: 0 };
 
+  let sent = 0, failed = 0;
   const promises = subscriptions.map(async (sub) => {
     try {
       const endpointUrl = new URL(sub.endpoint);
@@ -326,16 +327,23 @@ export async function sendWebPushNotification(env, userIds, payloadObj) {
       const resBody = await res.text().catch(() => '');
       console.log(`[WebPush] Response: status=${res.status} ${res.statusText}, body=${resBody.slice(0, 200)}`);
 
-      if (res.status === 404 || res.status === 410) {
+      if (res.status >= 200 && res.status < 300) {
+        sent++;
+      } else if (res.status === 404 || res.status === 410) {
+        failed++;
         console.log(`[WebPush] Removing expired subscription for user_id=${sub.user_id}`);
         await env.DB.prepare('DELETE FROM push_subscriptions WHERE endpoint=?').bind(sub.endpoint).run();
+      } else {
+        failed++;
       }
     } catch (err) {
+      failed++;
       console.error('[WebPush] Push delivery error for endpoint:', sub.endpoint?.slice(0, 60), err?.message || err);
     }
   });
 
   await Promise.allSettled(promises);
+  return { sent, failed, total: subscriptions.length };
 }
 
 export async function migrate(env) {
@@ -5177,7 +5185,7 @@ export async function handle(request, env) {
   if (path === '/api/notifications/test-push' && request.method === 'POST') {
     try {
       await ensurePushSchema(env);
-      await sendWebPushNotification(env, [me.id], {
+      const pushRes = await sendWebPushNotification(env, [me.id], {
         title: '🔔 NetViet HR - PWA',
         body: `Xin chào ${me.full_name || 'bạn'}! Thông báo đẩy lên màn hình khóa đã hoạt động thành công 🚀`,
         icon: me.avatar_url || '/icon-192.png',
@@ -5185,7 +5193,12 @@ export async function handle(request, env) {
         url: '/#/notifications',
         tag: 'test-push-notification',
       });
-      return json({ ok: true, message: 'Đã gửi thông báo thử nghiệm đến thiết bị của bạn' });
+      if (pushRes && pushRes.total === 0) {
+        return json({
+          error: 'Chưa có thiết bị nào kích hoạt thông báo cho tài khoản này. Vui lòng mở ứng dụng TRÊN ĐIỆN THOẠI, vào Cài đặt ➔ Thông báo và bấm "Kích hoạt thông báo" (chọn Cho phép khi máy hỏi).'
+        }, 400);
+      }
+      return json({ ok: true, message: `Đã gửi thông báo thử nghiệm đến ${pushRes?.sent || 1} thiết bị của bạn` });
     } catch (err) {
       return json({ error: 'Lỗi gửi test push: ' + (err?.message || err) }, 500);
     }
@@ -8136,7 +8149,7 @@ const attendanceRateTo =
     if (request.method === 'PUT') {
       const b = await request.json();
       const subtask = await env.DB.prepare(
-        `SELECT s.*,t.assigned_to AS task_assigned_to,t.assigned_by AS task_assigned_by,t.team_project_id
+        `SELECT s.*,t.assigned_to AS task_assigned_to,t.assigned_by AS task_assigned_by,t.team_project_id,t.title AS parent_task_title,t.department AS task_department
            FROM subtasks s JOIN tasks t ON t.id=s.task_id WHERE s.id=?`
       ).bind(sid).first();
       if (!subtask) return json({ error: 'Không tìm thấy công việc con' }, 404);
@@ -8158,6 +8171,57 @@ const attendanceRateTo =
           assigneeId: assignee.id, assigneeName: assignee.name,
           detail: `${activityAction === 'subtask_completed' ? 'Hoàn thành' : 'Mở lại'} công việc con: ${nextTitle}`,
         });
+      }
+      if (activityAction === 'subtask_completed') {
+        try {
+          const project = subtask.team_project_id ? await env.DB.prepare('SELECT name, department FROM task_projects WHERE id=?').bind(subtask.team_project_id).first() : null;
+          const taskDept = subtask.task_department || project?.department || '';
+          const projectName = project?.name || 'Dự án';
+          const parentTitle = subtask.parent_task_title || 'Công việc';
+          const { results: subs = [] } = await env.DB.prepare(
+            `SELECT DISTINCT user_id FROM task_completion_subscriptions
+             WHERE (project_id = ? AND project_id > 0)
+                OR (department = ? AND department != '')`
+          ).bind(subtask.team_project_id || 0, taskDept).all();
+
+          const recipientIds = subs.map(s => Number(s.user_id)).filter(uid => uid && uid !== Number(me.id));
+          for (const subUserId of recipientIds) {
+            await env.DB.prepare(
+              `INSERT INTO task_mention_notifications (user_id, task_id, comment_id, mentioned_by, mentioned_by_name, task_title, comment_snippet)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`
+            ).bind(
+              subUserId,
+              subtask.task_id,
+              null,
+              me.id,
+              me.full_name || 'Hệ thống',
+              nextTitle,
+              `[Hoàn thành subtask] ${me.full_name || 'Nhân viên'} đã hoàn thành subtask "${nextTitle}" trong "${parentTitle}"`
+            ).run();
+          }
+
+          if (recipientIds.length > 0) {
+            await broadcastAppEvent(env, 'tasks', 'task:subtask_completed_notif', {
+              taskId: subtask.task_id,
+              subtaskId: sid,
+              title: nextTitle,
+              parentTitle,
+              completedBy: me.full_name,
+              department: taskDept,
+              projectName: projectName,
+            }, { targetUserIds: recipientIds });
+
+            await sendWebPushNotification(env, recipientIds, {
+              title: '✅ Subtask hoàn thành',
+              body: `${me.full_name || 'Nhân viên'} đã hoàn thành subtask: ${nextTitle} (Task: ${parentTitle})`,
+              icon: me.avatar_url || '/icon-192.png',
+              url: `/#/tasks?project=${subtask.team_project_id || ''}&task=${subtask.task_id}`,
+              tag: `subtask-done-${sid}`,
+            }).catch(() => {});
+          }
+        } catch (subtaskNotifErr) {
+          console.error('Subtask completed notification error:', subtaskNotifErr);
+        }
       }
       await broadcastAppEvent(env, 'tasks', 'subtask:updated', {
         id: sid,
