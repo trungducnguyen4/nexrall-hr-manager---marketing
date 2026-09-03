@@ -15,7 +15,7 @@ let _migrated = false;
 // Chat interactions self-heal additively before the version fast path below.
 // Keep the established marker so a deployed Timeline database does not rerun
 // the legacy bootstrap migration sequence just to gain these new tables.
-const SCHEMA_VERSION = '2026-08-11-project-timeline-v1';
+const SCHEMA_VERSION = '2026-09-03-performance-indexes-v2';
 const SEED_VERSION = '2026-08-13-add-phong-it-v1';
 
 const LEAVE_DOCUMENT_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
@@ -373,6 +373,7 @@ export async function migrate(env) {
   try { await ensureMyxteamTaskImportSchema(env); } catch (error) { console.error('MyXteam import schema check failed', error); }
   try { await ensureChatInteractionSchema(env); } catch (error) { console.error('Chat interaction schema check failed', error); }
   try { await ensureTaskCompletionSubscriptionsSchema(env); } catch (error) { console.error('Task completion subscriptions schema check failed', error); }
+  try { await ensurePerformanceIndexes(env); } catch (error) { console.error('Performance indexes check failed', error); }
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS dissolved_conversations (
     conversation_id INTEGER PRIMARY KEY,
     dissolved_by INTEGER NOT NULL,
@@ -2395,6 +2396,67 @@ export async function ensureSubtaskSchema(env) {
   // Additive for legacy databases that already carry the table without the column.
   // If the column already exists the ALTER throws and is safely swallowed.
   try { await env.DB.prepare('ALTER TABLE subtasks ADD COLUMN description TEXT').run(); } catch (_) {}
+}
+
+export async function ensurePerformanceIndexes(env) {
+  const indexSqls = [
+    // 1. Tasks, Subtasks & Followers
+    'CREATE INDEX IF NOT EXISTS idx_subtasks_task_done ON subtasks(task_id, is_done)',
+    'CREATE INDEX IF NOT EXISTS idx_task_followers_task_user ON task_followers(task_id, user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_task_followers_user ON task_followers(user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_task_comments_task_created ON task_comments(task_id, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_task_activity_task_created ON task_activity(task_id, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_task_activity_project_created ON task_activity(project_id, created_at DESC, id DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_tasks_team_project_group ON tasks(team_project_id, group_id)',
+    'CREATE INDEX IF NOT EXISTS idx_tasks_dept_status ON tasks(department, status)',
+    'CREATE INDEX IF NOT EXISTS idx_tasks_assigned_status ON tasks(assigned_to, status)',
+    'CREATE INDEX IF NOT EXISTS idx_tasks_date ON tasks(date)',
+    'CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_task_mention_notif_user_read ON task_mention_notifications(user_id, is_read, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_task_attachments_task ON task_attachments(task_id, created_at)',
+
+    // 2. Chat & Messages
+    'CREATE INDEX IF NOT EXISTS idx_messages_convo_id ON messages(conversation_id, id DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_id)',
+    'CREATE INDEX IF NOT EXISTS idx_conversation_members_convo_user ON conversation_members(conversation_id, user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_conversation_members_user ON conversation_members(user_id, last_read_message_id, conversation_id)',
+    'CREATE INDEX IF NOT EXISTS idx_message_mentions_user ON message_mentions(mentioned_user_id, message_id DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_pinned_messages_conversation ON pinned_messages(conversation_id, created_at DESC)',
+
+    // 3. Attendance & Overtime
+    'CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance(date)',
+    'CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id, date)',
+    'CREATE INDEX IF NOT EXISTS idx_overtime_requests_user_status ON overtime_requests(user_id, status, work_date)',
+    'CREATE INDEX IF NOT EXISTS idx_overtime_forms_user_period ON overtime_forms(user_id, period_month)',
+    'CREATE INDEX IF NOT EXISTS idx_overtime_forms_status_period ON overtime_forms(status, period_month)',
+
+    // 4. Leave
+    'CREATE INDEX IF NOT EXISTS idx_leave_requests_user_status ON leave_requests(user_id, status)',
+    'CREATE INDEX IF NOT EXISTS idx_leave_requests_status_dates ON leave_requests(status, start_date, end_date)',
+    'CREATE INDEX IF NOT EXISTS idx_leave_requests_dept ON leave_requests(department, status)',
+    'CREATE INDEX IF NOT EXISTS idx_leave_balances_user_year ON leave_balances(user_id, balance_year, leave_type_code)',
+
+    // 5. Payroll & Invoices
+    'CREATE INDEX IF NOT EXISTS idx_payroll_month_user ON payroll(month, user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_payroll_batch ON payroll(batch_id)',
+    'CREATE INDEX IF NOT EXISTS idx_invoices_year_month ON invoices(year, month)',
+    'CREATE INDEX IF NOT EXISTS idx_invoices_employee_status ON invoices(employee_id, status)',
+    'CREATE INDEX IF NOT EXISTS idx_payroll_adjustments_month_employee ON payroll_adjustments(month, employee_id)',
+
+    // 6. Users & Sessions
+    'CREATE INDEX IF NOT EXISTS idx_users_active_code ON users(is_active, employee_code)',
+    'CREATE INDEX IF NOT EXISTS idx_users_active_dept ON users(is_active, department)',
+    'CREATE INDEX IF NOT EXISTS idx_users_role_active ON users(role, is_active)',
+    'CREATE INDEX IF NOT EXISTS idx_sessions_user_expires ON sessions(user_id, expires_at, revoked)',
+  ];
+
+  for (const sql of indexSqls) {
+    try {
+      await env.DB.prepare(sql).run();
+    } catch (_) {
+      // Idempotent: ignore if table does not exist or index already created
+    }
+  }
 }
 
 export async function ensureTaskCompletionSubscriptionsSchema(env) {
