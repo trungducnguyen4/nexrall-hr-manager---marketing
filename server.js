@@ -364,6 +364,7 @@ export async function migrate(env) {
   try { await ensureSubtaskSchema(env); } catch (error) { console.error('Subtask schema check failed', error); }
   try { await ensureMyxteamTaskImportSchema(env); } catch (error) { console.error('MyXteam import schema check failed', error); }
   try { await ensureChatInteractionSchema(env); } catch (error) { console.error('Chat interaction schema check failed', error); }
+  try { await ensureTaskCompletionSubscriptionsSchema(env); } catch (error) { console.error('Task completion subscriptions schema check failed', error); }
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS dissolved_conversations (
     conversation_id INTEGER PRIMARY KEY,
     dissolved_by INTEGER NOT NULL,
@@ -1235,16 +1236,7 @@ export async function migrate(env) {
   try { await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_task_projects_external ON task_projects(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL"); } catch (_) {}
   try { await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_task_groups_external ON task_groups(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL"); } catch (_) {}
   try { await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_external ON tasks(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL"); } catch (_) {}
-  try {
-    await env.DB.exec(`CREATE TABLE IF NOT EXISTS task_completion_subscriptions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      department TEXT DEFAULT '',
-      project_id INTEGER DEFAULT 0,
-      created_at TEXT DEFAULT (datetime('now','localtime'))
-    )`);
-    await env.DB.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_task_comp_sub ON task_completion_subscriptions(user_id, department, project_id)');
-  } catch (_) {}
+  try { await ensureTaskCompletionSubscriptionsSchema(env); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_leave_requests_type ON leave_requests(type)'); } catch (_) {}
   try { await env.DB.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_departments_name_ci ON departments(lower(name))'); } catch (_) {}
   try { await env.DB.exec('ALTER TABLE departments ADD COLUMN manager_id INTEGER'); } catch (_) {}
@@ -2395,6 +2387,23 @@ export async function ensureSubtaskSchema(env) {
   // Additive for legacy databases that already carry the table without the column.
   // If the column already exists the ALTER throws and is safely swallowed.
   try { await env.DB.prepare('ALTER TABLE subtasks ADD COLUMN description TEXT').run(); } catch (_) {}
+}
+
+export async function ensureTaskCompletionSubscriptionsSchema(env) {
+  try {
+    await env.DB.prepare(
+      'CREATE TABLE IF NOT EXISTS task_completion_subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, department TEXT DEFAULT \'\', project_id INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime(\'now\',\'localtime\')))'
+    ).run();
+  } catch (error) {
+    console.error('task_completion_subscriptions table create failed', error);
+  }
+  try {
+    await env.DB.prepare(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_task_comp_sub ON task_completion_subscriptions(user_id, department, project_id)'
+    ).run();
+  } catch (error) {
+    console.error('task_completion_subscriptions index create failed', error);
+  }
 }
 
 // Chat interactions are independent tables so existing text messages remain
@@ -7678,17 +7687,11 @@ const attendanceRateTo =
       ).bind(me.id).all();
       return json({ subscriptions: results });
     } catch (_) {
-      try {
-        await env.DB.exec(`CREATE TABLE IF NOT EXISTS task_completion_subscriptions (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          user_id INTEGER NOT NULL,
-          department TEXT DEFAULT '',
-          project_id INTEGER DEFAULT 0,
-          created_at TEXT DEFAULT (datetime('now','localtime'))
-        )`);
-        await env.DB.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_task_comp_sub ON task_completion_subscriptions(user_id, department, project_id)');
-      } catch (__) {}
-      return json({ subscriptions: [] });
+      await ensureTaskCompletionSubscriptionsSchema(env);
+      const { results = [] } = await env.DB.prepare(
+        'SELECT * FROM task_completion_subscriptions WHERE user_id = ?'
+      ).bind(me.id).all().catch(() => ({ results: [] }));
+      return json({ subscriptions: results });
     }
   }
 
@@ -7711,14 +7714,7 @@ const attendanceRateTo =
       }
     } catch (_) {
       try {
-        await env.DB.exec(`CREATE TABLE IF NOT EXISTS task_completion_subscriptions (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          user_id INTEGER NOT NULL,
-          department TEXT DEFAULT '',
-          project_id INTEGER DEFAULT 0,
-          created_at TEXT DEFAULT (datetime('now','localtime'))
-        )`);
-        await env.DB.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_task_comp_sub ON task_completion_subscriptions(user_id, department, project_id)');
+        await ensureTaskCompletionSubscriptionsSchema(env);
         const existing = await env.DB.prepare(
           'SELECT id FROM task_completion_subscriptions WHERE user_id = ? AND department = ? AND project_id = ?'
         ).bind(me.id, department, projectId).first();
@@ -7742,14 +7738,7 @@ const attendanceRateTo =
     const projectIds = Array.isArray(b.project_ids) ? b.project_ids.map(Number).filter(id => id > 0) : [];
     const depts = Array.isArray(b.departments) ? b.departments.map(d => String(d || '').trim()).filter(Boolean) : [];
     try {
-      await env.DB.exec(`CREATE TABLE IF NOT EXISTS task_completion_subscriptions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        department TEXT DEFAULT '',
-        project_id INTEGER DEFAULT 0,
-        created_at TEXT DEFAULT (datetime('now','localtime'))
-      )`);
-      await env.DB.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_task_comp_sub ON task_completion_subscriptions(user_id, department, project_id)');
+      await ensureTaskCompletionSubscriptionsSchema(env);
 
       await env.DB.prepare('DELETE FROM task_completion_subscriptions WHERE user_id = ?').bind(me.id).run();
 
@@ -7757,7 +7746,7 @@ const attendanceRateTo =
         await env.DB.prepare('INSERT OR IGNORE INTO task_completion_subscriptions (user_id, department, project_id) VALUES (?, ?, 0)').bind(me.id, dept).run();
       }
       for (const pid of projectIds) {
-        await env.DB.prepare('INSERT OR IGNORE INTO task_completion_subscriptions (user_id, department, project_id) VALUES (?, "", ?)').bind(me.id, pid).run();
+        await env.DB.prepare('INSERT OR IGNORE INTO task_completion_subscriptions (user_id, department, project_id) VALUES (?, ?, ?)').bind(me.id, '', pid).run();
       }
       return json({ ok: true, count: projectIds.length + depts.length });
     } catch (err) {

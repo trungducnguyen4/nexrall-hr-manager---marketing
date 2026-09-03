@@ -586,6 +586,14 @@ function initFullSchema(db) {
       user_agent TEXT,
       created_at TEXT DEFAULT (datetime('now','localtime'))
     );
+
+    CREATE TABLE IF NOT EXISTS task_completion_subscriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      department TEXT DEFAULT '',
+      project_id INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    );
   `);
 }
 
@@ -869,6 +877,25 @@ console.log('\n=== REAL-TIME BROADCAST INTEGRATION & FAULT TOLERANCE TEST HARNES
   assert.strictEqual(approveBroadcast.payload.id, createdLeaveId);
   assert.strictEqual(approveBroadcast.payload.status, 'approved');
   ok('PUT /api/leave/:id approves leave and broadcasts event "leave:approved"');
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// TEST 5B: POST /api/tasks/completion-subscriptions/save -> saves subscriptions
+// ──────────────────────────────────────────────────────────────────────────
+{
+  const { apiCall } = await setupTestEnvironment();
+  const res = await apiCall('POST', '/api/tasks/completion-subscriptions/save', {
+    departments: ['Phòng Marketing', 'Phòng Kỹ Thuật'],
+    project_ids: [1, 2],
+  });
+  assert.strictEqual(res.status, 200, `Expected 200 but got ${res.status}: ${JSON.stringify(res.json)}`);
+  assert.strictEqual(res.json.ok, true);
+  assert.strictEqual(res.json.count, 4);
+
+  const getRes = await apiCall('GET', '/api/tasks/completion-subscriptions');
+  assert.strictEqual(getRes.status, 200);
+  assert.strictEqual(getRes.json.subscriptions.length, 4);
+  ok('POST /api/tasks/completion-subscriptions/save successfully saves subscriptions without D1 SQL error');
 }
 
 // ──────────────────────────────────────────────────────────────────────────
