@@ -30,6 +30,8 @@ CREATE INDEX IF NOT EXISTS idx_pinned_messages_conversation ON pinned_messages(c
 -- 3. Attendance, Geofence & Overtime
 CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance(date);
 CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id, date);
+CREATE INDEX IF NOT EXISTS idx_attendance_checkout_checkin ON attendance(checkout_time, checkin_time, date, status);
+CREATE INDEX IF NOT EXISTS idx_overtime_requests_att_id ON overtime_requests(attendance_id);
 CREATE INDEX IF NOT EXISTS idx_overtime_requests_user_status ON overtime_requests(user_id, status, work_date);
 CREATE INDEX IF NOT EXISTS idx_overtime_forms_user_period ON overtime_forms(user_id, period_month);
 CREATE INDEX IF NOT EXISTS idx_overtime_forms_status_period ON overtime_forms(status, period_month);
@@ -37,6 +39,8 @@ CREATE INDEX IF NOT EXISTS idx_overtime_forms_status_period ON overtime_forms(st
 -- 4. Leave & Time-Off
 CREATE INDEX IF NOT EXISTS idx_leave_requests_user_status ON leave_requests(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_leave_requests_status_dates ON leave_requests(status, start_date, end_date);
+CREATE INDEX IF NOT EXISTS idx_leave_requests_approved_user ON leave_requests(status, user_id, start_date, end_date);
+CREATE INDEX IF NOT EXISTS idx_leave_requests_approved_emp ON leave_requests(status, employee_id, start_date, end_date);
 CREATE INDEX IF NOT EXISTS idx_leave_requests_dept ON leave_requests(department, status);
 CREATE INDEX IF NOT EXISTS idx_leave_balances_user_year ON leave_balances(user_id, balance_year, leave_type_code);
 

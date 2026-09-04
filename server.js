@@ -15,7 +15,7 @@ let _migrated = false;
 // Chat interactions self-heal additively before the version fast path below.
 // Keep the established marker so a deployed Timeline database does not rerun
 // the legacy bootstrap migration sequence just to gain these new tables.
-const SCHEMA_VERSION = '2026-09-03-performance-indexes-v2';
+const SCHEMA_VERSION = '2026-09-04-attendance-query-opt-v1';
 const SEED_VERSION = '2026-08-13-add-phong-it-v1';
 
 const LEAVE_DOCUMENT_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
@@ -2012,8 +2012,9 @@ async function buildEmployeeAlerts(env, windowDays = 30) {
 }
 
 async function buildAttendanceNotifications(env, me, { windowDays = 30, isAdmin = false, isHcnsScope = false } = {}) {
-  const conditions = [`date(a.date) >= date('now','localtime',?)`];
-  const binds = [`-${windowDays - 1} day`];
+  const cutoffDate = new Date(Date.now() - (windowDays - 1) * 86400 * 1000).toISOString().slice(0, 10);
+  const conditions = ['a.date >= ?'];
+  const binds = [cutoffDate];
   if (!isAdmin && !isHcnsScope && me.role === 'manager') {
     conditions.push('u.department=?');
     binds.push(me.department || '');
@@ -2027,8 +2028,8 @@ async function buildAttendanceNotifications(env, me, { windowDays = 30, isAdmin 
        CASE WHEN EXISTS (
          SELECT 1 FROM leave_requests lr
          WHERE lr.status='approved'
-           AND (lr.employee_id=a.user_id OR CAST(lr.user_id AS TEXT)=CAST(a.user_id AS TEXT))
-           AND date(a.date) BETWEEN date(lr.start_date) AND date(lr.end_date)
+           AND (lr.employee_id=a.user_id OR lr.user_id=a.user_id)
+           AND a.date >= lr.start_date AND a.date <= lr.end_date
        ) THEN 1 ELSE 0 END AS has_approved_leave
      FROM attendance a JOIN users u ON u.id=a.user_id
      WHERE ${conditions.join(' AND ')}
@@ -2426,6 +2427,8 @@ export async function ensurePerformanceIndexes(env) {
     // 3. Attendance & Overtime
     'CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance(date)',
     'CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id, date)',
+    'CREATE INDEX IF NOT EXISTS idx_attendance_checkout_checkin ON attendance(checkout_time, checkin_time, date, status)',
+    'CREATE INDEX IF NOT EXISTS idx_overtime_requests_att_id ON overtime_requests(attendance_id)',
     'CREATE INDEX IF NOT EXISTS idx_overtime_requests_user_status ON overtime_requests(user_id, status, work_date)',
     'CREATE INDEX IF NOT EXISTS idx_overtime_forms_user_period ON overtime_forms(user_id, period_month)',
     'CREATE INDEX IF NOT EXISTS idx_overtime_forms_status_period ON overtime_forms(status, period_month)',
@@ -2433,6 +2436,8 @@ export async function ensurePerformanceIndexes(env) {
     // 4. Leave
     'CREATE INDEX IF NOT EXISTS idx_leave_requests_user_status ON leave_requests(user_id, status)',
     'CREATE INDEX IF NOT EXISTS idx_leave_requests_status_dates ON leave_requests(status, start_date, end_date)',
+    'CREATE INDEX IF NOT EXISTS idx_leave_requests_approved_user ON leave_requests(status, user_id, start_date, end_date)',
+    'CREATE INDEX IF NOT EXISTS idx_leave_requests_approved_emp ON leave_requests(status, employee_id, start_date, end_date)',
     'CREATE INDEX IF NOT EXISTS idx_leave_requests_dept ON leave_requests(department, status)',
     'CREATE INDEX IF NOT EXISTS idx_leave_balances_user_year ON leave_balances(user_id, balance_year, leave_type_code)',
 
@@ -3299,6 +3304,7 @@ function attManualTimingMetrics(record, checkinTime, checkoutTime) {
 // (auto_checkout=1) so HR can see it was a forgotten check-out, not a
 // missing day. Work hours are computed up to the shift end (17:00 for a
 // full day) as if the employee worked the full registered shift.
+let _lastAutoCheckoutRun = 0;
 export async function runAutoCheckout(env) {
   const today = vnTodayStr();
   const rows = await env.DB.prepare(
@@ -5308,7 +5314,11 @@ export async function handle(request, env) {
   }
 
   if (path === '/api/notifications' && request.method === 'GET') {
-    await runAutoCheckout(env).catch(() => {});
+    const now = Date.now();
+    if (now - _lastAutoCheckoutRun > 6 * 3600 * 1000) {
+      _lastAutoCheckoutRun = now;
+      runAutoCheckout(env).catch(() => {});
+    }
     const windowDays = Math.min(90, Math.max(1, parseInt(url.searchParams.get('window') || '30', 10)));
     const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
     const pageSize = Math.min(100, Math.max(10, parseInt(url.searchParams.get('page_size') || '25', 10)));
