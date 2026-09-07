@@ -7651,11 +7651,11 @@ const attendanceRateTo =
     if (!includeArchived) q += ' AND g.is_archived=0';
     q += ' ORDER BY g.position ASC, g.id ASC';
     const { results } = await env.DB.prepare(q).bind(...binds).all();
-    return json({ groups: results, canManage: isTaskAdmin(me) });
+    const canManageGroups = isTaskAdmin(me) || (await canUseTaskProject(env, projectId, me));
+    return json({ groups: results, canManage: canManageGroups });
   }
 
   if (path === '/api/task-groups' && request.method === 'POST') {
-    if (!isTaskAdmin(me)) return json({ error: 'Khong co quyen' }, 403);
     const b = await request.json();
     const projectId = intOrNull(b.project_id);
     const name = String(b.name || '').trim();
@@ -7674,7 +7674,6 @@ const attendanceRateTo =
 
   const groupMatch = path.match(/^\/api\/task-groups\/(\d+)$/);
   if (groupMatch) {
-    if (!isTaskAdmin(me)) return json({ error: 'Khong co quyen' }, 403);
     const groupId = parseInt(groupMatch[1]);
     const group = await env.DB.prepare('SELECT * FROM task_groups WHERE id=?').bind(groupId).first();
     if (!group) return json({ error: 'Khong tim thay' }, 404);

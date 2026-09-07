@@ -870,7 +870,7 @@ export async function renderTasks(el, me) {
       labels = labelRes?.labels || [];
       tasks = taskRes?.tasks || [];
       projectMembers = memberRes?.members || [];
-      canManage = !!groupRes?.canManage;
+      canManage = canManageTasks(me) || !!groupRes?.canManage;
       renderProjects();
       renderBoard();
     } catch (err) {
@@ -1291,17 +1291,15 @@ export async function renderTasks(el, me) {
       </div>
       <div class="task-board-wrap" id="task-board-wrap-el" tabindex="0" aria-label="Bảng Kanban công việc">
         ${groups.map((group, index) => renderGroupColumn(group, index, defaultGroup)).join('')}
-        ${canManage ? `
-          <div class="task-group-add-slot">
-            <button type="button" class="btn-add-task-group-column" id="btn-new-group" title="Tạo nhóm công việc mới">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="12" y1="5" x2="12" y2="19"></line>
-                <line x1="5" y1="12" x2="19" y2="12"></line>
-              </svg>
-              <span>+ Tạo nhóm công việc</span>
-            </button>
-          </div>
-        ` : ''}
+        <div class="task-group-add-slot">
+          <button type="button" class="btn-add-task-group-column" id="btn-new-group" title="Tạo nhóm công việc mới">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            <span>Tạo nhóm công việc</span>
+          </button>
+        </div>
       </div>
     `;
 
