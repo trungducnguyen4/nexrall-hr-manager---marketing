@@ -3486,7 +3486,12 @@ async function ensureAttendanceLocationSchema(env) {
       (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active)
       SELECT ?,?,?,?,?,?,?,1
        WHERE NOT EXISTS (SELECT 1 FROM attendance_locations WHERE code=? OR name=?)`)
-      .bind('Văn phòng HCM', 'NETVIET-HCM', 'TP. Hồ Chí Minh', 10.762538, 106.682336, 100, 100, 'NETVIET-HCM', 'Văn phòng HCM')
+      .bind('Văn phòng HCM (Toà nhà UNIASIA)', 'NETVIET-HCM', 'Toà nhà UNIASIA, A8 Trường Sơn, Phường Tân Sơn Hòa, Quận Tân Bình, TP. Hồ Chí Minh', 10.804915, 106.664816, 150, 120, 'NETVIET-HCM', 'Văn phòng HCM (Toà nhà UNIASIA)')
+      .run();
+    await env.DB.prepare(`UPDATE attendance_locations
+      SET name=?, address=?, latitude=?, longitude=?, radius_meters=?, max_accuracy_meters=?, is_active=1
+      WHERE code='NETVIET-HCM' OR name LIKE '%Văn phòng HCM%'`)
+      .bind('Văn phòng HCM (Toà nhà UNIASIA)', 'Toà nhà UNIASIA, A8 Trường Sơn, Phường Tân Sơn Hòa, Quận Tân Bình, TP. Hồ Chí Minh', 10.804915, 106.664816, 150, 120)
       .run();
     await env.DB.prepare(`INSERT INTO attendance_locations
       (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active)
