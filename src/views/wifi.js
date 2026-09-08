@@ -150,11 +150,114 @@ export async function renderWifi(el, me) {
 
 function openLocationForm(location, refresh) {
   const edit = !!location;
-  openModal(edit ? 'Sửa địa điểm chấm công' : 'Thêm địa điểm chấm công', `<div class="field"><label>Tên *</label><input id="al-name" value="${esc(location?.name||'')}" placeholder="Văn phòng Hồ Chí Minh"/></div><div class="field"><label>Mã</label><input id="al-code" value="${esc(location?.code||'')}" placeholder="HCM"/></div><div class="field"><label>Địa chỉ</label><input id="al-address" value="${esc(location?.address||'')}"/></div><div class="input-row"><div class="field"><label>Latitude *</label><input type="number" step="any" id="al-lat" value="${esc(location?.latitude||'')}"/></div><div class="field"><label>Longitude *</label><input type="number" step="any" id="al-lng" value="${esc(location?.longitude||'')}"/></div></div><button type="button" class="btn-secondary btn-sm" id="al-current">Lấy vị trí hiện tại</button><div class="input-row"><div class="field"><label>Bán kính (m)</label><input type="number" id="al-radius" value="${esc(location?.radius_meters||100)}"/></div><div class="field"><label>GPS tối đa (m)</label><input type="number" id="al-accuracy" value="${esc(location?.max_accuracy_meters||100)}"/></div></div>`, `<button class="btn-secondary" id="al-cancel">Hủy</button>${edit?'<button class="btn-danger" id="al-delete">Xóa</button>':''}<button class="btn-primary" id="al-save">Lưu</button>`);
-  document.getElementById('al-cancel').onclick=closeModal;
-  document.getElementById('al-current').onclick=async()=>{try{const pos=await getDeviceLocation({purposeLabel:'lấy tọa độ'});document.getElementById('al-lat').value=pos.latitude;document.getElementById('al-lng').value=pos.longitude;}catch(e){toast(e.message,'error')}};
-  document.getElementById('al-save').onclick=async()=>{const data={name:document.getElementById('al-name').value,code:document.getElementById('al-code').value,address:document.getElementById('al-address').value,latitude:Number(document.getElementById('al-lat').value),longitude:Number(document.getElementById('al-lng').value),radius_meters:Number(document.getElementById('al-radius').value),max_accuracy_meters:Number(document.getElementById('al-accuracy').value)};try{edit?await api.updateAttendanceLocation(location.id,data):await api.createAttendanceLocation(data);closeModal();refresh();}catch(e){toast(e.message,'error')}};
-  document.getElementById('al-delete')?.addEventListener('click',async()=>{if(!confirm('Xóa địa điểm này?'))return;try{await api.deleteAttendanceLocation(location.id);closeModal();refresh();}catch(e){toast(e.message,'error')}});
+  const initialLat = location?.latitude != null ? String(location.latitude).replace(',', '.') : '';
+  const initialLng = location?.longitude != null ? String(location.longitude).replace(',', '.') : '';
+  const initialRadius = location?.radius_meters != null ? String(location.radius_meters).replace(',', '.') : '150';
+  const initialAccuracy = location?.max_accuracy_meters != null ? String(location.max_accuracy_meters).replace(',', '.') : '120';
+
+  openModal(edit ? 'Sửa địa điểm chấm công' : 'Thêm địa điểm chấm công', `
+    <div class="field"><label>Tên *</label><input id="al-name" value="${esc(location?.name||'')}" placeholder="Văn phòng Hồ Chí Minh"/></div>
+    <div class="field"><label>Mã</label><input id="al-code" value="${esc(location?.code||'')}" placeholder="HCM"/></div>
+    <div class="field"><label>Địa chỉ</label><input id="al-address" value="${esc(location?.address||'')}" placeholder="Địa chỉ chi tiết"/></div>
+    <div class="input-row">
+      <div class="field"><label>Latitude *</label><input type="text" inputmode="decimal" id="al-lat" value="${esc(initialLat)}" placeholder="VD: 10.804915"/></div>
+      <div class="field"><label>Longitude *</label><input type="text" inputmode="decimal" id="al-lng" value="${esc(initialLng)}" placeholder="VD: 106.664816"/></div>
+    </div>
+    <button type="button" class="btn-secondary btn-sm" id="al-current" style="margin-bottom:12px;">${icon('mapPin', 'xs')} Lấy vị trí hiện tại</button>
+    <div class="input-row">
+      <div class="field"><label>Bán kính (m)</label><input type="number" id="al-radius" value="${esc(initialRadius)}" min="10" placeholder="150"/></div>
+      <div class="field"><label>GPS tối đa (m)</label><input type="number" id="al-accuracy" value="${esc(initialAccuracy)}" min="5" placeholder="120"/></div>
+    </div>
+  `, `
+    <button class="btn-secondary" id="al-cancel">Hủy</button>
+    ${edit?'<button class="btn-danger" id="al-delete">Xóa</button>':''}
+    <button class="btn-primary" id="al-save">Lưu</button>
+  `);
+
+  document.getElementById('al-cancel').onclick = closeModal;
+
+  document.getElementById('al-current').onclick = async () => {
+    const btn = document.getElementById('al-current');
+    const originalText = btn ? btn.innerHTML : '';
+    try {
+      if (btn) { btn.disabled = true; btn.innerHTML = `${icon('refreshCw', 'xs', 'spin')} Đang lấy tọa độ GPS...`; }
+      const pos = await getDeviceLocation({ purposeLabel: 'lấy tọa độ chấm công' });
+      const latEl = document.getElementById('al-lat');
+      const lngEl = document.getElementById('al-lng');
+      if (latEl) latEl.value = String(pos.latitude).replace(',', '.');
+      if (lngEl) lngEl.value = String(pos.longitude).replace(',', '.');
+      if (pos.accuracy) {
+        const accEl = document.getElementById('al-accuracy');
+        const estAcc = Math.min(250, Math.max(50, Math.round(pos.accuracy * 1.5)));
+        if (accEl && (!accEl.value || Number(accEl.value) < estAcc)) {
+          accEl.value = estAcc;
+        }
+      }
+      toast(`Đã lấy tọa độ GPS thành công (sai số ±${Math.round(pos.accuracy || 0)}m)`, 'success');
+    } catch (e) {
+      toast(e.message || 'Không thể lấy vị trí thiết bị', 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.innerHTML = originalText; }
+    }
+  };
+
+  document.getElementById('al-save').onclick = async () => {
+    const name = document.getElementById('al-name').value.trim();
+    if (!name) { toast('Vui lòng nhập tên địa điểm', 'error'); return; }
+
+    const parseCoord = val => {
+      if (typeof val === 'number') return Number.isFinite(val) ? val : null;
+      const s = String(val || '').trim().replace(',', '.');
+      const n = parseFloat(s);
+      return Number.isFinite(n) ? n : null;
+    };
+
+    const lat = parseCoord(document.getElementById('al-lat').value);
+    const lng = parseCoord(document.getElementById('al-lng').value);
+    if (lat === null || lng === null) {
+      toast('Tọa độ không hợp lệ. Vui lòng nhập số thập phân (VD: 10.8049)', 'error');
+      return;
+    }
+
+    const radius = Math.max(10, parseCoord(document.getElementById('al-radius').value) || 100);
+    const maxAccuracy = Math.max(5, parseCoord(document.getElementById('al-accuracy').value) || 100);
+
+    const data = {
+      name,
+      code: document.getElementById('al-code').value.trim(),
+      address: document.getElementById('al-address').value.trim(),
+      latitude: lat,
+      longitude: lng,
+      radius_meters: radius,
+      max_accuracy_meters: maxAccuracy
+    };
+
+    const saveBtn = document.getElementById('al-save');
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.innerHTML = `${icon('refreshCw', 'xs', 'spin')} Đang lưu...`; }
+
+    try {
+      if (edit) await api.updateAttendanceLocation(location.id, data);
+      else await api.createAttendanceLocation(data);
+      closeModal();
+      toast('Đã lưu địa điểm chấm công thành công', 'success');
+      refresh();
+    } catch (e) {
+      toast(e.message || 'Lỗi khi lưu địa điểm', 'error');
+      if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = 'Lưu'; }
+    }
+  };
+
+  document.getElementById('al-delete')?.addEventListener('click', async () => {
+    if (!confirm('Xóa địa điểm này?')) return;
+    try {
+      await api.deleteAttendanceLocation(location.id);
+      closeModal();
+      toast('Đã xóa địa điểm thành công', 'success');
+      refresh();
+    } catch (e) {
+      toast(e.message || 'Không thể xóa địa điểm', 'error');
+    }
+  });
 }
 
 function openWifiForm(data, refreshFn) {

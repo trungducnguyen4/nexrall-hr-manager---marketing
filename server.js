@@ -3488,11 +3488,6 @@ async function ensureAttendanceLocationSchema(env) {
        WHERE NOT EXISTS (SELECT 1 FROM attendance_locations WHERE code=? OR name=?)`)
       .bind('Văn phòng HCM (Toà nhà UNIASIA)', 'NETVIET-HCM', 'Toà nhà UNIASIA, A8 Trường Sơn, Phường Tân Sơn Hòa, Quận Tân Bình, TP. Hồ Chí Minh', 10.804915, 106.664816, 150, 120, 'NETVIET-HCM', 'Văn phòng HCM (Toà nhà UNIASIA)')
       .run();
-    await env.DB.prepare(`UPDATE attendance_locations
-      SET name=?, address=?, latitude=?, longitude=?, radius_meters=?, max_accuracy_meters=?, is_active=1
-      WHERE code='NETVIET-HCM' OR name LIKE '%Văn phòng HCM%'`)
-      .bind('Văn phòng HCM (Toà nhà UNIASIA)', 'Toà nhà UNIASIA, A8 Trường Sơn, Phường Tân Sơn Hòa, Quận Tân Bình, TP. Hồ Chí Minh', 10.804915, 106.664816, 150, 120)
-      .run();
     await env.DB.prepare(`INSERT INTO attendance_locations
       (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active)
       SELECT ?,?,?,?,?,?,?,1
@@ -3504,11 +3499,6 @@ async function ensureAttendanceLocationSchema(env) {
       SELECT ?,?,?,?,?,?,?,1
        WHERE NOT EXISTS (SELECT 1 FROM attendance_locations WHERE code=? OR name=?)`)
       .bind('Phim Trường NetVietTv', 'NETVIET-Q9', '76 D12, Khu đô thị mới Đông Tăng Long, Long Phước, Hồ Chí Minh 70000', 10.814200, 106.819500, 200, 150, 'NETVIET-Q9', 'Phim Trường NetVietTv')
-      .run();
-    await env.DB.prepare(`UPDATE attendance_locations
-      SET name=?, address=?, latitude=?, longitude=?, radius_meters=?, is_active=1
-      WHERE code=? OR name LIKE '%Phim trường%' OR name LIKE '%Phim Trường%'`)
-      .bind('Phim Trường NetVietTv', '76 D12, Khu đô thị mới Đông Tăng Long, Long Phước, Hồ Chí Minh 70000', 10.814200, 106.819500, 200, 'NETVIET-Q9')
       .run();
   } catch (error) {
     console.error('Unable to seed attendance locations', error);
@@ -7346,8 +7336,18 @@ const attendanceRateTo =
     if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
     if (!(await ensureAttendanceLocationSchema(env))) return json({ error: 'Không thể khởi tạo dữ liệu địa điểm chấm công. Vui lòng thử lại sau.' }, 503);
     const b = await request.json().catch(() => ({}));
-    if (!String(b.name || '').trim() || !Number.isFinite(Number(b.latitude)) || !Number.isFinite(Number(b.longitude))) return json({ error: 'Tên và tọa độ là bắt buộc' }, 400);
-    const r = await env.DB.prepare('INSERT INTO attendance_locations (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active) VALUES (?,?,?,?,?,?,?,?)').bind(String(b.name).trim(),String(b.code||'').trim()||null,String(b.address||'').trim(),Number(b.latitude),Number(b.longitude),Math.max(10,Number(b.radius_meters||100)),Math.max(5,Number(b.max_accuracy_meters||100)),b.is_active===false?0:1).run();
+    const parseCoord = val => {
+      if (typeof val === 'number') return Number.isFinite(val) ? val : null;
+      const s = String(val || '').trim().replace(',', '.');
+      const n = parseFloat(s);
+      return Number.isFinite(n) ? n : null;
+    };
+    const lat = parseCoord(b.latitude);
+    const lng = parseCoord(b.longitude);
+    const radius = Math.max(10, parseCoord(b.radius_meters) || 100);
+    const maxAccuracy = Math.max(5, parseCoord(b.max_accuracy_meters) || 100);
+    if (!String(b.name || '').trim() || lat === null || lng === null) return json({ error: 'Tên và tọa độ là bắt buộc' }, 400);
+    const r = await env.DB.prepare('INSERT INTO attendance_locations (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active) VALUES (?,?,?,?,?,?,?,?)').bind(String(b.name).trim(),String(b.code||'').trim()||null,String(b.address||'').trim(),lat,lng,radius,maxAccuracy,b.is_active===false?0:1).run();
     return json({ ok:true,id:r.meta.last_row_id });
   }
   const attendanceLocationMatch = path.match(/^\/api\/attendance-locations\/(\d+)$/);
@@ -7357,8 +7357,18 @@ const attendanceRateTo =
     const id = Number(attendanceLocationMatch[1]);
     if (request.method === 'DELETE') { await env.DB.prepare('DELETE FROM attendance_locations WHERE id=?').bind(id).run(); return json({ok:true}); }
     const b = await request.json().catch(() => ({}));
-    if (!String(b.name||'').trim() || !Number.isFinite(Number(b.latitude)) || !Number.isFinite(Number(b.longitude))) return json({ error:'Tên và tọa độ là bắt buộc' },400);
-    await env.DB.prepare('UPDATE attendance_locations SET name=?,code=?,address=?,latitude=?,longitude=?,radius_meters=?,max_accuracy_meters=?,is_active=?,updated_at=datetime(\'now\',\'localtime\') WHERE id=?').bind(String(b.name).trim(),String(b.code||'').trim()||null,String(b.address||'').trim(),Number(b.latitude),Number(b.longitude),Math.max(10,Number(b.radius_meters||100)),Math.max(5,Number(b.max_accuracy_meters||100)),b.is_active===false?0:1,id).run();
+    const parseCoord = val => {
+      if (typeof val === 'number') return Number.isFinite(val) ? val : null;
+      const s = String(val || '').trim().replace(',', '.');
+      const n = parseFloat(s);
+      return Number.isFinite(n) ? n : null;
+    };
+    const lat = parseCoord(b.latitude);
+    const lng = parseCoord(b.longitude);
+    const radius = Math.max(10, parseCoord(b.radius_meters) || 100);
+    const maxAccuracy = Math.max(5, parseCoord(b.max_accuracy_meters) || 100);
+    if (!String(b.name||'').trim() || lat === null || lng === null) return json({ error:'Tên và tọa độ là bắt buộc' },400);
+    await env.DB.prepare('UPDATE attendance_locations SET name=?,code=?,address=?,latitude=?,longitude=?,radius_meters=?,max_accuracy_meters=?,is_active=?,updated_at=datetime(\'now\',\'localtime\') WHERE id=?').bind(String(b.name).trim(),String(b.code||'').trim()||null,String(b.address||'').trim(),lat,lng,radius,maxAccuracy,b.is_active===false?0:1,id).run();
     return json({ok:true});
   }
 
