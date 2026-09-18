@@ -33,6 +33,20 @@ const daysBetween = (start, end, session = 'full') => {
 const isHcnsDepartment = (department) => ['hcns', 'phong hcns', 'nhan su', 'phong nhan su', 'hanh chinh nhan su', 'hr'].includes(String(department || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim());
 const isBodDepartment = (department) => ['ban giam doc', 'bgd', 'giam doc'].includes(String(department || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim());
 
+function formatLeaveDateTime(s) {
+  if (!s) return '—';
+  const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/);
+  if (m) {
+    const [, y, mo, d, h, min] = m;
+    if (h !== undefined && min !== undefined) {
+      return `${d}/${mo}/${y} ${h}:${min}`;
+    }
+    return `${d}/${mo}/${y}`;
+  }
+  const dt = new Date(s);
+  return isNaN(dt) ? s : dt.toLocaleString('vi-VN');
+}
+
 function formatDocSize(bytes) {
   const n = Number(bytes || 0);
   if (n <= 0) return '0 B';
@@ -297,7 +311,20 @@ export async function renderLeave(el, me) {
     });
 
     const isReview = currentTab === 'review';
-    const displayRows = isReview ? sortVietnameseNames(filtered, 'employee_name') : filtered;
+    const displayRows = [...filtered].sort((a, b) => {
+      // 1. Pending (đơn chưa duyệt) always on top
+      const aPending = a.status === 'pending' ? 1 : 0;
+      const bPending = b.status === 'pending' ? 1 : 0;
+      if (bPending !== aPending) return bPending - aPending;
+
+      // 2. Sort by form submission / creation time descending (newest first)
+      const timeA = new Date(a.submitted_at ? a.submitted_at.replace(' ', 'T') : (a.created_at || a.start_date || 0)).getTime();
+      const timeB = new Date(b.submitted_at ? b.submitted_at.replace(' ', 'T') : (b.created_at || b.start_date || 0)).getTime();
+      if (timeB !== timeA) return timeB - timeA;
+
+      // 3. Fallback to ID descending
+      return (Number(b.id) || 0) - (Number(a.id) || 0);
+    });
     const page = paginateRows(displayRows, currentPage, 12);
     currentPage = page.page;
 
@@ -362,6 +389,11 @@ export async function renderLeave(el, me) {
                       <div class="leave-period-sub">
                         ${sessionLabel(row.leave_session)} · <strong>${days} ngày</strong>
                       </div>
+                      ${row.submitted_at ? `
+                        <div class="leave-created-hint" title="Thời gian gửi đơn xin nghỉ">
+                          ${icon('clock', 'xs')} <span>Tạo: <strong>${formatLeaveDateTime(row.submitted_at)}</strong></span>
+                        </div>
+                      ` : ''}
                     </td>
                     <td>
                       <div class="leave-reason-text">
@@ -394,9 +426,22 @@ export async function renderLeave(el, me) {
                           <span class="leave-status-dot ${cls}"></span>
                           <span>${label}</span>
                         </span>
-                        ${row.status === 'pending' && row.current_approver ? `
+                        ${row.status === 'pending' ? `
                           <div class="leave-approver-hint">
-                            Chờ: <em>${esc(row.current_approver)}</em>
+                            Chờ: <em>${esc(row.current_approver && !['Quản lý trực tiếp', 'Ban Giám đốc'].includes(row.current_approver) ? row.current_approver : 'Quản lý / HR')}</em>
+                          </div>
+                        ` : ''}
+                        ${row.status === 'approved' ? `
+                          <div class="leave-approver-hint leave-decision-approved">
+                            <span class="leave-decision-actor">${icon('check', 'xs')} Duyệt bởi: <strong>${esc(row.approved_by_name || 'Quản lý')}</strong></span>
+                            ${row.approved_at ? `<div class="leave-decision-time">${formatLeaveDateTime(row.approved_at)}</div>` : ''}
+                          </div>
+                        ` : ''}
+                        ${row.status === 'rejected' ? `
+                          <div class="leave-approver-hint leave-decision-rejected">
+                            <span class="leave-decision-actor">${icon('x', 'xs')} Từ chối bởi: <strong>${esc(row.rejected_by_name || 'Quản lý')}</strong></span>
+                            ${row.rejected_at ? `<div class="leave-decision-time">${formatLeaveDateTime(row.rejected_at)}</div>` : ''}
+                            ${row.rejection_note ? `<div class="leave-rejection-note" title="${esc(row.rejection_note)}">Lý do: ${esc(row.rejection_note)}</div>` : ''}
                           </div>
                         ` : ''}
                       </div>
@@ -404,7 +449,7 @@ export async function renderLeave(el, me) {
                     <td>
                       <div class="leave-actions-cell">
                         ${row.can_action ? `
-                          <button class="btn-primary btn-xs leave-approve" data-id="${row.id}" title="Phê duyệt đơn">${icon('check', 'xs')} <span>Duyệt</span></button>
+                          <button class="btn-primary btn-xs leave-approve" data-id="${row.id}" title="Phê duyệt đơn nghỉ phép">${icon('check', 'xs')} <span>Duyệt</span></button>
                           <button class="btn-secondary btn-xs leave-reject" data-id="${row.id}" title="Từ chối đơn" style="color:var(--danger);border-color:rgba(239,68,68,0.25);">${icon('x', 'xs')} <span>Từ chối</span></button>
                         ` : ''}
                         ${isApplicant && row.status === 'pending' ? `
@@ -488,23 +533,31 @@ export async function renderLeave(el, me) {
 
     // Bind Approvals
     list.querySelectorAll('.leave-approve').forEach(button => button.addEventListener('click', async () => {
+      const leaveId = button.dataset.id;
       try {
-        await api.updateLeave(button.dataset.id, { status: 'approved' });
+        button.disabled = true;
+        await api.updateLeave(leaveId, { status: 'approved' });
         toast('Đã phê duyệt đơn nghỉ phép thành công', 'success');
         loadLeave();
       } catch (error) {
         toast(error.message, 'error');
+      } finally {
+        button.disabled = false;
       }
     }));
 
     list.querySelectorAll('.leave-reject').forEach(button => button.addEventListener('click', async () => {
+      const leaveId = button.dataset.id;
       const note = prompt('Ghi chú lý do từ chối (không bắt buộc):') || '';
       try {
-        await api.updateLeave(button.dataset.id, { status: 'rejected', note });
+        button.disabled = true;
+        await api.updateLeave(leaveId, { status: 'rejected', note });
         toast('Đã từ chối đơn nghỉ phép', 'info');
         loadLeave();
       } catch (error) {
         toast(error.message, 'error');
+      } finally {
+        button.disabled = false;
       }
     }));
 

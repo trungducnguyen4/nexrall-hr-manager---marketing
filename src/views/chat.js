@@ -45,18 +45,16 @@ export async function renderChat(el, user, route = {}) {
   el.innerHTML = `
     <div class="chat-page">
       ${renderPageHeader()}
-      <div class="chat-workspace" id="chat-workspace">
-        ${renderSidebar()}
-        <section class="chat-main" id="chat-conversation">
-          ${renderMainEmpty()}
+      <div class="chat-workspace chat-workspace--single" id="chat-workspace">
+        <section class="chat-main chat-main--single" id="chat-conversation">
+          ${renderSkeletonMain()}
         </section>
       </div>
     </div>`;
 
   bindGlobalEvents(el);
-  loadConversations();
-  const [, conversationId, messageId] = route.segments || [];
-  if (Number(conversationId)) openConversation(Number(conversationId), Number(messageId) || null);
+  await loadCompanyChat(route);
+
   conversationRefreshTimer = setInterval(() => {
     if (!wsAuthenticated && (!realtime || !realtime.isConnected())) {
       loadConversationsSilently();
@@ -125,7 +123,10 @@ export async function renderChat(el, user, route = {}) {
     }
 
     if (eventType === 'chat:pin' || eventType === 'chat:message_pinned') {
-      if (convId === activeConvId) refreshMessages();
+      if (convId === activeConvId) {
+        refreshMessages();
+        refreshPinnedBanner();
+      }
       return;
     }
 
@@ -142,32 +143,10 @@ function renderPageHeader() {
   return `
     <div class="page-header chat-page-header">
       <div>
-        <div class="page-title">${icon('messageCircle', 'xl')} Chat</div>
-        <div class="page-sub">Trao đổi trực tiếp với đồng nghiệp và nhóm làm việc.</div>
+        <div class="page-title">${icon('messageCircle', 'xl')} Kênh chung công ty</div>
+        <div class="page-sub">Không gian trao đổi, thông báo và thảo luận chung cho toàn thể nhân sự.</div>
       </div>
-      <button id="btn-new-conv" class="btn-primary btn-sm">${icon('plus', 'sm')} Tin nhắn mới</button>
     </div>`;
-}
-
-// ── Component: Conversation sidebar ─────────────────────────────────
-function renderSidebar() {
-  return `
-    <aside class="chat-list-panel" id="chat-list-panel">
-      <div class="chat-list-head">
-        <div class="chat-list-title">Tin nhắn</div>
-        <button class="chat-icon-btn" id="chat-compose-icon" aria-label="Tạo cuộc trò chuyện">${icon('squarePen', 'sm')}</button>
-      </div>
-      <div class="chat-search">
-        ${icon('search', 'sm')}
-        <input type="text" id="chat-search" placeholder="Tìm kiếm cuộc trò chuyện..." />
-      </div>
-      <div class="chat-segmented" role="tablist" id="chat-tabs">
-        <button class="chat-seg-btn active" data-tab="all" role="tab" aria-selected="true">Tất cả</button>
-        <button class="chat-seg-btn" data-tab="unread" role="tab" aria-selected="false">Chưa đọc</button>
-        <button class="chat-seg-btn" data-tab="direct" role="tab" aria-selected="false">Trực tiếp</button>
-      </div>
-      <div class="chat-list" id="chat-sidebar-list"></div>
-    </aside>`;
 }
 
 // ── Component: Main empty state ─────────────────────────────────────
@@ -175,133 +154,52 @@ function renderMainEmpty() {
   return `
     <div class="chat-main-empty">
       <div class="chat-main-empty-icon">${icon('messageCircle', 'xl')}</div>
-      <div class="chat-main-empty-title">Chọn một cuộc trò chuyện</div>
-      <div class="chat-main-empty-sub">Chọn hội thoại ở bên trái<br/>hoặc bắt đầu một cuộc trò chuyện mới.</div>
-      <button id="btn-new-conv-main" class="btn-primary btn-sm">${icon('plus', 'sm')} Tin nhắn mới</button>
+      <div class="chat-main-empty-title">Kênh chung công ty</div>
+      <div class="chat-main-empty-sub">Nơi trao đổi và nhận thông báo chung toàn công ty.</div>
     </div>`;
 }
 
 // ── Global events ───────────────────────────────────────────────────
 function bindGlobalEvents(el) {
-  document.getElementById('btn-new-conv')?.addEventListener('click', openNewConversation);
-  document.getElementById('btn-new-conv-main')?.addEventListener('click', openNewConversation);
-  document.getElementById('chat-compose-icon')?.addEventListener('click', openNewConversation);
-  document.getElementById('chat-search')?.addEventListener('input', debounce(renderSidebarList, 250));
-  el.querySelector('#chat-tabs')?.addEventListener('click', e => {
-    const btn = e.target.closest('.chat-seg-btn');
-    if (!btn) return;
-    activeTab = btn.dataset.tab;
-    el.querySelectorAll('.chat-seg-btn').forEach(b => {
-      const isActive = b === btn;
-      b.classList.toggle('active', isActive);
-      b.setAttribute('aria-selected', isActive ? 'true' : 'false');
-    });
-    renderSidebarList();
-  });
+  // Global chat view events if any
 }
 
-// ── Load conversations ──────────────────────────────────────────────
-async function loadConversations() {
-  const list = document.getElementById('chat-sidebar-list');
-  if (!list) return;
-  list.innerHTML = renderSkeletonList();
+// ── Load company chat ───────────────────────────────────────────────
+async function loadCompanyChat(route = {}) {
+  const [, conversationId, messageId] = route?.segments || [];
   try {
-    const { conversations: convs } = await api.get('/api/conversations');
+    const { conversations: convs = [] } = await api.get('/api/conversations');
     conversations = convs;
     publishUnreadCount();
-    renderSidebarList();
+    if (convs.length > 0) {
+      const targetConvId = Number(conversationId) || convs[0].id;
+      await openConversation(targetConvId, Number(messageId) || null);
+    } else {
+      const convEl = document.getElementById('chat-conversation');
+      if (convEl) {
+        convEl.innerHTML = `
+          <div class="chat-main-empty">
+            <div class="chat-main-empty-icon">${icon('messageCircle', 'xl')}</div>
+            <div class="chat-main-empty-title">Đang khởi tạo Kênh chung...</div>
+            <div class="chat-main-empty-sub">Vui lòng bấm tải lại nếu chưa kết nối được.</div>
+            <button class="btn-primary btn-sm" id="chat-retry-load">${icon('refreshCw', 'sm')} Tải lại</button>
+          </div>`;
+        document.getElementById('chat-retry-load')?.addEventListener('click', () => loadCompanyChat(route));
+      }
+    }
   } catch (e) {
-    list.innerHTML = `
-      <div class="chat-list-empty">
-        <div class="chat-list-empty-icon">${icon('triangleAlert', 'lg')}</div>
-        <div class="chat-list-empty-title">Không thể tải cuộc trò chuyện</div>
-        <div class="chat-list-empty-sub">${esc(e.message)}</div>
-        <button class="btn-secondary btn-sm" id="chat-retry-list">${icon('refreshCw', 'sm')} Thử lại</button>
-      </div>`;
-    document.getElementById('chat-retry-list')?.addEventListener('click', loadConversations);
-  }
-}
-
-function renderSkeletonList() {
-  return Array.from({ length: 5 }, () => `
-    <div class="chat-skel-item">
-      <div class="chat-skeleton chat-skel-avatar"></div>
-      <div class="chat-skel-lines">
-        <div class="chat-skeleton chat-skel-line-sm"></div>
-        <div class="chat-skeleton chat-skel-line-xs"></div>
-      </div>
-    </div>`).join('');
-}
-
-function renderSidebarList() {
-  const list = document.getElementById('chat-sidebar-list');
-  if (!list) return;
-  const search = (document.getElementById('chat-search')?.value || '').trim().toLowerCase();
-  let filtered = conversations;
-  if (activeTab === 'direct') filtered = filtered.filter(c => c.type === 'direct');
-  if (activeTab === 'unread') filtered = filtered.filter(c => Number(c.unread_count) > 0);
-  if (search) filtered = filtered.filter(c => {
-    const names = (c.members || []).map(m => m.full_name || '').join(' ');
-    return (c.name || '').toLowerCase().includes(search) || names.toLowerCase().includes(search);
-  });
-
-  const dms = filtered.filter(c => c.type === 'direct');
-  const channels = filtered.filter(c => c.type !== 'direct');
-
-  if (!filtered.length) {
-    list.innerHTML = `
-      <div class="chat-list-empty" id="chat-list-empty">
-        <div class="chat-list-empty-icon">${icon('messageCircle', 'lg')}</div>
-        <div class="chat-list-empty-title">Chưa có cuộc trò chuyện</div>
-        <div class="chat-list-empty-sub">Bắt đầu trò chuyện với đồng nghiệp hoặc tạo nhóm làm việc.</div>
-        <button class="btn-primary btn-sm" id="chat-list-empty-cta">${icon('plus', 'sm')} Bắt đầu trò chuyện</button>
-      </div>`;
-    document.getElementById('chat-list-empty-cta')?.addEventListener('click', openNewConversation);
-    return;
-  }
-
-  let html = '';
-  if (dms.length) {
-    html += '<div class="chat-list-section">Tin nhắn trực tiếp</div>';
-    for (const c of dms) {
-      const other = (c.members || []).find(m => m.user_id !== me.id);
-      html += renderConvItem(c, other?.full_name || c.name || 'Unknown');
+    const convEl = document.getElementById('chat-conversation');
+    if (convEl) {
+      convEl.innerHTML = `
+        <div class="chat-main-empty">
+          <div class="chat-main-empty-icon">${icon('triangleAlert', 'xl')}</div>
+          <div class="chat-main-empty-title">Không thể tải Kênh chung</div>
+          <div class="chat-main-empty-sub">${esc(e.message)}</div>
+          <button class="btn-primary btn-sm" id="chat-retry-load">${icon('refreshCw', 'sm')} Thử lại</button>
+        </div>`;
+      document.getElementById('chat-retry-load')?.addEventListener('click', () => loadCompanyChat(route));
     }
   }
-  if (channels.length) {
-    html += '<div class="chat-list-section">Nhóm & Kênh</div>';
-    for (const c of channels) html += renderConvItem(c, c.name || 'Nhóm');
-  }
-  list.innerHTML = html;
-
-  list.querySelectorAll('.chat-conv-item').forEach(item => {
-    item.addEventListener('click', () => openConversation(Number(item.dataset.convId)));
-  });
-}
-
-function renderConvItem(c, name) {
-  const lastMsg = c.last_message;
-  const preview = lastMsg ? (lastMsg.deleted_at ? 'Tin nhắn đã xóa' : (lastMsg.content || '📎 File đính kèm').slice(0, 40)) : 'Chưa có tin nhắn';
-  const time = lastMsg ? formatChatTime(lastMsg.created_at) : '';
-  const unread = Number(c.unread_count) || 0;
-  const isActive = Number(c.id) === activeConvId;
-  const cls = [
-    'chat-conv-item',
-    isActive ? 'active' : '',
-    unread ? 'unread' : '',
-  ].filter(Boolean).join(' ');
-  const other = (c.members || []).find(m => m.user_id !== me.id);
-  return `<div class="${cls}" data-conv-id="${c.id}" role="button" tabindex="0" aria-selected="${isActive}">
-    ${renderChatAvatar(other || c.members?.[0], 44)}
-    <div class="chat-conv-info">
-      <div class="chat-conv-name">${esc(name)}</div>
-      <div class="chat-conv-preview">${esc(preview)}</div>
-    </div>
-    <div class="chat-conv-meta">
-      ${time ? `<span class="chat-conv-time">${time}</span>` : ''}
-      ${unread ? `<span class="chat-conv-unread">${unread > 99 ? '99+' : unread}</span>` : ''}
-    </div>
-  </div>`;
 }
 
 // ── Open conversation ───────────────────────────────────────────────
@@ -316,16 +214,8 @@ async function openConversation(convId, targetMessageId = null) {
   messages = [];
   disconnectWS();
 
-  // Mobile: switch to conversation view
-  const workspace = document.getElementById('chat-workspace');
-  workspace?.classList.add('show-conv');
-  document.body.classList.add('in-chat-conv');
-
-  // Highlight active
-  document.querySelectorAll('.chat-conv-item').forEach(i => i.classList.remove('active'));
-  document.querySelector(`.chat-conv-item[data-conv-id="${convId}"]`)?.classList.add('active');
-
   const convEl = document.getElementById('chat-conversation');
+  if (!convEl) return;
   convEl.innerHTML = renderSkeletonMain();
 
   try {
@@ -336,16 +226,17 @@ async function openConversation(convId, targetMessageId = null) {
     messages = msgs;
     renderConversation(conv);
     renderMessages();
+    refreshPinnedBanner();
     if (targetMessageId) scrollToMessage(targetMessageId); else scrollToBottom();
     connectWS(convId);
 
-    // Mark all visible as read, then refresh sidebar
+    // Mark all visible as read
     if (msgs.length) {
       const lastMsg = msgs[msgs.length - 1];
       const readOk = await markRead(lastMsg.id);
       if (readOk) {
-        const conv = conversations.find(c => c.id === convId);
-        if (conv) { conv.unread_count = 0; publishUnreadCount(); renderSidebarList(); }
+        const found = conversations.find(c => c.id === convId);
+        if (found) { found.unread_count = 0; publishUnreadCount(); }
       }
       loadConversationsSilently();
     }
@@ -353,13 +244,14 @@ async function openConversation(convId, targetMessageId = null) {
     convEl.innerHTML = `
       <div class="chat-main-empty">
         <div class="chat-main-empty-icon">${icon('triangleAlert', 'xl')}</div>
-        <div class="chat-main-empty-title">Không thể tải cuộc trò chuyện</div>
+        <div class="chat-main-empty-title">Không thể tải kênh trò chuyện</div>
         <div class="chat-main-empty-sub">${esc(e.message)}</div>
         <button class="btn-secondary btn-sm" id="chat-retry-conv">${icon('refreshCw', 'sm')} Thử lại</button>
       </div>`;
     document.getElementById('chat-retry-conv')?.addEventListener('click', () => openConversation(convId));
   }
 }
+
 
 function renderSkeletonMain() {
   return `
@@ -383,39 +275,37 @@ function renderSkeletonMain() {
 
 // ── Component: Conversation view ────────────────────────────────────
 function renderConversation(conv) {
-  const otherMembers = (conv.members || []).filter(m => m.user_id !== me.id);
-  const name = conv.type === 'direct' ? (otherMembers[0]?.full_name || 'Unknown') : (conv.name || 'Nhóm');
-  const sub = conv.type === 'direct'
-    ? '<span class="chat-online-dot"></span> Đang hoạt động'
-    : `${icon('users', 'xs')} ${conv.members.length} thành viên`;
-  const headerMember = conv.type === 'direct' ? otherMembers[0] : { full_name: name };
+  const name = conv.name || 'Kênh chung công ty';
+  const memberCount = conv.members?.length || 0;
+  const sub = `${icon('users', 'xs')} <span id="chat-members-count-text">${memberCount} thành viên công ty</span>`;
 
   const convEl = document.getElementById('chat-conversation');
   convEl.innerHTML = `
     <div class="chat-conv-header">
       <div class="chat-conv-header-left">
-        <button class="chat-header-action chat-back-btn" id="chat-back-btn" aria-label="Quay lại">${icon('chevronLeft', 'md')}</button>
-        ${renderChatAvatar(headerMember, 42, 'chat-conv-header-avatar')}
+        <div class="chat-conv-header-avatar" style="background:var(--primary);color:#fff">
+          ${icon('messageCircle', 'md')}
+        </div>
         <div style="min-width:0">
           <div class="chat-conv-header-name">${esc(name)}</div>
-          <div class="chat-conv-header-sub">${sub}</div>
+          <div class="chat-conv-header-sub" id="chat-header-members-trigger" style="cursor:pointer" title="Bấm để xem danh sách thành viên">${sub}</div>
         </div>
       </div>
       <div class="chat-conv-header-actions">
-        <button class="chat-header-action" id="chat-search-btn" aria-label="Tìm kiếm">${icon('search', 'md')}</button>
-        <button class="chat-header-action" id="chat-more-btn" aria-label="Thêm">${icon('moreHorizontal', 'md')}</button>
+        <button class="chat-header-action" id="chat-pinned-btn" title="Thông báo đã ghim">${icon('pin', 'md')}</button>
+        <button class="chat-header-action" id="chat-members-btn" title="Danh sách thành viên">${icon('users', 'md')}</button>
+        <button class="chat-header-action" id="chat-search-btn" title="Tìm kiếm tin nhắn">${icon('search', 'md')}</button>
+        <button class="chat-header-action" id="chat-more-btn" title="Tệp & Thông tin">${icon('moreHorizontal', 'md')}</button>
       </div>
     </div>
+    <div id="chat-pinned-banner-wrap"></div>
     <div class="chat-messages" id="chat-messages"></div>
     ${renderComposer()}
   `;
 
-  document.getElementById('chat-back-btn')?.addEventListener('click', () => {
-    activeConvId = null;
-    document.body.classList.remove('in-chat-conv');
-    document.getElementById('chat-workspace')?.classList.remove('show-conv');
-    renderEmptyChat();
-  });
+  document.getElementById('chat-pinned-btn')?.addEventListener('click', openPinnedModal);
+  document.getElementById('chat-members-btn')?.addEventListener('click', () => openMembersModal(conv));
+  document.getElementById('chat-header-members-trigger')?.addEventListener('click', () => openMembersModal(conv));
   document.getElementById('chat-search-btn')?.addEventListener('click', openSearchModal);
   document.getElementById('chat-more-btn')?.addEventListener('click', () => openMoreMenu(conv));
   document.getElementById('chat-send-btn')?.addEventListener('click', sendMessage);
@@ -483,6 +373,7 @@ function renderConversation(conv) {
 
   // Scroll to load more
   document.getElementById('chat-messages')?.addEventListener('scroll', onScrollLoadMore);
+  refreshPinnedBanner();
 }
 
 function renderComposer() {
@@ -630,6 +521,10 @@ function renderMessages() {
       ? '<span class="chat-msg-bubble deleted">Tin nhắn đã bị xóa</span>'
       : `${msg.content ? `<span class="chat-msg-bubble">${renderMessageContent(msg)}</span>` : ''}${edited ? '<span class="chat-msg-edited">(đã sửa)</span>' : ''}`;
 
+    const isHcnsDept = me?.department === 'Hành chính nhân sự' || me?.department === 'HCNS';
+    const canPin = ['admin', 'director', 'manager'].includes(me?.role) || isHcnsDept;
+    const canModerate = ['admin', 'director', 'manager'].includes(me?.role) || isHcnsDept;
+
     html += `<div class="${cls}${msg.is_pinned ? ' chat-msg-pinned' : ''}" data-msg-id="${msg.id}">
       ${showAvatar ? renderChatAvatar({ full_name: msg.sender_name, avatar_url: msg.sender_avatar }, 32, 'chat-msg-avatar') : '<div class="chat-msg-avatar"></div>'}
       <div class="chat-msg-body">
@@ -646,11 +541,11 @@ function renderMessages() {
         ${reactHtml}
         ${readReceiptHtml}
         ${!deleted ? `<div class="chat-msg-actions">
-          <button class="chat-msg-action-btn" data-action="reply" data-msg-id="${msg.id}" aria-label="Trả lời">${icon('arrowRight', 'sm')}</button>
-          <button class="chat-msg-action-btn" data-action="react" data-msg-id="${msg.id}" aria-label="Biểu cảm">${icon('smile', 'sm')}</button>
-          <button class="chat-msg-action-btn" data-action="pin" data-msg-id="${msg.id}" aria-label="${msg.is_pinned ? 'Bỏ ghim' : 'Ghim tin nhắn'}">${icon('pin', 'sm')}</button>
-          ${isMe ? `<button class="chat-msg-action-btn" data-action="edit" data-msg-id="${msg.id}" aria-label="Sửa">${icon('pencil', 'sm')}</button>
-          <button class="chat-msg-action-btn" data-action="delete" data-msg-id="${msg.id}" aria-label="Xóa">${icon('trash2', 'sm')}</button>` : ''}
+          <button class="chat-msg-action-btn" data-action="reply" data-msg-id="${msg.id}" aria-label="Trả lời" title="Trả lời">${icon('arrowRight', 'sm')}</button>
+          <button class="chat-msg-action-btn" data-action="react" data-msg-id="${msg.id}" aria-label="Biểu cảm" title="Thả cảm xúc">${icon('smile', 'sm')}</button>
+          ${canPin ? `<button class="chat-msg-action-btn" data-action="pin" data-msg-id="${msg.id}" aria-label="${msg.is_pinned ? 'Bỏ ghim' : 'Ghim thông báo'}" title="${msg.is_pinned ? 'Bỏ ghim' : 'Ghim thông báo'}">${icon('pin', 'sm')}</button>` : ''}
+          ${isMe ? `<button class="chat-msg-action-btn" data-action="edit" data-msg-id="${msg.id}" aria-label="Sửa" title="Sửa">${icon('pencil', 'sm')}</button>` : ''}
+          ${(isMe || canModerate) ? `<button class="chat-msg-action-btn" data-action="delete" data-msg-id="${msg.id}" aria-label="Xóa" title="Xóa tin nhắn">${icon('trash2', 'sm')}</button>` : ''}
         </div>` : ''}
       </div>
     </div>`;
@@ -1463,67 +1358,124 @@ function openSearchModal() {
   }, 300));
 }
 
+// ── Pinned Banner & Modals ──────────────────────────────────────────
+async function refreshPinnedBanner() {
+  const wrap = document.getElementById('chat-pinned-banner-wrap');
+  if (!wrap || !activeConvId) return;
+  try {
+    const { messages: pinned = [] } = await api.get(`/api/conversations/${activeConvId}/pinned`);
+    if (!pinned.length) {
+      wrap.innerHTML = '';
+      return;
+    }
+    const topPin = pinned[0];
+    const pinCount = pinned.length;
+    wrap.innerHTML = `
+      <div class="chat-pinned-banner" id="chat-pinned-banner-el">
+        <div class="chat-pinned-banner-icon">${icon('pin', 'sm')}</div>
+        <div class="chat-pinned-banner-content" style="cursor:pointer" id="chat-pinned-banner-click">
+          <div class="chat-pinned-banner-title">Thông báo đã ghim ${pinCount > 1 ? `(${pinCount})` : ''} · <span style="font-weight:normal;color:var(--text-3)">bởi ${esc(topPin.sender_name || 'Quản trị viên')}</span></div>
+          <div class="chat-pinned-banner-text">${esc((topPin.content || 'Tệp đính kèm').slice(0, 100))}</div>
+        </div>
+        <button class="chat-pinned-banner-all" id="chat-pinned-banner-view-all">Xem tất cả</button>
+      </div>`;
+    document.getElementById('chat-pinned-banner-click')?.addEventListener('click', () => scrollToMessage(topPin.id));
+    document.getElementById('chat-pinned-banner-view-all')?.addEventListener('click', openPinnedModal);
+  } catch (_) {
+    wrap.innerHTML = '';
+  }
+}
+
+function openMembersModal(conv) {
+  const members = (conv.members || []).map(m => `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border-radius:8px;background:var(--surface-2);margin-bottom:6px;">
+      <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+        ${renderChatAvatar(m, 36)}
+        <div style="min-width:0;">
+          <div style="font-size:13.5px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(m.full_name || 'Nhân viên')}</div>
+          <div style="font-size:11.5px;color:var(--text-3);">${esc(m.employee_code || '')}</div>
+        </div>
+      </div>
+      <div>
+        ${m.role === 'owner' ? '<span class="badge badge-success">Quản trị</span>' : (m.role === 'admin' ? '<span class="badge badge-info">Quản lý</span>' : '<span class="badge badge-secondary">Thành viên</span>')}
+      </div>
+    </div>`).join('');
+
+  openModal(`Thành viên Kênh chung (${conv.members?.length || 0})`, `
+    <div style="max-height:60vh;overflow-y:auto;padding:4px 0;">
+      ${members || '<div class="chat-shared-empty">Chưa có thành viên nào.</div>'}
+    </div>`,
+    '<button class="btn-secondary" id="chat-members-close">Đóng</button>'
+  );
+  document.getElementById('chat-members-close')?.addEventListener('click', closeModal);
+}
+
+async function openPinnedModal() {
+  if (!activeConvId) return;
+  try {
+    const { messages: pinned = [] } = await api.get(`/api/conversations/${activeConvId}/pinned`);
+    const content = pinned.length ? `
+      <div style="max-height:60vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding:4px 0;">
+        ${pinned.map(item => `
+          <div style="padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+              <strong style="font-size:13px;color:var(--text);">${esc(item.sender_name || 'Thành viên')}</strong>
+              <small style="font-size:11px;color:var(--text-3);">${formatChatDateTime(item.created_at)}</small>
+            </div>
+            <div style="font-size:13.5px;color:var(--text);line-height:1.5;white-space:pre-wrap;">${esc(item.content || '')}</div>
+            <div style="margin-top:8px;text-align:right;">
+              <button class="btn-secondary btn-xs btn-jump-to-pin" data-msg-id="${item.id}" style="display:inline-flex;align-items:center;gap:4px;">${icon('arrowRight', 'xs')} <span>Đến tin nhắn</span></button>
+            </div>
+          </div>
+        `).join('')}
+      </div>` : '<div class="chat-shared-empty" style="padding:32px 0;">Chưa có thông báo nào được ghim trong kênh này.</div>';
+
+    openModal(`Thông báo đã ghim (${pinned.length})`, content, '<button class="btn-secondary" id="chat-pinned-close">Đóng</button>');
+    document.getElementById('chat-pinned-close')?.addEventListener('click', closeModal);
+    document.querySelectorAll('.btn-jump-to-pin').forEach(btn => {
+      btn.addEventListener('click', () => {
+        closeModal();
+        scrollToMessage(Number(btn.dataset.msgId));
+      });
+    });
+  } catch (err) {
+    toast(err.message || 'Không thể tải tin nhắn đã ghim', 'error');
+  }
+}
+
 // ── More menu ───────────────────────────────────────────────────────
 function openMoreMenu(conv) {
-  const isDM = conv.type === 'direct';
   const attachmentCount = messages.reduce((total, message) => total + (message.attachments || []).length, 0);
   const latestMessage = messages[messages.length - 1];
   const summary = `
     <div class="chat-info-hero">
-      ${renderChatAvatar(isDM ? (conv.members || []).find(m => m.user_id !== me.id) : { full_name: conv.name || 'Nhóm' }, 54, 'chat-info-avatar')}
-      <div><strong>${esc(isDM ? ((conv.members || []).find(m => m.user_id !== me.id)?.full_name || 'Hội thoại trực tiếp') : (conv.name || 'Nhóm làm việc'))}</strong>
-      <span>${isDM ? 'Hội thoại trực tiếp' : `Nhóm làm việc · ${conv.members.length} thành viên`}</span></div>
+      <div class="chat-conv-header-avatar" style="width:54px;height:54px;border-radius:50%;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;">
+        ${icon('messageCircle', 'lg')}
+      </div>
+      <div><strong>${esc(conv.name || 'Kênh chung công ty')}</strong>
+      <span>Không gian trao đổi toàn công ty · ${conv.members?.length || 0} thành viên</span></div>
     </div>
     <div class="chat-info-stats">
-      <div><strong>${conv.members.length}</strong><span>Thành viên</span></div>
+      <div><strong>${conv.members?.length || 0}</strong><span>Thành viên</span></div>
       <div><strong>${attachmentCount}</strong><span>Tệp gần đây</span></div>
       <div><strong>${latestMessage ? formatChatTime(latestMessage.created_at) : '—'}</strong><span>Hoạt động cuối</span></div>
     </div>`;
-  const members = (conv.members || []).map(m => `
-    <div style="display:flex;align-items:center;gap:10px;padding:8px 0">
-      ${renderChatAvatar(m, 34)}
-      <span style="font-size:13.5px;font-weight:500;color:var(--text)">${esc(m.full_name || '')}</span>
-      ${m.role === 'owner' ? '<span class="badge badge-success">Owner</span>' : ''}
-    </div>`).join('');
 
-  const isOwner = !isDM && (conv.members || []).some(member => Number(member.user_id) === Number(me.id) && member.role === 'owner');
-  const actions = !isDM ? `
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      <button class="btn-secondary btn-sm" id="chat-rename-btn">${icon('pencil', 'sm')} Đổi tên</button>
-      <button class="btn-secondary btn-sm" id="chat-add-member-btn">${icon('userPlus', 'sm')} Thêm</button>
-      ${isOwner ? `<button class="btn-danger btn-sm" id="chat-dissolve-btn">${icon('trash2', 'sm')} Giải tán nhóm</button>` : ''}
-    </div>` : '';
-
-  openModal('Thông tin cuộc trò chuyện', `
+  openModal('Thông tin Kênh chung công ty', `
     <div style="padding:4px">
       ${summary}
-      ${actions}
       <div id="chat-shared-panel" class="chat-shared-panel">${loadingHTML()}</div>
-      <div style="font-size:12px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Thành viên (${conv.members.length})</div>
-      <div>${members}</div>
+      <div style="margin-top:14px;text-align:center;">
+        <button class="btn-secondary btn-sm" id="chat-info-open-members">${icon('users', 'sm')} Xem danh sách thành viên (${conv.members?.length || 0})</button>
+      </div>
     </div>`,
     '<button class="btn-secondary" id="chat-more-close">Đóng</button>');
   document.getElementById('chat-more-close')?.addEventListener('click', closeModal);
-
-  document.getElementById('chat-rename-btn')?.addEventListener('click', () => renameConversation(conv));
-  document.getElementById('chat-add-member-btn')?.addEventListener('click', () => addMemberFlow(conv));
-  document.getElementById('chat-dissolve-btn')?.addEventListener('click', () => dissolveConversation(conv));
-  loadConversationInfoPanel(conv.id);
-}
-
-async function dissolveConversation(conv) {
-  const confirmation = window.prompt(`Giải tán nhóm “${conv.name || 'Nhóm làm việc'}”?\n\nToàn bộ thành viên sẽ mất quyền truy cập. Nhập GIẢI TÁN để xác nhận:`);
-  if (confirmation !== 'GIẢI TÁN') return;
-  try {
-    await api.delete(`/api/conversations/${conv.id}`);
+  document.getElementById('chat-info-open-members')?.addEventListener('click', () => {
     closeModal();
-    if (Number(activeConvId) === Number(conv.id)) renderEmptyChat();
-    conversations = conversations.filter(item => Number(item.id) !== Number(conv.id));
-    renderSidebarList();
-    toast('Nhóm đã được giải tán. Lịch sử được lưu audit.', 'success');
-  } catch (error) {
-    toast(error.message || 'Không thể giải tán nhóm', 'error');
-  }
+    openMembersModal(conv);
+  });
+  loadConversationInfoPanel(conv.id);
 }
 
 async function loadConversationInfoPanel(conversationId) {
@@ -1842,7 +1794,9 @@ function loadConversationsSilently() {
     api.get('/api/conversations').then(({ conversations: convs }) => {
       conversations = convs;
       publishUnreadCount();
-      renderSidebarList();
+      if (!activeConvId && convs.length > 0) {
+        openConversation(convs[0].id);
+      }
     }).catch(() => {});
   }, 800);
 }

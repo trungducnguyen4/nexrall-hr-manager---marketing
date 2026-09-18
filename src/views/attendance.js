@@ -41,12 +41,11 @@ export async function renderAttendance(el, me, route = {}) {
           <div class="att-clock-status" id="att-status-line">
             <span style="font-size:13px;opacity:.8">Đang tải...</span>
           </div>
-          <div id="att-compliance" aria-live="polite" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px;"></div>
 
         <!-- Registration form (shown when not yet registered today) -->
         <div id="att-register-wrap" style="display:none;margin-top:14px;">
         <div class="field" style="margin-bottom:10px;">
-          <label style="color:rgba(255,255,255,.7)">Hình thức làm việc</label>
+          <label style="color:#e2e8f0;font-weight:650;">Hình thức làm việc</label>
           <div class="att-chip-row" id="att-worktype-row">
             <button type="button" class="att-chip" data-worktype="office">${icon('building2', 'xs')} <span>Văn phòng</span></button>
             <button type="button" class="att-chip" data-worktype="wfh">${icon('home', 'xs')} <span>WFH</span></button>
@@ -54,12 +53,33 @@ export async function renderAttendance(el, me, route = {}) {
           </div>
         </div>
         <div class="field" id="att-shift-field" style="margin-bottom:10px;">
-          <label style="color:rgba(255,255,255,.7)">Ca làm việc</label>
+          <label style="color:#e2e8f0;font-weight:650;">Ca làm việc</label>
           <div class="att-chip-row" id="att-shift-row">
             <button type="button" class="att-chip" data-shift="morning">Sáng 08:30–12:00</button>
             <button type="button" class="att-chip" data-shift="afternoon">Chiều 13:30–17:00</button>
           </div>
-          <div style="font-size:11px;color:rgba(255,255,255,.55);margin-top:6px;">Chọn cả hai ca = làm cả ngày. Chỉ check-in đầu ngày và check-out cuối ngày.</div>
+          <div style="font-size:12px;color:#cbd5e1;margin-top:6px;line-height:1.4;">Chọn cả hai ca = làm cả ngày. Chỉ check-in đầu ngày và check-out cuối ngày.</div>
+        </div>
+        <div id="att-wfh-extra" style="display:none;margin-bottom:12px;padding:10px 12px;background:rgba(255,255,255,0.08);border-radius:8px;border:1px solid rgba(255,255,255,0.18);">
+          <div class="field" style="margin-bottom:8px;">
+            <label style="color:#fef08a;font-weight:650;display:flex;align-items:center;gap:4px;">
+              ${icon('fileText', 'xs')} <span>Lý do WFH *</span>
+            </label>
+            <input id="att-wfh-reason" type="text" placeholder="Nhập lý do làm việc tại nhà (bắt buộc)..." style="background:rgba(255,255,255,.2);border-color:rgba(255,255,255,.4);color:#fff;width:100%;border-radius:6px;padding:7px 10px;"/>
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label style="color:rgba(255,255,255,.85);font-size:12px;display:flex;align-items:center;gap:4px;">
+              ${icon('paperclip', 'xs')} <span>Minh chứng WFH (ảnh chụp, tài liệu hoặc link)</span>
+            </label>
+            <div style="display:flex;gap:8px;align-items:center;margin-top:4px;flex-wrap:wrap;">
+              <label class="btn-secondary btn-sm" style="cursor:pointer;margin:0;background:rgba(255,255,255,0.2);color:#fff;border-color:rgba(255,255,255,0.35);font-size:12px;padding:5px 10px;display:inline-flex;align-items:center;gap:4px;">
+                ${icon('upload', 'xs')} <span id="att-wfh-file-label">Chọn tệp / ảnh</span>
+                <input type="file" id="att-wfh-file" accept="image/*,application/pdf" style="display:none;"/>
+              </label>
+              <input type="text" id="att-wfh-proof-url" placeholder="Hoặc dán link tài liệu minh chứng..." style="flex:1;min-width:180px;background:rgba(255,255,255,.15);border-color:rgba(255,255,255,.3);color:#fff;border-radius:6px;padding:5px 8px;font-size:12px;"/>
+            </div>
+            <div id="att-wfh-uploaded-hint" style="display:none;font-size:11.5px;color:#86efac;margin-top:4px;"></div>
+          </div>
         </div>
         <div id="att-business-time" style="display:none;gap:10px;" class="flex">
           <div class="field" style="flex:1;margin-bottom:10px;">
@@ -75,13 +95,13 @@ export async function renderAttendance(el, me, route = {}) {
           <label style="color:rgba(255,255,255,.7)">Ghi chú (tuỳ chọn)</label>
           <input id="att-reg-note" type="text" placeholder="Ghi chú..." style="background:rgba(255,255,255,.2);border-color:rgba(255,255,255,.4);color:#fff;"/>
         </div>
-        <button id="btn-register" class="att-btn-in" style="width:100%;">${icon('clock3', 'sm')} <span>Đăng ký & Check In</span></button>
       </div>
 
       <div id="att-note-wrap" style="margin-top:10px;display:none;">
         <input id="att-note" type="text" placeholder="Ghi chú (tuỳ chọn)" style="background:rgba(255,255,255,.2);border-color:rgba(255,255,255,.4);color:#fff;border-radius:8px;padding:8px 12px;width:100%;"/>
       </div>
       <div class="att-clock-btns">
+        <button id="btn-register" class="att-btn-in">${icon('clock3', 'sm')} <span>Đăng ký & Check In</span></button>
         <button id="btn-checkout" class="att-btn-out" disabled>${icon('logOut', 'sm')} <span>Check Out</span></button>
       </div>
 
@@ -151,6 +171,19 @@ export async function renderAttendance(el, me, route = {}) {
       </div>
       <div id="ot-form-list">${loadingHTML()}</div>
     </div>
+
+    ${canManageAttendance ? `<div class="card" style="margin:14px 0;">
+      <div class="card-header">
+        <div class="card-title">${icon('home', 'sm')} <span>Yêu cầu duyệt WFH</span></div>
+        <select id="wfh-status-filter" class="btn-secondary btn-sm">
+          <option value="pending">Chờ duyệt</option>
+          <option value="approved">Đã duyệt</option>
+          <option value="rejected">Đã từ chối</option>
+          <option value="">Tất cả</option>
+        </select>
+      </div>
+      <div id="wfh-request-list">${loadingHTML()}</div>
+    </div>` : ''}
 
     ${canManageAttendance ? `<div class="card" style="margin:14px 0;">
       <div class="card-header"><div class="card-title">${icon('clock3', 'sm')} <span>Yêu cầu làm thêm giờ</span></div><select id="ot-status-filter" class="btn-secondary btn-sm"><option value="pending">Chờ duyệt</option><option value="approved">Đã duyệt</option><option value="rejected">Đã từ chối</option><option value="">Tất cả</option></select></div>
@@ -283,11 +316,15 @@ export async function renderAttendance(el, me, route = {}) {
   }
 
   // ── Registration form interactivity ──
+  let pendingWfhProof = null;
   function updateWorktypeChips() {
     document.querySelectorAll('#att-worktype-row .att-chip').forEach(b => {
       b.classList.toggle('active', b.dataset.worktype === regWorkType);
     });
-    document.getElementById('att-business-time').style.display = regWorkType === 'business' ? 'flex' : 'none';
+    const bTime = document.getElementById('att-business-time');
+    if (bTime) bTime.style.display = regWorkType === 'business' ? 'flex' : 'none';
+    const wfhExtra = document.getElementById('att-wfh-extra');
+    if (wfhExtra) wfhExtra.style.display = regWorkType === 'wfh' ? 'block' : 'none';
   }
   function updateShiftChips() {
     document.querySelectorAll('#att-shift-row .att-chip').forEach(b => {
@@ -305,6 +342,31 @@ export async function renderAttendance(el, me, route = {}) {
       updateShiftChips();
     });
   });
+
+  const wfhFileInput = document.getElementById('att-wfh-file');
+  if (wfhFileInput) {
+    wfhFileInput.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const label = document.getElementById('att-wfh-file-label');
+      const hint = document.getElementById('att-wfh-uploaded-hint');
+      if (label) label.textContent = 'Đang tải lên...';
+      try {
+        const res = await api.uploadWfhProof(file);
+        pendingWfhProof = res;
+        if (label) label.textContent = 'Đổi tệp khác';
+        if (hint) {
+          hint.style.display = 'block';
+          hint.innerHTML = `${icon('circleCheck', 'xs')} Đã đính kèm: <b>${esc(res.filename)}</b>`;
+        }
+        toast('Đã tải minh chứng lên thành công', 'success');
+      } catch (err) {
+        if (label) label.textContent = 'Chọn tệp / ảnh';
+        toast(err.message || 'Lỗi tải tệp lên', 'error');
+      }
+    });
+  }
+
   regShifts.add('morning'); regShifts.add('afternoon'); // default: full day
   updateWorktypeChips(); updateShiftChips();
 
@@ -326,55 +388,23 @@ export async function renderAttendance(el, me, route = {}) {
         else if (todayRecord.shift === 'morning') regShifts.add('morning');
         else if (todayRecord.shift === 'afternoon') regShifts.add('afternoon');
       }
+      if (todayRecord && todayRecord.work_type) {
+        regWorkType = todayRecord.work_type;
+        updateWorktypeChips();
+        if (todayRecord.wfh_reason) {
+          const rInput = document.getElementById('att-wfh-reason');
+          if (rInput && !rInput.value) rInput.value = todayRecord.wfh_reason;
+        }
+        if (todayRecord.wfh_proof_url) {
+          const pInput = document.getElementById('att-wfh-proof-url');
+          if (pInput && !pInput.value) pInput.value = todayRecord.wfh_proof_url;
+        }
+      }
       if (regShifts.size === 0) { regShifts.add('morning'); regShifts.add('afternoon'); }
       updateShiftChips();
       renderClockState();
     } catch(e) {
       document.getElementById('att-status-line').innerHTML = `<span style="font-size:12px;opacity:.7">Lỗi tải trạng thái</span>`;
-    }
-  }
-
-  function complianceTile(title, value, detail, tone = 'rgba(255,255,255,.12)') {
-    return `<div style="background:${tone};border:1px solid rgba(255,255,255,.18);border-radius:9px;padding:9px 10px;min-width:0;">
-      <div style="font-size:11px;opacity:.7;text-transform:uppercase;letter-spacing:.03em;">${title}</div>
-      <div style="font-size:16px;font-weight:800;margin:2px 0 3px;">${value}</div>
-      <div style="font-size:11px;line-height:1.35;opacity:.84;">${detail}</div>
-    </div>`;
-  }
-
-  async function loadAttendanceCompliance() {
-    const target = document.getElementById('att-compliance');
-    if (!target) return;
-    target.innerHTML = complianceTile('Tuân thủ tháng này', 'Đang tải…', 'Đang kiểm tra chấm công tháng hiện tại');
-    try {
-      const data = await api.getMyAttendanceCompliance();
-      if (!data.policy_active) {
-        target.innerHTML = complianceTile('Tuân thủ tháng này', 'Chưa áp dụng', `Chế tài hiện hành áp dụng từ ${esc(data.policy?.effective_month || '2026-08')}`);
-        return;
-      }
-      const lateCount = Number(data.late_count || 0);
-      const missingCount = Number(data.missing_checkinout_count || 0);
-      const lateDetail = lateCount === 0
-        ? 'Chưa ghi nhận đi trễ. Bạn được miễn tối đa 2 lần/tháng.'
-        : lateCount <= 2
-          ? `Lần thứ ${lateCount}; còn miễn ${Number(data.late_free_remaining || 0)} lần trong tháng.`
-          : `Đã vượt định mức miễn (${lateCount} lần). Từ lần 3, mỗi lần trừ 50.000đ vào thu nhập.`;
-      const missingDetail = missingCount === 0
-        ? 'Không có lỗi quên check in/out. Mỗi tháng được miễn 1 lần giải trình.'
-        : missingCount === 1
-          ? 'Đã dùng 1 lần giải trình miễn trừ trong tháng.'
-          : `Phát sinh ${missingCount} lần lỗi check in/out. Từ lần 2 trừ 50.000đ/lần.`;
-      const penaltyTotal = Number(data.penalty_total || 0);
-      const penaltyDetail = penaltyTotal > 0
-        ? `Dự kiến giảm trừ: ${penaltyTotal.toLocaleString('vi-VN')} đ (sẽ trừ vào kỳ lương ${esc(data.period_month || closingMonth)}).`
-        : 'Chưa phát sinh giảm trừ chế tài trong kỳ.';
-      target.innerHTML = [
-        complianceTile('Đi trễ tháng', `${lateCount} lần`, lateDetail, lateCount > 2 ? 'rgba(239,68,68,.24)' : 'rgba(255,255,255,.12)'),
-        complianceTile('Quên check in/out', `${missingCount} lần`, missingDetail, missingCount > 1 ? 'rgba(239,68,68,.24)' : 'rgba(255,255,255,.12)'),
-        complianceTile('Giảm trừ dự kiến', `${penaltyTotal.toLocaleString('vi-VN')} đ`, penaltyDetail, penaltyTotal > 0 ? 'rgba(239,68,68,.28)' : 'rgba(255,255,255,.12)'),
-      ].join('');
-    } catch (_) {
-      target.innerHTML = complianceTile('Tuân thủ tháng này', '—', 'Không tải được dữ liệu tuân thủ');
     }
   }
 
@@ -395,44 +425,124 @@ export async function renderAttendance(el, me, route = {}) {
     ? `<div style="font-size:12px;opacity:.8;margin-top:2px;">${WORK_TYPE_LABEL[todayRecord.work_type] || WORK_TYPE_LABEL.office} · ${SHIFT_LABEL_SHORT[todayRecord.shift] || SHIFT_LABEL_SHORT.full}${todayRecord.work_type === 'business' ? ` (${esc(todayRecord.expected_start||'—')}–${esc(todayRecord.expected_end||'—')})` : ''}</div>`
     : '';
 
+  const btnIn = document.getElementById('btn-register');
+
+  const wfhStatusBadge = (r) => {
+    if (!r || r.work_type !== 'wfh') return '';
+    const st = r.wfh_status || 'approved';
+    if (st === 'approved') return `<span class="badge badge-success" style="font-size:11px;padding:3px 8px;">${icon('circleCheck', 'xs')} WFH Đã duyệt${r.wfh_reviewer_name ? ` · ${esc(r.wfh_reviewer_name)}` : ''}</span>`;
+    if (st === 'rejected') return `<span class="badge badge-danger" style="font-size:11px;padding:3px 8px;">${icon('circleX', 'xs')} WFH Bị từ chối</span>`;
+    return `<span class="badge badge-warning" style="font-size:11px;padding:3px 8px;">${icon('hourglass', 'xs')} WFH Chờ duyệt</span>`;
+  };
+
+  const wfhFooterSection = (r) => {
+    if (!r || r.work_type !== 'wfh') return '';
+    return `
+      <div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.15);text-align:left;">
+        ${r.wfh_reason ? `<div style="font-size:12px;color:#fef08a;margin-bottom:4px;"><b>Lý do WFH:</b> ${esc(r.wfh_reason)}</div>` : ''}
+        ${r.wfh_review_note && r.wfh_status === 'rejected' ? `<div style="font-size:12px;color:#fca5a5;margin-bottom:4px;"><b>Lý do từ chối:</b> ${esc(r.wfh_review_note)}</div>` : ''}
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">
+          ${r.wfh_proof_url ? `<button type="button" class="btn-secondary btn-xs btn-view-today-wfh-proof" style="display:inline-flex;align-items:center;gap:4px;">${icon('paperclip', 'xs')} <span>Xem minh chứng</span></button>` : ''}
+          <button type="button" class="btn-secondary btn-xs btn-edit-today-wfh-proof" style="display:inline-flex;align-items:center;gap:4px;">${icon('pencil', 'xs')} <span>${r.wfh_proof_url ? 'Cập nhật minh chứng / lý do' : 'Bổ sung minh chứng WFH'}</span></button>
+        </div>
+      </div>
+    `;
+  };
+
   if (!todayRecord || !todayRecord.registered) {
     // Chưa đăng ký: hiện form đăng ký + nút "Đăng ký & Check In"
     statusLine.innerHTML = `<span class="badge badge-gray" style="font-size:12px;">${icon('fileText', 'xs')} Chưa đăng ký hôm nay</span>`;
+    if (btnIn) { btnIn.disabled = false; btnIn.style.display = 'inline-flex'; btnIn.innerHTML = `${icon('clock3', 'sm')} <span>Đăng ký & Check In</span>`; }
     btnOut.disabled = true;
     noteWrap.style.display = 'none';
     regWrap.style.display = 'block';
   } else if (todayRecord.checkin_time && todayRecord.checkout_time) {
     // Đã check-out: khóa tất cả
+    const workHours = (todayRecord.work_hours || 0).toFixed(1);
     statusLine.innerHTML = `
-      <span class="badge badge-success" style="font-size:12px;">${icon('circleCheck', 'xs')} Đã hoàn thành</span>
-      <span style="font-size:12px;opacity:.8">${todayRecord.checkin_time} → ${todayRecord.checkout_time} (${(todayRecord.work_hours||0).toFixed(1)}h)</span>
-      ${infoLine}${lateEarlyLine(todayRecord)}`;
+      <div class="att-checked-card">
+        <div class="att-checked-head">
+          <span class="badge badge-success" style="font-size:12px;padding:4px 10px;">${icon('circleCheck', 'xs')} Đã hoàn thành ca làm</span>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+            <span class="att-checked-badge">${esc(WORK_TYPE_LABEL[todayRecord.work_type] || 'Văn phòng')} · ${esc(SHIFT_LABEL_SHORT[todayRecord.shift] || 'Cả ngày')}</span>
+            ${wfhStatusBadge(todayRecord)}
+          </div>
+        </div>
+        <div class="att-checked-body">
+          <div class="att-checked-stat">
+            <span>Giờ vào</span>
+            <strong>${todayRecord.checkin_time}</strong>
+          </div>
+          <div class="att-checked-divider">→</div>
+          <div class="att-checked-stat">
+            <span>Giờ ra</span>
+            <strong>${todayRecord.checkout_time}</strong>
+          </div>
+          <div class="att-checked-divider">·</div>
+          <div class="att-checked-stat">
+            <span>Tổng giờ làm</span>
+            <strong style="color:#10b981;">${workHours} giờ</strong>
+          </div>
+        </div>
+        ${wfhFooterSection(todayRecord)}
+        ${lateEarlyLine(todayRecord)}
+      </div>`;
+    if (btnIn) { btnIn.disabled = true; btnIn.style.display = 'inline-flex'; btnIn.innerHTML = `${icon('circleCheck', 'sm')} <span>Đã Check In</span>`; }
     btnOut.disabled = true;
     noteWrap.style.display = 'none';
     regWrap.style.display = 'none';
   } else if (todayRecord.checkin_time) {
-    // Đã check-in: mở check-out
+    // Đã check-in: mở check-out, hiển thị thẻ thông tin ca làm việc sang trọng
     statusLine.innerHTML = `
-      <span class="badge badge-warning" style="font-size:12px;">${icon('clock3', 'xs')} Đang làm</span>
-      <span style="font-size:12px;opacity:.8">Vào lúc ${todayRecord.checkin_time}</span>
-      ${infoLine}${lateEarlyLine(todayRecord)}`;
+      <div class="att-checked-card">
+        <div class="att-checked-head">
+          <span class="badge badge-warning" style="font-size:12px;padding:4px 10px;">${icon('clock3', 'xs')} Đang trong ca làm việc</span>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+            <span class="att-checked-badge">${esc(WORK_TYPE_LABEL[todayRecord.work_type] || 'Văn phòng')} · ${esc(SHIFT_LABEL_SHORT[todayRecord.shift] || 'Cả ngày')}</span>
+            ${wfhStatusBadge(todayRecord)}
+          </div>
+        </div>
+        <div class="att-checked-body">
+          <div class="att-checked-stat">
+            <span>Giờ check-in</span>
+            <strong style="color:#38bdf8;">${todayRecord.checkin_time}</strong>
+          </div>
+          <div class="att-checked-stat">
+            <span>Hình thức</span>
+            <strong>${esc(WORK_TYPE_LABEL[todayRecord.work_type] || 'Văn phòng')}</strong>
+          </div>
+          <div class="att-checked-stat">
+            <span>Ca làm</span>
+            <strong>${esc(SHIFT_LABEL_SHORT[todayRecord.shift] || 'Cả ngày')}</strong>
+          </div>
+        </div>
+        <div class="att-checked-footer">
+          <small>● Bạn đã hoàn thành chấm công đầu ngày. Bấm <b>Check Out</b> bên dưới khi kết thúc ca làm.</small>
+          ${wfhFooterSection(todayRecord)}
+        </div>
+        ${lateEarlyLine(todayRecord)}
+      </div>`;
+    if (btnIn) { btnIn.disabled = true; btnIn.style.display = 'inline-flex'; btnIn.innerHTML = `${icon('circleCheck', 'sm')} <span>Đã Check In</span>`; }
     btnOut.disabled = false;
     noteWrap.style.display = 'none';
     regWrap.style.display = 'none';
   } else {
-    // Đã đăng ký nhưng chưa check-in (trường hợp hiếm, có thể xảy ra nếu user đăng ký từ nơi khác)
-    // Vẫn hiện nút "Đăng ký & Check In" để user có thể check-in
+    // Đã đăng ký nhưng chưa check-in
     statusLine.innerHTML = `<span class="badge badge-info" style="font-size:12px;">${icon('mapPin', 'xs')} Đã đăng ký — sẵn sàng check in</span>${infoLine}`;
+    if (btnIn) { btnIn.disabled = false; btnIn.style.display = 'inline-flex'; btnIn.innerHTML = `${icon('clock3', 'sm')} <span>Check In</span>`; }
     btnOut.disabled = true;
     noteWrap.style.display = 'block';
     regWrap.style.display = 'block';
-    // Đổi nhãn nút thành "Check In" vì đã đăng ký rồi
-    const regBtn = document.getElementById('btn-register');
-    if (regBtn) regBtn.innerHTML = `${icon('clock3', 'sm')} <span>Check In</span>`;
   }
+
+  statusLine.querySelector('.btn-view-today-wfh-proof')?.addEventListener('click', () => {
+    viewProofModal(todayRecord.wfh_proof_url, todayRecord.wfh_proof_filename);
+  });
+  statusLine.querySelector('.btn-edit-today-wfh-proof')?.addEventListener('click', () => {
+    openWfhProofModal(todayRecord);
+  });
 }
 
-  // Register + checkin (combinend)
   // Register + Check In (combined)
 document.getElementById('btn-register').addEventListener('click', async () => {
   if (submitting) return;
@@ -447,25 +557,41 @@ document.getElementById('btn-register').addEventListener('click', async () => {
     const en = document.getElementById('att-exp-end').value;
     if (!s || !en) { toast('Vui lòng nhập giờ dự kiến', 'error'); return; }
   }
+  if (needsRegistration && regWorkType === 'wfh') {
+    const wfhReason = document.getElementById('att-wfh-reason')?.value?.trim();
+    if (!wfhReason) {
+      toast('Vui lòng nhập lý do làm việc tại nhà (WFH)', 'error');
+      document.getElementById('att-wfh-reason')?.focus();
+      return;
+    }
+  }
 
   // Xác nhận
   const shiftLabel = resolvedShift() === 'full' ? 'Cả ngày' : resolvedShift() === 'morning' ? 'Ca sáng' : 'Ca chiều';
   const workTypeLabel = WORK_TYPE_LABEL[regWorkType] || regWorkType;
   const actionLabel = needsRegistration ? 'Đăng ký & Check In' : 'Check In';
   const confirmMsg = needsRegistration
-    ? `Xác nhận ${actionLabel}?\n\nHình thức: ${workTypeLabel}\nCa làm: ${shiftLabel}`
+    ? `Xác nhận ${actionLabel}?\n\nHình thức: ${workTypeLabel}\nCa làm: ${shiftLabel}${regWorkType === 'wfh' ? '\n(Yêu cầu WFH sẽ được gửi cho HR/Quản lý phê duyệt)' : ''}`
     : `Xác nhận Check In lúc này?`;
   if (!confirm(confirmMsg)) return;
 
-  submitting = true; btn.disabled = true; const oldText = btn.textContent; btn.textContent = 'Đang xử lý...';
+  submitting = true; btn.disabled = true; btn.textContent = 'Đang xử lý...';
   try {
     if (needsRegistration) {
       // Bước 1: Đăng ký
+      const wfhReason = regWorkType === 'wfh' ? document.getElementById('att-wfh-reason')?.value?.trim() : undefined;
+      const wfhProofUrl = regWorkType === 'wfh' ? (document.getElementById('att-wfh-proof-url')?.value?.trim() || pendingWfhProof?.file_url || undefined) : undefined;
+      const wfhProofFilename = regWorkType === 'wfh' ? (pendingWfhProof?.filename || undefined) : undefined;
+      const wfhProofDocId = regWorkType === 'wfh' ? (pendingWfhProof?.document_id || undefined) : undefined;
       await api.registerAttendance({
         work_type: regWorkType,
         shift: resolvedShift(),
         expected_start: regWorkType === 'business' ? document.getElementById('att-exp-start').value : undefined,
         expected_end: regWorkType === 'business' ? document.getElementById('att-exp-end').value : undefined,
+        wfh_reason: wfhReason,
+        wfh_proof_url: wfhProofUrl,
+        wfh_proof_filename: wfhProofFilename,
+        wfh_proof_document_id: wfhProofDocId,
         note: document.getElementById('att-reg-note')?.value || '',
       });
     }
@@ -481,8 +607,6 @@ document.getElementById('btn-register').addEventListener('click', async () => {
       const dist = Math.round(Number(result.distance_meters ?? gf?.location?.distance_meters) || 0);
       const lim = Math.round(Number(gf?.location?.radius_meters) || 0);
       toast(`Check-in đã được ghi nhận · Bạn đang ngoài phạm vi ${gf?.location?.name || 'văn phòng'} — Khoảng cách: ${dist} m · Bán kính cho phép: ${lim} m — Lượt chấm công này sẽ được gửi để quản trị viên xem xét.`, 'warning', 6500);
-    } else if (result.requires_location_review) {
-      toast(`Check-in đã được ghi nhận · Vị trí đang ở sát biên hoặc độ chính xác GPS chưa đủ — Lượt chấm công này sẽ được gửi để quản trị viên xem xét.`, 'warning', 6500);
     } else {
       toast(needsRegistration ? 'Đăng ký & Check In thành công!' : 'Check in thành công!', 'success');
     }
@@ -490,8 +614,10 @@ document.getElementById('btn-register').addEventListener('click', async () => {
     loadHistory();
   } catch(e) {
     toast(e.message || 'Lỗi', 'error');
+    btn.disabled = false;
+    btn.innerHTML = `${icon('clock3', 'sm')} <span>${actionLabel}</span>`;
   } finally {
-    submitting = false; btn.disabled = false; btn.textContent = oldText;
+    submitting = false;
   }
 });
 
@@ -535,11 +661,16 @@ document.getElementById('btn-register').addEventListener('click', async () => {
       const pageData = paginateRows(forms, otFormPage);
       otFormPage = pageData.page;
       list.innerHTML = pageData.rows.length ? `<div class="table-wrap"><table><thead><tr><th>Nhân viên</th><th>Thời gian & lý do</th><th>Đề nghị / duyệt</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>${pageData.rows.map(form => {
-        const detail = form.items.map(item => `${esc(item.start_at.replace('T', ' '))} → ${esc(item.end_at.replace('T', ' '))}<br><small>${esc(item.reason)} · ${item.time_category === 'holiday' ? 'Ngày lễ' : item.time_category === 'rest_day' ? 'Ngày nghỉ' : 'Ngày thường'}</small>`).join('<hr style="border:0;border-top:1px solid var(--border);margin:7px 0">');
+        const detail = form.items.map(item => `
+          <div class="ot-item-cell" style="display:flex;flex-direction:column;gap:3px;max-width:380px;">
+            <div style="font-weight:600;font-size:12.5px;color:var(--text);">${esc(item.start_at.replace('T', ' '))} → ${esc(item.end_at.replace('T', ' '))}</div>
+            <div style="font-size:12px;color:var(--text-2);line-height:1.4;">${esc(item.reason)} · <span class="badge badge-gray" style="font-size:11px;padding:1px 6px;">${item.time_category === 'holiday' ? 'Ngày lễ' : item.time_category === 'rest_day' ? 'Ngày nghỉ' : 'Ngày thường'}</span></div>
+          </div>
+        `).join('<hr style="border:0;border-top:1px solid var(--border);margin:7px 0">');
         const minutes = `${(Number(form.requested_minutes || 0) / 60).toFixed(2)}h${form.status !== 'draft' ? ` / ${(Number(form.approved_minutes || 0) / 60).toFixed(2)}h` : ''}`;
         const canDecide = canManageAttendance && form.status === 'pending';
         const canSubmit = Number(form.user_id) === Number(me.id) && form.status === 'draft';
-        return `<tr><td><b>${esc(form.full_name)}</b><br><small>${esc(form.employee_code || '')}</small></td><td style="min-width:260px">${detail}</td><td>${minutes}</td><td>${formStatus(form.status)}${form.review_note ? `<br><small>${esc(form.review_note)}</small>` : ''}</td><td>${canDecide ? `<button class="btn-secondary btn-sm ot-form-decide" data-id="${form.id}">Duyệt</button>` : ''}${canSubmit ? `<button class="btn-primary btn-sm ot-form-submit" data-id="${form.id}">Gửi</button>` : ''}${form.reviewer_name ? `<small>${esc(form.reviewer_name)}</small>` : ''}</td></tr>`;
+        return `<tr><td><b>${esc(form.full_name)}</b><br><small style="color:var(--text-2);font-size:11.5px;">${esc(form.employee_code || '')}</small></td><td>${detail}</td><td><strong>${minutes}</strong></td><td>${formStatus(form.status)}${form.review_note ? `<br><small style="color:var(--text-2);">${esc(form.review_note)}</small>` : ''}</td><td>${canDecide ? `<button class="btn-secondary btn-sm ot-form-decide" data-id="${form.id}">Duyệt</button>` : ''}${canSubmit ? `<button class="btn-primary btn-sm ot-form-submit" data-id="${form.id}">Gửi</button>` : ''}${form.reviewer_name ? `<small style="color:var(--text-2);display:block;margin-top:2px;">${esc(form.reviewer_name)}</small>` : ''}</td></tr>`;
       }).join('')}</tbody></table></div>${paginationHTML(pageData)}` : emptyHTML('fileText', 'Chưa có form làm thêm giờ trong kỳ này');
       bindPagination(list, page => { otFormPage = page; loadOvertimeForms(); });
       list.querySelectorAll('.ot-form-decide').forEach(button => button.addEventListener('click', () => openOvertimeFormDecision(Number(button.dataset.id))));
@@ -645,6 +776,206 @@ document.getElementById('btn-register').addEventListener('click', async () => {
     };
   }
 
+  function viewProofModal(url, filename) {
+    if (!url) return;
+    const isImage = /\.(jpeg|jpg|png|webp|gif)($|\?)/i.test(url) || /\/wfh-proof\/[0-9a-fA-F-]+$/i.test(url);
+    const isPdf = /\.pdf($|\?)/i.test(url);
+    const isExternal = /^https?:\/\//i.test(url) && !url.includes(location.host);
+
+    if (isExternal) {
+      window.open(url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+
+    openModal(`Minh chứng WFH: ${esc(filename || 'Tài liệu')}`, `
+      <div style="text-align:center;max-height:70vh;overflow:auto;padding:10px;">
+        ${isPdf
+          ? `<iframe src="${esc(url)}" style="width:100%;height:500px;border:none;border-radius:6px;"></iframe>`
+          : `<img src="${esc(url)}" alt="Minh chứng" style="max-width:100%;max-height:65vh;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.15);" onerror="this.outerHTML='<p style=\\'color:var(--text-2)\\'>Không thể hiển thị ảnh trực tiếp. <a href=\\'${esc(url)}\\' target=\\'_blank\\' class=\\'btn-secondary btn-sm\\' style=\\'margin-top:8px;display:inline-block;\\'>Mở trong tab mới</a></p>'"/>`
+        }
+      </div>
+    `, `<a href="${esc(url)}" target="_blank" download="${esc(filename || 'minh-chung')}" class="btn-secondary">${icon('download', 'xs')} <span>Tải xuống</span></a><button class="btn-primary" id="wfh-proof-close">Đóng</button>`);
+    document.getElementById('wfh-proof-close')?.addEventListener('click', closeModal);
+  }
+
+  function openWfhProofModal(record) {
+    if (!record) return;
+    let newUploadProof = null;
+    const isReapplying = record.wfh_status === 'rejected';
+    openModal(
+      isReapplying ? `Bổ sung giải trình WFH - Ngày ${record.date}` : `Cập nhật minh chứng WFH - Ngày ${record.date}`,
+      `
+        ${isReapplying ? `<div class="alert alert-warning" style="margin-bottom:12px;font-size:12.5px;padding:8px 12px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);border-radius:6px;color:#fef08a;">
+          ${icon('triangleAlert', 'xs')} <b>Đơn này đã bị từ chối</b>: ${esc(record.wfh_review_note || 'Chưa rõ lý do')}. Bạn có thể cập nhật lại lý do và bổ sung minh chứng để gửi HR xem xét lại.
+        </div>` : ''}
+        <div class="field" style="margin-bottom:10px;">
+          <label style="font-weight:600;">Lý do WFH *</label>
+          <textarea id="modal-wfh-reason" rows="3" placeholder="Nhập lý do làm việc tại nhà..." style="width:100%;padding:8px 10px;border-radius:6px;">${esc(record.wfh_reason || '')}</textarea>
+        </div>
+        <div class="field" style="margin-bottom:10px;">
+          <label style="font-weight:600;">Minh chứng đính kèm</label>
+          ${record.wfh_proof_url ? `
+            <div style="margin-bottom:6px;font-size:12px;">
+              Đang có: <button type="button" class="btn-secondary btn-xs" id="modal-wfh-view-current">${icon('paperclip', 'xs')} <span>Xem tệp hiện tại (${esc(record.wfh_proof_filename || 'Tài liệu')})</span></button>
+            </div>
+          ` : ''}
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <label class="btn-secondary btn-sm" style="cursor:pointer;margin:0;display:inline-flex;align-items:center;gap:4px;">
+              ${icon('upload', 'xs')} <span id="modal-wfh-file-label">Tải lên tệp mới</span>
+              <input type="file" id="modal-wfh-file" accept="image/*,application/pdf" style="display:none;"/>
+            </label>
+            <input type="text" id="modal-wfh-proof-url" value="${esc(record.wfh_proof_url || '')}" placeholder="Hoặc dán link tài liệu..." style="flex:1;min-width:180px;padding:6px 10px;border-radius:6px;"/>
+          </div>
+          <div id="modal-wfh-hint" style="display:none;font-size:11.5px;color:var(--success);margin-top:4px;"></div>
+        </div>
+      `,
+      `<button class="btn-secondary" id="modal-wfh-cancel">Hủy</button><button class="btn-primary" id="modal-wfh-save">${isReapplying ? 'Gửi duyệt lại' : 'Lưu thay đổi'}</button>`
+    );
+    document.getElementById('modal-wfh-cancel')?.addEventListener('click', closeModal);
+    document.getElementById('modal-wfh-view-current')?.addEventListener('click', () => {
+      viewProofModal(record.wfh_proof_url, record.wfh_proof_filename);
+    });
+    document.getElementById('modal-wfh-file')?.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const label = document.getElementById('modal-wfh-file-label');
+      const hint = document.getElementById('modal-wfh-hint');
+      if (label) label.textContent = 'Đang tải lên...';
+      try {
+        const res = await api.uploadWfhProof(file);
+        newUploadProof = res;
+        if (label) label.textContent = 'Đổi tệp';
+        if (hint) {
+          hint.style.display = 'block';
+          hint.innerHTML = `${icon('circleCheck', 'xs')} Đã tải lên: <b>${esc(res.filename)}</b>`;
+        }
+        toast('Đã tải minh chứng lên thành công', 'success');
+      } catch (err) {
+        if (label) label.textContent = 'Tải lên tệp mới';
+        toast(err.message || 'Lỗi tải tệp lên', 'error');
+      }
+    });
+    document.getElementById('modal-wfh-save')?.addEventListener('click', async () => {
+      const reason = document.getElementById('modal-wfh-reason')?.value.trim() || '';
+      if (!reason) { toast('Vui lòng nhập lý do WFH', 'error'); return; }
+      const proofUrl = newUploadProof?.file_url || document.getElementById('modal-wfh-proof-url')?.value.trim() || record.wfh_proof_url || null;
+      const proofFilename = newUploadProof?.filename || record.wfh_proof_filename || null;
+      const proofDocId = newUploadProof?.document_id || record.wfh_proof_document_id || null;
+      try {
+        await api.updateWfhProof(record.id, {
+          wfh_reason: reason,
+          wfh_proof_url: proofUrl,
+          wfh_proof_filename: proofFilename,
+          wfh_proof_document_id: proofDocId,
+        });
+        closeModal();
+        toast(isReapplying ? 'Đã gửi lại yêu cầu WFH để HR xem xét' : 'Đã cập nhật minh chứng WFH', 'success');
+        loadTodayStatus();
+        loadHistory();
+        if (canManageAttendance) loadWfhRequests();
+      } catch (err) {
+        toast(err.message || 'Không thể cập nhật', 'error');
+      }
+    });
+  }
+
+  async function loadWfhRequests() {
+    const list = document.getElementById('wfh-request-list');
+    if (!list) return;
+    try {
+      const month = document.getElementById('att-month-filter')?.value || closingMonth;
+      const status = document.getElementById('wfh-status-filter')?.value || '';
+      const { wfh_requests: rows = [] } = await api.getWfhRequests({ month, status });
+      list.innerHTML = rows.length ? `
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Nhân viên</th>
+                <th>Ngày & Ca</th>
+                <th>Check-in / Check-out</th>
+                <th>Giờ làm</th>
+                <th>Lý do WFH</th>
+                <th>Minh chứng</th>
+                <th>Trạng thái</th>
+                <th>Thao tác</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map(r => {
+                const shiftText = SHIFT_LABEL_SHORT[r.shift] || SHIFT_LABEL_SHORT.full;
+                const hoursText = r.work_hours ? `${Number(r.work_hours).toFixed(1)}h` : '—';
+                const inOutText = `${esc(r.checkin_time || '—')} / ${esc(r.checkout_time || '—')}`;
+                const proofHtml = r.wfh_proof_url
+                  ? `<button type="button" class="btn-secondary btn-xs btn-wfh-table-proof" data-url="${esc(r.wfh_proof_url)}" data-filename="${esc(r.wfh_proof_filename || 'Minh chứng')}" style="display:inline-flex;align-items:center;gap:4px;">${icon('paperclip', 'xs')} <span>Xem minh chứng</span></button>`
+                  : '<span style="color:var(--text-3);font-size:12px;">Không có</span>';
+                const statusBadgeHtml = r.wfh_status === 'pending'
+                  ? '<span class="badge badge-warning">Chờ duyệt</span>'
+                  : r.wfh_status === 'approved'
+                    ? `<span class="badge badge-success">Đã duyệt</span>${r.wfh_reviewer_name ? `<br><small style="color:var(--text-2);">${esc(r.wfh_reviewer_name)}</small>` : ''}`
+                    : `<span class="badge badge-danger">Từ chối</span>${r.wfh_review_note ? `<br><small style="color:var(--danger)">Lý do: ${esc(r.wfh_review_note)}</small>` : ''}`;
+                const actionHtml = r.wfh_status === 'pending'
+                  ? `<button class="btn-secondary btn-sm wfh-decide" data-id="${r.id}" data-action="approve">Duyệt</button> <button class="btn-danger btn-sm wfh-decide" data-id="${r.id}" data-action="reject">Từ chối</button>`
+                  : `<button class="btn-secondary btn-xs wfh-decide" data-id="${r.id}" data-action="${r.wfh_status === 'approved' ? 'reject' : 'approve'}" title="Đổi quyết định">${r.wfh_status === 'approved' ? 'Hủy duyệt' : 'Duyệt lại'}</button>`;
+                return `
+                  <tr>
+                    <td><b>${esc(r.full_name)}</b><br><small style="color:var(--text-2);font-size:11.5px;">${esc(r.employee_code || '')} · ${esc(r.department || '')}</small></td>
+                    <td style="white-space:nowrap;"><b>${esc(r.date)}</b><br><small style="color:var(--text-2);">${esc(shiftText)}</small></td>
+                    <td style="white-space:nowrap;">${inOutText}</td>
+                    <td><strong>${hoursText}</strong></td>
+                    <td style="max-width:240px;word-break:break-word;">${esc(r.wfh_reason || '—')}</td>
+                    <td>${proofHtml}</td>
+                    <td>${statusBadgeHtml}</td>
+                    <td style="white-space:nowrap;">${actionHtml}</td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      ` : emptyHTML('home', 'Không có yêu cầu duyệt WFH');
+      list.querySelectorAll('.btn-wfh-table-proof').forEach(btn => {
+        btn.addEventListener('click', () => viewProofModal(btn.dataset.url, btn.dataset.filename));
+      });
+      list.querySelectorAll('.wfh-decide').forEach(btn => {
+        btn.addEventListener('click', () => openWfhDecision(btn.dataset));
+      });
+    } catch (e) {
+      list.innerHTML = emptyHTML('triangleAlert', e.message || 'Không thể tải yêu cầu WFH');
+    }
+  }
+
+  function openWfhDecision(data) {
+    const approving = data.action === 'approve';
+    openModal(
+      approving ? 'Duyệt yêu cầu WFH' : 'Từ chối yêu cầu WFH',
+      `
+        <div class="field">
+          <label style="font-weight:600;">${approving ? 'Ghi chú phê duyệt (tuỳ chọn)' : 'Lý do từ chối *'}</label>
+          <textarea id="wfh-review-note" rows="3" placeholder="${approving ? 'Ghi chú thêm cho nhân viên nếu có...' : 'Nhập lý do từ chối yêu cầu WFH (bắt buộc)...'}"></textarea>
+        </div>
+      `,
+      `<button class="btn-secondary" id="wfh-decision-cancel">Hủy</button><button class="${approving ? 'btn-primary' : 'btn-danger'}" id="wfh-decision-confirm">${approving ? 'Phê duyệt WFH' : 'Từ chối WFH'}</button>`
+    );
+    document.getElementById('wfh-decision-cancel')?.addEventListener('click', closeModal);
+    document.getElementById('wfh-decision-confirm')?.addEventListener('click', async () => {
+      const review_note = document.getElementById('wfh-review-note')?.value.trim() || '';
+      if (!approving && !review_note) {
+        toast('Vui lòng nhập lý do từ chối WFH', 'error');
+        return;
+      }
+      try {
+        await api.decideWfhRequest(data.id, { action: data.action, review_note });
+        closeModal();
+        toast(approving ? 'Đã duyệt yêu cầu WFH' : 'Đã từ chối yêu cầu WFH', 'success');
+        loadWfhRequests();
+        loadHistory();
+      } catch (e) {
+        toast(e.message || 'Không thể xử lý yêu cầu WFH', 'error');
+      }
+    });
+  }
+
   async function loadOvertimeRequests() {
     const list = document.getElementById('ot-request-list');
     if (!list) return;
@@ -668,16 +999,17 @@ document.getElementById('btn-register').addEventListener('click', async () => {
       catch (e) { toast(e.message || 'Không thể xử lý yêu cầu OT', 'error'); }
     });
   }
+  document.getElementById('wfh-status-filter')?.addEventListener('change', loadWfhRequests);
   document.getElementById('ot-status-filter')?.addEventListener('change', loadOvertimeRequests);
   document.getElementById('btn-create-ot-form')?.addEventListener('click', openOvertimeFormCreator);
   document.getElementById('btn-import-att')?.addEventListener('click', openHistoricalImport);
-  if (canManageAttendance) loadOvertimeRequests();
+  if (canManageAttendance) { loadOvertimeRequests(); loadWfhRequests(); }
   loadOvertimeForms();
 
 
 
   // Month filter
-  document.getElementById('att-month-filter').addEventListener('change', () => { historyPage = 1; otFormPage = 1; loadHistory(); loadOvertimeForms(); if (canManageAttendance) loadOvertimeRequests(); });
+  document.getElementById('att-month-filter').addEventListener('change', () => { historyPage = 1; otFormPage = 1; loadHistory(); loadOvertimeForms(); if (canManageAttendance) { loadOvertimeRequests(); loadWfhRequests(); } });
   document.getElementById('att-date-filter')?.addEventListener('change', () => { historyPage = 1; loadHistory(); });
   document.getElementById('att-search')?.addEventListener('input', () => { historyPage = 1; loadHistory(); });
   document.getElementById('att-dept-filter')?.addEventListener('change', () => { historyPage = 1; loadHistory(); });
@@ -1078,10 +1410,20 @@ document.getElementById('btn-register').addEventListener('click', async () => {
               ${pageData.rows.map(a => {
                 const checkinValid = a.checkin_time && a.late_minutes === 0;
                 const checkoutValid = a.checkout_time && a.early_minutes === 0;
+                const wfhBadge = a.work_type === 'wfh'
+                  ? (a.wfh_status === 'approved'
+                      ? `<br><span class="badge badge-success" style="font-size:10px;padding:2px 6px;margin-top:2px;display:inline-block;" title="${esc(a.wfh_review_note ? `Ghi chú: ${a.wfh_review_note}` : 'Đã duyệt')}">${icon('circleCheck', 'xs')} Đã duyệt${a.wfh_reviewer_name ? ` · ${esc(a.wfh_reviewer_name)}` : ''}</span>`
+                      : a.wfh_status === 'rejected'
+                        ? `<br><span class="badge badge-danger" style="font-size:10px;padding:2px 6px;margin-top:2px;display:inline-block;" title="Lý do: ${esc(a.wfh_review_note || '')}">${icon('circleX', 'xs')} Từ chối${a.wfh_review_note ? ` · ${esc(a.wfh_review_note)}` : ''}</span><br><button type="button" class="btn-secondary btn-xs btn-history-wfh-proof" data-id="${a.id}" style="margin-top:2px;font-size:10px;padding:1px 5px;">Bổ sung giải trình</button>`
+                        : `<br><span class="badge badge-warning" style="font-size:10px;padding:2px 6px;margin-top:2px;display:inline-block;">${icon('hourglass', 'xs')} Chờ duyệt</span>`)
+                  : '';
+                const wfhProofLink = (a.work_type === 'wfh' && a.wfh_proof_url)
+                  ? `<br><button type="button" class="btn-secondary btn-xs btn-history-view-proof" data-url="${esc(a.wfh_proof_url)}" data-filename="${esc(a.wfh_proof_filename || 'Minh chứng')}" style="margin-top:2px;font-size:10px;padding:1px 5px;display:inline-flex;align-items:center;gap:2px;">${icon('paperclip', 'xs')} <span>Xem minh chứng</span></button>`
+                  : '';
                 return `
                 <tr>
                   <td style="white-space:nowrap">${esc(a.date)}</td>
-                  <td style="white-space:nowrap">${esc((WORK_TYPE_LABEL[a.work_type] || WORK_TYPE_LABEL.office))}</td>
+                  <td style="white-space:nowrap"><b>${esc((WORK_TYPE_LABEL[a.work_type] || WORK_TYPE_LABEL.office))}</b>${wfhBadge}${wfhProofLink}</td>
                   <td style="white-space:nowrap">${esc(SHIFT_LABEL_SHORT[a.shift] || SHIFT_LABEL_SHORT.full)}${a.work_type === 'business' ? `<br><span style="font-size:11px;color:var(--text-2)">${esc(a.expected_start||'—')}–${esc(a.expected_end||'—')}</span>` : ''}</td>
                   <td>${timeCell(a.checkin_time, checkinValid)}</td>
                   <td>${timeCell(a.checkout_time, checkoutValid)}${Number(a.auto_checkout) ? '<br><span class="att-quen-checkout-tag">Tự động checkout</span>' : ''}</td>
@@ -1096,6 +1438,15 @@ document.getElementById('btn-register').addEventListener('click', async () => {
         </div>
         ${paginationHTML(pageData)}
       `;
+      listEl.querySelectorAll('.btn-history-view-proof').forEach(btn => {
+        btn.addEventListener('click', () => viewProofModal(btn.dataset.url, btn.dataset.filename));
+      });
+      listEl.querySelectorAll('.btn-history-wfh-proof').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const rec = filteredAttendance.find(x => String(x.id) === String(btn.dataset.id));
+          if (rec) openWfhProofModal(rec);
+        });
+      });
       bindPagination(listEl, page => { historyPage = page; loadHistory(); });
     } catch(e) {
       listEl.innerHTML = emptyHTML('triangleAlert', e.message);
@@ -1157,8 +1508,11 @@ document.getElementById('btn-register').addEventListener('click', async () => {
           const checkoutValid = r.checkout_time && r.early_minutes === 0;
           // Location-review (ngoài phạm vi GPS) indicator + admin action.
           let locReviewHtml = '';
-          if (Number(r.checkin_requires_review) && r.checkin_review_status !== 'approved' && r.checkin_review_status !== 'rejected') {
-            locReviewHtml = `<div class="att-loc-review att-loc-review--pending"><span>${icon('triangleAlert', 'xs')} Ngoài phạm vi · Cần xem xét</span><br><small>${Math.round(Number(r.checkin_distance_meters) || 0)} m / giới hạn ${Math.round(Number(r.checkin_office_radius) || 0)} m${r.checkin_accuracy_meters != null ? ` · GPS ±${Math.round(Number(r.checkin_accuracy_meters))} m` : ''}</small></div>`;
+          const radiusLimit = Number(r.checkin_office_radius) || 150;
+          const distMeters = r.checkin_distance_meters != null ? Number(r.checkin_distance_meters) : null;
+          const isStrictlyOutside = distMeters != null ? distMeters > radiusLimit : true;
+          if (Number(r.checkin_requires_review) && isStrictlyOutside && r.checkin_review_status !== 'approved' && r.checkin_review_status !== 'rejected') {
+            locReviewHtml = `<div class="att-loc-review att-loc-review--pending"><span>${icon('triangleAlert', 'xs')} Ngoài phạm vi · Cần xem xét</span><br><small>${Math.round(distMeters || 0)} m / giới hạn ${Math.round(radiusLimit)} m${r.checkin_accuracy_meters != null ? ` · GPS ±${Math.round(Number(r.checkin_accuracy_meters))} m` : ''}</small></div>`;
           } else if (r.checkin_review_status === 'approved') {
             locReviewHtml = `<div class="att-loc-review att-loc-review--approved"><span>${icon('circleCheck', 'xs')} Đã xác nhận vị trí</span></div>`;
           } else if (r.checkin_review_status === 'rejected') {
@@ -1166,11 +1520,26 @@ document.getElementById('btn-register').addEventListener('click', async () => {
           }
           const actions = [];
           if (isManager) actions.push(`<button class="btn-icon att-summary-edit" data-id="${r.id}" data-checkin="${esc(r.checkin_time || '')}" data-checkout="${esc(r.checkout_time || '')}" data-status="${esc(r.status)}" data-note="${esc(r.note || '')}" data-work-type="${esc(r.work_type || 'office')}" data-shift="${esc(r.shift || 'full')}" data-expected-start="${esc(r.expected_start || '')}" data-expected-end="${esc(r.expected_end || '')}" title="Sửa">${icon('pencil', 'xs')}</button>`);
-          if (isManager && Number(r.checkin_requires_review) && r.checkin_review_status !== 'approved' && r.checkin_review_status !== 'rejected') {
+          if (isManager && Number(r.checkin_requires_review) && isStrictlyOutside && r.checkin_review_status !== 'approved' && r.checkin_review_status !== 'rejected') {
             actions.push(`<button class="btn-secondary btn-xs att-review-btn" data-id="${r.id}" data-decision="approved" style="display:inline-flex;align-items:center;gap:4px;">${icon('check', 'xs')} <span>Xác nhận</span></button><button class="btn-danger btn-xs att-review-btn" data-id="${r.id}" data-decision="rejected" style="display:inline-flex;align-items:center;gap:4px;">${icon('x', 'xs')} <span>Không hợp lệ</span></button>`);
           }
-          return `<tr><td>${esc(r.date)}</td><td>${esc(new Date(r.date + 'T00:00:00').toLocaleDateString('vi-VN', { weekday: 'short' }))}</td><td>${esc(WORK_TYPE_LABEL[r.work_type] || WORK_TYPE_LABEL.office)}</td><td>${esc(SHIFT_LABEL_SHORT[r.shift] || SHIFT_LABEL_SHORT.full)}</td><td>${timeCell(r.checkin_time, checkinValid)}</td><td>${timeCell(r.checkout_time, checkoutValid)}</td><td>${r.work_hours ? Number(r.work_hours).toFixed(1) + 'h' : '—'}</td><td>${r.late_minutes ? r.late_minutes + 'p' : '—'}</td><td>${r.early_minutes ? r.early_minutes + 'p' : '—'}</td><td>${displayStatus}${locReviewHtml}</td><td>${formatAttendanceNote(r.note)}</td>${isManager ? `<td style="white-space:nowrap">${actions.join(' ')}</td>` : ''}</tr>`;
+          let wfhDetailHtml = '';
+          if (r.work_type === 'wfh') {
+            const st = r.wfh_status || 'approved';
+            const badge = st === 'approved'
+              ? `<span class="badge badge-success" style="font-size:10px;padding:1px 5px;" title="${esc(r.wfh_review_note ? `Ghi chú: ${r.wfh_review_note}` : 'Đã duyệt')}">${icon('circleCheck', 'xs')} Đã duyệt${r.wfh_reviewer_name ? ` · ${esc(r.wfh_reviewer_name)}` : ''}</span>`
+              : st === 'rejected'
+                ? `<span class="badge badge-danger" style="font-size:10px;padding:1px 5px;" title="Lý do: ${esc(r.wfh_review_note || '')}">${icon('circleX', 'xs')} Từ chối${r.wfh_review_note ? ` · ${esc(r.wfh_review_note)}` : ''}</span>`
+                : `<span class="badge badge-warning" style="font-size:10px;padding:1px 5px;">${icon('hourglass', 'xs')} Chờ duyệt</span>`;
+            const proofBtn = r.wfh_proof_url
+              ? `<br><button type="button" class="btn-secondary btn-xs btn-summary-view-proof" data-url="${esc(r.wfh_proof_url)}" data-filename="${esc(r.wfh_proof_filename || 'Minh chứng')}" style="margin-top:2px;font-size:10px;padding:1px 5px;display:inline-flex;align-items:center;gap:2px;">${icon('paperclip', 'xs')} <span>Xem minh chứng</span></button>`
+              : '';
+            const reasonLine = r.wfh_reason ? `<small style="display:block;color:var(--text-2);font-size:11px;max-width:160px;white-space:normal;line-height:1.2;margin-top:2px;">Lý do: ${esc(r.wfh_reason)}</small>` : '';
+            wfhDetailHtml = `<div style="margin-top:2px;">${badge}${proofBtn}${reasonLine}</div>`;
+          }
+          return `<tr><td>${esc(r.date)}</td><td>${esc(new Date(r.date + 'T00:00:00').toLocaleDateString('vi-VN', { weekday: 'short' }))}</td><td><b>${esc(WORK_TYPE_LABEL[r.work_type] || WORK_TYPE_LABEL.office)}</b>${wfhDetailHtml}</td><td>${esc(SHIFT_LABEL_SHORT[r.shift] || SHIFT_LABEL_SHORT.full)}</td><td>${timeCell(r.checkin_time, checkinValid)}</td><td>${timeCell(r.checkout_time, checkoutValid)}</td><td>${r.work_hours ? Number(r.work_hours).toFixed(1) + 'h' : '—'}</td><td>${r.late_minutes ? r.late_minutes + 'p' : '—'}</td><td>${r.early_minutes ? r.early_minutes + 'p' : '—'}</td><td>${displayStatus}${locReviewHtml}</td><td>${formatAttendanceNote(r.note)}</td>${isManager ? `<td style="white-space:nowrap">${actions.join(' ')}</td>` : ''}</tr>`;
         }).join('') : `<tr><td colspan="${isManager ? 12 : 11}" class="att-summary-empty">Không có bản ghi phù hợp.</td></tr>`;
+        document.querySelectorAll('.btn-summary-view-proof').forEach(btn => btn.addEventListener('click', () => viewProofModal(btn.dataset.url, btn.dataset.filename)));
         document.querySelectorAll('.att-summary-edit').forEach(btn => btn.addEventListener('click', () => openEditAttModal(btn.dataset)));
         document.querySelectorAll('.att-review-btn').forEach(btn => btn.addEventListener('click', async () => {
           const aid = btn.dataset.id; const decision = btn.dataset.decision;
@@ -1413,8 +1782,8 @@ document.getElementById('btn-register').addEventListener('click', async () => {
       loadHistory();
       loadGeoPanel();
       if (canManageAttendance) {
-        loadAttendanceCompliance();
         loadOvertimeRequests();
+        loadWfhRequests();
       }
     }, 250);
   }
@@ -1432,8 +1801,8 @@ document.getElementById('btn-register').addEventListener('click', async () => {
     loadTodayStatus(),
     loadHistory(),
     loadGeoPanel(),
-    loadAttendanceCompliance(),
     canManageAttendance ? loadOvertimeRequests() : Promise.resolve(),
+    canManageAttendance ? loadWfhRequests() : Promise.resolve(),
     loadOvertimeForms(),
   ]);
   if (routeEmployeeId && (canManageAttendance || routeEmployeeId === Number(me.id))) {

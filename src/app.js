@@ -17,14 +17,14 @@ async function getView(name) {
     if (name === 'dashboard')    _viewModules[name] = await import('./views/dashboard.js?v=20260817-dash-geo-v1');
     else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js?v=20260817-att-map-v1');
     else if (name === 'tasks')       _viewModules[name] = await import('./views/tasks.js?v=20260826-project-members-picker-v7');
-    else if (name === 'invoices')    _viewModules[name] = await import('./views/invoices.js?v=20260730-payslip-detail-v1');
+    else if (name === 'invoices')    _viewModules[name] = await import('./views/invoices.js?v=20260916-invoice-export-fix-v2');
     else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260826-leave-annual-policy-v6');
     else if (name === 'wifi')        _viewModules[name] = await import('./views/wifi.js?v=20260817-geofence-soft-v1');
     else if (name === 'settings')    _viewModules[name] = await import('./views/settings.js?v=20260826-webpush-lockscreen-v25');
     else if (name === 'taskpanel')   _viewModules[name] = await import('./views/taskpanel.js?v=20260826-taskpanel-mention-fix-v10');
     else if (name === 'departments') _viewModules[name] = await import('./views/departments.js');
     else if (name === 'recruitment') _viewModules[name] = await import('./views/recruitment.js');
-    else if (name === 'payroll')     _viewModules[name] = await import('./views/payroll.js?v=20260903-fix-v1');
+    else if (name === 'payroll')     _viewModules[name] = await import('./views/payroll.js?v=20260916-excel-payroll-v5');
     else if (name === 'leave')       _viewModules[name] = await import('./views/leave.js?v=20260826-leave-annual-policy-v6');
     else if (name === 'campaigns')   _viewModules[name] = await import('./views/campaigns.js?v=20260811-hr-access-v1');
     else if (name === 'evaluation')  _viewModules[name] = await import('./views/evaluation.js?v=20260903-fix-v1');
@@ -184,6 +184,48 @@ async function _doRefreshEmployeeAlertBadge() {
     if (bottomBadge) bottomBadge.classList.add('hidden');
   } finally {
     _alertBadgeInFlight = false;
+  }
+}
+
+let _announcementBadgeInFlight = false;
+let _announcementBadgeTimer = null;
+let _lastAnnouncementUnreadCount = null;
+
+export function refreshAnnouncementBadge(immediate = false) {
+  if (_announcementBadgeTimer) clearTimeout(_announcementBadgeTimer);
+  if (immediate) {
+    _doRefreshAnnouncementBadge();
+  } else {
+    _announcementBadgeTimer = setTimeout(_doRefreshAnnouncementBadge, 150);
+  }
+}
+
+async function _doRefreshAnnouncementBadge() {
+  if (_announcementBadgeInFlight || !me) return;
+  _announcementBadgeInFlight = true;
+  const linkEl = document.getElementById('sidebar-announcements-link');
+  const badgeEl = document.getElementById('sidebar-announcement-badge');
+  try {
+    const { unread_count = 0 } = await api.getUnreadAnnouncementCount();
+    const count = Number(unread_count || 0);
+    if (_lastAnnouncementUnreadCount !== null && count > _lastAnnouncementUnreadCount) {
+      try { playTaskSound(); } catch (_) {}
+    }
+    _lastAnnouncementUnreadCount = count;
+
+    if (badgeEl) {
+      badgeEl.textContent = count > 99 ? '99+' : String(count);
+      badgeEl.classList.toggle('hidden', count < 1);
+    }
+    if (linkEl) {
+      linkEl.classList.toggle('nav-item-glowing', count > 0);
+      linkEl.setAttribute('title', count > 0 ? `Thông báo (${count} mới)` : 'Thông báo');
+    }
+  } catch (_) {
+    if (badgeEl) badgeEl.classList.add('hidden');
+    if (linkEl) linkEl.classList.remove('nav-item-glowing');
+  } finally {
+    _announcementBadgeInFlight = false;
   }
 }
 
@@ -349,6 +391,10 @@ function setupRealtimeBusListeners() {
   _realtimeUnsubs.push(EventBus.on('notifications', () => refreshEmployeeAlertBadge()));
   _realtimeUnsubs.push(EventBus.on('notification:*', () => refreshEmployeeAlertBadge()));
 
+  // Company announcements -> refresh announcement badge and glow effect
+  _realtimeUnsubs.push(EventBus.on('announcements', () => refreshAnnouncementBadge()));
+  _realtimeUnsubs.push(EventBus.on('announcement:*', () => refreshAnnouncementBadge()));
+
   // Tasks mutations -> refresh badges
   _realtimeUnsubs.push(EventBus.on('tasks', () => refreshTaskMentionBadge()));
   _realtimeUnsubs.push(EventBus.on('task:*', (data, topic) => {
@@ -464,6 +510,7 @@ function initApp() {
   renderSoundButton();
   refreshEmployeeAlertBadge();
   refreshTaskMentionBadge();
+  refreshAnnouncementBadge();
   if (!realtime.isConnected()) {
     const token = getToken();
     if (token) realtime.connect({ user: me, token });
@@ -634,6 +681,11 @@ async function route() {
   const routeKey = hash.replace('#/', '').replace(/^\/+|\/+$/g, '') || 'dashboard';
   const segments = routeKey.split('/').filter(Boolean);
   const path = segments[0] || 'dashboard';
+
+  if (path === 'departments' || path === 'recruitment' || path === 'campaigns') {
+    location.hash = '#/dashboard';
+    return;
+  }
 
   // 1. Immediately update active nav state (instant paint for INP < 16ms)
   document.querySelectorAll('.nav-item[data-nav]').forEach(link => {

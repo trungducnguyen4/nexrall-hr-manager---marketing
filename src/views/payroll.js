@@ -1,8 +1,9 @@
 import { api } from '../api.js?v=20260811-penalty-policy-v3';
 import { EventBus } from '../event-bus.js';
 import { esc, fmtMoney, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination, avatarColor, initials, isHcnsDepartment, sortVietnameseNames, compareVietnameseNames } from '../utils.js?v=20260811-hr-access-v1';
-import { payslipDetailHTML, hydratePayslipAttendance, preparePayslipModal } from './payslip-detail.js?v=20260804-inline-line-notes-v1';
+import { payslipDetailHTML, hydratePayslipAttendance, preparePayslipModal } from './payslip-detail.js?v=20260916-excel-payroll-v1';
 import { icon } from '../icons.js';
+import { parsePayrollExcelText } from '../excel-payroll-parser.js';
 
 function formatMonth(month) {
   if (!/^\d{4}-\d{2}$/.test(month || '')) return month || '';
@@ -108,11 +109,1013 @@ function payrollRowHTML(p) {
       <td class="payroll-col-dept" data-label="Phòng ban"><span class="payroll-dept">${esc(p.department || '—')}</span></td>
       <td class="payroll-col-money" data-label="Lương CB">${payrollMoney(p.base_salary, ready)}</td>
       <td class="payroll-col-money payroll-col-net" data-label="Thực lĩnh">${payrollMoney(net, ready)}</td>
-    </tr>
-  `;
+    </tr>`;
   payrollRowCache.set(p.id, { sig, html });
   if (payrollRowCache.size > 500) payrollRowCache.delete(payrollRowCache.keys().next().value);
   return html;
+}
+
+const fmtNum = (n) => (n ? Number(n).toLocaleString('vi-VN') : '-');
+const fmtM = (n) => (n ? fmtMoney(n) : '-');
+
+const PAYROLL_COLUMNS = [
+  // 1. THÔNG TIN NHÂN VIÊN (4 columns)
+  {
+    key: 'stt',
+    title: 'TT',
+    group: 'THÔNG TIN NHÂN VIÊN',
+    width: 44,
+    align: 'center',
+    sticky: true,
+    stickyLeft: 0,
+    colClass: 'col-stt',
+    render: (r, idx, pageData) => (pageData.page - 1) * pageData.pageSize + idx + 1,
+    renderTotal: () => '',
+  },
+  {
+    key: 'employee_name',
+    title: 'Họ và tên',
+    group: 'THÔNG TIN NHÂN VIÊN',
+    width: 180,
+    align: 'left',
+    sticky: true,
+    stickyLeft: 44,
+    colClass: 'col-name',
+    cellClass: 'font-semibold',
+    render: (r) => esc(r.employee_name || '—'),
+    renderTotal: (totals, rows) => `CỘNG TỔNG (${rows.length} NV)`,
+  },
+  {
+    key: 'employee_code',
+    title: 'Mã NV',
+    group: 'THÔNG TIN NHÂN VIÊN',
+    width: 90,
+    align: 'center',
+    sticky: true,
+    stickyLeft: 224,
+    colClass: 'col-code',
+    cellClass: 'font-mono',
+    render: (r) => esc(r.employee_code || '—'),
+    renderTotal: () => '',
+  },
+  {
+    key: 'department',
+    title: 'Phòng ban',
+    group: 'THÔNG TIN NHÂN VIÊN',
+    width: 130,
+    align: 'left',
+    sticky: true,
+    stickyLeft: 314,
+    colClass: 'col-dept',
+    render: (r) => esc(r.department || '—'),
+    renderTotal: () => '',
+  },
+
+  // 2. MỨC LƯƠNG & THƯỞNG HTCV (4 columns)
+  {
+    key: 'insurance_base',
+    title: 'Mức đóng BH',
+    group: 'MỨC LƯƠNG & THƯỞNG HTCV',
+    groupClass: 'th-group--salary',
+    width: 110,
+    align: 'right',
+    render: (r) => fmtM(r.insurance_base),
+    renderTotal: (totals) => fmtM(totals.insurance_base),
+  },
+  {
+    key: 'position_salary',
+    title: 'Lương vị trí',
+    group: 'MỨC LƯƠNG & THƯỞNG HTCV',
+    groupClass: 'th-group--salary',
+    width: 110,
+    align: 'right',
+    render: (r) => fmtM(r.position_salary),
+    renderTotal: (totals) => fmtM(totals.position_salary),
+  },
+  {
+    key: 'completion_bonus',
+    title: 'Thưởng HTCV',
+    group: 'MỨC LƯƠNG & THƯỞNG HTCV',
+    groupClass: 'th-group--salary',
+    width: 110,
+    align: 'right',
+    render: (r) => fmtM(r.completion_bonus),
+    renderTotal: (totals) => fmtM(totals.completion_bonus),
+  },
+  {
+    key: 'total_income_agreed',
+    title: 'Tổng thỏa thuận',
+    group: 'MỨC LƯƠNG & THƯỞNG HTCV',
+    groupClass: 'th-group--salary',
+    width: 125,
+    align: 'right',
+    headerClass: 'font-semibold',
+    cellClass: 'font-semibold',
+    render: (r) => fmtM(r.total_income_agreed || r.base_salary),
+    renderTotal: (totals) => fmtM(totals.total_income_agreed),
+  },
+
+  // 3. NGÀY CÔNG LÀM VIỆC (5 columns)
+  {
+    key: 'probation_days',
+    title: 'Công TV',
+    group: 'NGÀY CÔNG LÀM VIỆC',
+    groupClass: 'th-group--days',
+    width: 65,
+    align: 'center',
+    render: (r) => fmtNum(r.probation_days),
+    renderTotal: (totals) => fmtNum(totals.probation_days),
+  },
+  {
+    key: 'official_days',
+    title: 'Công CT',
+    group: 'NGÀY CÔNG LÀM VIỆC',
+    groupClass: 'th-group--days',
+    width: 65,
+    align: 'center',
+    render: (r) => fmtNum(r.official_days || r.work_days),
+    renderTotal: (totals) => fmtNum(totals.official_days),
+  },
+  {
+    key: 'paid_leave_days',
+    title: 'Nghỉ phép',
+    group: 'NGÀY CÔNG LÀM VIỆC',
+    groupClass: 'th-group--days',
+    width: 70,
+    align: 'center',
+    render: (r) => fmtNum(r.paid_leave_days),
+    renderTotal: (totals) => fmtNum(totals.paid_leave_days),
+  },
+  {
+    key: 'unpaid_leave_days',
+    title: 'Nghỉ KL',
+    group: 'NGÀY CÔNG LÀM VIỆC',
+    groupClass: 'th-group--days',
+    width: 65,
+    align: 'center',
+    render: (r) => fmtNum(r.unpaid_leave_days),
+    renderTotal: (totals) => fmtNum(totals.unpaid_leave_days),
+  },
+  {
+    key: 'work_income',
+    title: 'Thu nhập công',
+    group: 'NGÀY CÔNG LÀM VIỆC',
+    groupClass: 'th-group--days',
+    width: 120,
+    align: 'right',
+    render: (r) => fmtM(r.work_income),
+    renderTotal: (totals) => fmtM(totals.work_income),
+  },
+
+  // 4. LÀM THÊM GIỜ (OT) (5 columns)
+  {
+    key: 'ot_normal_hours',
+    title: 'Giờ thường',
+    group: 'LÀM THÊM GIỜ (OT)',
+    groupClass: 'th-group--ot',
+    width: 70,
+    align: 'center',
+    render: (r) => fmtNum(r.ot_normal_hours),
+    renderTotal: (totals) => fmtNum(totals.ot_normal_hours),
+  },
+  {
+    key: 'ot_weekend_hours',
+    title: 'Giờ nghỉ',
+    group: 'LÀM THÊM GIỜ (OT)',
+    groupClass: 'th-group--ot',
+    width: 70,
+    align: 'center',
+    render: (r) => fmtNum(r.ot_weekend_hours),
+    renderTotal: (totals) => fmtNum(totals.ot_weekend_hours),
+  },
+  {
+    key: 'ot_holiday_hours',
+    title: 'Giờ lễ',
+    group: 'LÀM THÊM GIỜ (OT)',
+    groupClass: 'th-group--ot',
+    width: 70,
+    align: 'center',
+    render: (r) => fmtNum(r.ot_holiday_hours),
+    renderTotal: (totals) => fmtNum(totals.ot_holiday_hours),
+  },
+  {
+    key: 'base_hourly_rate',
+    title: 'Đơn giá giờ',
+    group: 'LÀM THÊM GIỜ (OT)',
+    groupClass: 'th-group--ot',
+    width: 95,
+    align: 'right',
+    render: (r) => fmtM(r.base_hourly_rate),
+    renderTotal: () => '—',
+  },
+  {
+    key: 'ot_total_income',
+    title: 'Tiền OT',
+    group: 'LÀM THÊM GIỜ (OT)',
+    groupClass: 'th-group--ot',
+    width: 110,
+    align: 'right',
+    render: (r) => fmtM(r.ot_total_income || r.overtime_pay),
+    renderTotal: (totals) => fmtM(totals.ot_total_income),
+  },
+
+  // 5. PHỤ CẤP THEO QUY ĐỊNH (6 columns)
+  {
+    key: 'parking_allowance',
+    title: 'Gửi xe',
+    group: 'PHỤ CẤP THEO QUY ĐỊNH',
+    groupClass: 'th-group--allowance',
+    width: 85,
+    align: 'right',
+    render: (r) => fmtM(r.parking_allowance),
+    renderTotal: (totals) => fmtM(totals.parking_allowance),
+  },
+  {
+    key: 'fuel_allowance',
+    title: 'Xăng xe',
+    group: 'PHỤ CẤP THEO QUY ĐỊNH',
+    groupClass: 'th-group--allowance',
+    width: 85,
+    align: 'right',
+    render: (r) => fmtM(r.fuel_allowance),
+    renderTotal: (totals) => fmtM(totals.fuel_allowance),
+  },
+  {
+    key: 'phone_allowance',
+    title: 'Điện thoại',
+    group: 'PHỤ CẤP THEO QUY ĐỊNH',
+    groupClass: 'th-group--allowance',
+    width: 85,
+    align: 'right',
+    render: (r) => fmtM(r.phone_allowance),
+    renderTotal: (totals) => fmtM(totals.phone_allowance),
+  },
+  {
+    key: 'attire_allowance',
+    title: 'Trang phục',
+    group: 'PHỤ CẤP THEO QUY ĐỊNH',
+    groupClass: 'th-group--allowance',
+    width: 85,
+    align: 'right',
+    render: (r) => fmtM(r.attire_allowance),
+    renderTotal: (totals) => fmtM(totals.attire_allowance),
+  },
+  {
+    key: 'business_trip_allowance',
+    title: 'Công tác',
+    group: 'PHỤ CẤP THEO QUY ĐỊNH',
+    groupClass: 'th-group--allowance',
+    width: 85,
+    align: 'right',
+    render: (r) => fmtM(r.business_trip_allowance),
+    renderTotal: (totals) => fmtM(totals.business_trip_allowance),
+  },
+  {
+    key: 'total_allowance',
+    title: 'Tổng PC',
+    group: 'PHỤ CẤP THEO QUY ĐỊNH',
+    groupClass: 'th-group--allowance',
+    width: 110,
+    align: 'right',
+    headerClass: 'font-semibold',
+    cellClass: 'font-semibold',
+    render: (r) => fmtM(r.total_allowance || r.allowance),
+    renderTotal: (totals) => fmtM(totals.total_allowance),
+  },
+
+  // 6. THU NHẬP TRƯỚC THUẾ (3 columns)
+  {
+    key: 'total_income_with_allowance',
+    title: 'Tổng TN & PC',
+    group: 'THU NHẬP TRƯỚC THUẾ',
+    groupClass: 'th-group--pretax',
+    width: 125,
+    align: 'right',
+    render: (r) => fmtM(r.total_income_with_allowance),
+    renderTotal: (totals) => fmtM(totals.total_income_with_allowance),
+  },
+  {
+    key: 'kpi_bonus',
+    title: 'Thưởng KPI',
+    group: 'THU NHẬP TRƯỚC THUẾ',
+    groupClass: 'th-group--pretax',
+    width: 105,
+    align: 'right',
+    render: (r) => fmtM(r.kpi_bonus),
+    renderTotal: (totals) => fmtM(totals.kpi_bonus),
+  },
+  {
+    key: 'total_pretax_income',
+    title: 'Tổng TN trước thuế',
+    group: 'THU NHẬP TRƯỚC THUẾ',
+    groupClass: 'th-group--pretax',
+    width: 135,
+    align: 'right',
+    headerClass: 'font-bold',
+    cellClass: 'font-bold',
+    render: (r) => fmtM(r.total_pretax_income),
+    renderTotal: (totals) => fmtM(totals.total_pretax_income),
+  },
+
+  // 7. CÁC KHOẢN ĐÓNG GÓP NLĐ (4 columns)
+  {
+    key: 'insurance_social',
+    title: 'BHXH (8%)',
+    group: 'CÁC KHOẢN ĐÓNG GÓP NLĐ',
+    groupClass: 'th-group--insurance',
+    width: 95,
+    align: 'right',
+    render: (r) => fmtM(r.insurance_social),
+    renderTotal: (totals) => fmtM(totals.insurance_social),
+  },
+  {
+    key: 'insurance_health',
+    title: 'BHYT (1.5%)',
+    group: 'CÁC KHOẢN ĐÓNG GÓP NLĐ',
+    groupClass: 'th-group--insurance',
+    width: 95,
+    align: 'right',
+    render: (r) => fmtM(r.insurance_health),
+    renderTotal: (totals) => fmtM(totals.insurance_health),
+  },
+  {
+    key: 'insurance_unemployment',
+    title: 'BHTN (1%)',
+    group: 'CÁC KHOẢN ĐÓNG GÓP NLĐ',
+    groupClass: 'th-group--insurance',
+    width: 95,
+    align: 'right',
+    render: (r) => fmtM(r.insurance_unemployment),
+    renderTotal: (totals) => fmtM(totals.insurance_unemployment),
+  },
+  {
+    key: 'insurance_total',
+    title: 'Tổng BH NLĐ',
+    group: 'CÁC KHOẢN ĐÓNG GÓP NLĐ',
+    groupClass: 'th-group--insurance',
+    width: 110,
+    align: 'right',
+    headerClass: 'font-semibold',
+    cellClass: 'font-semibold',
+    render: (r) => fmtM(r.insurance || (Number(r.insurance_social || 0) + Number(r.insurance_health || 0) + Number(r.insurance_unemployment || 0))),
+    renderTotal: (totals) => fmtM(totals.insurance_total),
+  },
+
+  // 8. GIẢM TRỪ GIA CẢNH & THUẾ TNCN (6 columns)
+  {
+    key: 'personal_deduction',
+    title: 'GT Bản thân',
+    group: 'GIẢM TRỪ GIA CẢNH & THUẾ TNCN',
+    groupClass: 'th-group--tax',
+    width: 105,
+    align: 'right',
+    render: (r) => fmtM(r.personal_deduction),
+    renderTotal: (totals) => fmtM(totals.personal_deduction),
+  },
+  {
+    key: 'dependent_deduction',
+    title: 'GT Phụ thuộc',
+    group: 'GIẢM TRỪ GIA CẢNH & THUẾ TNCN',
+    groupClass: 'th-group--tax',
+    width: 105,
+    align: 'right',
+    render: (r) => fmtM(r.dependent_deduction),
+    renderTotal: (totals) => fmtM(totals.dependent_deduction),
+  },
+  {
+    key: 'dependent_count',
+    title: 'Số người',
+    group: 'GIẢM TRỪ GIA CẢNH & THUẾ TNCN',
+    groupClass: 'th-group--tax',
+    width: 65,
+    align: 'center',
+    render: (r) => fmtNum(r.dependent_count),
+    renderTotal: (totals) => fmtNum(totals.dependent_count),
+  },
+  {
+    key: 'total_family_deduction',
+    title: 'Tổng giảm trừ',
+    group: 'GIẢM TRỪ GIA CẢNH & THUẾ TNCN',
+    groupClass: 'th-group--tax',
+    width: 110,
+    align: 'right',
+    render: (r) => fmtM(r.total_family_deduction),
+    renderTotal: (totals) => fmtM(totals.total_family_deduction),
+  },
+  {
+    key: 'taxable_income',
+    title: 'TN tính thuế',
+    group: 'GIẢM TRỪ GIA CẢNH & THUẾ TNCN',
+    groupClass: 'th-group--tax',
+    width: 110,
+    align: 'right',
+    render: (r) => fmtM(r.taxable_income),
+    renderTotal: (totals) => fmtM(totals.taxable_income),
+  },
+  {
+    key: 'tax',
+    title: 'Thuế TNCN',
+    group: 'GIẢM TRỪ GIA CẢNH & THUẾ TNCN',
+    groupClass: 'th-group--tax',
+    width: 105,
+    align: 'right',
+    headerClass: 'font-semibold text-danger',
+    cellClass: 'font-semibold text-danger',
+    render: (r) => fmtM(r.tax),
+    renderTotal: (totals) => fmtM(totals.personal_tax),
+  },
+
+  // 9. CÁC KHOẢN ĐIỀU CHỈNH (5 columns)
+  {
+    key: 'net_income_after_tax',
+    title: 'Sau thuế',
+    group: 'CÁC KHOẢN ĐIỀU CHỈNH',
+    groupClass: 'th-group--adjust',
+    width: 115,
+    align: 'right',
+    render: (r) => fmtM(r.net_income_after_tax),
+    renderTotal: (totals) => fmtM(totals.net_income_after_tax),
+  },
+  {
+    key: 'tax_withheld',
+    title: 'Thuế đã trừ',
+    group: 'CÁC KHOẢN ĐIỀU CHỈNH',
+    groupClass: 'th-group--adjust',
+    width: 105,
+    align: 'right',
+    render: (r) => fmtM(r.tax_withheld),
+    renderTotal: (totals) => fmtM(totals.tax_withheld),
+  },
+  {
+    key: 'meal_allowance',
+    title: 'Tiền ăn ca',
+    group: 'CÁC KHOẢN ĐIỀU CHỈNH',
+    groupClass: 'th-group--adjust',
+    width: 105,
+    align: 'right',
+    headerClass: 'font-semibold text-success',
+    cellClass: 'font-semibold text-success',
+    render: (r) => fmtM(r.meal_allowance),
+    renderTotal: (totals) => fmtM(totals.meal_allowance),
+  },
+  {
+    key: 'arrears_deduction',
+    title: 'Truy thu',
+    group: 'CÁC KHOẢN ĐIỀU CHỈNH',
+    groupClass: 'th-group--adjust',
+    width: 100,
+    align: 'right',
+    cellClass: 'text-danger',
+    render: (r) => fmtM(r.arrears_deduction || r.deduction),
+    renderTotal: (totals) => fmtM(totals.arrears_deduction),
+  },
+  {
+    key: 'arrears_addition',
+    title: 'Truy lĩnh',
+    group: 'CÁC KHOẢN ĐIỀU CHỈNH',
+    groupClass: 'th-group--adjust',
+    width: 100,
+    align: 'right',
+    cellClass: 'text-success',
+    render: (r) => fmtM(r.arrears_addition),
+    renderTotal: (totals) => fmtM(totals.arrears_addition),
+  },
+
+  // 10. THỰC CHUYỂN (1 column)
+  {
+    key: 'transfer_amount',
+    title: 'Chuyển vào TK NLĐ',
+    group: 'THỰC CHUYỂN',
+    groupClass: 'th-group--transfer',
+    width: 145,
+    align: 'right',
+    headerClass: 'th-transfer-col',
+    cellClass: 'td-transfer-col',
+    render: (r) => fmtM(r.transfer_amount || r.net_salary),
+    renderTotal: (totals) => fmtM(totals.transfer_amount),
+  },
+
+  // 11. CÁC KHOẢN CÔNG TY ĐÓNG (21.5%) (5 columns)
+  {
+    key: 'comp_insurance_social',
+    title: 'BHXH Cty (17%)',
+    group: 'CÁC KHOẢN CÔNG TY ĐÓNG (21.5%)',
+    groupClass: 'th-group--company',
+    width: 105,
+    align: 'right',
+    render: (r) => fmtM(r.comp_insurance_social),
+    renderTotal: (totals) => fmtM(totals.comp_insurance_social),
+  },
+  {
+    key: 'comp_insurance_health',
+    title: 'BHYT Cty (3%)',
+    group: 'CÁC KHOẢN CÔNG TY ĐÓNG (21.5%)',
+    groupClass: 'th-group--company',
+    width: 95,
+    align: 'right',
+    render: (r) => fmtM(r.comp_insurance_health),
+    renderTotal: (totals) => fmtM(totals.comp_insurance_health),
+  },
+  {
+    key: 'comp_insurance_unemp',
+    title: 'BHTN Cty (1%)',
+    group: 'CÁC KHOẢN CÔNG TY ĐÓNG (21.5%)',
+    groupClass: 'th-group--company',
+    width: 95,
+    align: 'right',
+    render: (r) => fmtM(r.comp_insurance_unemp),
+    renderTotal: (totals) => fmtM(totals.comp_insurance_unemp),
+  },
+  {
+    key: 'comp_insurance_accident',
+    title: 'BHTNLĐ (0.5%)',
+    group: 'CÁC KHOẢN CÔNG TY ĐÓNG (21.5%)',
+    groupClass: 'th-group--company',
+    width: 95,
+    align: 'right',
+    render: (r) => fmtM(r.comp_insurance_accident),
+    renderTotal: (totals) => fmtM(totals.comp_insurance_accident),
+  },
+  {
+    key: 'comp_insurance_total',
+    title: 'Tổng BH Cty',
+    group: 'CÁC KHOẢN CÔNG TY ĐÓNG (21.5%)',
+    groupClass: 'th-group--company',
+    width: 115,
+    align: 'right',
+    headerClass: 'font-semibold',
+    cellClass: 'font-semibold',
+    render: (r) => fmtM(r.comp_insurance_total),
+    renderTotal: (totals) => fmtM(totals.comp_insurance_total),
+  },
+
+  // 12. TỔNG QUỸ LƯƠNG (1 column)
+  {
+    key: 'total_company_cost',
+    title: 'Tổng chi phí Cty',
+    group: 'TỔNG QUỸ LƯƠNG',
+    groupClass: 'th-group--cost',
+    width: 145,
+    align: 'right',
+    headerClass: 'th-cost-col',
+    cellClass: 'td-cost-col',
+    render: (r) => fmtM(r.total_company_cost),
+    renderTotal: (totals) => fmtM(totals.total_company_cost),
+  },
+
+  // 13. KHÁC (2 columns)
+  {
+    key: 'is_signed',
+    title: 'Đã ký',
+    group: 'KHÁC',
+    groupClass: 'th-group--other',
+    width: 60,
+    align: 'center',
+    render: (r) => (r.is_signed ? '<span class="signed-check">✓</span>' : '—'),
+    renderTotal: () => '',
+  },
+  {
+    key: 'notes',
+    title: 'Ghi chú',
+    group: 'KHÁC',
+    groupClass: 'th-group--other',
+    width: 160,
+    align: 'left',
+    colClass: 'col-note',
+    render: (r) => esc(r.notes || r.note || '—'),
+    renderTotal: () => '',
+  },
+];
+
+function renderFullPayrollTableHTML(pageData, allFilteredRows) {
+  const totals = {
+    insurance_base: allFilteredRows.reduce((s, r) => s + Number(r.insurance_base || 0), 0),
+    position_salary: allFilteredRows.reduce((s, r) => s + Number(r.position_salary || 0), 0),
+    completion_bonus: allFilteredRows.reduce((s, r) => s + Number(r.completion_bonus || 0), 0),
+    total_income_agreed: allFilteredRows.reduce((s, r) => s + Number(r.total_income_agreed || r.base_salary || 0), 0),
+    probation_days: allFilteredRows.reduce((s, r) => s + Number(r.probation_days || 0), 0),
+    official_days: allFilteredRows.reduce((s, r) => s + Number(r.official_days || r.work_days || 0), 0),
+    paid_leave_days: allFilteredRows.reduce((s, r) => s + Number(r.paid_leave_days || 0), 0),
+    unpaid_leave_days: allFilteredRows.reduce((s, r) => s + Number(r.unpaid_leave_days || 0), 0),
+    work_income: allFilteredRows.reduce((s, r) => s + Number(r.work_income || 0), 0),
+    ot_normal_hours: allFilteredRows.reduce((s, r) => s + Number(r.ot_normal_hours || 0), 0),
+    ot_weekend_hours: allFilteredRows.reduce((s, r) => s + Number(r.ot_weekend_hours || 0), 0),
+    ot_holiday_hours: allFilteredRows.reduce((s, r) => s + Number(r.ot_holiday_hours || 0), 0),
+    ot_total_income: allFilteredRows.reduce((s, r) => s + Number(r.ot_total_income || r.overtime_pay || 0), 0),
+    phone_allowance: allFilteredRows.reduce((s, r) => s + Number(r.phone_allowance || 0), 0),
+    attire_allowance: allFilteredRows.reduce((s, r) => s + Number(r.attire_allowance || 0), 0),
+    parking_allowance: allFilteredRows.reduce((s, r) => s + Number(r.parking_allowance || 0), 0),
+    fuel_allowance: allFilteredRows.reduce((s, r) => s + Number(r.fuel_allowance || 0), 0),
+    business_trip_allowance: allFilteredRows.reduce((s, r) => s + Number(r.business_trip_allowance || 0), 0),
+    total_allowance: allFilteredRows.reduce((s, r) => s + Number(r.total_allowance || r.allowance || 0), 0),
+    total_income_with_allowance: allFilteredRows.reduce((s, r) => s + Number(r.total_income_with_allowance || 0), 0),
+    kpi_bonus: allFilteredRows.reduce((s, r) => s + Number(r.kpi_bonus || 0), 0),
+    total_pretax_income: allFilteredRows.reduce((s, r) => s + Number(r.total_pretax_income || 0), 0),
+    insurance_social: allFilteredRows.reduce((s, r) => s + Number(r.insurance_social || 0), 0),
+    insurance_health: allFilteredRows.reduce((s, r) => s + Number(r.insurance_health || 0), 0),
+    insurance_unemployment: allFilteredRows.reduce((s, r) => s + Number(r.insurance_unemployment || 0), 0),
+    insurance_total: allFilteredRows.reduce((s, r) => s + Number(r.insurance || (Number(r.insurance_social || 0) + Number(r.insurance_health || 0) + Number(r.insurance_unemployment || 0))), 0),
+    personal_deduction: allFilteredRows.reduce((s, r) => s + Number(r.personal_deduction || 0), 0),
+    dependent_deduction: allFilteredRows.reduce((s, r) => s + Number(r.dependent_deduction || 0), 0),
+    dependent_count: allFilteredRows.reduce((s, r) => s + Number(r.dependent_count || 0), 0),
+    total_family_deduction: allFilteredRows.reduce((s, r) => s + Number(r.total_family_deduction || 0), 0),
+    taxable_income: allFilteredRows.reduce((s, r) => s + Number(r.taxable_income || 0), 0),
+    personal_tax: allFilteredRows.reduce((s, r) => s + Number(r.tax || 0), 0),
+    net_income_after_tax: allFilteredRows.reduce((s, r) => s + Number(r.net_income_after_tax || 0), 0),
+    tax_withheld: allFilteredRows.reduce((s, r) => s + Number(r.tax_withheld || 0), 0),
+    meal_allowance: allFilteredRows.reduce((s, r) => s + Number(r.meal_allowance || 0), 0),
+    arrears_deduction: allFilteredRows.reduce((s, r) => s + Number(r.arrears_deduction || 0), 0),
+    arrears_addition: allFilteredRows.reduce((s, r) => s + Number(r.arrears_addition || 0), 0),
+    transfer_amount: allFilteredRows.reduce((s, r) => s + Number(r.transfer_amount || r.net_salary || 0), 0),
+    comp_insurance_social: allFilteredRows.reduce((s, r) => s + Number(r.comp_insurance_social || 0), 0),
+    comp_insurance_health: allFilteredRows.reduce((s, r) => s + Number(r.comp_insurance_health || 0), 0),
+    comp_insurance_unemp: allFilteredRows.reduce((s, r) => s + Number(r.comp_insurance_unemp || 0), 0),
+    comp_insurance_accident: allFilteredRows.reduce((s, r) => s + Number(r.comp_insurance_accident || 0), 0),
+    comp_insurance_total: allFilteredRows.reduce((s, r) => s + Number(r.comp_insurance_total || 0), 0),
+    total_company_cost: allFilteredRows.reduce((s, r) => s + Number(r.total_company_cost || 0), 0),
+  };
+
+  // Build Groups automatically from PAYROLL_COLUMNS
+  const groupOrder = [];
+  const groupMap = new Map();
+
+  for (const col of PAYROLL_COLUMNS) {
+    if (!groupMap.has(col.group)) {
+      groupMap.set(col.group, {
+        title: col.group,
+        groupClass: col.groupClass,
+        sticky: col.sticky,
+        count: 0,
+        width: 0,
+      });
+      groupOrder.push(col.group);
+    }
+    const g = groupMap.get(col.group);
+    g.count++;
+    g.width += col.width;
+  }
+
+  const colgroupHTML = PAYROLL_COLUMNS.map(col =>
+    `<col style="width:${col.width}px;min-width:${col.width}px;max-width:${col.width}px;" />`
+  ).join('');
+
+  const theadRow1HTML = groupOrder.map(gName => {
+    const g = groupMap.get(gName);
+    const stickyClass = g.sticky ? 'sticky-group-header' : (g.groupClass || '');
+    const stickyStyle = g.sticky
+      ? `width:${g.width}px;min-width:${g.width}px;max-width:${g.width}px;left:0;`
+      : `width:${g.width}px;min-width:${g.width}px;`;
+    return `<th colspan="${g.count}" class="${stickyClass}" style="${stickyStyle}">${esc(g.title)}</th>`;
+  }).join('');
+
+  const theadRow2HTML = PAYROLL_COLUMNS.map(col => {
+    const stickyClass = col.sticky ? `sticky-col ${col.colClass || ''}` : (col.colClass || '');
+    const stickyStyle = col.sticky
+      ? `left:${col.stickyLeft}px;width:${col.width}px;min-width:${col.width}px;max-width:${col.width}px;`
+      : `width:${col.width}px;min-width:${col.width}px;max-width:${col.width}px;`;
+    return `<th class="${stickyClass} text-${col.align} ${col.headerClass || ''}" style="${stickyStyle}">${esc(col.title)}</th>`;
+  }).join('');
+
+  const tbodyHTML = pageData.rows.map((r, idx) => {
+    const cellsHTML = PAYROLL_COLUMNS.map(col => {
+      const val = col.render ? col.render(r, idx, pageData) : (r[col.key] !== undefined ? esc(String(r[col.key])) : '—');
+      const stickyClass = col.sticky ? `sticky-col ${col.colClass || ''}` : (col.colClass || '');
+      const stickyStyle = col.sticky
+        ? `left:${col.stickyLeft}px;width:${col.width}px;min-width:${col.width}px;max-width:${col.width}px;`
+        : `width:${col.width}px;min-width:${col.width}px;max-width:${col.width}px;`;
+      const titleAttr = (col.key === 'employee_name' || col.key === 'department' || col.key === 'notes') ? ` title="${esc(String(r[col.key] || ''))}"` : '';
+      return `<td class="${stickyClass} text-${col.align} ${col.cellClass || ''}" style="${stickyStyle}"${titleAttr}>${val}</td>`;
+    }).join('');
+    return `<tr class="payroll-row" data-pid="${r.id}" tabindex="0" role="button" aria-label="Mở phiếu lương của ${esc(r.employee_name || 'nhân viên')}">${cellsHTML}</tr>`;
+  }).join('');
+
+  const tfootHTML = PAYROLL_COLUMNS.map(col => {
+    const val = col.renderTotal ? col.renderTotal(totals, allFilteredRows) : '';
+    const stickyClass = col.sticky ? `sticky-col ${col.colClass || ''}` : (col.colClass || '');
+    const stickyStyle = col.sticky
+      ? `left:${col.stickyLeft}px;width:${col.width}px;min-width:${col.width}px;max-width:${col.width}px;`
+      : `width:${col.width}px;min-width:${col.width}px;max-width:${col.width}px;`;
+    return `<td class="${stickyClass} text-${col.align} ${col.cellClass || ''} font-bold" style="${stickyStyle}">${val}</td>`;
+  }).join('');
+
+  return `
+    <div class="payroll-top-scroll" id="payroll-top-scroll">
+      <div class="payroll-top-scroll-inner" id="payroll-top-scroll-inner"></div>
+    </div>
+    <div class="payroll-full-table-wrap" id="payroll-table-wrap">
+      <table class="payroll-full-table" id="payroll-full-table">
+        <colgroup>${colgroupHTML}</colgroup>
+        <thead>
+          <tr>${theadRow1HTML}</tr>
+          <tr>${theadRow2HTML}</tr>
+        </thead>
+        <tbody>
+          ${tbodyHTML}
+        </tbody>
+        <tfoot>
+          <tr class="payroll-full-tfoot">
+            ${tfootHTML}
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    ${paginationHTML(pageData)}
+  `;
+}
+
+function initPayrollTableScrollSync() {
+  const topScroll = document.getElementById('payroll-top-scroll');
+  const topScrollInner = document.getElementById('payroll-top-scroll-inner');
+  const tableWrap = document.getElementById('payroll-table-wrap');
+  const table = document.getElementById('payroll-full-table');
+
+  if (!topScroll || !topScrollInner || !tableWrap || !table) return;
+
+  const syncWidth = () => {
+    topScrollInner.style.width = table.scrollWidth + 'px';
+    if (table.scrollWidth <= tableWrap.clientWidth + 2) {
+      topScroll.style.display = 'none';
+    } else {
+      topScroll.style.display = 'block';
+    }
+  };
+  syncWidth();
+
+  let isSyncingTop = false;
+  let isSyncingWrap = false;
+
+  topScroll.addEventListener('scroll', () => {
+    if (!isSyncingWrap) {
+      isSyncingTop = true;
+      tableWrap.scrollLeft = topScroll.scrollLeft;
+      requestAnimationFrame(() => { isSyncingTop = false; });
+    }
+  }, { passive: true });
+
+  tableWrap.addEventListener('scroll', () => {
+    if (!isSyncingTop) {
+      isSyncingWrap = true;
+      topScroll.scrollLeft = tableWrap.scrollLeft;
+      requestAnimationFrame(() => { isSyncingWrap = false; });
+    }
+  }, { passive: true });
+
+  if (window.ResizeObserver) {
+    const ro = new ResizeObserver(() => syncWidth());
+    ro.observe(table);
+    ro.observe(tableWrap);
+  }
+}
+
+function openImportExcelModal(month, onDone) {
+  let parsedResult = null;
+  openModal('Nhập bảng lương từ Excel (Chuẩn 51 cột)', `
+    <div class="payroll-import-modal-content">
+      <div class="payroll-import-banner">
+        <strong>${icon('fileSpreadsheet', 'sm')} Chuẩn bảng tính 51 cột NetViet:</strong> Bóc tách tự động mức lương, công thử việc/chính thức, làm thêm giờ, phụ cấp chi tiết, BHXH/BHYT/BHTN, thuế TNCN, tiền ăn ca, truy lĩnh, truy thu và số tiền thực chuyển ngân hàng.
+      </div>
+
+      <div class="payroll-import-controls-row" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+        <div class="payroll-import-field">
+          <label for="import-excel-month" style="font-size:12px;font-weight:600;color:var(--text-2);display:block;margin-bottom:4px;">Kỳ lương:</label>
+          <input type="month" id="import-excel-month" class="input-sm" value="${esc(month)}" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-weight:600;"/>
+        </div>
+        <div class="payroll-import-field">
+          <label for="import-std-days" style="font-size:12px;font-weight:600;color:var(--text-2);display:block;margin-bottom:4px;">Định mức VP (ngày):</label>
+          <input type="number" id="import-std-days" class="input-sm" value="23" style="width:80px;padding:6px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);"/>
+        </div>
+        <div class="payroll-import-field">
+          <label for="import-std-sec" style="font-size:12px;font-weight:600;color:var(--text-2);display:block;margin-bottom:4px;">Định mức BV (ngày):</label>
+          <input type="number" id="import-std-sec" class="input-sm" value="27" style="width:80px;padding:6px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);"/>
+        </div>
+      </div>
+
+      <div class="payroll-import-tabs" style="display:flex;gap:8px;border-bottom:1px solid var(--border);margin-bottom:12px;">
+        <button type="button" class="tab-btn active" id="import-tab-paste" style="padding:8px 16px;font-size:13px;font-weight:600;background:transparent;border:none;border-bottom:2px solid var(--primary);color:var(--primary);cursor:pointer;">1. Dán trực tiếp từ Excel (Ctrl+V)</button>
+        <button type="button" class="tab-btn" id="import-tab-file" style="padding:8px 16px;font-size:13px;font-weight:600;background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-2);cursor:pointer;">2. Tải tệp Excel (.xlsx / .csv)</button>
+      </div>
+
+      <div id="import-pane-paste" class="import-tab-pane">
+        <textarea id="import-paste-textarea" rows="7" style="width:100%;box-sizing:border-box;padding:10px;font-family:monospace;font-size:12px;border:1px solid var(--border);border-radius:6px;resize:vertical;" placeholder="Mở file Excel -> Bôi đen toàn bộ dữ liệu (từ dòng tiêu đề tới dòng nhân viên cuối cùng) -> Nhấn Ctrl+C -> Bấm vào ô này và nhấn Ctrl+V..."></textarea>
+      </div>
+
+      <div id="import-pane-file" class="import-tab-pane" style="display:none;">
+        <div class="file-dropzone" id="import-dropzone" style="border:2px dashed #CBD5E1;border-radius:8px;padding:24px;text-align:center;background:#F8FAFC;cursor:pointer;">
+          <input type="file" id="import-file-elem" accept=".xlsx,.xls,.csv,.tsv,.txt" style="display:none;"/>
+          <div>${icon('upload', 'lg')}</div>
+          <button type="button" class="btn-secondary btn-sm" id="btn-browse-file" style="margin-top:8px;">Chọn tệp Excel từ máy tính</button>
+          <p id="import-file-name" style="margin:8px 0 0;font-size:12px;color:var(--text-3);">Hỗ trợ file .xlsx, .xls, .csv, .tsv</p>
+        </div>
+      </div>
+
+      <div style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;">
+        <button type="button" class="btn-secondary btn-sm" id="btn-do-parse">${icon('refreshCw', 'xs')} <span>Phân tích dữ liệu</span></button>
+        <span id="import-parse-status" style="font-size:12px;color:var(--text-2);">Chưa có dữ liệu phân tích</span>
+      </div>
+
+      <div id="import-preview-container" style="display:none;margin-top:14px;border-top:1px solid var(--border);padding-top:14px;">
+      </div>
+    </div>
+  `, `
+    <button type="button" class="btn-secondary" id="btn-import-cancel">Hủy</button>
+    <button type="button" class="btn-primary" id="btn-import-submit" disabled>${icon('check', 'sm')} <span>Lưu bảng lương vào hệ thống</span></button>
+  `);
+
+  document.getElementById('modal')?.classList.add('modal--payroll-import');
+
+  const tabPaste = document.getElementById('import-tab-paste');
+  const tabFile = document.getElementById('import-tab-file');
+  const panePaste = document.getElementById('import-pane-paste');
+  const paneFile = document.getElementById('import-pane-file');
+  const pasteTextarea = document.getElementById('import-paste-textarea');
+  const fileElem = document.getElementById('import-file-elem');
+  const btnBrowse = document.getElementById('btn-browse-file');
+  const fileNameLabel = document.getElementById('import-file-name');
+  const btnDoParse = document.getElementById('btn-do-parse');
+  const parseStatus = document.getElementById('import-parse-status');
+  const previewContainer = document.getElementById('import-preview-container');
+  const btnSubmit = document.getElementById('btn-import-submit');
+
+  tabPaste?.addEventListener('click', () => {
+    tabPaste.classList.add('active');
+    tabPaste.style.color = 'var(--primary)';
+    tabPaste.style.borderBottomColor = 'var(--primary)';
+    tabFile.classList.remove('active');
+    tabFile.style.color = 'var(--text-2)';
+    tabFile.style.borderBottomColor = 'transparent';
+    panePaste.style.display = 'block';
+    paneFile.style.display = 'none';
+  });
+
+  tabFile?.addEventListener('click', () => {
+    tabFile.classList.add('active');
+    tabFile.style.color = 'var(--primary)';
+    tabFile.style.borderBottomColor = 'var(--primary)';
+    tabPaste.classList.remove('active');
+    tabPaste.style.color = 'var(--text-2)';
+    tabPaste.style.borderBottomColor = 'transparent';
+    paneFile.style.display = 'block';
+    panePaste.style.display = 'none';
+  });
+
+  btnBrowse?.addEventListener('click', () => fileElem?.click());
+  fileElem?.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    fileNameLabel.textContent = `Đã chọn: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+    if (file.name.endsWith('.csv') || file.name.endsWith('.tsv') || file.name.endsWith('.txt')) {
+      const text = await file.text();
+      pasteTextarea.value = text;
+      runParse(text);
+    } else if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
+      parseStatus.textContent = 'Đang đọc tệp Excel...';
+      try {
+        let XLSX = window.XLSX;
+        if (!XLSX) {
+          await new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+            script.onload = () => resolve();
+            script.onerror = () => reject(new Error('Không thể nạp thư viện XLSX. Vui lòng dán trực tiếp từ Excel.'));
+            document.head.appendChild(script);
+          });
+          XLSX = window.XLSX;
+        }
+        const ab = await file.arrayBuffer();
+        const wb = XLSX.read(ab, { type: 'array' });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const tsv = XLSX.utils.sheet_to_csv(sheet, { FS: '\t' });
+        pasteTextarea.value = tsv;
+        runParse(tsv);
+      } catch (err) {
+        parseStatus.textContent = `Lỗi đọc file Excel: ${err.message}`;
+        toast(err.message, 'error');
+      }
+    }
+  });
+
+  pasteTextarea?.addEventListener('input', () => {
+    if (pasteTextarea.value.trim().length > 100) {
+      runParse(pasteTextarea.value);
+    }
+  });
+
+  btnDoParse?.addEventListener('click', () => {
+    runParse(pasteTextarea.value);
+  });
+
+  function runParse(text) {
+    if (!text || !text.trim()) {
+      parseStatus.textContent = 'Vui lòng dán dữ liệu hoặc chọn tệp trước khi phân tích.';
+      return;
+    }
+    try {
+      const parsed = parsePayrollExcelText(text);
+      if (!parsed.rows.length) {
+        throw new Error('Không tìm thấy dòng dữ liệu nhân viên nào hợp lệ trong bảng tính.');
+      }
+      parsedResult = parsed;
+      parseStatus.innerHTML = `<span style="color:var(--success);font-weight:700;">✓ Nhận diện thành công ${parsed.rows.length} nhân sự</span>`;
+      btnSubmit.disabled = false;
+
+      if (parsed.standard_days) document.getElementById('import-std-days').value = parsed.standard_days;
+      if (parsed.standard_days_security) document.getElementById('import-std-sec').value = parsed.standard_days_security;
+
+      previewContainer.style.display = 'block';
+      previewContainer.innerHTML = `
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(135px, 1fr));gap:8px;margin-bottom:12px;">
+          <div style="background:#F8FAFC;border:1px solid var(--border);border-radius:6px;padding:8px;text-align:center;">
+            <div style="font-size:11px;color:var(--text-3);">Tổng nhân sự</div>
+            <div style="font-size:16px;font-weight:800;color:var(--text);">${parsed.rows.length} người</div>
+          </div>
+          <div style="background:#F8FAFC;border:1px solid var(--border);border-radius:6px;padding:8px;text-align:center;">
+            <div style="font-size:11px;color:var(--text-3);">Tổng TN trước thuế</div>
+            <div style="font-size:13px;font-weight:700;color:var(--text);">${fmtMoney(parsed.summary.total_pretax_income)}</div>
+          </div>
+          <div style="background:#F8FAFC;border:1px solid var(--border);border-radius:6px;padding:8px;text-align:center;">
+            <div style="font-size:11px;color:var(--text-3);">Tổng tiền ăn ca</div>
+            <div style="font-size:13px;font-weight:700;color:#059669;">${fmtMoney(parsed.summary.total_meal_allowance)}</div>
+          </div>
+          <div style="background:#F8FAFC;border:1px solid var(--border);border-radius:6px;padding:8px;text-align:center;">
+            <div style="font-size:11px;color:var(--text-3);">BHXH NLĐ (10.5%)</div>
+            <div style="font-size:13px;font-weight:700;color:#DC2626;">${fmtMoney(parsed.summary.total_insurance)}</div>
+          </div>
+          <div style="background:#F8FAFC;border:1px solid var(--border);border-radius:6px;padding:8px;text-align:center;">
+            <div style="font-size:11px;color:var(--text-3);">Thuế TNCN</div>
+            <div style="font-size:13px;font-weight:700;color:#DC2626;">${fmtMoney(parsed.summary.total_tax)}</div>
+          </div>
+          <div style="background:#ECFDF5;border:1px solid #A7F3D0;border-radius:6px;padding:8px;text-align:center;">
+            <div style="font-size:11px;color:#047857;font-weight:600;">SỐ TIỀN CHUYỂN VÀO TK</div>
+            <div style="font-size:15px;font-weight:800;color:#047857;">${fmtMoney(parsed.summary.total_transfer_amount)}</div>
+          </div>
+          <div style="background:#F8FAFC;border:1px solid var(--border);border-radius:6px;padding:8px;text-align:center;">
+            <div style="font-size:11px;color:var(--text-3);">Tổng quỹ lương Cty</div>
+            <div style="font-size:13px;font-weight:700;color:var(--text);">${fmtMoney(parsed.summary.total_company_cost)}</div>
+          </div>
+        </div>
+
+        <div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">
+          <table class="table" style="width:100%;font-size:11px;border-collapse:collapse;">
+            <thead style="position:sticky;top:0;background:#F8FAFC;">
+              <tr>
+                <th style="padding:6px;text-align:center;">TT</th>
+                <th style="padding:6px;text-align:left;">Họ và tên</th>
+                <th style="padding:6px;text-align:left;">Mã NV</th>
+                <th style="padding:6px;text-align:left;">Phòng ban</th>
+                <th style="padding:6px;text-align:right;">Mức thỏa thuận</th>
+                <th style="padding:6px;text-align:center;">Công</th>
+                <th style="padding:6px;text-align:right;">Ăn ca</th>
+                <th style="padding:6px;text-align:right;background:#ECFDF5;color:#047857;">Thực chuyển</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${parsed.rows.slice(0, 10).map((r, i) => `
+                <tr style="border-top:1px solid #F1F5F9;">
+                  <td style="padding:5px;text-align:center;">${i + 1}</td>
+                  <td style="padding:5px;font-weight:600;">${esc(r.full_name)}</td>
+                  <td style="padding:5px;font-family:monospace;">${esc(r.employee_code)}</td>
+                  <td style="padding:5px;">${esc(r.department)}</td>
+                  <td style="padding:5px;text-align:right;">${fmtMoney(r.total_income_agreed)}</td>
+                  <td style="padding:5px;text-align:center;">${r.work_days}</td>
+                  <td style="padding:5px;text-align:right;">${fmtMoney(r.meal_allowance)}</td>
+                  <td style="padding:5px;text-align:right;font-weight:700;background:#ECFDF5;color:#047857;">${fmtMoney(r.transfer_amount)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          ${parsed.rows.length > 10 ? `<div style="text-align:center;padding:6px;font-size:11px;color:var(--text-3);background:#F8FAFC;">... và ${parsed.rows.length - 10} nhân sự khác</div>` : ''}
+        </div>
+      `;
+    } catch (err) {
+      parsedResult = null;
+      btnSubmit.disabled = true;
+      parseStatus.innerHTML = `<span style="color:var(--danger);font-weight:600;">✕ Lỗi: ${esc(err.message)}</span>`;
+      previewContainer.style.display = 'none';
+    }
+  }
+
+  document.getElementById('btn-import-cancel')?.addEventListener('click', closeModal);
+  btnSubmit?.addEventListener('click', async () => {
+    if (!parsedResult || !parsedResult.rows.length) return;
+    const targetMonth = document.getElementById('import-excel-month')?.value || month;
+    btnSubmit.disabled = true;
+    btnSubmit.innerHTML = `${icon('refreshCw', 'xs')} <span>Đang lưu dữ liệu...</span>`;
+    try {
+      const res = await api.importPayrollExcel({
+        month: targetMonth,
+        rows: parsedResult.rows,
+        standard_days: Number(document.getElementById('import-std-days')?.value || 23),
+        standard_days_security: Number(document.getElementById('import-std-sec')?.value || 27),
+      });
+      toast(`Đã import thành công ${res.total} nhân sự cho kỳ ${formatMonth(targetMonth)}!`, 'success');
+      closeModal();
+      if (typeof onDone === 'function') onDone(targetMonth);
+    } catch (err) {
+      toast(err.message || 'Lỗi lưu bảng lương', 'error');
+      btnSubmit.disabled = false;
+      btnSubmit.innerHTML = `${icon('check', 'sm')} <span>Lưu bảng lương vào hệ thống</span>`;
+    }
+  });
 }
 
 export async function renderPayroll(el, me) {
@@ -131,6 +1134,7 @@ export async function renderPayroll(el, me) {
   const adjustmentAmounts = new Map();
   let latestPayrollRows = [];
   let currentPage = 1;
+  let viewMode = localStorage.getItem('payroll_view_mode') || 'full';
 
   el.innerHTML = `
     <div class="page-header" style="margin-bottom:18px;">
@@ -153,8 +1157,9 @@ export async function renderPayroll(el, me) {
         </div>
       </div>
       <div class="payroll-control-right">
-        ${canEditPayroll ? `<button id="btn-sync-payroll" class="btn-secondary btn-sm">${icon('refreshCw', 'sm')} <span>Đồng bộ / Tạo bảng lương</span></button>` : ''}
-        <button id="btn-export-payslips" class="btn-primary btn-sm">${icon('fileText', 'sm')} <span>Xuất phiếu lương tháng ${formatMonth(curMonth)}</span></button>
+        ${canEditPayroll ? `<button id="btn-import-excel" class="btn-primary btn-sm">${icon('upload', 'sm')} <span>Nhập từ Excel</span></button>` : ''}
+        ${canEditPayroll ? `<button id="btn-sync-payroll" class="btn-secondary btn-sm">${icon('refreshCw', 'sm')} <span>Đồng bộ hệ thống</span></button>` : ''}
+        <button id="btn-export-payslips" class="btn-secondary btn-sm">${icon('fileText', 'sm')} <span>Xuất phiếu lương tháng ${formatMonth(curMonth)}</span></button>
       </div>
     </div>
     <div id="payroll-load-status" class="payroll-status-note"></div>
@@ -176,6 +1181,10 @@ export async function renderPayroll(el, me) {
         <input type="text" id="payroll-search" class="payroll-search-input" placeholder="Tìm theo tên nhân viên, mã nhân viên..."/>
       </div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <div class="payroll-view-mode-toggle" style="display:inline-flex;background:var(--bg-2, #F1F5F9);padding:3px;border-radius:var(--radius-sm, 6px);border:1px solid var(--border);">
+          <button type="button" class="btn-view-toggle ${viewMode === 'full' ? 'active' : ''}" data-mode="full" style="padding:4px 10px;font-size:12px;font-weight:600;border:none;border-radius:4px;cursor:pointer;background:${viewMode === 'full' ? 'var(--primary)' : 'transparent'};color:${viewMode === 'full' ? '#fff' : 'var(--text-2)'};">Chuẩn Excel (51 cột)</button>
+          <button type="button" class="btn-view-toggle ${viewMode === 'compact' ? 'active' : ''}" data-mode="compact" style="padding:4px 10px;font-size:12px;font-weight:600;border:none;border-radius:4px;cursor:pointer;background:${viewMode === 'compact' ? 'var(--primary)' : 'transparent'};color:${viewMode === 'compact' ? '#fff' : 'var(--text-2)'};">Gọn gàng</button>
+        </div>
         <select id="payroll-dept-filter" class="payroll-dept-select" style="min-width:180px;">
           <option value="">Tất cả phòng ban</option>
           ${DEPARTMENTS.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}
@@ -191,6 +1200,27 @@ export async function renderPayroll(el, me) {
   `;
 
   const monthInput = document.getElementById('payroll-month');
+  document.getElementById('btn-import-excel')?.addEventListener('click', () => {
+    openImportExcelModal(monthInput.value, (newMonth) => {
+      monthInput.value = newMonth;
+      currentPage = 1;
+      updateExportButtonLabel();
+      loadPayroll();
+    });
+  });
+  document.querySelectorAll('.btn-view-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      viewMode = btn.dataset.mode;
+      localStorage.setItem('payroll_view_mode', viewMode);
+      document.querySelectorAll('.btn-view-toggle').forEach(b => {
+        const isActive = b.dataset.mode === viewMode;
+        b.style.background = isActive ? 'var(--primary)' : 'transparent';
+        b.style.color = isActive ? '#fff' : 'var(--text-2)';
+      });
+      currentPage = 1;
+      loadPayroll({ keepStatus: true });
+    });
+  });
   document.getElementById('btn-export-payslips').addEventListener('click', openExportPayslipsConfirm);
   document.getElementById('btn-sync-payroll')?.addEventListener('click', openCreatePayrollBatchConfirm);
   monthInput.addEventListener('change', () => {
@@ -440,12 +1470,18 @@ export async function renderPayroll(el, me) {
     }
     const readyRows = latestPayrollRows.filter(p => (p.data_status || (Number(p.base_salary || 0) > 0 ? 'ready' : 'missing_salary_config')) === 'ready').length;
     const missingRows = latestPayrollRows.length - readyRows;
+    const hasExcelRows = latestPayrollRows.some(p => p.import_source === 'excel' || Number(p.transfer_amount || 0) > 0);
 
     openModal(`Tạo bảng lương tháng ${formatMonth(month)}`, `
       <div style="display:grid;gap:10px;">
         <div class="detail-item"><div class="detail-label">Dòng lương hiện có</div><div class="detail-val">${latestPayrollRows.length}</div></div>
         <div class="detail-item"><div class="detail-label">Đủ dữ liệu hiện tại</div><div class="detail-val">${readyRows}</div></div>
         <div class="detail-item"><div class="detail-label">Thiếu cấu hình hiện tại</div><div class="detail-val">${missingRows}</div></div>
+        ${hasExcelRows ? `
+          <div style="background:#EFF6FF;border:1px solid #BFDBFE;color:#1E40AF;border-radius:8px;padding:10px 12px;font-size:12px;line-height:1.5;">
+            <strong>ℹ Bảng lương chứa dữ liệu nạp từ Excel:</strong> Hệ thống đang bảo vệ dữ liệu chốt của kế toán. Thao tác này sẽ <strong>KHÔNG</strong> ghi đè số liệu các nhân sự đã import từ Excel.
+          </div>
+        ` : ''}
         <div style="background:#FFF7ED;border:1px solid #FDBA74;color:#9A3412;border-radius:8px;padding:12px;font-size:13px;line-height:1.5;">
           Hệ thống sẽ tạo hoặc cập nhật bảng lương tháng này từ danh sách nhân sự đang hoạt động. Các khoản thưởng/phạt đã áp dụng trên dòng lương hiện có vẫn được giữ lại.
         </div>
@@ -555,7 +1591,8 @@ export async function renderPayroll(el, me) {
       let filtered = filterBySearch(payrolls, document.getElementById('payroll-search')?.value || '', ['employee_name', 'employee_code']);
       filtered = filterByDepartment(filtered, document.getElementById('payroll-dept-filter')?.value || '', ['department']);
       filtered = sortVietnameseNames(filtered, 'employee_name');
-      const pageData = paginateRows(filtered, currentPage);
+      const pageSize = viewMode === 'full' ? 50 : 15;
+      const pageData = paginateRows(filtered, currentPage, pageSize);
       currentPage = pageData.page;
 
       const chartsEl = document.getElementById('payroll-charts-container');
@@ -859,32 +1896,43 @@ export async function renderPayroll(el, me) {
         tableEl.innerHTML = `<div style="padding:24px 16px;">${emptyHTML('search', `Không có dòng lương phù hợp`, 'Thử đổi từ khóa tìm kiếm hoặc chọn phòng ban khác')}</div>`;
         return;
       }
-      if (statusEl && !options.keepStatus) statusEl.textContent = `Đã tải ${payrolls.length} dòng bảng lương tháng ${month}. Đang hiển thị ${filtered.length} dòng phù hợp.`;
+      if (statusEl && !options.keepStatus) {
+        const hasExcel = payrolls.some(p => p.import_source === 'excel' || Number(p.transfer_amount || 0) > 0);
+        statusEl.innerHTML = `
+          <span>Đã tải ${payrolls.length} dòng bảng lương tháng ${month}. Đang hiển thị ${filtered.length} dòng phù hợp.</span>
+          ${hasExcel ? `<span style="margin-left:8px;padding:2px 8px;background:#ECFDF5;color:#047857;border:1px solid #A7F3D0;border-radius:4px;font-size:11px;font-weight:700;">✓ Dữ liệu chốt từ Excel (Bảo vệ không ghi đè)</span>` : ''}
+        `;
+      }
 
-      tableEl.innerHTML = `
-        <div class="table-wrap payroll-table-wrap">
-          <table class="payroll-table">
-            <colgroup>
-              <col class="payroll-width-employee" />
-              <col class="payroll-width-dept" />
-              <col class="payroll-width-money" />
-              <col class="payroll-width-net" />
-            </colgroup>
-            <thead>
-              <tr>
-                <th class="payroll-col-employee">Nhân viên</th>
-                <th class="payroll-col-dept">Phòng ban</th>
-                <th class="payroll-col-money">Lương CB</th>
-                <th class="payroll-col-money payroll-col-net">Thực lĩnh</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${pageData.rows.map(p => payrollRowHTML(p)).join('')}
-            </tbody>
-          </table>
-        </div>
-        ${paginationHTML(pageData)}
-      `;
+      if (viewMode === 'full') {
+        tableEl.innerHTML = renderFullPayrollTableHTML(pageData, filtered);
+        initPayrollTableScrollSync();
+      } else {
+        tableEl.innerHTML = `
+          <div class="table-wrap payroll-table-wrap">
+            <table class="payroll-table">
+              <colgroup>
+                <col class="payroll-width-employee" />
+                <col class="payroll-width-dept" />
+                <col class="payroll-width-money" />
+                <col class="payroll-width-net" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th class="payroll-col-employee">Nhân viên</th>
+                  <th class="payroll-col-dept">Phòng ban</th>
+                  <th class="payroll-col-money">Lương CB</th>
+                  <th class="payroll-col-money payroll-col-net">Thực lĩnh</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${pageData.rows.map(p => payrollRowHTML(p)).join('')}
+              </tbody>
+            </table>
+          </div>
+          ${paginationHTML(pageData)}
+        `;
+      }
 
       tableEl.querySelectorAll('.payroll-row').forEach(row => {
         const open = () => {

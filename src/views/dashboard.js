@@ -721,11 +721,11 @@ async function renderAdminDashboard(el, me) {
             <div class="emp-ring-box" style="width:105px;height:105px;">
               <svg viewBox="0 0 100 100" class="emp-ring-svg">
                 <circle cx="50" cy="50" r="40" class="emp-ring-bg" style="stroke:rgba(0,0,0,0.06);stroke-width:9;" />
-                <circle cx="50" cy="50" r="40" class="emp-ring-fill emerald" style="stroke:#10b981;stroke-width:9;stroke-dasharray:251.33;stroke-dashoffset:${checkinOffset};" />
+                <circle cx="50" cy="50" r="40" class="emp-ring-fill emerald" style="stroke:#059669;stroke-width:9;stroke-dasharray:251.33;stroke-dashoffset:${checkinOffset};" />
               </svg>
               <div class="emp-ring-inner">
-                <strong style="font-size:20px;color:#10b981;">${checkinRate}%</strong>
-                <small style="font-size:10px;color:var(--text-2);font-weight:600;">${number(checkedIn)}/${number(eligible)}</small>
+                <strong style="font-size:20px;color:#047857;">${checkinRate}%</strong>
+                <small style="font-size:12px;color:var(--text);font-weight:600;">${number(checkedIn)}/${number(eligible)}</small>
               </div>
             </div>
             <div class="admin-att-ring-label">
@@ -818,36 +818,6 @@ async function renderAdminDashboard(el, me) {
             <span>Điểm đánh dấu là vị trí check-in gần nhất của ngày hôm nay — không phải theo dõi liên tục.</span>
           </div>
         </div>
-      </article>
-
-      <!-- ── PRIMARY ACTION & INSIGHTS ── -->
-      <div class="admin-dash-primary">
-        <article class="admin-dash-panel">
-          <header>
-            <h2>Cần xử lý ngay</h2>
-            <a href="#/notifications">Xem tất cả</a>
-          </header>
-          ${actions}
-        </article>
-        <article class="admin-dash-panel">
-          <header>
-            <h2>Insight hôm nay</h2>
-          </header>
-          <ul class="admin-insights">${insights}</ul>
-        </article>
-      </div>
-
-      <!-- ── MARKETING CAMPAIGNS ── -->
-      <article class="admin-dash-panel admin-campaign-panel">
-        <header>
-          <h2>Chiến dịch Marketing</h2>
-          <a href="#/campaigns">Xem chiến dịch →</a>
-        </header>
-        <div class="admin-campaign-summary">
-          <b>${number(data.campaigns?.active || 0)} đang chạy</b>
-          <span>${number(data.campaigns?.spent || 0)} / ${number(data.campaigns?.budget || 0)} đ${data.campaigns?.spent_percent===null?'':' · '+percent(data.campaigns?.spent_percent)}</span>
-        </div>
-        <div class="admin-campaigns">${campaigns}</div>
       </article>
     </section>
   `;
@@ -972,9 +942,9 @@ async function renderHrDashboard(el, me, activeTab = 'org') {
   };
 
   const getActionSeverityTag = (sev) => {
-    if (sev === 'danger') return '<span class="hr-action-tag" style="background:#FEE2E2;color:#DC2626;border-color:#FCA5A5;">Khẩn cấp</span>';
-    if (sev === 'warning') return '<span class="hr-action-tag" style="background:#FEF3C7;color:#D97706;border-color:#FCD34D;">Cần phê duyệt</span>';
-    return '<span class="hr-action-tag" style="background:#E0E7FF;color:#4F46E5;border-color:#C7D2FE;">Cần xử lý</span>';
+    if (sev === 'danger') return '<span class="hr-action-tag hr-action-tag-danger">Khẩn cấp</span>';
+    if (sev === 'warning') return '<span class="hr-action-tag hr-action-tag-warning">Cần phê duyệt</span>';
+    return '<span class="hr-action-tag hr-action-tag-info">Cần xử lý</span>';
   };
 
   el.innerHTML = `
@@ -1012,21 +982,23 @@ async function renderHrDashboard(el, me, activeTab = 'org') {
           <div class="hr-action-list">
             ${actions.length ? actions.map(act => `
               <div class="hr-action-item ${esc(act.severity || 'warning')}">
-                <div class="hr-action-icon-wrap">${icon(getActionIcon(act), 'md')}</div>
+                <div class="hr-action-card-header">
+                  <div class="hr-action-icon-wrap">${icon(getActionIcon(act), 'md')}</div>
+                  ${getActionSeverityTag(act.severity)}
+                </div>
                 <div class="hr-action-body">
-                  <div class="hr-action-title">
-                    <span>${esc(act.title)}</span>
-                    ${getActionSeverityTag(act.severity)}
-                  </div>
-                  <div class="hr-action-detail">${esc(act.detail)}</div>
+                  <h3 class="hr-action-title">${esc(act.title)}</h3>
+                  <p class="hr-action-detail">${esc(act.detail)}</p>
+                </div>
+                <div class="hr-action-card-footer">
                   <div class="hr-action-tags">
                     <span class="hr-action-tag">${icon('clock3', 'xs')} Hôm nay</span>
                     <span class="hr-action-tag">Toàn công ty</span>
                   </div>
+                  <a href="${esc(act.action_url || '#')}" class="btn-primary hr-action-btn">
+                    <span>${esc(act.action_label || 'Xử lý ngay')}</span> ${icon('arrowRight', 'xs')}
+                  </a>
                 </div>
-                <a href="${esc(act.action_url || '#')}" class="btn-primary hr-action-btn">
-                  ${esc(act.action_label || 'Xử lý ngay')} ${icon('arrowRight', 'xs')}
-                </a>
               </div>
             `).join('') : `
               <div class="empty-state" style="padding:32px 16px;grid-column:1/-1;">
@@ -1110,108 +1082,6 @@ async function renderHrDashboard(el, me, activeTab = 'org') {
           ${renderMonthlyAttendanceLineChart(monthlyAtt)}
         </article>
       </div>
-
-      <!-- ── 3. HÀNG 3: NGHỈ PHÉP & TĂNG CA + TUYỂN DỤNG ── -->
-      <div class="hr-dash-grid-2 equal">
-        <!-- Nghỉ phép & Tăng ca toàn công ty -->
-        <article class="hr-panel">
-          <div class="hr-panel-head">
-            <div class="hr-panel-title">
-              ${icon('clipboardCheck', 'sm')} Nghỉ phép & Tăng ca (OT) toàn công ty
-            </div>
-            <div style="display:flex;gap:8px;">
-              <a href="#/leave" class="hr-panel-link">Nghỉ phép ${icon('arrowRight', 'xs')}</a>
-              <a href="#/attendance" class="hr-panel-link">Tăng ca ${icon('arrowRight', 'xs')}</a>
-            </div>
-          </div>
-
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
-            <!-- Cột Nghỉ phép -->
-            <div style="background:var(--surface-2);border-radius:10px;padding:12px 14px;">
-              <div style="font-size:12.5px;font-weight:700;color:var(--text);margin-bottom:6px;display:flex;align-items:center;gap:6px;">
-                ${icon('plane', 'xs')} Nghỉ phép
-              </div>
-              <div style="font-size:18px;font-weight:800;color:var(--text);margin-bottom:4px;">
-                ${number(lv.today_leave_count)} <small style="font-size:12px;font-weight:550;color:var(--text-2);">hôm nay</small>
-              </div>
-              <div style="font-size:11.5px;color:var(--text-2);display:flex;flex-direction:column;gap:3px;">
-                <span>${icon('hourglass', 'xs')} <strong>${number(lv.pending_count)}</strong> đơn chờ duyệt</span>
-                <span>${icon('calendarDays', 'xs')} <strong>${number(lv.month_total_approved)}</strong> lượt nghỉ tháng này</span>
-              </div>
-            </div>
-
-            <!-- Cột Tăng ca -->
-            <div style="background:var(--surface-2);border-radius:10px;padding:12px 14px;">
-              <div style="font-size:12.5px;font-weight:700;color:var(--text);margin-bottom:6px;display:flex;align-items:center;gap:6px;">
-                ${icon('timer', 'xs')} Tăng ca (OT)
-              </div>
-              <div style="font-size:18px;font-weight:800;color:#6366F1;margin-bottom:4px;">
-                ${number(ot.ot_month_hours)}h <small style="font-size:12px;font-weight:550;color:var(--text-2);">tháng này</small>
-              </div>
-              <div style="font-size:11.5px;color:var(--text-2);display:flex;flex-direction:column;gap:3px;">
-                <span>${icon('hourglass', 'xs')} <strong>${number(ot.pending_count)}</strong> phiếu chờ duyệt</span>
-                <span>${icon('users', 'xs')} <strong>${number(ot.ot_employee_count)}</strong> nhân sự làm OT (${ot.ot_form_count} form)</span>
-              </div>
-            </div>
-          </div>
-        </article>
-
-        <!-- Tuyển dụng & Phễu ứng viên -->
-        <article class="hr-panel">
-          <div class="hr-panel-head">
-            <div class="hr-panel-title">
-              ${icon('funnel', 'sm')} Tuyển dụng & Phễu ứng viên
-            </div>
-            <a href="#/recruitment" class="hr-panel-link">Xem tuyển dụng ${icon('arrowRight', 'xs')}</a>
-          </div>
-
-          <div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;">
-            <div>
-              <strong style="font-size:15px;color:var(--text);">${number(rec.open_positions)} vị trí đang tuyển</strong>
-              <span style="font-size:12px;color:var(--text-2);margin-left:6px;">(${number(rec.active)} ứng viên)</span>
-            </div>
-            <span class="badge badge-success">+${number(rec.hired_this_month)} đã nhận việc</span>
-          </div>
-
-          <div class="hr-funnel-container">
-            <div class="hr-funnel-step">
-              <span class="hr-funnel-label">1. Ứng tuyển (${number(rec.received)})</span>
-              <div class="hr-funnel-bar-wrap">
-                <div class="hr-funnel-bar-fill" style="width:${Math.max(12, Math.min(100, Math.round((rec.received / maxRec) * 100)))}%;">
-                  ${number(rec.received)}
-                </div>
-              </div>
-            </div>
-
-            <div class="hr-funnel-step">
-              <span class="hr-funnel-label">2. Sàng lọc (${number(rec.screening)})</span>
-              <div class="hr-funnel-bar-wrap">
-                <div class="hr-funnel-bar-fill" style="width:${Math.max(12, Math.min(100, Math.round((rec.screening / maxRec) * 100)))}%;background:linear-gradient(90deg, #3B82F6 0%, #2563EB 100%);">
-                  ${number(rec.screening)}
-                </div>
-              </div>
-            </div>
-
-            <div class="hr-funnel-step">
-              <span class="hr-funnel-label">3. Phỏng vấn (${number(rec.interview)})</span>
-              <div class="hr-funnel-bar-wrap">
-                <div class="hr-funnel-bar-fill" style="width:${Math.max(12, Math.min(100, Math.round((rec.interview / maxRec) * 100)))}%;background:linear-gradient(90deg, #F59E0B 0%, #D97706 100%);">
-                  ${number(rec.interview)}
-                </div>
-              </div>
-            </div>
-
-            <div class="hr-funnel-step">
-              <span class="hr-funnel-label">4. Offer (${number(rec.offer)})</span>
-              <div class="hr-funnel-bar-wrap">
-                <div class="hr-funnel-bar-fill" style="width:${Math.max(12, Math.min(100, Math.round((rec.offer / maxRec) * 100)))}%;background:linear-gradient(90deg, #10B981 0%, #059669 100%);">
-                  ${number(rec.offer)}
-                </div>
-              </div>
-            </div>
-          </div>
-        </article>
-      </div>
     </section>
   `;
 
@@ -1288,7 +1158,7 @@ async function renderAdminGeoPanel(el, me) {
               <span style="display:flex;align-items:center;color:var(--primary);">${icon(locIconName, 'sm')}</span>
               <div>
                 <strong>${esc(loc.name)}</strong>
-                ${loc.address ? `<div style="font-size:11px;color:var(--text-3);font-weight:normal;margin-top:1px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(loc.address)}">${esc(loc.address)}</div>` : ''}
+                ${loc.address ? `<div style="font-size:12px;color:var(--text-2);font-weight:normal;margin-top:2px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(loc.address)}">${esc(loc.address)}</div>` : ''}
               </div>
             </div>
             <div class="admin-dash-geo-card-badges">
@@ -1338,7 +1208,7 @@ async function renderAdminGeoPanel(el, me) {
         if (statusEl) {
           const mine = markers.find(m => m.is_current_user);
           statusEl.textContent = mine
-            ? `Bạn: check-in lúc ${mine.checkin_time || '—'} · cách ${Math.round(Number(mine.distance_m))} m · ${mine.inside_geofence !== false ? 'Trong phạm vi' : 'Ngoài phạm vi'}${mine.requires_location_review ? ' · cần xem xét' : ''}`
+            ? `Bạn: check-in lúc ${mine.checkin_time || '—'} · cách ${Math.round(Number(mine.distance_m))} m · ${mine.inside_geofence !== false ? 'Trong phạm vi' : 'Ngoài phạm vi'}${(!mine.inside_geofence && mine.requires_location_review) ? ' · cần xem xét' : ''}`
             : `Chưa có lượt check-in của bạn tại ${office.name} hôm nay.`;
         }
       } catch (err) {

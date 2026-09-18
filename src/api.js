@@ -342,6 +342,10 @@ export const api = {
   deleteAttendance: (id) => req('DELETE', `/api/attendance/${id}`).then(r => { inv('/api/attendance'); return r; }),
   addAttendanceBatch: (d, dryRun = false) =>
     req('POST', '/api/attendance/batch' + (dryRun ? '?dry_run=1' : ''), d).then(r => { inv('/api/attendance', '/api/attendance/employees', '/api/invoices'); return r; }),
+  uploadWfhProof: (file) => uploadForm('/api/attendance/wfh-proof-upload', {}, file),
+  getWfhRequests: (params = {}) => { const q = new URLSearchParams(params).toString(); return req('GET', '/api/attendance/wfh-requests' + (q ? '?' + q : '')); },
+  decideWfhRequest: (id, d) => req('POST', `/api/attendance/${id}/wfh-decision`, d).then(r => { inv('/api/attendance'); return r; }),
+  updateWfhProof: (id, d) => req('POST', `/api/attendance/${id}/wfh-proof`, d).then(r => { inv('/api/attendance'); return r; }),
   getOvertimeRequests: (params = {}) => { const q = new URLSearchParams(params).toString(); return req('GET', '/api/overtime-requests' + (q ? '?' + q : '')); },
   createOvertimeRequest: (d) => req('POST', '/api/overtime-requests', d).then(r => { inv('/api/attendance'); return r; }),
   decideOvertimeRequest: (id, action, d = {}) => req('POST', `/api/overtime-requests/${id}/${action}`, d).then(r => { inv('/api/attendance', '/api/invoices'); return r; }),
@@ -409,6 +413,7 @@ export const api = {
   createTaskGroup: (d) => req('POST', '/api/task-groups', d).then(r => { inv('/api/task-groups', '/api/tasks'); return r; }),
   updateTaskGroup: (id, d) => req('PUT', `/api/task-groups/${id}`, d).then(r => { inv('/api/task-groups', '/api/tasks'); return r; }),
   archiveTaskGroup: (id) => req('DELETE', `/api/task-groups/${id}`).then(r => { inv('/api/task-groups', '/api/tasks'); return r; }),
+  unarchiveTaskGroup: (id) => req('PUT', `/api/task-groups/${id}`, { is_archived: 0 }).then(r => { inv('/api/task-groups', '/api/tasks'); return r; }),
   getTaskLabels: (params = {}) => {
     const q = new URLSearchParams(params).toString();
     return req('GET', '/api/task-labels' + (q ? '?' + q : ''));
@@ -517,6 +522,7 @@ export const api = {
   createPayroll: (d) => req('POST', '/api/payroll', d).then(r => { inv('/api/payroll'); return r; }),
   loadPayrollData: (month) => req('POST', '/api/payroll/load', { month }).then(r => { inv('/api/payroll'); return r; }),
   createPayrollBatch: (month) => req('POST', '/api/payroll/batch', { month }).then(r => { inv('/api/payroll'); return r; }),
+  importPayrollExcel: (d) => req('POST', '/api/payroll/import', d).then(r => { inv('/api/payroll', '/api/invoices'); return r; }),
   exportPayslips: (month, confirmText) =>
     req('POST', '/api/payroll/export-payslips', { month, confirmText }).then(r => { inv('/api/payroll', '/api/invoices'); return r; }),
   updatePayroll: (id, d) => req('PUT', `/api/payroll/${id}`, d).then(r => { inv('/api/payroll'); return r; }),
@@ -569,4 +575,17 @@ export const api = {
   getKpiTemplates: () => req('GET', '/api/kpi-templates'),
   saveKpiTemplate: (data) => req('POST', '/api/kpi-templates', data).then(r => { inv('/api/kpi-templates'); return r; }),
   applyKpiTemplate: (id, data) => req('POST', `/api/kpi-templates/${id}/apply`, data).then(r => { inv('/api/kpis'); return r; }),
+
+  // Announcements (Admin / Company Announcements)
+  getAnnouncements: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return req('GET', '/api/announcements' + (q ? '?' + q : ''));
+  },
+  getUnreadAnnouncementCount: () => req('GET', '/api/announcements/unread-count'),
+  getAnnouncement: (id) => req('GET', `/api/announcements/${id}`),
+  createAnnouncement: (data) => req('POST', '/api/announcements', data).then(r => { inv('/api/announcements'); return r; }),
+  updateAnnouncement: (id, data) => req('PUT', `/api/announcements/${id}`, data).then(r => { inv('/api/announcements'); return r; }),
+  deleteAnnouncement: (id) => req('DELETE', `/api/announcements/${id}`).then(r => { inv('/api/announcements'); return r; }),
+  markAnnouncementRead: (id) => req('POST', `/api/announcements/${id}/read`).then(r => { inv('/api/announcements'); return r; }),
+  markAllAnnouncementsRead: () => req('POST', '/api/announcements/read-all').then(r => { inv('/api/announcements'); return r; }),
 };

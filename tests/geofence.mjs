@@ -155,6 +155,18 @@ console.log('Backend validation & persistence');
   assert.strictEqual(up.args[4], 1, 'checkin_location_id persisted');
   ok('inside check-in: persisted (no review flag)');
 
+  // inside with high accuracy uncertainty (~73m, accuracy ±100m, radius 100m)
+  // Distance 73m <= radius 100m must be inside and NOT flagged for review
+  const inside73mLat = office.latitude + 0.00065; // ~72.3 m
+  let rHighAcc = await call('POST', '/api/attendance/checkin', { latitude: inside73mLat, longitude: office.longitude, accuracy: 100 }, { db });
+  assert.strictEqual(rHighAcc.status, 200);
+  assert.strictEqual(rHighAcc.body.ok, true);
+  assert.strictEqual(rHighAcc.body.inside_geofence, true);
+  assert.strictEqual(rHighAcc.body.geofence_status, 'inside');
+  assert.strictEqual(rHighAcc.body.requires_location_review, false);
+  assert.strictEqual(rHighAcc.body.location_review_status, 'none');
+  ok('inside check-in with high accuracy (73m <= 100m, acc ±100m): inside, no review');
+
   // client fake flag ignored → outside is NOT rejected, but flagged for review,
   // and the server recomputed that it is outside regardless of the client's claim.
   const outsideLat = office.latitude + 0.002; // ~222 m

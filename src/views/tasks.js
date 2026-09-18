@@ -253,12 +253,15 @@ export async function renderTasks(el, me) {
   let departments = [];
   let projects = [];
   let groups = [];
+  let archivedGroups = [];
+  let showArchivedGroups = false;
   let labels = [];
   let tasks = [];
   let projectMembers = [];
   let selectedProjectId = '';
   let currentStatus = '';
   const expandedDepartmentStorageKey = 'tasks-expanded-departments-v1';
+  const projectStorageKey = 'tasks-last-selected-project-v1';
   let expandedDepartments = new Set();
   try {
     const savedDepartments = JSON.parse(localStorage.getItem(expandedDepartmentStorageKey) || '[]');
@@ -340,9 +343,12 @@ export async function renderTasks(el, me) {
       refreshCompletionSubscriptions(),
     ]);
     projects = res.projects || [];
+    if (!selectedProjectId) {
+      try { selectedProjectId = localStorage.getItem(projectStorageKey) || ''; } catch (_) {}
+    }
     if (selectedProjectId && !projects.some(p => String(p.id) === String(selectedProjectId))) selectedProjectId = '';
     renderProjects();
-    if (selectedProjectId) await loadBoard();
+    if (selectedProjectId) await loadBoard({ scrollTo: 'right' });
     else renderEmptyBoard();
   }
 
@@ -665,6 +671,7 @@ export async function renderTasks(el, me) {
 
     list.querySelectorAll('[data-project]').forEach(item => item.addEventListener('click', () => {
       selectedProjectId = item.dataset.project || '';
+      try { localStorage.setItem(projectStorageKey, selectedProjectId); } catch (_) {}
       const project = projects.find(candidate => String(candidate.id) === String(selectedProjectId));
       if (project) {
         expandedDepartments.add(project.department || 'Khác');
@@ -672,7 +679,7 @@ export async function renderTasks(el, me) {
       }
       currentStatus = '';
       renderProjects();
-      loadBoard();
+      loadBoard({ scrollTo: 'right' });
       if (window.matchMedia('(max-width: 767px)').matches) {
         el.querySelector('.task-workspace-shell')?.classList.add('project-nav-collapsed');
         updateToggleBtnState();
@@ -850,7 +857,11 @@ export async function renderTasks(el, me) {
     `;
   }
 
-  async function loadBoard() {
+  async function loadBoard(options = {}) {
+    if (options.projectId && String(options.projectId) !== String(selectedProjectId)) {
+      selectedProjectId = String(options.projectId);
+      try { localStorage.setItem(projectStorageKey, selectedProjectId); } catch (_) {}
+    }
     if (!selectedProjectId) return renderEmptyBoard();
     const board = el.querySelector('#project-board');
     if (board && !board.querySelector('.task-board-wrap')) {
@@ -860,19 +871,21 @@ export async function renderTasks(el, me) {
     if (currentStatus) params.status = currentStatus;
     try {
       const [groupRes, labelRes, taskRes, memberRes] = await Promise.all([
-        api.getTaskGroups({ project_id: selectedProjectId }),
+        api.getTaskGroups({ project_id: selectedProjectId, include_archived: 1 }),
         api.getTaskLabels({ project_id: selectedProjectId }),
         api.getTasks(params),
         api.getTaskProjectMembers(selectedProjectId).catch(() => ({ members: [] })),
         refreshUnreadMentionCount(),
       ]);
-      groups = groupRes?.groups || [];
+      const allGroups = groupRes?.groups || [];
+      archivedGroups = allGroups.filter(g => !!g.is_archived);
+      groups = showArchivedGroups ? allGroups : allGroups.filter(g => !g.is_archived);
       labels = labelRes?.labels || [];
       tasks = taskRes?.tasks || [];
       projectMembers = memberRes?.members || [];
       canManage = canManageTasks(me) || !!groupRes?.canManage;
       renderProjects();
-      renderBoard();
+      renderBoard(options);
     } catch (err) {
       console.error('loadBoard error:', err);
       if (board) {
@@ -1245,7 +1258,55 @@ export async function renderTasks(el, me) {
     renderList();
   }
 
-  function renderBoard() {
+  function openArchivedGroupsModal(project) {
+    if (!archivedGroups.length) {
+      toast('Không có nhóm công việc nào đang bị ẩn', 'info');
+      return;
+    }
+    openModal(`Nhóm công việc đã ẩn (${archivedGroups.length})`, `
+      <div style="padding:4px 0;">
+        <div style="font-size:13px;color:var(--text-2);margin-bottom:14px;line-height:1.45;">
+          Danh sách các nhóm công việc đang bị ẩn trong dự án <strong>${esc(projectLabel(project))}</strong>. Bạn có thể khôi phục để nhóm hiển thị lại trên bảng Kanban.
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;max-height:60vh;overflow-y:auto;padding-right:2px;">
+          ${archivedGroups.map(g => `
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;">
+              <div style="min-width:0;">
+                <div style="font-weight:650;font-size:13.5px;color:var(--text);display:flex;align-items:center;gap:6px;">
+                  <span>${esc(taskGroupLabel(g.name))}</span>
+                  <span class="badge" style="background:#FEF3C7;color:#92400E;border:1px solid #FCD34D;font-size:10px;padding:1px 5px;font-weight:600;border-radius:4px;">Đã ẩn</span>
+                </div>
+                <div style="font-size:11.5px;color:var(--text-2);margin-top:3px;">${Number(g.task_count || 0)} công việc trong nhóm</div>
+              </div>
+              <button type="button" class="btn-primary btn-sm" data-restore-group-btn="${g.id}" style="white-space:nowrap;flex-shrink:0;">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                <span>Khôi phục (Bỏ ẩn)</span>
+              </button>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `, `
+      <button type="button" class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Đóng</button>
+    `);
+
+    document.querySelectorAll('[data-restore-group-btn]').forEach(btn => btn.addEventListener('click', async () => {
+      const gid = btn.dataset.restoreGroupBtn;
+      const target = archivedGroups.find(g => String(g.id) === String(gid));
+      btn.disabled = true;
+      try {
+        await api.unarchiveTaskGroup(gid);
+        closeModal();
+        toast(`Đã khôi phục nhóm "${target?.name || ''}"`, 'success');
+        await loadBoard({ scrollTo: 'right', focusGroupId: gid });
+      } catch (e) {
+        toast(e.message || 'Không thể khôi phục nhóm', 'error');
+        btn.disabled = false;
+      }
+    }));
+  }
+
+  function renderBoard(options = {}) {
     const board = el.querySelector('#project-board');
     const project = selectedProject();
     if (!project) return renderEmptyBoard();
@@ -1267,26 +1328,41 @@ export async function renderTasks(el, me) {
             ${projectMembers.length > 5 ? `<span class="task-project-member-more">+${projectMembers.length - 5}</span>` : ''}
             ${canManage ? '<span class="task-project-member-add" aria-hidden="true">+</span>' : ''}
           </button>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-            <div class="task-board-nav-pill" title="Điều hướng cuộn cột Kanban">
-              <button type="button" id="btn-scroll-board-left" class="board-pill-btn" title="Cuộn sang trái (hoặc Shift + cuộn chuột)" aria-label="Cuộn sang trái">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-left:auto;">
+            <div class="task-board-nav-pill" title="Điều hướng cuộn nhóm việc">
+              <button type="button" id="btn-scroll-board-left" class="board-pill-btn" title="Cuộn sang trái (Shift + cuộn chuột, nhấp đúp về đầu)" aria-label="Cuộn sang trái">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
               </button>
               <span class="board-pill-divider"></span>
-              <button type="button" id="btn-scroll-board-right" class="board-pill-btn" title="Cuộn sang phải (hoặc Shift + cuộn chuột)" aria-label="Cuộn sang phải">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+              <button type="button" id="btn-scroll-board-right" class="board-pill-btn" title="Cuộn sang phải (Shift + cuộn chuột, nhấp đúp về cuối)" aria-label="Cuộn sang phải">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
               </button>
             </div>
+            ${canManage && archivedGroups.length > 0 ? `
+              <button type="button" id="btn-manage-archived-groups" class="btn-secondary btn-sm" title="Xem và khôi phục ${archivedGroups.length} nhóm công việc đã ẩn" style="display:inline-flex;align-items:center;gap:6px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                <span>Nhóm đã ẩn</span>
+                <span class="badge" style="background:#F59E0B;color:#fff;border-radius:10px;padding:1px 6px;font-size:11px;font-weight:700;">${archivedGroups.length}</span>
+              </button>
+            ` : ''}
             ${canViewProjectTimeline(project) ? `<button id="btn-project-timeline" class="btn-secondary btn-sm">${icon('history', 'xs')} Timeline</button>` : ''}
           </div>
         </div>
-        <div class="filter-bar" id="task-status-bar" style="margin-top:8px;margin-bottom:0;">
-          <span class="filter-chip ${currentStatus === '' ? 'active' : ''}" data-status="">Tất cả</span>
-          <span class="filter-chip ${currentStatus === 'todo' ? 'active' : ''}" data-status="todo">Chờ làm</span>
-          <span class="filter-chip ${currentStatus === 'in-progress' ? 'active' : ''}" data-status="in-progress">Đang làm</span>
-          <span class="filter-chip ${currentStatus === 'review' ? 'active' : ''}" data-status="review">Review</span>
-          <span class="filter-chip ${currentStatus === 'done' ? 'active' : ''}" data-status="done">Hoàn thành</span>
-          <span class="filter-chip ${currentStatus === 'cancelled' ? 'active' : ''}" data-status="cancelled">Hủy</span>
+        <div class="filter-bar" id="task-status-bar" style="margin-top:8px;margin-bottom:0;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+            <span class="filter-chip ${currentStatus === '' ? 'active' : ''}" data-status="">Tất cả</span>
+            <span class="filter-chip ${currentStatus === 'todo' ? 'active' : ''}" data-status="todo">Chờ làm</span>
+            <span class="filter-chip ${currentStatus === 'in-progress' ? 'active' : ''}" data-status="in-progress">Đang làm</span>
+            <span class="filter-chip ${currentStatus === 'review' ? 'active' : ''}" data-status="review">Review</span>
+            <span class="filter-chip ${currentStatus === 'done' ? 'active' : ''}" data-status="done">Hoàn thành</span>
+            <span class="filter-chip ${currentStatus === 'cancelled' ? 'active' : ''}" data-status="cancelled">Hủy</span>
+          </div>
+          ${canManage && archivedGroups.length > 0 ? `
+            <label style="font-size:12px;color:var(--text-2);display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none;margin-left:auto;padding:3px 8px;border-radius:6px;background:var(--surface-2);border:1px solid var(--border);">
+              <input type="checkbox" id="chk-toggle-archived-groups" ${showArchivedGroups ? 'checked' : ''} style="width:14px;height:14px;cursor:pointer;accent-color:var(--primary);"/>
+              <span>Hiện ${archivedGroups.length} nhóm đã ẩn</span>
+            </label>
+          ` : ''}
         </div>
       </div>
       <div class="task-board-wrap" id="task-board-wrap-el" tabindex="0" aria-label="Bảng Kanban công việc">
@@ -1304,12 +1380,32 @@ export async function renderTasks(el, me) {
     `;
 
     const boardWrap = board.querySelector('#task-board-wrap-el');
-    board.querySelector('#btn-scroll-board-left')?.addEventListener('click', () => {
-      boardWrap?.scrollBy({ left: -420, behavior: 'smooth' });
+    const btnLeft = board.querySelector('#btn-scroll-board-left');
+    const btnRight = board.querySelector('#btn-scroll-board-right');
+
+    const updateNavButtons = () => {
+      if (!boardWrap || !btnLeft || !btnRight) return;
+      const maxScroll = Math.max(0, boardWrap.scrollWidth - boardWrap.clientWidth);
+      const atStart = boardWrap.scrollLeft <= 10;
+      const atEnd = boardWrap.scrollLeft >= maxScroll - 10;
+      btnLeft.classList.toggle('is-disabled', atStart);
+      btnRight.classList.toggle('is-disabled', atEnd);
+    };
+
+    btnLeft?.addEventListener('click', () => {
+      boardWrap?.scrollBy({ left: -380, behavior: 'smooth' });
     });
-    board.querySelector('#btn-scroll-board-right')?.addEventListener('click', () => {
-      boardWrap?.scrollBy({ left: 420, behavior: 'smooth' });
+    btnLeft?.addEventListener('dblclick', () => {
+      boardWrap?.scrollTo({ left: 0, behavior: 'smooth' });
     });
+    btnRight?.addEventListener('click', () => {
+      boardWrap?.scrollBy({ left: 380, behavior: 'smooth' });
+    });
+    btnRight?.addEventListener('dblclick', () => {
+      boardWrap?.scrollTo({ left: boardWrap.scrollWidth, behavior: 'smooth' });
+    });
+    boardWrap?.addEventListener('scroll', updateNavButtons, { passive: true });
+
     boardWrap?.addEventListener('wheel', e => {
       if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && (e.shiftKey || e.altKey)) {
         e.preventDefault();
@@ -1317,21 +1413,75 @@ export async function renderTasks(el, me) {
       }
     }, { passive: false });
 
-    board.querySelector('#btn-new-group')?.addEventListener('click', () => openGroupForm(null, selectedProjectId, groups.length, loadBoard));
+    // Auto-scroll / Focus into target group or task
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        if (!boardWrap) return;
+
+        if (options.focusTaskId) {
+          const cardEl = board.querySelector(`.task-card[data-tid="${options.focusTaskId}"]`);
+          if (cardEl) {
+            cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+            cardEl.classList.add('task-card--highlight');
+            setTimeout(() => cardEl.classList.remove('task-card--highlight'), 2500);
+            cardEl.focus?.();
+            updateNavButtons();
+            return;
+          }
+        }
+
+        if (options.focusGroupId) {
+          const colEl = board.querySelector(`.task-group-column[data-group-id="${options.focusGroupId}"]`);
+          if (colEl) {
+            colEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+            colEl.classList.add('task-group-column--highlight');
+            setTimeout(() => colEl.classList.remove('task-group-column--highlight'), 2500);
+            updateNavButtons();
+            return;
+          }
+        }
+
+        if (options.preserveScroll && typeof options.scrollLeft === 'number') {
+          boardWrap.scrollLeft = options.scrollLeft;
+        } else {
+          // Default: always scroll to the far right (newest task group column)
+          boardWrap.scrollTo({ left: boardWrap.scrollWidth, behavior: 'smooth' });
+        }
+        updateNavButtons();
+      }, 60);
+    });
+
+    board.querySelector('#btn-new-group')?.addEventListener('click', () => openGroupForm(null, selectedProjectId, groups.length, (info) => loadBoard(info || { scrollTo: 'right' })));
     board.querySelector('#btn-project-members')?.addEventListener('click', () => openProjectMembers(project));
     board.querySelector('#btn-project-timeline')?.addEventListener('click', () => openProjectTimeline(project));
+    board.querySelector('#btn-manage-archived-groups')?.addEventListener('click', () => openArchivedGroupsModal(project));
+    board.querySelector('#chk-toggle-archived-groups')?.addEventListener('change', (e) => {
+      showArchivedGroups = e.target.checked;
+      loadBoard({ preserveScroll: true, scrollLeft: boardWrap?.scrollLeft });
+    });
     board.querySelectorAll('[data-edit-group]').forEach(btn => btn.addEventListener('click', () => {
       const group = groups.find(g => String(g.id) === btn.dataset.editGroup);
-      openGroupForm(group, selectedProjectId, groups.length, loadBoard);
+      openGroupForm(group, selectedProjectId, groups.length, (info) => loadBoard(info || { preserveScroll: true, scrollLeft: boardWrap?.scrollLeft }));
     }));
     board.querySelectorAll('[data-archive-group]').forEach(btn => btn.addEventListener('click', async () => {
-      if (!confirm('Lưu trữ nhóm công việc này? Task trong nhóm vẫn còn và có thể xử lý lại sau.')) return;
-      try { await api.archiveTaskGroup(btn.dataset.archiveGroup); toast('Đã lưu trữ nhóm', 'success'); loadBoard(); }
+      if (!confirm('Ẩn nhóm công việc này khỏi bảng? Task trong nhóm vẫn được bảo toàn và có thể khôi phục lại bất kỳ lúc nào.')) return;
+      try { await api.archiveTaskGroup(btn.dataset.archiveGroup); toast('Đã ẩn nhóm công việc', 'success'); loadBoard({ preserveScroll: true, scrollLeft: boardWrap?.scrollLeft }); }
       catch (e) { toast(e.message, 'error'); }
+    }));
+    board.querySelectorAll('[data-unarchive-group]').forEach(btn => btn.addEventListener('click', async () => {
+      const gid = btn.dataset.unarchiveGroup;
+      const target = archivedGroups.find(g => String(g.id) === String(gid));
+      try {
+        await api.unarchiveTaskGroup(gid);
+        toast(`Đã khôi phục nhóm "${target?.name || ''}"`, 'success');
+        loadBoard({ preserveScroll: true, scrollLeft: boardWrap?.scrollLeft, focusGroupId: gid });
+      } catch (e) {
+        toast(e.message || 'Không thể khôi phục nhóm', 'error');
+      }
     }));
     board.querySelectorAll('[data-add-task-group]').forEach(btn => btn.addEventListener('click', () => {
       const group = groups.find(g => String(g.id) === btn.dataset.addTaskGroup) || defaultGroup;
-      openTaskForm(null, users, me, loadBoard, { project, groups, labels, selectedGroupId: group.id, departments });
+      openTaskForm(null, users, me, (info) => loadBoard(info || { focusGroupId: group.id }), { project, groups: groups.filter(g => !g.is_archived), labels, selectedGroupId: group.id, departments });
     }));
     board.querySelectorAll('[data-task-status]').forEach(btn => btn.addEventListener('click', async e => {
       e.stopPropagation();
@@ -1342,7 +1492,7 @@ export async function renderTasks(el, me) {
       try {
         await api.updateTask(taskId, { ...minimalTaskPayload(task), status, group_id: task.group_id || null, team_project_id: selectedProjectId });
         toast('Đã cập nhật trạng thái công việc', 'success');
-        loadBoard();
+        loadBoard({ preserveScroll: true, scrollLeft: boardWrap?.scrollLeft, focusTaskId: taskId });
       } catch (e) { toast(e.message, 'error'); }
     }));
     board.querySelectorAll('.task-card').forEach(card => {
@@ -1354,7 +1504,7 @@ export async function renderTasks(el, me) {
     });
     board.querySelectorAll('#task-status-bar [data-status]').forEach(chip => chip.addEventListener('click', () => {
       currentStatus = chip.dataset.status;
-      loadBoard();
+      loadBoard({ preserveScroll: true, scrollLeft: boardWrap?.scrollLeft });
     }));
 
     bindTaskDragAndDrop(board);
@@ -1596,11 +1746,15 @@ export async function renderTasks(el, me) {
       return String(group.id) === String(defaultGroup.id);
     });
     const groupTasks = sortGroupTasks(rawTasks, mentionedTaskIds);
+    const isArchived = !!group.is_archived;
     return `
-      <section class="task-group-column" data-group-id="${group.id || ''}">
+      <section class="task-group-column ${isArchived ? 'task-group-column--archived' : ''}" data-group-id="${group.id || ''}">
         <div class="task-group-head">
           <div>
-            <div class="task-group-title">${esc(taskGroupLabel(group.name))}</div>
+            <div class="task-group-title" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+              <span>${esc(taskGroupLabel(group.name))}</span>
+              ${isArchived ? `<span class="badge" style="background:#FEF3C7;color:#92400E;border:1px solid #FCD34D;font-size:10px;padding:1px 5px;font-weight:600;border-radius:4px;">Đã ẩn</span>` : ''}
+            </div>
             <div class="task-group-count">${groupTasks.length} công việc</div>
           </div>
           ${canManage ? `
@@ -1609,10 +1763,17 @@ export async function renderTasks(el, me) {
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                 <span>Sửa</span>
               </button>
-              <button type="button" class="task-group-head-btn task-group-head-btn--archive" data-archive-group="${group.id}" title="Ẩn / Lưu trữ nhóm" aria-label="Ẩn nhóm">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
-                <span>Ẩn</span>
-              </button>
+              ${isArchived ? `
+                <button type="button" class="task-group-head-btn task-group-head-btn--restore" data-unarchive-group="${group.id}" title="Khôi phục / Bỏ ẩn nhóm" aria-label="Bỏ ẩn nhóm" style="color:#059669;background:rgba(16,185,129,0.1);">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                  <span>Bỏ ẩn</span>
+                </button>
+              ` : `
+                <button type="button" class="task-group-head-btn task-group-head-btn--archive" data-archive-group="${group.id}" title="Ẩn / Lưu trữ nhóm" aria-label="Ẩn nhóm">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                  <span>Ẩn</span>
+                </button>
+              `}
             </div>
           ` : ''}
         </div>
@@ -1724,7 +1885,8 @@ export async function renderTasks(el, me) {
   el.querySelector('#btn-new-task').addEventListener('click', () => {
     const project = selectedProject();
     if (!project) { toast('Vui lòng chọn Project trước khi tạo việc', 'error'); return; }
-    openTaskForm(null, users, me, loadBoard, { project, groups, labels, selectedGroupId: groups[0]?.id || '', departments});
+    const lastGroup = groups[groups.length - 1] || groups[0];
+    openTaskForm(null, users, me, (info) => loadBoard(info || { focusGroupId: lastGroup?.id, scrollTo: 'right' }), { project, groups, labels, selectedGroupId: lastGroup?.id || '', departments});
   });
 
   const abortController = new AbortController();
@@ -1737,11 +1899,11 @@ export async function renderTasks(el, me) {
   };
   document.addEventListener('click', onDocClick, { signal });
 
-  document.addEventListener('task-copied', () => { if (selectedProjectId) loadBoard(); }, { signal });
+  document.addEventListener('task-copied', () => { if (selectedProjectId) loadBoard({ scrollTo: 'right' }); }, { signal });
   document.addEventListener('task-mentions-read', async () => {
     await refreshUnreadMentionCount();
     renderProjects();
-    if (selectedProjectId) await loadBoard();
+    if (selectedProjectId) await loadBoard({ preserveScroll: true });
   }, { signal });
 
   el._cleanup = () => {
@@ -1889,11 +2051,13 @@ export function openTaskForm(task, users, me, onDone, options = {}) {
       department: document.getElementById('tf-dept').value,
     };
     try {
+      let created = null;
       if (isEdit) await api.updateTask(task.id, data);
-      else await api.createTask(data);
+      else created = await api.createTask(data);
       closeModal();
       toast(isEdit ? 'Đã cập nhật' : 'Đã tạo công việc', 'success');
-      onDone?.();
+      const targetTaskId = created?.id || (created?.task?.id) || task?.id;
+      onDone?.({ focusTaskId: targetTaskId, focusGroupId: groupId, projectId });
     } catch (e) { toast(e.message, 'error'); }
   });
 
@@ -2219,11 +2383,12 @@ function openGroupForm(group, projectId, groupCount, onDone) {
     };
     if (!data.name) { toast('Vui lòng nhập tên nhóm', 'error'); return; }
     try {
+      let created = null;
       if (isEdit) await api.updateTaskGroup(group.id, data);
-      else await api.createTaskGroup(data);
+      else created = await api.createTaskGroup(data);
       closeModal();
       toast('Đã lưu nhóm công việc', 'success');
-      onDone?.();
+      onDone?.({ scrollTo: 'right', focusGroupId: created?.id || group?.id });
     } catch (e) { toast(e.message, 'error'); }
   });
 }

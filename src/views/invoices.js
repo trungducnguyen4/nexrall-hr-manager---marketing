@@ -1,11 +1,16 @@
 import { api } from '../api.js?v=20260722-payroll-export-ux';
 import { EventBus } from '../event-bus.js';
 import { esc, fmtMoney, fmtDateTime, invStatusBadge, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination, sortVietnameseNames, compareVietnameseNames } from '../utils.js?v=20260722-payroll-export-ux';
-import { payslipDetailHTML, hydratePayslipAttendance, preparePayslipModal } from './payslip-detail.js';
+import { payslipDetailHTML, hydratePayslipAttendance, preparePayslipModal } from './payslip-detail.js?v=20260916-excel-payroll-v1';
 import { icon } from '../icons.js';
 
 export async function renderInvoices(el, me) {
   const isManager = me.role === 'admin' || me.role === 'manager';
+
+  const now = new Date();
+  const defaultMonth = now.getDate() < 25
+    ? (new Date(now.getFullYear(), now.getMonth() - 1, 1)).toISOString().slice(0, 7)
+    : now.toISOString().slice(0, 7);
 
   el.innerHTML = `
     <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;">
@@ -17,7 +22,7 @@ export async function renderInvoices(el, me) {
     </div>
 
     <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
-      <input type="month" id="inv-month-filter" value="${new Date().toISOString().slice(0,7)}" style="flex:1;min-width:140px;"/>
+      <input type="month" id="inv-month-filter" value="${defaultMonth}" style="flex:1;min-width:140px;"/>
       ${isManager ? `
         <select id="inv-user-filter" style="flex:2;min-width:160px;">
           <option value="">-- Tất cả --</option>
@@ -78,6 +83,21 @@ export async function renderInvoices(el, me) {
     try {
       const { invoices } = await api.getInvoices(params);
       let filteredInvoices = invoices || [];
+      if (!isManager && !filteredInvoices.length && monthVal) {
+        // Neu thang dang chon chua co phieu luong, tu dong tim ky luong gan nhat da phat hanh
+        try {
+          const allUserInvs = await api.getInvoices({});
+          if (allUserInvs?.invoices?.length) {
+            const latestInv = allUserInvs.invoices[0];
+            const latestMonthStr = `${latestInv.year}-${String(latestInv.month).padStart(2, '0')}`;
+            const monthInput = document.getElementById('inv-month-filter');
+            if (monthInput && monthInput.value !== latestMonthStr) {
+              monthInput.value = latestMonthStr;
+              filteredInvoices = allUserInvs.invoices.filter(i => i.month === latestInv.month && i.year === latestInv.year);
+            }
+          }
+        } catch (_) {}
+      }
       if (isManager) {
         filteredInvoices = filterBySearch(filteredInvoices, document.getElementById('inv-search')?.value || '', ['full_name', 'employee_code', 'invoice_number']);
         filteredInvoices = filterByDepartment(filteredInvoices, document.getElementById('inv-dept-filter')?.value || '', ['department']);

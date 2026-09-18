@@ -13,9 +13,9 @@ let _migrated = false;
 // already have the prior version recorded, so they would otherwise skip the
 // KPI table creation below and fail every KPI request at runtime.
 // Chat interactions self-heal additively before the version fast path below.
-// Keep the established marker so a deployed Timeline database does not rerun
-// the legacy bootstrap migration sequence just to gain these new tables.
-const SCHEMA_VERSION = '2026-09-04-attendance-query-opt-v1';
+// Bumped to re-run additive migrations for WFH approval columns, announcements
+// tables, and all other schema additions since the previous version.
+const SCHEMA_VERSION = '2026-09-18-wfh-announcements-v1';
 const SEED_VERSION = '2026-08-13-add-phong-it-v1';
 
 const LEAVE_DOCUMENT_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
@@ -64,6 +64,9 @@ async function ensureLeavePolicySchema(env) {
   for (const [column, type] of Object.entries({
     leave_session: "TEXT DEFAULT 'full'", total_days: 'REAL', handover_user_id: 'INTEGER',
     handover_user_name: 'TEXT', approval_flow: 'TEXT', balance_reserved_days: 'REAL DEFAULT 0',
+    approved_by: 'INTEGER', approved_by_name: 'TEXT', approved_at: 'TEXT',
+    rejected_by: 'INTEGER', rejected_by_name: 'TEXT', rejected_at: 'TEXT',
+    rejection_note: 'TEXT',
   })) { try { await env.DB.exec(`ALTER TABLE leave_requests ADD COLUMN ${column} ${type}`); } catch (_) {} }
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_leave_balances_user_year ON leave_balances(user_id,balance_year,leave_type_code)'); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_leave_documents_request ON leave_request_documents(leave_request_id,owner_id)'); } catch (_) {}
@@ -112,6 +115,102 @@ async function ensurePayrollAdjustmentDismissalSchema(env) {
     UNIQUE(month, source_ref)
   )`);
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_payroll_adjustment_dismissals_month ON payroll_adjustment_dismissals(month,dismissed_at DESC)'); } catch (_) {}
+}
+
+async function ensurePayrollDetailSchema(env) {
+  const payrollCols = {
+    position_salary: 'REAL DEFAULT 0',
+    completion_bonus: 'REAL DEFAULT 0',
+    total_income_agreed: 'REAL DEFAULT 0',
+    insurance_base: 'REAL DEFAULT 0',
+    probation_days: 'REAL DEFAULT 0',
+    official_days: 'REAL DEFAULT 0',
+    unpaid_leave_days: 'REAL DEFAULT 0',
+    work_income: 'REAL DEFAULT 0',
+    ot_normal_hours: 'REAL DEFAULT 0',
+    ot_weekend_hours: 'REAL DEFAULT 0',
+    ot_holiday_hours: 'REAL DEFAULT 0',
+    base_hourly_rate: 'REAL DEFAULT 0',
+    ot_total_income: 'REAL DEFAULT 0',
+    phone_allowance: 'REAL DEFAULT 0',
+    attire_allowance: 'REAL DEFAULT 0',
+    parking_allowance: 'REAL DEFAULT 0',
+    fuel_allowance: 'REAL DEFAULT 0',
+    business_trip_allowance: 'REAL DEFAULT 0',
+    total_allowance: 'REAL DEFAULT 0',
+    total_income_with_allowance: 'REAL DEFAULT 0',
+    total_pretax_income: 'REAL DEFAULT 0',
+    insurance_social: 'REAL DEFAULT 0',
+    insurance_health: 'REAL DEFAULT 0',
+    insurance_unemployment: 'REAL DEFAULT 0',
+    personal_deduction: 'REAL DEFAULT 0',
+    dependent_deduction: 'REAL DEFAULT 0',
+    dependent_count: 'INTEGER DEFAULT 0',
+    total_family_deduction: 'REAL DEFAULT 0',
+    taxable_income: 'REAL DEFAULT 0',
+    net_income_after_tax: 'REAL DEFAULT 0',
+    tax_withheld: 'REAL DEFAULT 0',
+    meal_allowance: 'REAL DEFAULT 0',
+    arrears_deduction: 'REAL DEFAULT 0',
+    arrears_addition: 'REAL DEFAULT 0',
+    transfer_amount: 'REAL DEFAULT 0',
+    comp_insurance_social: 'REAL DEFAULT 0',
+    comp_insurance_health: 'REAL DEFAULT 0',
+    comp_insurance_unemp: 'REAL DEFAULT 0',
+    comp_insurance_accident: 'REAL DEFAULT 0',
+    comp_insurance_total: 'REAL DEFAULT 0',
+    total_company_cost: 'REAL DEFAULT 0',
+    is_signed: 'INTEGER DEFAULT 0',
+    import_source: "TEXT DEFAULT 'system'",
+    raw_data: 'TEXT',
+  };
+
+  const invoiceCols = {
+    position_salary: 'REAL DEFAULT 0',
+    completion_bonus: 'REAL DEFAULT 0',
+    total_income_agreed: 'REAL DEFAULT 0',
+    insurance_base: 'REAL DEFAULT 0',
+    probation_days: 'REAL DEFAULT 0',
+    official_days: 'REAL DEFAULT 0',
+    unpaid_leave_days: 'REAL DEFAULT 0',
+    work_income: 'REAL DEFAULT 0',
+    ot_normal_hours: 'REAL DEFAULT 0',
+    ot_weekend_hours: 'REAL DEFAULT 0',
+    ot_holiday_hours: 'REAL DEFAULT 0',
+    base_hourly_rate: 'REAL DEFAULT 0',
+    ot_total_income: 'REAL DEFAULT 0',
+    phone_allowance: 'REAL DEFAULT 0',
+    attire_allowance: 'REAL DEFAULT 0',
+    parking_allowance: 'REAL DEFAULT 0',
+    fuel_allowance: 'REAL DEFAULT 0',
+    business_trip_allowance: 'REAL DEFAULT 0',
+    total_allowance: 'REAL DEFAULT 0',
+    total_income_with_allowance: 'REAL DEFAULT 0',
+    total_pretax_income: 'REAL DEFAULT 0',
+    insurance_social: 'REAL DEFAULT 0',
+    insurance_health: 'REAL DEFAULT 0',
+    insurance_unemployment: 'REAL DEFAULT 0',
+    personal_deduction: 'REAL DEFAULT 0',
+    dependent_deduction: 'REAL DEFAULT 0',
+    dependent_count: 'INTEGER DEFAULT 0',
+    total_family_deduction: 'REAL DEFAULT 0',
+    taxable_income: 'REAL DEFAULT 0',
+    net_income_after_tax: 'REAL DEFAULT 0',
+    tax_withheld: 'REAL DEFAULT 0',
+    meal_allowance: 'REAL DEFAULT 0',
+    arrears_deduction: 'REAL DEFAULT 0',
+    arrears_addition: 'REAL DEFAULT 0',
+    transfer_amount: 'REAL DEFAULT 0',
+    import_source: "TEXT DEFAULT 'system'",
+    raw_data: 'TEXT',
+  };
+
+  for (const [col, type] of Object.entries(payrollCols)) {
+    try { await env.DB.exec(`ALTER TABLE payroll ADD COLUMN ${col} ${type}`); } catch (_) {}
+  }
+  for (const [col, type] of Object.entries(invoiceCols)) {
+    try { await env.DB.exec(`ALTER TABLE invoices ADD COLUMN ${col} ${type}`); } catch (_) {}
+  }
 }
 
 // VietQR's bank directory is public reference data, but fetching it through
@@ -400,6 +499,7 @@ export async function migrate(env) {
   try { await ensurePayrollLineChangeLog(env); } catch (_) {}
   try { await ensurePayrollAdjustmentPolicySchema(env); } catch (error) { console.error('Payroll adjustment policy schema check failed', error); }
   try { await ensurePayrollAdjustmentDismissalSchema(env); } catch (error) { console.error('Payroll adjustment dismissal schema check failed', error); }
+  try { await ensurePayrollDetailSchema(env); } catch (error) { console.error('Payroll detail schema check failed', error); }
   // Repair the old unaccented default label without touching custom group names.
   try { await normalizeDefaultTaskGroupNames(env); } catch (error) { console.error('Task group label repair failed', error); }
   try { await env.DB.exec(`ALTER TABLE task_comments ADD COLUMN mentions TEXT`); } catch (_) {}
@@ -755,6 +855,42 @@ export async function migrate(env) {
   try {
     await env.DB.exec(`UPDATE attendance SET note = replace(replace(replace(note, '[Quên checkout]', 'Tự động checkout'), '[quên checkout]', 'Tự động checkout'), 'quên checkout', 'Tự động checkout') WHERE note LIKE '%quên checkout%' OR note LIKE '%Quên checkout%'`);
   } catch (_) {}
+  // WFH approval, reason, and proof columns
+  try { await env.DB.exec("ALTER TABLE attendance ADD COLUMN wfh_status TEXT DEFAULT NULL"); } catch (_) {}
+  try { await env.DB.exec("ALTER TABLE attendance ADD COLUMN wfh_reason TEXT"); } catch (_) {}
+  try { await env.DB.exec("ALTER TABLE attendance ADD COLUMN wfh_proof_url TEXT"); } catch (_) {}
+  try { await env.DB.exec("ALTER TABLE attendance ADD COLUMN wfh_proof_filename TEXT"); } catch (_) {}
+  try { await env.DB.exec("ALTER TABLE attendance ADD COLUMN wfh_proof_document_id TEXT"); } catch (_) {}
+  try { await env.DB.exec("ALTER TABLE attendance ADD COLUMN wfh_reviewer_id INTEGER"); } catch (_) {}
+  try { await env.DB.exec("ALTER TABLE attendance ADD COLUMN wfh_reviewer_name TEXT"); } catch (_) {}
+  try { await env.DB.exec("ALTER TABLE attendance ADD COLUMN wfh_review_note TEXT"); } catch (_) {}
+  try { await env.DB.exec("ALTER TABLE attendance ADD COLUMN wfh_reviewed_at TEXT"); } catch (_) {}
+  try { await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_attendance_wfh_status ON attendance(wfh_status)"); } catch (_) {}
+  try { await env.DB.exec("CREATE TABLE IF NOT EXISTS wfh_proof_files (id TEXT PRIMARY KEY, user_id INTEGER, filename TEXT, content_type TEXT, byte_size INTEGER, data_base64 TEXT, created_at TEXT DEFAULT (datetime('now','localtime')))"); } catch (_) {}
+  try { await env.DB.exec("UPDATE attendance SET wfh_status = 'approved' WHERE work_type = 'wfh' AND wfh_status IS NULL"); } catch (_) {}
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS announcements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      priority TEXT DEFAULT 'normal',
+      target_scope TEXT DEFAULT 'all',
+      target_department TEXT,
+      attachment_url TEXT,
+      attachment_name TEXT,
+      created_by INTEGER NOT NULL,
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      updated_at TEXT
+    )`);
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS announcement_reads (
+      announcement_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      read_at TEXT DEFAULT (datetime('now','localtime')),
+      PRIMARY KEY (announcement_id, user_id)
+    )`);
+    await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_announcements_created ON announcements(created_at DESC)');
+    await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_announcement_reads_user ON announcement_reads(user_id, announcement_id)');
+  } catch (_) {}
   // Additive GPS/geofence audit. Existing IP-based attendance remains readable.
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS attendance_locations (
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, code TEXT, address TEXT,
@@ -1104,7 +1240,12 @@ export async function migrate(env) {
       }
     }
   } catch (_) {}
-  for (const [column, type] of Object.entries({ current_approver:'TEXT', approval_level:'INTEGER DEFAULT 1', submitted_at:'TEXT' })) { try { await env.DB.exec(`ALTER TABLE leave_requests ADD COLUMN ${column} ${type}`); } catch (_) {} }
+  for (const [column, type] of Object.entries({
+    current_approver:'TEXT', approval_level:'INTEGER DEFAULT 1', submitted_at:'TEXT',
+    approved_by:'INTEGER', approved_by_name:'TEXT', approved_at:'TEXT',
+    rejected_by:'INTEGER', rejected_by_name:'TEXT', rejected_at:'TEXT',
+    rejection_note:'TEXT',
+  })) { try { await env.DB.exec(`ALTER TABLE leave_requests ADD COLUMN ${column} ${type}`); } catch (_) {} }
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS leave_approval_history (id INTEGER PRIMARY KEY AUTOINCREMENT, leave_request_id INTEGER NOT NULL, approval_level INTEGER NOT NULL, actor_id INTEGER, actor_name TEXT, action TEXT NOT NULL, note TEXT, created_at TEXT DEFAULT (datetime('now','localtime')))`); } catch (_) {}
   // Asset handover (Bàn giao tài sản cho TTS)
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS asset_handovers (
@@ -2544,6 +2685,31 @@ async function ensureChatInteractionSchema(env) {
   for (const [column, type] of Object.entries({
     dissolved_at: 'TEXT', dissolved_by: 'INTEGER', dissolved_by_name: 'TEXT',
   })) { try { await env.DB.exec(`ALTER TABLE conversations ADD COLUMN ${column} ${type}`); } catch (_) {} }
+  try { await ensureCompanyChannel(env); } catch (_) {}
+}
+
+async function ensureCompanyChannel(env) {
+  let conv = await env.DB.prepare("SELECT id, name, type FROM conversations WHERE type = 'company' LIMIT 1").first();
+  if (!conv) {
+    conv = await env.DB.prepare("SELECT id, name, type FROM conversations WHERE name = 'Kênh chung công ty' LIMIT 1").first();
+    if (conv) {
+      await env.DB.prepare("UPDATE conversations SET type = 'company' WHERE id = ?").bind(conv.id).run();
+    } else {
+      const ins = await env.DB.prepare(
+        "INSERT INTO conversations (type, name, created_by) VALUES ('company', 'Kênh chung công ty', 1)"
+      ).run();
+      conv = { id: ins.meta?.last_row_id };
+    }
+  }
+  if (conv && conv.id) {
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO conversation_members (conversation_id, user_id, role)
+       SELECT ?, id, CASE WHEN role IN ('admin','director') THEN 'owner' WHEN role = 'manager' THEN 'admin' ELSE 'member' END
+       FROM users WHERE is_active = 1`
+    ).bind(conv.id).run();
+    return conv.id;
+  }
+  return null;
 }
 
 async function attachChatAttachments(env, messageRows) {
@@ -3481,25 +3647,33 @@ async function ensureAttendanceLocationSchema(env) {
   // without the index, so never let index creation fail the request.
   try { await env.DB.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_attendance_locations_code ON attendance_locations(code) WHERE code IS NOT NULL'); } catch (_) {}
   // Official offices & studios supplied by administrator.
+  // Seed ONLY once on fresh install; never resurrect locations deleted by users.
   try {
-    await env.DB.prepare(`INSERT INTO attendance_locations
-      (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active)
-      SELECT ?,?,?,?,?,?,?,1
-       WHERE NOT EXISTS (SELECT 1 FROM attendance_locations WHERE code=? OR name=?)`)
-      .bind('Văn phòng HCM (Toà nhà UNIASIA)', 'NETVIET-HCM', 'Toà nhà UNIASIA, A8 Trường Sơn, Phường Tân Sơn Hòa, Quận Tân Bình, TP. Hồ Chí Minh', 10.804915, 106.664816, 150, 120, 'NETVIET-HCM', 'Văn phòng HCM (Toà nhà UNIASIA)')
-      .run();
-    await env.DB.prepare(`INSERT INTO attendance_locations
-      (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active)
-      SELECT ?,?,?,?,?,?,?,1
-       WHERE NOT EXISTS (SELECT 1 FROM attendance_locations WHERE code=? OR name=?)`)
-      .bind('Văn phòng Hà Nội', 'NETVIET-HN', 'Hà Nội', 21.018472, 105.793595, 100, 100, 'NETVIET-HN', 'Văn phòng Hà Nội')
-      .run();
-    await env.DB.prepare(`INSERT INTO attendance_locations
-      (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active)
-      SELECT ?,?,?,?,?,?,?,1
-       WHERE NOT EXISTS (SELECT 1 FROM attendance_locations WHERE code=? OR name=?)`)
-      .bind('Phim Trường NetVietTv', 'NETVIET-Q9', '76 D12, Khu đô thị mới Đông Tăng Long, Long Phước, Hồ Chí Minh 70000', 10.814200, 106.819500, 200, 150, 'NETVIET-Q9', 'Phim Trường NetVietTv')
-      .run();
+    const seedMarker = await env.DB.prepare("SELECT setting_value FROM settings WHERE setting_key='attendance_locations_seeded'").first();
+    if (!seedMarker) {
+      const countRow = await env.DB.prepare('SELECT COUNT(*) as cnt FROM attendance_locations').first();
+      if (!countRow || countRow.cnt === 0) {
+        await env.DB.prepare(`INSERT INTO attendance_locations
+          (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active)
+          SELECT ?,?,?,?,?,?,?,1
+           WHERE NOT EXISTS (SELECT 1 FROM attendance_locations WHERE code=? OR name=?)`)
+          .bind('Văn phòng HCM (Toà nhà UNIASIA)', 'NETVIET-HCM', 'Toà nhà UNIASIA, A8 Trường Sơn, Phường Tân Sơn Hòa, Quận Tân Bình, TP. Hồ Chí Minh', 10.804915, 106.664816, 150, 120, 'NETVIET-HCM', 'Văn phòng HCM (Toà nhà UNIASIA)')
+          .run();
+        await env.DB.prepare(`INSERT INTO attendance_locations
+          (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active)
+          SELECT ?,?,?,?,?,?,?,1
+           WHERE NOT EXISTS (SELECT 1 FROM attendance_locations WHERE code=? OR name=?)`)
+          .bind('Văn phòng Hà Nội', 'NETVIET-HN', 'Hà Nội', 21.018472, 105.793595, 100, 100, 'NETVIET-HN', 'Văn phòng Hà Nội')
+          .run();
+        await env.DB.prepare(`INSERT INTO attendance_locations
+          (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active)
+          SELECT ?,?,?,?,?,?,?,1
+           WHERE NOT EXISTS (SELECT 1 FROM attendance_locations WHERE code=? OR name=?)`)
+          .bind('Phim Trường NetVietTv', 'NETVIET-Q9', '76 D12, Khu đô thị mới Đông Tăng Long, Long Phước, Hồ Chí Minh 70000', 10.814200, 106.819500, 200, 150, 'NETVIET-Q9', 'Phim Trường NetVietTv')
+          .run();
+      }
+      await env.DB.prepare("INSERT OR REPLACE INTO settings (setting_key,setting_value) VALUES ('attendance_locations_seeded','1')").run();
+    }
   } catch (error) {
     console.error('Unable to seed attendance locations', error);
   }
@@ -3539,7 +3713,6 @@ async function verifyAttendanceGeofence(env, payload = {}) {
   const radius = Number(location.radius_meters || 100), maxAccuracy = Number(location.max_accuracy_meters || 100);
   const decision = geofenceDecision(location.distance_meters, radius);
   const base = { location, accuracy_meters: accuracy, distance_meters: location.distance_meters, inside_geofence: decision.inside, outside_meters: decision.outside_meters };
-  if (accuracy > maxAccuracy || (decision.inside && location.distance_meters + accuracy > radius)) return { status: 'retry', ...base, reason: 'Vị trí đang ở sát biên hoặc độ chính xác GPS chưa đủ' };
   if (decision.inside) return { status: 'verified', ...base };
   return { status: 'outside', ...base, reason: 'Bạn ở ngoài khu vực chấm công' };
 }
@@ -4044,10 +4217,28 @@ function canManageLeaveRequest(me, request) {
 }
 
 function canAdvanceLeaveApproval(me, request) {
-  if (me?.role === 'admin') return true;
-  if (Number(request.approval_level || 1) === 1) return me?.role === 'manager' && normalizeDeptName(me?.department) === normalizeDeptName(request?.department);
-  if (Number(request.approval_level) === 2) return isHcns(me);
-  if (Number(request.approval_level) === 3) return isBgd(me);
+  if (!me || !request) return false;
+  // Admin hoặc HR (HCNS) có toàn quyền duyệt đơn nghỉ phép của nhân viên, không cần chờ ai
+  if (me?.role === 'admin' || isHcns(me)) {
+    // Không cho phép tự duyệt đơn của chính mình nếu không phải admin
+    if (Number(request.employee_id) === Number(me.id) && me?.role !== 'admin') {
+      return false;
+    }
+    return true;
+  }
+  // Không cho phép tự duyệt đơn của chính mình
+  if (Number(request.employee_id) === Number(me.id) || String(request.user_id) === String(me.id) || String(request.user_id) === String(me.employee_code || '')) return false;
+
+  const currentLevel = Number(request.approval_level || 1);
+  // Level 1: Quản lý trực tiếp phòng ban
+  if (currentLevel === 1) {
+    const isDeptMgr = me?.role === 'manager' && !!request?.department && normalizeDeptName(me?.department) === normalizeDeptName(request?.department);
+    return isDeptMgr;
+  }
+  // Level 2: HCNS
+  if (currentLevel === 2) return isHcns(me);
+  // Level 3: Ban Giám Đốc (BGD)
+  if (currentLevel === 3) return isBgd(me);
   return false;
 }
 
@@ -5376,6 +5567,186 @@ export async function handle(request, env) {
     });
   }
 
+  // ── Announcements (Admin / Company Announcements) ────────────────
+  const canManageAnnouncements = ['admin', 'director'].includes(me.role) || isHcns(me) || isAttendanceHcns;
+
+  if (path === '/api/announcements' && request.method === 'GET') {
+    const scopeFilter = url.searchParams.get('scope') || '';
+    const priorityFilter = url.searchParams.get('priority') || '';
+    const search = (url.searchParams.get('search') || '').trim().toLowerCase();
+
+    const rows = await env.DB.prepare(`
+      SELECT a.*, u.full_name AS creator_name, u.avatar_url AS creator_avatar, u.role AS creator_role, u.department AS creator_department,
+             EXISTS(SELECT 1 FROM announcement_reads ar WHERE ar.announcement_id = a.id AND ar.user_id = ?) AS is_read
+      FROM announcements a
+      LEFT JOIN users u ON u.id = a.created_by
+      WHERE (a.target_scope = 'all' OR a.target_department = ? OR ? = 1)
+      ORDER BY a.created_at DESC
+      LIMIT 100
+    `).bind(me.id, me.department || '', canManageAnnouncements ? 1 : 0).all().then(r => r.results || []);
+
+    let filtered = rows;
+    if (scopeFilter) filtered = filtered.filter(a => a.target_scope === scopeFilter || a.target_department === scopeFilter);
+    if (priorityFilter) filtered = filtered.filter(a => a.priority === priorityFilter);
+    if (search) {
+      filtered = filtered.filter(a =>
+        (a.title || '').toLowerCase().includes(search) ||
+        (a.content || '').toLowerCase().includes(search) ||
+        (a.creator_name || '').toLowerCase().includes(search)
+      );
+    }
+
+    return json({ announcements: filtered, can_manage: canManageAnnouncements });
+  }
+
+  if (path === '/api/announcements/unread-count' && request.method === 'GET') {
+    const row = await env.DB.prepare(`
+      SELECT COUNT(*) AS unread_count
+      FROM announcements a
+      WHERE (a.target_scope = 'all' OR a.target_department = ? OR ? = 1)
+        AND NOT EXISTS (SELECT 1 FROM announcement_reads ar WHERE ar.announcement_id = a.id AND ar.user_id = ?)
+    `).bind(me.department || '', canManageAnnouncements ? 1 : 0, me.id).first();
+
+    return json({ unread_count: Number(row?.unread_count || 0) });
+  }
+
+  if (path === '/api/announcements' && request.method === 'POST') {
+    if (!canManageAnnouncements) {
+      return json({ error: 'Chỉ Quản trị viên và HCNS mới có quyền đăng thông báo' }, 403);
+    }
+    const b = await request.json().catch(() => ({}));
+    const title = String(b.title || '').trim();
+    const content = String(b.content || '').trim();
+    const priority = ['normal', 'important'].includes(b.priority) ? b.priority : 'normal';
+    const targetScope = b.target_scope === 'department' ? 'department' : 'all';
+    const targetDepartment = targetScope === 'department' ? String(b.target_department || '').trim() : null;
+    const attachmentUrl = b.attachment_url ? String(b.attachment_url).trim() : null;
+    const attachmentName = b.attachment_name ? String(b.attachment_name).trim() : null;
+
+    if (!title) return json({ error: 'Tiêu đề thông báo không được để trống' }, 400);
+    if (!content) return json({ error: 'Nội dung thông báo không được để trống' }, 400);
+    if (targetScope === 'department' && !targetDepartment) {
+      return json({ error: 'Vui lòng chọn phòng ban nhận thông báo' }, 400);
+    }
+
+    const res = await env.DB.prepare(`
+      INSERT INTO announcements (title, content, priority, target_scope, target_department, attachment_url, attachment_name, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(title, content, priority, targetScope, targetDepartment, attachmentUrl, attachmentName, me.id).run();
+
+    const newId = res.meta?.last_row_id;
+    if (newId) {
+      await env.DB.prepare('INSERT OR IGNORE INTO announcement_reads (announcement_id, user_id) VALUES (?, ?)')
+        .bind(newId, me.id).run();
+    }
+
+    const created = await env.DB.prepare(`
+      SELECT a.*, u.full_name AS creator_name, u.avatar_url AS creator_avatar, u.role AS creator_role, u.department AS creator_department,
+             1 AS is_read
+      FROM announcements a
+      LEFT JOIN users u ON u.id = a.created_by
+      WHERE a.id = ?
+    `).bind(newId).first();
+
+    await broadcastAppEvent(env, 'announcements', 'announcement:new', {
+      announcement: created,
+      target_scope: targetScope,
+      target_department: targetDepartment,
+    }, { actorId: me.id });
+
+    return json({ ok: true, announcement: created });
+  }
+
+  const announcementIdMatch = path.match(/^\/api\/announcements\/(\d+)$/);
+  if (announcementIdMatch) {
+    const annId = parseInt(announcementIdMatch[1], 10);
+    const existing = await env.DB.prepare('SELECT * FROM announcements WHERE id = ?').bind(annId).first();
+    if (!existing) return json({ error: 'Không tìm thấy thông báo' }, 404);
+
+    if (request.method === 'GET') {
+      const isEligible = existing.target_scope === 'all' || existing.target_department === me.department || canManageAnnouncements;
+      if (!isEligible) return json({ error: 'Không có quyền xem thông báo này' }, 403);
+
+      const item = await env.DB.prepare(`
+        SELECT a.*, u.full_name AS creator_name, u.avatar_url AS creator_avatar, u.role AS creator_role, u.department AS creator_department,
+               EXISTS(SELECT 1 FROM announcement_reads ar WHERE ar.announcement_id = a.id AND ar.user_id = ?) AS is_read
+        FROM announcements a
+        LEFT JOIN users u ON u.id = a.created_by
+        WHERE a.id = ?
+      `).bind(me.id, annId).first();
+      return json({ announcement: item });
+    }
+
+    if (request.method === 'PUT') {
+      const canEdit = ['admin', 'director'].includes(me.role) || existing.created_by === me.id;
+      if (!canEdit) return json({ error: 'Không có quyền chỉnh sửa thông báo này' }, 403);
+
+      const b = await request.json().catch(() => ({}));
+      const title = String(b.title || '').trim();
+      const content = String(b.content || '').trim();
+      const priority = ['normal', 'important'].includes(b.priority) ? b.priority : (existing.priority || 'normal');
+      const targetScope = b.target_scope === 'department' ? 'department' : (b.target_scope === 'all' ? 'all' : existing.target_scope);
+      const targetDepartment = targetScope === 'department' ? String(b.target_department || '').trim() : null;
+      const attachmentUrl = b.attachment_url !== undefined ? (b.attachment_url ? String(b.attachment_url).trim() : null) : existing.attachment_url;
+      const attachmentName = b.attachment_name !== undefined ? (b.attachment_name ? String(b.attachment_name).trim() : null) : existing.attachment_name;
+
+      if (!title) return json({ error: 'Tiêu đề thông báo không được để trống' }, 400);
+      if (!content) return json({ error: 'Nội dung thông báo không được để trống' }, 400);
+
+      const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+      await env.DB.prepare(`
+        UPDATE announcements
+        SET title = ?, content = ?, priority = ?, target_scope = ?, target_department = ?, attachment_url = ?, attachment_name = ?, updated_at = ?
+        WHERE id = ?
+      `).bind(title, content, priority, targetScope, targetDepartment, attachmentUrl, attachmentName, now, annId).run();
+
+      const updated = await env.DB.prepare(`
+        SELECT a.*, u.full_name AS creator_name, u.avatar_url AS creator_avatar, u.role AS creator_role, u.department AS creator_department,
+               EXISTS(SELECT 1 FROM announcement_reads ar WHERE ar.announcement_id = a.id AND ar.user_id = ?) AS is_read
+        FROM announcements a
+        LEFT JOIN users u ON u.id = a.created_by
+        WHERE a.id = ?
+      `).bind(me.id, annId).first();
+
+      await broadcastAppEvent(env, 'announcements', 'announcement:updated', {
+        announcement: updated,
+      }, { actorId: me.id });
+
+      return json({ ok: true, announcement: updated });
+    }
+
+    if (request.method === 'DELETE') {
+      const canDelete = ['admin', 'director'].includes(me.role) || existing.created_by === me.id;
+      if (!canDelete) return json({ error: 'Không có quyền xóa thông báo này' }, 403);
+
+      await env.DB.prepare('DELETE FROM announcement_reads WHERE announcement_id = ?').bind(annId).run();
+      await env.DB.prepare('DELETE FROM announcements WHERE id = ?').bind(annId).run();
+
+      await broadcastAppEvent(env, 'announcements', 'announcement:deleted', {
+        id: annId,
+      }, { actorId: me.id });
+
+      return json({ ok: true, id: annId });
+    }
+  }
+
+  if (path.match(/^\/api\/announcements\/(\d+)\/read$/) && request.method === 'POST') {
+    const annId = parseInt(path.match(/^\/api\/announcements\/(\d+)\/read$/)[1], 10);
+    await env.DB.prepare('INSERT OR IGNORE INTO announcement_reads (announcement_id, user_id) VALUES (?, ?)')
+      .bind(annId, me.id).run();
+    return json({ ok: true, id: annId });
+  }
+
+  if (path === '/api/announcements/read-all' && request.method === 'POST') {
+    await env.DB.prepare(`
+      INSERT OR IGNORE INTO announcement_reads (announcement_id, user_id)
+      SELECT a.id, ?
+      FROM announcements a
+      WHERE (a.target_scope = 'all' OR a.target_department = ? OR ? = 1)
+    `).bind(me.id, me.department || '', canManageAnnouncements ? 1 : 0).run();
+    return json({ ok: true });
+  }
+
   const employeeProfileMatch = path.match(/^\/api\/users\/(\d+)\/profile$/);
   if (employeeProfileMatch) {
     const userId = parseInt(employeeProfileMatch[1], 10);
@@ -5507,15 +5878,31 @@ export async function handle(request, env) {
     if (!target) return json({ error: 'Không tìm thấy tài khoản nhân viên' }, 404);
 
     try {
+      // Clean up child tables first to avoid FOREIGN KEY constraint failure
+      const cleanupQueries = [
+        env.DB.prepare('DELETE FROM employee_profile_audit WHERE user_id=? OR changed_by=?').bind(userId, userId),
+        env.DB.prepare('DELETE FROM employee_documents WHERE user_id=?').bind(userId),
+        env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(userId),
+        env.DB.prepare('DELETE FROM attendance WHERE user_id=?').bind(userId),
+        env.DB.prepare('DELETE FROM task_mention_notifications WHERE user_id=?').bind(userId),
+        env.DB.prepare('DELETE FROM task_followers WHERE user_id=?').bind(userId),
+        env.DB.prepare('DELETE FROM tasks WHERE assignee_id=?').bind(userId),
+        env.DB.prepare('DELETE FROM leave_balance_ledger WHERE employee_id=?').bind(userId),
+        env.DB.prepare('DELETE FROM leave_requests WHERE user_id=? OR employee_id=?').bind(userId, userId),
+        env.DB.prepare('DELETE FROM leave_balances WHERE user_id=? OR employee_id=?').bind(userId, userId),
+        env.DB.prepare('DELETE FROM conversation_members WHERE user_id=?').bind(userId),
+        env.DB.prepare('DELETE FROM push_subscriptions WHERE user_id=?').bind(userId),
+        env.DB.prepare('DELETE FROM overtime_forms WHERE user_id=?').bind(userId),
+        env.DB.prepare('DELETE FROM overtime_requests WHERE user_id=?').bind(userId),
+      ];
+
+      for (const q of cleanupQueries) {
+        try { await q.run(); } catch (_) {}
+      }
+
+      // Finally delete from users table
       await env.DB.prepare('DELETE FROM users WHERE id=?').bind(userId).run();
-      try { await env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(userId).run(); } catch (_) {}
-      try { await env.DB.prepare('DELETE FROM attendance WHERE user_id=?').bind(userId).run(); } catch (_) {}
-      try { await env.DB.prepare('DELETE FROM employee_documents WHERE user_id=?').bind(userId).run(); } catch (_) {}
-      try { await env.DB.prepare('DELETE FROM employee_profile_audit WHERE user_id=?').bind(userId).run(); } catch (_) {}
-      try { await env.DB.prepare('DELETE FROM task_mention_notifications WHERE user_id=?').bind(userId).run(); } catch (_) {}
-      try { await env.DB.prepare('DELETE FROM leave_requests WHERE user_id=? OR employee_id=?').bind(userId, userId).run(); } catch (_) {}
-      try { await env.DB.prepare('DELETE FROM leave_balances WHERE user_id=? OR employee_id=?').bind(userId, userId).run(); } catch (_) {}
-      try { await env.DB.prepare('DELETE FROM conversation_members WHERE user_id=?').bind(userId).run(); } catch (_) {}
+
       await broadcastAppEvent(env, 'users', 'user:deleted', {
         id: userId,
         employee_code: target.employee_code,
@@ -5824,6 +6211,13 @@ export async function handle(request, env) {
         b.lifecycle_status || (isTts ? 'Thực tập' : 'Chính thức')
       ).run();
       const newUserId = r.meta.last_row_id;
+      try {
+        const companyChannelId = await ensureCompanyChannel(env);
+        if (companyChannelId) {
+          await env.DB.prepare('INSERT OR IGNORE INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?)')
+            .bind(companyChannelId, newUserId, b.role === 'manager' ? 'admin' : (['admin', 'director'].includes(b.role) ? 'owner' : 'member')).run();
+        }
+      } catch (_) {}
       await broadcastAppEvent(env, 'users', 'user:created', {
         id: newUserId,
         employee_code: code,
@@ -6452,8 +6846,8 @@ export async function handle(request, env) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return json({ error: 'Khoảng ngày không hợp lệ' }, 400);
     let q = `SELECT u.id AS user_id,u.full_name,u.employee_code,u.department,u.position,u.work_location,
       COUNT(a.id) AS record_count,
-      COALESCE(SUM(CASE WHEN a.checkin_time IS NOT NULL AND a.checkout_time IS NOT NULL AND a.status NOT IN ('absent','cancelled','rejected') THEN CASE WHEN a.shift IN ('morning','afternoon') THEN 0.5 ELSE 1 END ELSE 0 END),0) AS actual_work_days,
-      COALESCE(SUM(CASE WHEN a.checkin_time IS NOT NULL AND a.checkout_time IS NOT NULL AND a.status NOT IN ('absent','cancelled','rejected') THEN a.work_hours ELSE 0 END),0) AS total_work_hours,
+      COALESCE(SUM(CASE WHEN a.checkin_time IS NOT NULL AND a.checkout_time IS NOT NULL AND a.status NOT IN ('absent','cancelled','rejected') AND (a.work_type != 'wfh' OR COALESCE(a.wfh_status,'') != 'rejected') THEN CASE WHEN a.shift IN ('morning','afternoon') THEN 0.5 ELSE 1 END ELSE 0 END),0) AS actual_work_days,
+      COALESCE(SUM(CASE WHEN a.checkin_time IS NOT NULL AND a.checkout_time IS NOT NULL AND a.status NOT IN ('absent','cancelled','rejected') AND (a.work_type != 'wfh' OR COALESCE(a.wfh_status,'') != 'rejected') THEN a.work_hours ELSE 0 END),0) AS total_work_hours,
       COALESCE(SUM(CASE WHEN COALESCE(a.late_minutes,0)>0 THEN 1 ELSE 0 END),0) AS late_days,
       COALESCE(SUM(CASE WHEN COALESCE(a.late_minutes,0)>0 THEN a.late_minutes ELSE 0 END),0) AS late_minutes,
       COALESCE(SUM(CASE WHEN a.status NOT IN ('absent','leave','cancelled','rejected') AND a.checkin_time IS NULL THEN 1 ELSE 0 END),0) AS missing_checkin_days,
@@ -6572,6 +6966,16 @@ const attendanceRateTo =
       return json({ error: 'Vui lòng nhập giờ bắt đầu và kết thúc dự kiến cho chuyến công tác' }, 400);
     }
     const today = vnTodayStr();
+    const wfhReason = String(b.wfh_reason || '').trim();
+    if (workType === 'wfh' && !wfhReason) {
+      return json({ error: 'Vui lòng nhập lý do làm việc tại nhà (WFH)' }, 400);
+    }
+    if (workType === 'wfh' && wfhReason.length > 1000) {
+      return json({ error: 'Lý do WFH không được vượt quá 1000 ký tự' }, 400);
+    }
+    const wfhProofUrl = workType === 'wfh' ? (String(b.wfh_proof_url || '').trim() || null) : null;
+    const wfhProofFilename = workType === 'wfh' ? (String(b.wfh_proof_filename || '').trim() || null) : null;
+    const wfhProofDocId = workType === 'wfh' ? (String(b.wfh_proof_document_id || '').trim() || null) : null;
     const existing = await env.DB.prepare('SELECT * FROM attendance WHERE user_id=? AND date=?')
       .bind(me.id, today).first();
     if (existing && existing.checkin_time) {
@@ -6580,14 +6984,16 @@ const attendanceRateTo =
     const expectedStart = workType === 'business' ? b.expected_start : null;
     const expectedEnd = workType === 'business' ? b.expected_end : null;
     const note = b.note || '';
+    let recordId = existing ? existing.id : null;
     if (existing) {
       await env.DB.prepare(
-        "UPDATE attendance SET work_type=?,shift=?,expected_start=?,expected_end=?,registered=1,status=CASE WHEN checkin_time IS NULL THEN 'registered' ELSE status END,note=? WHERE id=?"
-      ).bind(workType, shift, expectedStart, expectedEnd, note, existing.id).run();
+        "UPDATE attendance SET work_type=?,shift=?,expected_start=?,expected_end=?,registered=1,status=CASE WHEN checkin_time IS NULL THEN 'registered' ELSE status END,note=?,wfh_status=CASE WHEN ?='wfh' THEN COALESCE(wfh_status, 'pending') ELSE NULL END,wfh_reason=CASE WHEN ?='wfh' THEN ? ELSE NULL END,wfh_proof_url=CASE WHEN ?='wfh' THEN COALESCE(?, wfh_proof_url) ELSE NULL END,wfh_proof_filename=CASE WHEN ?='wfh' THEN COALESCE(?, wfh_proof_filename) ELSE NULL END,wfh_proof_document_id=CASE WHEN ?='wfh' THEN COALESCE(?, wfh_proof_document_id) ELSE NULL END WHERE id=?"
+      ).bind(workType, shift, expectedStart, expectedEnd, note, workType, workType, wfhReason || null, workType, wfhProofUrl, workType, wfhProofFilename, workType, wfhProofDocId, existing.id).run();
     } else {
-      await env.DB.prepare(
-        "INSERT INTO attendance (user_id,date,work_type,shift,expected_start,expected_end,registered,status,note) VALUES (?,?,?,?,?,?,1,'registered',?)"
-      ).bind(me.id, today, workType, shift, expectedStart, expectedEnd, note).run();
+      const insRes = await env.DB.prepare(
+        "INSERT INTO attendance (user_id,date,work_type,shift,expected_start,expected_end,registered,status,note,wfh_status,wfh_reason,wfh_proof_url,wfh_proof_filename,wfh_proof_document_id) VALUES (?,?,?,?,?,?,1,'registered',?,CASE WHEN ?='wfh' THEN 'pending' ELSE NULL END,?,?,?,?)"
+      ).bind(me.id, today, workType, shift, expectedStart, expectedEnd, note, workType, wfhReason || null, wfhProofUrl, wfhProofFilename, wfhProofDocId).run();
+      recordId = insRes?.meta?.last_row_id || null;
     }
     await broadcastAppEvent(env, 'attendance', 'attendance:registered', {
       user_id: me.id,
@@ -6598,7 +7004,24 @@ const attendanceRateTo =
       work_type: workType,
       shift,
       status: 'registered',
+      wfh_status: workType === 'wfh' ? 'pending' : null,
+      wfh_reason: workType === 'wfh' ? wfhReason : null,
     }, { actorId: me.id });
+    if (workType === 'wfh') {
+      await broadcastAppEvent(env, 'attendance', 'attendance:wfh_requested', {
+        id: recordId,
+        user_id: me.id,
+        user_name: me.full_name,
+        employee_code: me.employee_code,
+        department: me.department,
+        date: today,
+        shift,
+        wfh_reason: wfhReason,
+        wfh_proof_url: wfhProofUrl,
+        wfh_proof_filename: wfhProofFilename,
+        wfh_status: 'pending',
+      }, { actorId: me.id });
+    }
     return json({ ok: true });
   }
 
@@ -6644,8 +7067,8 @@ const attendanceRateTo =
     const geoLat = Number.isFinite(Number(b.latitude)) ? Number(b.latitude) : null;
     const geoLng = Number.isFinite(Number(b.longitude)) ? Number(b.longitude) : null;
     const isOffice = workType === 'office';
-    const geofenceStatus = isOffice ? (geo.status === 'verified' ? 'inside' : geo.status === 'outside' ? 'outside' : geo.status === 'retry' ? (geo.inside_geofence ? 'inside' : 'outside') : null) : null;
-    const requiresReview = isOffice && (geo.status === 'outside' || geo.status === 'retry');
+    const geofenceStatus = isOffice ? (geo.status === 'verified' ? 'inside' : 'outside') : null;
+    const requiresReview = isOffice && geo.status === 'outside';
     const reviewStatus = requiresReview ? 'pending' : 'none';
     await env.DB.prepare('UPDATE attendance SET checkin_time=?,checkin_ip=?,status=?,late_minutes=?,checkin_location_id=?,checkin_distance_meters=?,checkin_accuracy_meters=?,checkin_verification_method=?,checkin_lat=?,checkin_lng=?,checkin_geofence_status=?,checkin_requires_review=?,checkin_review_status=?,note=? WHERE id=?')
       .bind(timeStr, ipInfo.ip, status, lateMinutes, geo.location?.id||null, geo.location?.distance_meters||null, geo.accuracy_meters||null, geo.status === 'verified' ? 'geofence' : (geo.location?.id ? 'geofence' : (ipInfo.matched ? 'ip' : null)), geoLat, geoLng, geofenceStatus, requiresReview ? 1 : 0, reviewStatus, b.note || existing.note || '', existing.id).run();
@@ -6724,8 +7147,8 @@ const attendanceRateTo =
     const geoLat = Number.isFinite(Number(b.latitude)) ? Number(b.latitude) : null;
     const geoLng = Number.isFinite(Number(b.longitude)) ? Number(b.longitude) : null;
     const isOffice = workType === 'office';
-    const geofenceStatus = isOffice ? (geo.status === 'verified' ? 'inside' : geo.status === 'outside' ? 'outside' : geo.status === 'retry' ? (geo.inside_geofence ? 'inside' : 'outside') : null) : null;
-    const requiresReview = isOffice && (geo.status === 'outside' || geo.status === 'retry');
+    const geofenceStatus = isOffice ? (geo.status === 'verified' ? 'inside' : 'outside') : null;
+    const requiresReview = isOffice && geo.status === 'outside';
     const reviewStatus = requiresReview ? 'pending' : 'none';
     await env.DB.prepare('UPDATE attendance SET checkout_time=?,checkout_ip=?,work_hours=?,early_minutes=?,checkout_location_id=?,checkout_distance_meters=?,checkout_accuracy_meters=?,checkout_verification_method=?,checkout_lat=?,checkout_lng=?,checkout_geofence_status=?,checkout_requires_review=?,checkout_review_status=? WHERE id=?')
       .bind(timeStr, ipInfo.ip, workHours, earlyMinutes, geo.location?.id||null, geo.location?.distance_meters||null, geo.accuracy_meters||null, geo.status === 'verified' ? 'geofence' : (geo.location?.id ? 'geofence' : (ipInfo.matched ? 'ip' : null)), geoLat, geoLng, geofenceStatus, requiresReview ? 1 : 0, reviewStatus, record.id).run();
@@ -6847,6 +7270,180 @@ const attendanceRateTo =
       note,
     }, { actorId: me.id });
     return json({ ok: true, attendance_id: aid, status: decision });
+  }
+
+  // ── WFH MANAGEMENT ──────────────────────────────────────────────
+  if (path === '/api/attendance/wfh-proof-upload' && request.method === 'POST') {
+    const form = await request.formData().catch(() => null);
+    const file = form?.get('file');
+    if (!file || typeof file.stream !== 'function') return json({ error: 'Vui lòng chọn tệp đính kèm' }, 400);
+    const contentType = String(file.type || '').toLowerCase();
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
+    if (!allowed.includes(contentType) || !Number.isFinite(file.size) || file.size < 1 || file.size > 10 * 1024 * 1024) {
+      return json({ error: 'Chỉ nhận ảnh (JPG, PNG, WebP, GIF) hoặc PDF, tối đa 10 MB' }, 400);
+    }
+    const bytes = await file.arrayBuffer();
+    const documentId = crypto.randomUUID();
+    const filename = safeDownloadName(file.name);
+    const fileUrl = `/api/attendance/wfh-proof/${documentId}`;
+    if (env.HR_DOCUMENTS) {
+      const storageKey = `wfh-proofs/${me.id}/${documentId}`;
+      await env.HR_DOCUMENTS.put(storageKey, bytes, {
+        httpMetadata: { contentType, cacheControl: 'private, no-store' },
+        customMetadata: { owner_id: String(me.id) }
+      });
+      await env.DB.prepare('INSERT INTO wfh_proof_files (id, user_id, filename, content_type, byte_size, data_base64) VALUES (?, ?, ?, ?, ?, ?)')
+        .bind(documentId, me.id, filename, contentType, file.size, null).run();
+    } else {
+      const b64 = Buffer.from(bytes).toString('base64');
+      await env.DB.prepare('INSERT INTO wfh_proof_files (id, user_id, filename, content_type, byte_size, data_base64) VALUES (?, ?, ?, ?, ?, ?)')
+        .bind(documentId, me.id, filename, contentType, file.size, b64).run();
+    }
+    return json({ ok: true, document_id: documentId, filename, file_url: fileUrl });
+  }
+
+  const wfhProofServeMatch = path.match(/^\/api\/attendance\/wfh-proof\/([0-9a-fA-F-]{36})$/);
+  if (wfhProofServeMatch && request.method === 'GET') {
+    const documentId = wfhProofServeMatch[1];
+    const row = await env.DB.prepare('SELECT * FROM wfh_proof_files WHERE id=?').bind(documentId).first();
+    if (!row) return json({ error: 'Tệp không tồn tại' }, 404);
+    const canAccess = Number(row.user_id) === Number(me.id) || isAttendanceAdmin;
+    if (!canAccess) return json({ error: 'Không có quyền xem tệp' }, 403);
+    const disposition = url.searchParams.get('disposition') === 'attachment' ? 'attachment' : 'inline';
+    const filename = safeDownloadName(row.filename || 'proof');
+    if (env.HR_DOCUMENTS) {
+      const storageKey = `wfh-proofs/${row.user_id}/${documentId}`;
+      const object = await env.HR_DOCUMENTS.get(storageKey);
+      if (object) {
+        return new Response(object.body, {
+          headers: {
+            'Content-Type': row.content_type || 'application/octet-stream',
+            'Content-Disposition': `${disposition}; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+            'Cache-Control': 'private, max-age=3600',
+            'X-Content-Type-Options': 'nosniff',
+          }
+        });
+      }
+    }
+    if (row.data_base64) {
+      const buffer = Buffer.from(row.data_base64, 'base64');
+      return new Response(buffer, {
+        headers: {
+          'Content-Type': row.content_type || 'application/octet-stream',
+          'Content-Disposition': `${disposition}; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+          'Cache-Control': 'private, max-age=3600',
+          'X-Content-Type-Options': 'nosniff',
+        }
+      });
+    }
+    return json({ error: 'Nội dung tệp không khả dụng' }, 404);
+  }
+
+  const wfhProofUpdateMatch = path.match(/^\/api\/attendance\/(\d+)\/wfh-proof$/);
+  if (wfhProofUpdateMatch && request.method === 'POST') {
+    const attendanceId = parseInt(wfhProofUpdateMatch[1]);
+    const record = await env.DB.prepare('SELECT a.*, u.department, u.full_name, u.employee_code FROM attendance a JOIN users u ON u.id=a.user_id WHERE a.id=?').bind(attendanceId).first();
+    if (!record) return json({ error: 'Không tìm thấy bản ghi chấm công' }, 404);
+    if (Number(record.user_id) !== Number(me.id)) return json({ error: 'Chỉ được bổ sung minh chứng của chính bạn' }, 403);
+    const b = await request.json().catch(() => ({}));
+    const reason = String(b.wfh_reason || record.wfh_reason || '').trim();
+    if (!reason) return json({ error: 'Vui lòng nhập lý do WFH' }, 400);
+    const proofUrl = b.wfh_proof_url !== undefined ? b.wfh_proof_url : record.wfh_proof_url;
+    const proofFilename = b.wfh_proof_filename !== undefined ? b.wfh_proof_filename : record.wfh_proof_filename;
+    const proofDocId = b.wfh_proof_document_id !== undefined ? b.wfh_proof_document_id : record.wfh_proof_document_id;
+    const newStatus = (record.wfh_status === 'rejected' || !record.wfh_status) ? 'pending' : record.wfh_status;
+    await env.DB.prepare(
+      "UPDATE attendance SET wfh_reason=?, wfh_proof_url=?, wfh_proof_filename=?, wfh_proof_document_id=?, wfh_status=?, wfh_review_note=CASE WHEN ?='pending' THEN NULL ELSE wfh_review_note END WHERE id=?"
+    ).bind(reason, proofUrl || null, proofFilename || null, proofDocId || null, newStatus, newStatus, attendanceId).run();
+    await broadcastAppEvent(env, 'attendance', 'attendance:wfh_requested', {
+      id: attendanceId,
+      user_id: me.id,
+      user_name: me.full_name,
+      employee_code: me.employee_code,
+      department: record.department,
+      date: record.date,
+      wfh_status: newStatus,
+      wfh_reason: reason,
+      wfh_proof_url: proofUrl,
+      wfh_proof_filename: proofFilename,
+    }, { actorId: me.id });
+    return json({ ok: true, wfh_status: newStatus });
+  }
+
+  if (path === '/api/attendance/wfh-requests' && request.method === 'GET') {
+    const month = String(url.searchParams.get('month') || '');
+    const status = String(url.searchParams.get('status') || '');
+    const date = String(url.searchParams.get('date') || '');
+    let q = `SELECT a.*, u.full_name, u.employee_code, u.department, u.avatar
+             FROM attendance a
+             JOIN users u ON u.id = a.user_id
+             WHERE a.work_type = 'wfh' AND a.wfh_status IS NOT NULL`;
+    const binds = [];
+    if (!isAttendanceAdmin) {
+      q += ' AND a.user_id = ?';
+      binds.push(me.id);
+    } else if (me.role === 'manager' && !isAdmin && !isAttendanceHcns) {
+      q += ' AND u.department = ?';
+      binds.push(me.department);
+    }
+    if (/^\d{4}-\d{2}$/.test(month)) {
+      q += " AND strftime('%Y-%m', a.date) = ?";
+      binds.push(month);
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      q += " AND a.date = ?";
+      binds.push(date);
+    }
+    if (['pending', 'approved', 'rejected'].includes(status)) {
+      q += ' AND a.wfh_status = ?';
+      binds.push(status);
+    }
+    q += " ORDER BY CASE a.wfh_status WHEN 'pending' THEN 0 WHEN 'rejected' THEN 1 ELSE 2 END, a.date DESC, a.id DESC";
+    const { results = [] } = await (binds.length ? env.DB.prepare(q).bind(...binds) : env.DB.prepare(q)).all();
+    return json({ wfh_requests: results });
+  }
+
+  const wfhDecisionMatch = path.match(/^\/api\/attendance\/(\d+)\/wfh-decision$/);
+  if (wfhDecisionMatch && request.method === 'POST') {
+    if (!isAttendanceAdmin) return json({ error: 'Không có quyền duyệt yêu cầu WFH' }, 403);
+    const id = parseInt(wfhDecisionMatch[1]);
+    const record = await env.DB.prepare('SELECT a.*, u.full_name, u.employee_code, u.department FROM attendance a JOIN users u ON u.id=a.user_id WHERE a.id=?').bind(id).first();
+    if (!record || record.work_type !== 'wfh') return json({ error: 'Không tìm thấy bản ghi WFH hợp lệ' }, 404);
+    if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && record.department !== me.department) {
+      return json({ error: 'Không có quyền duyệt yêu cầu ngoài phòng ban' }, 403);
+    }
+    const b = await request.json().catch(() => ({}));
+    const action = b.action === 'reject' ? 'reject' : 'approve';
+    const note = String(b.review_note || '').trim();
+    if (action === 'reject' && !note) {
+      return json({ error: 'Vui lòng nhập lý do từ chối WFH' }, 400);
+    }
+    const nextStatus = action === 'approve' ? 'approved' : 'rejected';
+    await env.DB.prepare(
+      "UPDATE attendance SET wfh_status=?, wfh_reviewer_id=?, wfh_reviewer_name=?, wfh_review_note=?, wfh_reviewed_at=datetime('now','localtime') WHERE id=?"
+    ).bind(nextStatus, me.id, me.full_name || '', note || null, id).run();
+
+    try {
+      const notifTitle = action === 'approve' ? 'Yêu cầu WFH đã được duyệt' : 'Yêu cầu WFH đã bị từ chối';
+      const notifContent = action === 'approve'
+        ? `Yêu cầu WFH ngày ${record.date} của bạn đã được ${me.full_name || 'Quản lý'} phê duyệt.${note ? ` Ghi chú: ${note}` : ''}`
+        : `Yêu cầu WFH ngày ${record.date} của bạn đã bị từ chối bởi ${me.full_name || 'Quản lý'}. Lý do: ${note}`;
+      await env.DB.prepare(
+        "INSERT INTO notifications (user_id, title, content, type, link) VALUES (?, ?, ?, 'attendance', '/attendance')"
+      ).bind(record.user_id, notifTitle, notifContent).run();
+    } catch (_) {}
+
+    await broadcastAppEvent(env, 'attendance', action === 'approve' ? 'attendance:wfh_approved' : 'attendance:wfh_rejected', {
+      id,
+      user_id: record.user_id,
+      date: record.date,
+      wfh_status: nextStatus,
+      reviewer_id: me.id,
+      reviewer_name: me.full_name || '',
+      review_note: note || null,
+    }, { actorId: me.id });
+
+    return json({ ok: true, wfh_status: nextStatus });
   }
 
   // ── OVERTIME ────────────────────────────────────────────────────
@@ -7216,7 +7813,7 @@ const attendanceRateTo =
       for (const leave of leaves) paidLeaveDays += attCountBusinessDaysBetween(String(leave.start_date) > from ? String(leave.start_date) : from, String(leave.end_date) < to ? String(leave.end_date) : to);
     } catch (_) {}
     const activeRecords = records.filter(r => !['cancelled', 'rejected'].includes(r.status));
-    const complete = activeRecords.filter(r => r.checkin_time && r.checkout_time && r.status !== 'absent');
+    const complete = activeRecords.filter(r => r.checkin_time && r.checkout_time && r.status !== 'absent' && (r.work_type !== 'wfh' || r.wfh_status !== 'rejected'));
     const fullDays = complete.filter(r => r.shift !== 'morning' && r.shift !== 'afternoon').length;
     const halfDays = complete.length - fullDays;
     const missingCheckinDays = activeRecords.filter(r => !r.checkin_time && r.status !== 'absent' && r.status !== 'leave').length;
@@ -7348,6 +7945,7 @@ const attendanceRateTo =
     const maxAccuracy = Math.max(5, parseCoord(b.max_accuracy_meters) || 100);
     if (!String(b.name || '').trim() || lat === null || lng === null) return json({ error: 'Tên và tọa độ là bắt buộc' }, 400);
     const r = await env.DB.prepare('INSERT INTO attendance_locations (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active) VALUES (?,?,?,?,?,?,?,?)').bind(String(b.name).trim(),String(b.code||'').trim()||null,String(b.address||'').trim(),lat,lng,radius,maxAccuracy,b.is_active===false?0:1).run();
+    await broadcastAppEvent(env, 'location_config', 'attendance_location:created', { id: r.meta.last_row_id }, { actorId: me.id });
     return json({ ok:true,id:r.meta.last_row_id });
   }
   const attendanceLocationMatch = path.match(/^\/api\/attendance-locations\/(\d+)$/);
@@ -7355,7 +7953,11 @@ const attendanceRateTo =
     if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
     if (!(await ensureAttendanceLocationSchema(env))) return json({ error: 'Không thể khởi tạo dữ liệu địa điểm chấm công. Vui lòng thử lại sau.' }, 503);
     const id = Number(attendanceLocationMatch[1]);
-    if (request.method === 'DELETE') { await env.DB.prepare('DELETE FROM attendance_locations WHERE id=?').bind(id).run(); return json({ok:true}); }
+    if (request.method === 'DELETE') {
+      await env.DB.prepare('DELETE FROM attendance_locations WHERE id=?').bind(id).run();
+      await broadcastAppEvent(env, 'location_config', 'attendance_location:deleted', { id }, { actorId: me.id });
+      return json({ok:true});
+    }
     const b = await request.json().catch(() => ({}));
     const parseCoord = val => {
       if (typeof val === 'number') return Number.isFinite(val) ? val : null;
@@ -7369,6 +7971,7 @@ const attendanceRateTo =
     const maxAccuracy = Math.max(5, parseCoord(b.max_accuracy_meters) || 100);
     if (!String(b.name||'').trim() || lat === null || lng === null) return json({ error:'Tên và tọa độ là bắt buộc' },400);
     await env.DB.prepare('UPDATE attendance_locations SET name=?,code=?,address=?,latitude=?,longitude=?,radius_meters=?,max_accuracy_meters=?,is_active=?,updated_at=datetime(\'now\',\'localtime\') WHERE id=?').bind(String(b.name).trim(),String(b.code||'').trim()||null,String(b.address||'').trim(),lat,lng,radius,maxAccuracy,b.is_active===false?0:1,id).run();
+    await broadcastAppEvent(env, 'location_config', 'attendance_location:updated', { id }, { actorId: me.id });
     return json({ok:true});
   }
 
@@ -8916,14 +9519,22 @@ const attendanceRateTo =
     const selfOnly     = url.searchParams.get('self') === '1' || scope === 'mine';
     const canReview    = me.role === 'admin' || isHrOrBod(me) || me.role === 'manager';
     let query, params;
+    const leaveSelectFields = `lr.*, u.full_name as employee_name, u.employee_code, u.department, lt.name AS type_name, lt.paid_policy, lt.deducts_annual_leave, lt.requires_evidence, lt.requires_bod_approval, lt.max_days, lt.short_description AS type_short_description, lt.policy_description AS type_policy_description, lt.notice_hours AS type_notice_hours, lt.required_documents AS type_required_documents, lt.requires_handover AS type_requires_handover,
+      COALESCE(lr.approved_by_name, (SELECT actor_name FROM leave_approval_history WHERE leave_request_id=lr.id AND action='approved' ORDER BY id DESC LIMIT 1)) AS approved_by_name,
+      COALESCE(lr.approved_at, (SELECT created_at FROM leave_approval_history WHERE leave_request_id=lr.id AND action='approved' ORDER BY id DESC LIMIT 1)) AS approved_at,
+      COALESCE(lr.rejected_by_name, (SELECT actor_name FROM leave_approval_history WHERE leave_request_id=lr.id AND action='rejected' ORDER BY id DESC LIMIT 1)) AS rejected_by_name,
+      COALESCE(lr.rejected_at, (SELECT created_at FROM leave_approval_history WHERE leave_request_id=lr.id AND action='rejected' ORDER BY id DESC LIMIT 1)) AS rejected_at,
+      COALESCE(lr.rejection_note, (SELECT note FROM leave_approval_history WHERE leave_request_id=lr.id AND action='rejected' ORDER BY id DESC LIMIT 1)) AS rejection_note,
+      COALESCE(lr.submitted_at, (SELECT created_at FROM leave_approval_history WHERE leave_request_id=lr.id AND action='submitted' ORDER BY id ASC LIMIT 1)) AS submitted_at`;
+
     if (!canReview || selfOnly) {
-      query  = `SELECT lr.*, u.full_name as employee_name, u.employee_code, u.department, lt.name AS type_name, lt.paid_policy, lt.deducts_annual_leave, lt.requires_evidence, lt.requires_bod_approval, lt.max_days, lt.short_description AS type_short_description, lt.policy_description AS type_policy_description, lt.notice_hours AS type_notice_hours, lt.required_documents AS type_required_documents, lt.requires_handover AS type_requires_handover FROM leave_requests lr
+      query  = `SELECT ${leaveSelectFields} FROM leave_requests lr
                 LEFT JOIN users u ON lr.user_id=u.employee_code OR CAST(lr.user_id AS TEXT)=CAST(u.id AS TEXT) OR lr.employee_id=u.id
                 LEFT JOIN leave_types lt ON lr.type=lt.code
                 WHERE (CAST(lr.user_id AS TEXT)=CAST(? AS TEXT) OR CAST(lr.employee_id AS TEXT)=CAST(? AS TEXT) OR lr.user_id=?)`;
       params = [String(me.id), String(me.id), String(me.employee_code || '')];
     } else {
-      query  = `SELECT lr.*, u.full_name as employee_name, u.employee_code, u.department, lt.name AS type_name, lt.paid_policy, lt.deducts_annual_leave, lt.requires_evidence, lt.requires_bod_approval, lt.max_days, lt.short_description AS type_short_description, lt.policy_description AS type_policy_description, lt.notice_hours AS type_notice_hours, lt.required_documents AS type_required_documents, lt.requires_handover AS type_requires_handover FROM leave_requests lr
+      query  = `SELECT ${leaveSelectFields} FROM leave_requests lr
                 LEFT JOIN users u ON CAST(lr.user_id AS TEXT)=CAST(u.id AS TEXT) OR lr.user_id=u.employee_code OR lr.employee_id=u.id
                 LEFT JOIN leave_types lt ON lr.type=lt.code
                 WHERE 1=1`;
@@ -8934,12 +9545,17 @@ const attendanceRateTo =
       }
     }
     if (statusFilter) { query += ' AND lr.status=?'; params.push(statusFilter); }
-    query += ' ORDER BY lr.id DESC';
+    query += " ORDER BY CASE WHEN lr.status = 'pending' THEN 0 ELSE 1 END ASC, COALESCE(lr.submitted_at, lr.id) DESC, lr.id DESC";
+    try {
+      await env.DB.prepare("UPDATE leave_requests SET current_approver='Quản lý / HR' WHERE status='pending' AND current_approver IN ('Quản lý trực tiếp', 'Ban Giám đốc')").run();
+    } catch (_) {}
     const { results } = await env.DB.prepare(query).bind(...params).all();
     const leave = await Promise.all(results.map(async row => {
       const docs = await env.DB.prepare('SELECT id,original_filename,content_type,byte_size,required_label FROM leave_request_documents WHERE leave_request_id=?').bind(row.id).all();
+      const approverHint = (row.current_approver === 'Quản lý trực tiếp' || row.current_approver === 'Ban Giám đốc') ? 'Quản lý / HR' : (row.current_approver || 'Quản lý / HR');
       return {
         ...row,
+        current_approver: approverHint,
         type_name: row.type_name || row.type,
         paid_label: leavePaidLabel(row.paid_policy),
         can_action: row.status === 'pending' && canAdvanceLeaveApproval(me, row),
@@ -8985,8 +9601,8 @@ const attendanceRateTo =
     }
     if (balanceType && await getLeaveBalance(env, me.id, balanceType, balanceYear) < leaveDays) return json({ error: `Không đủ số dư ${balanceType === 'annual' ? 'phép năm' : 'nghỉ bù'}` }, 400);
     const isHcnsApplicant = normalizeDeptName(me.department) === 'Phòng HCNS';
-    const flow = leavePolicyFor(leaveType), needsBod = flow === 'manager_hr_bgd' || isHcnsApplicant;
-    const currentApprover = isHcnsApplicant ? 'Trưởng phòng HCNS' : 'Quản lý trực tiếp';
+    const flow = leavePolicyFor(leaveType);
+    const currentApprover = isHcnsApplicant ? 'Trưởng phòng HCNS' : 'Quản lý / HR';
     const r = await env.DB.prepare(
       'INSERT INTO leave_requests (user_id,employee_id,type,start_date,end_date,reason,status,current_approver,approval_level,submitted_at,leave_session,total_days,handover_user_id,handover_user_name,approval_flow,balance_reserved_days) VALUES (?,?,?,?,?,?,?,?,?,datetime(\'now\',\'localtime\'),?,?,?,?,?,?)'
     ).bind(String(me.id), me.id, typeCode, b.start_date, b.end_date, reason, 'pending', currentApprover, 1, session, leaveDays, handoverUser?.id || null, handoverUser?.full_name || null, flow, balanceType ? leaveDays : 0).run();
@@ -8996,7 +9612,7 @@ const attendanceRateTo =
       env.DB.prepare('INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,leave_request_id,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?,?)').bind(me.id, balanceType, balanceYear, leaveRequestId, -leaveDays, 'pending_reservation', 'Giữ chỗ đơn nghỉ', me.id, me.full_name || ''),
     ]);
     if (documentIds.length) await env.DB.prepare(`UPDATE leave_request_documents SET leave_request_id=? WHERE id IN (${documentIds.map(() => '?').join(',')})`).bind(leaveRequestId, ...documentIds).run();
-    await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(leaveRequestId, 0, me.id, me.full_name, 'submitted', needsBod ? 'Luồng cần Ban Giám đốc phê duyệt cuối' : 'Luồng Quản lý trực tiếp → HCNS').run();
+    await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(leaveRequestId, 0, me.id, me.full_name, 'submitted', 'Gửi đơn xin nghỉ phép').run();
     await broadcastAppEvent(env, 'leave', 'leave:created', {
       id: leaveRequestId,
       user_id: me.id,
@@ -9053,7 +9669,20 @@ const attendanceRateTo =
       if (!leaveReq) return json({ error: 'Không tìm thấy đơn nghỉ' }, 404);
       if (b.status === 'rejected') {
         if (!canAdvanceLeaveApproval(me, leaveReq)) return json({ error: 'Chưa đến bước phê duyệt của bạn' }, 403);
-        await env.DB.prepare("UPDATE leave_requests SET status='rejected',current_approver=NULL WHERE id=?").bind(id).run();
+        const currentLevel = Number(leaveReq.approval_level || 1);
+        const noteText = String(b.note || '').trim();
+
+        await env.DB.prepare(`
+          UPDATE leave_requests SET
+            status='rejected',
+            current_approver=NULL,
+            rejected_by=?,
+            rejected_by_name=?,
+            rejected_at=datetime('now','localtime'),
+            rejection_note=?
+          WHERE id=?
+        `).bind(me.id, me.full_name, noteText || null, id).run();
+
         if (leaveReq.balance_reserved_days > 0) {
           const type = leaveReq.type === 'annual' ? 'annual' : 'compensatory', year = Number(String(leaveReq.start_date).slice(0,4));
           await env.DB.batch([
@@ -9061,23 +9690,58 @@ const attendanceRateTo =
             env.DB.prepare('INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,leave_request_id,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?,?)').bind(leaveReq.employee_id, type, year, id, leaveReq.balance_reserved_days, 'reservation_release', String(b.note || 'Từ chối đơn'), me.id, me.full_name || ''),
           ]);
         }
-        await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(id, leaveReq.approval_level, me.id, me.full_name, 'rejected', String(b.note || '')).run();
+        await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(id, currentLevel, me.id, me.full_name, 'rejected', noteText).run();
         await broadcastAppEvent(env, 'leave', 'leave:rejected', {
           id,
           user_id: leaveReq.employee_id,
           status: 'rejected',
-          note: String(b.note || ''),
+          note: noteText,
+          rejected_by_name: me.full_name,
         }, { actorId: me.id });
         return json({ ok: true });
       }
       if (b.status === 'approved') {
         if (!canAdvanceLeaveApproval(me, leaveReq)) return json({ error: 'Chưa đến bước phê duyệt của bạn' }, 403);
-        const flow = leaveReq.approval_flow || 'manager_hr'; let nextLevel = Number(leaveReq.approval_level || 1) + 1, nextApprover = null;
-        if (me.role === 'admin' || (nextLevel === 3 && flow !== 'manager_hr_bgd') || nextLevel > 3) nextLevel = 99;
-        if (nextLevel === 2) nextApprover = 'HCNS'; else if (nextLevel === 3) nextApprover = 'Ban Giám đốc';
+        const currentLevel = Number(leaveReq.approval_level || 1);
+        const isApproverAdmin = me.role === 'admin';
+        const isApproverHcns = isHcns(me);
+        const isApproverBgd = isBgd(me);
+        const isDeptMgr = me.role === 'manager' && !!leaveReq.department && normalizeDeptName(me.department) === normalizeDeptName(leaveReq.department);
+
+        let nextLevel = 99;
+        let nextApprover = null;
+
+        if (isApproverAdmin || isApproverHcns || isApproverBgd) {
+          // HR (HCNS), Admin và Ban Giám Đốc duyệt: hoàn tất phê duyệt ngay lập tức (level 99), không cần chờ ai hết
+          nextLevel = 99;
+          nextApprover = null;
+        } else if (isDeptMgr) {
+          // Quản lý trực tiếp duyệt ở level 1 -> chuyển tiếp tới HCNS
+          nextLevel = 2;
+          nextApprover = 'HCNS';
+        } else {
+          nextLevel = 99;
+        }
+
         const finalApproved = nextLevel === 99;
-        await env.DB.prepare('UPDATE leave_requests SET status=?,approval_level=?,current_approver=? WHERE id=?').bind(finalApproved ? 'approved' : 'pending', nextLevel, nextApprover, id).run();
-        await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(id, leaveReq.approval_level, me.id, me.full_name, finalApproved ? 'approved' : 'forwarded', String(b.note || '')).run();
+        const noteText = String(b.note || '').trim();
+
+        if (finalApproved) {
+          await env.DB.prepare(`
+            UPDATE leave_requests SET
+              status='approved',
+              approval_level=?,
+              current_approver=?,
+              approved_by=?,
+              approved_by_name=?,
+              approved_at=datetime('now','localtime')
+            WHERE id=?
+          `).bind(nextLevel, nextApprover, me.id, me.full_name, id).run();
+        } else {
+          await env.DB.prepare('UPDATE leave_requests SET status=?,approval_level=?,current_approver=? WHERE id=?').bind('pending', nextLevel, nextApprover, id).run();
+        }
+
+        await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(id, currentLevel, me.id, me.full_name, finalApproved ? 'approved' : 'forwarded', noteText).run();
         await broadcastAppEvent(env, 'leave', finalApproved ? 'leave:approved' : 'leave:forwarded', {
           id,
           user_id: leaveReq.employee_id,
@@ -9085,7 +9749,8 @@ const attendanceRateTo =
           approval_level: nextLevel,
           current_approver: nextApprover,
           final: finalApproved,
-          note: String(b.note || ''),
+          note: noteText,
+          approved_by_name: finalApproved ? me.full_name : undefined,
         }, { actorId: me.id });
         return json({ ok: true, final: finalApproved });
       }
@@ -9299,6 +9964,282 @@ const attendanceRateTo =
     const { results } = (!isAdmin && !isHcns(me)) ? await stmt.bind(month, me.department).all() : await stmt.bind(month).all();
     return json({ payroll: results });
   }
+
+  if (path === '/api/payroll/import' && request.method === 'POST') {
+    if (!(isAdmin || isHcns(me))) return json({ error: 'Không có quyền thực hiện' }, 403);
+    await ensurePayrollDetailSchema(env);
+    const b = await request.json().catch(() => ({}));
+    const month = String(b.month || '').trim();
+    if (!/^\d{4}-\d{2}$/.test(month)) return json({ error: 'Thiếu hoặc sai định dạng tháng lương (YYYY-MM)' }, 400);
+
+    const batch = await env.DB.prepare('SELECT * FROM payroll_batches WHERE month=?').bind(month).first();
+    if (batch && ['locked', 'paid'].includes(String(batch.status || '').toLowerCase())) {
+      return json({ error: 'Bảng lương tháng này đã khóa, không thể import đè.' }, 409);
+    }
+
+    const rows = Array.isArray(b.rows) ? b.rows : [];
+    if (!rows.length) return json({ error: 'Không có dữ liệu nhân viên để import' }, 400);
+
+    const [yearStr, mmStr] = month.split('-');
+    const invYear = Number(yearStr);
+    const invMonth = Number(mmStr);
+
+    const { results: users = [] } = await env.DB.prepare(
+      'SELECT id, employee_code, full_name, department, position, contract_type, salary FROM users'
+    ).all();
+
+    const userByCode = new Map();
+    const userByName = new Map();
+    for (const u of users) {
+      if (u.employee_code) userByCode.set(String(u.employee_code).trim().toUpperCase(), u);
+      if (u.full_name) userByName.set(String(u.full_name).trim().toLowerCase(), u);
+    }
+
+    let created = 0, updated = 0, matched = 0;
+    const unmatchedCodes = [];
+
+    for (const r of rows) {
+      const code = String(r.employee_code || '').trim().toUpperCase();
+      const name = String(r.full_name || '').trim();
+      const normName = name.toLowerCase();
+
+      const matchedUser = (code && userByCode.get(code)) || userByName.get(normName) || null;
+      const employeeId = matchedUser ? matchedUser.id : null;
+      if (matchedUser) matched++;
+      else if (code) unmatchedCodes.push(`${code} (${name})`);
+
+      const dept = r.department || (matchedUser ? matchedUser.department : '') || '';
+      const baseSalary = Number(r.total_income_agreed || r.base_salary || r.position_salary || (matchedUser ? matchedUser.salary : 0) || 0);
+      const netSalary = Number(r.transfer_amount || r.net_income_after_tax || r.net_salary || 0);
+      const dataStatus = 'ready';
+      const dataWarnings = '';
+
+      let existing = null;
+      if (employeeId) {
+        existing = await env.DB.prepare('SELECT id FROM payroll WHERE month=? AND employee_id=? LIMIT 1')
+          .bind(month, employeeId).first();
+      }
+      if (!existing && code) {
+        existing = await env.DB.prepare('SELECT id FROM payroll WHERE month=? AND UPPER(employee_code)=? LIMIT 1')
+          .bind(month, code).first();
+      }
+      if (!existing && name) {
+        existing = await env.DB.prepare('SELECT id FROM payroll WHERE month=? AND employee_name=? LIMIT 1')
+          .bind(month, name).first();
+      }
+
+      let payrollId = null;
+      if (existing) {
+        payrollId = existing.id;
+        await env.DB.prepare(`
+          UPDATE payroll SET
+            user_id=?, employee_id=?, employee_name=?, employee_code=?, department=?,
+            base_salary=?, kpi_bonus=?, allowance=?, deduction=?, overtime_pay=?, tax=?, insurance=?,
+            work_days=?, standard_days=?, note=?, net_salary=?, data_status=?, data_warnings=?,
+            position_salary=?, completion_bonus=?, total_income_agreed=?, insurance_base=?,
+            probation_days=?, official_days=?, unpaid_leave_days=?, work_income=?,
+            ot_normal_hours=?, ot_weekend_hours=?, ot_holiday_hours=?, base_hourly_rate=?, ot_total_income=?,
+            phone_allowance=?, attire_allowance=?, parking_allowance=?, fuel_allowance=?, business_trip_allowance=?,
+            total_allowance=?, total_income_with_allowance=?, total_pretax_income=?,
+            insurance_social=?, insurance_health=?, insurance_unemployment=?,
+            personal_deduction=?, dependent_deduction=?, dependent_count=?, total_family_deduction=?,
+            taxable_income=?, net_income_after_tax=?, tax_withheld=?,
+            meal_allowance=?, arrears_deduction=?, arrears_addition=?, transfer_amount=?,
+            comp_insurance_social=?, comp_insurance_health=?, comp_insurance_unemp=?,
+            comp_insurance_accident=?, comp_insurance_total=?, total_company_cost=?,
+            is_signed=?, import_source='excel', source_synced_at=datetime('now','localtime')
+          WHERE id=?
+        `).bind(
+          String(me.id), employeeId, name, code, dept,
+          baseSalary, Number(r.kpi_bonus || 0), Number(r.total_allowance || r.allowance || 0),
+          Number(r.arrears_deduction || 0), Number(r.ot_total_income || r.overtime_pay || 0),
+          Number(r.tax || 0), Number(r.insurance || 0),
+          Number(r.work_days || 0), Number(r.standard_days || 23), r.notes || '', netSalary, dataStatus, dataWarnings,
+          Number(r.position_salary || 0), Number(r.completion_bonus || 0), Number(r.total_income_agreed || 0), Number(r.insurance_base || 0),
+          Number(r.probation_days || 0), Number(r.official_days || 0), Number(r.unpaid_leave_days || 0), Number(r.work_income || 0),
+          Number(r.ot_normal_hours || 0), Number(r.ot_weekend_hours || 0), Number(r.ot_holiday_hours || 0), Number(r.base_hourly_rate || 0), Number(r.ot_total_income || 0),
+          Number(r.phone_allowance || 0), Number(r.attire_allowance || 0), Number(r.parking_allowance || 0), Number(r.fuel_allowance || 0), Number(r.business_trip_allowance || 0),
+          Number(r.total_allowance || 0), Number(r.total_income_with_allowance || 0), Number(r.total_pretax_income || 0),
+          Number(r.insurance_social || 0), Number(r.insurance_health || 0), Number(r.insurance_unemployment || 0),
+          Number(r.personal_deduction || 0), Number(r.dependent_deduction || 0), Number(r.dependent_count || 0), Number(r.total_family_deduction || 0),
+          Number(r.taxable_income || 0), Number(r.net_income_after_tax || 0), Number(r.tax_withheld || 0),
+          Number(r.meal_allowance || 0), Number(r.arrears_deduction || 0), Number(r.arrears_addition || 0), Number(r.transfer_amount || 0),
+          Number(r.comp_insurance_social || 0), Number(r.comp_insurance_health || 0), Number(r.comp_insurance_unemp || 0),
+          Number(r.comp_insurance_accident || 0), Number(r.comp_insurance_total || 0), Number(r.total_company_cost || 0),
+          r.is_signed ? 1 : 0, existing.id
+        ).run();
+        updated++;
+      } else {
+        const ins = await env.DB.prepare(`
+          INSERT INTO payroll (
+            user_id, employee_id, employee_name, employee_code, department, month,
+            base_salary, kpi_bonus, allowance, deduction, overtime_pay, tax, insurance,
+            work_days, standard_days, note, net_salary, data_status, data_warnings,
+            position_salary, completion_bonus, total_income_agreed, insurance_base,
+            probation_days, official_days, unpaid_leave_days, work_income,
+            ot_normal_hours, ot_weekend_hours, ot_holiday_hours, base_hourly_rate, ot_total_income,
+            phone_allowance, attire_allowance, parking_allowance, fuel_allowance, business_trip_allowance,
+            total_allowance, total_income_with_allowance, total_pretax_income,
+            insurance_social, insurance_health, insurance_unemployment,
+            personal_deduction, dependent_deduction, dependent_count, total_family_deduction,
+            taxable_income, net_income_after_tax, tax_withheld,
+            meal_allowance, arrears_deduction, arrears_addition, transfer_amount,
+            comp_insurance_social, comp_insurance_health, comp_insurance_unemp,
+            comp_insurance_accident, comp_insurance_total, total_company_cost,
+            is_signed, import_source, source_synced_at
+          ) VALUES (
+            ?,?,?,?,?,?,
+            ?,?,?,?,?,?,?,
+            ?,?,?,?,?,?,
+            ?,?,?,?,
+            ?,?,?,?,
+            ?,?,?,?,?,
+            ?,?,?,?,?,
+            ?,?,?,
+            ?,?,?,
+            ?,?,?,?,
+            ?,?,?,
+            ?,?,?,?,
+            ?,?,?,
+            ?,?,?,
+            ?,'excel',datetime('now','localtime')
+          )
+        `).bind(
+          String(me.id), employeeId, name, code, dept, month,
+          baseSalary, Number(r.kpi_bonus || 0), Number(r.total_allowance || r.allowance || 0),
+          Number(r.arrears_deduction || 0), Number(r.ot_total_income || r.overtime_pay || 0),
+          Number(r.tax || 0), Number(r.insurance || 0),
+          Number(r.work_days || 0), Number(r.standard_days || 23), r.notes || '', netSalary, dataStatus, dataWarnings,
+          Number(r.position_salary || 0), Number(r.completion_bonus || 0), Number(r.total_income_agreed || 0), Number(r.insurance_base || 0),
+          Number(r.probation_days || 0), Number(r.official_days || 0), Number(r.unpaid_leave_days || 0), Number(r.work_income || 0),
+          Number(r.ot_normal_hours || 0), Number(r.ot_weekend_hours || 0), Number(r.ot_holiday_hours || 0), Number(r.base_hourly_rate || 0), Number(r.ot_total_income || 0),
+          Number(r.phone_allowance || 0), Number(r.attire_allowance || 0), Number(r.parking_allowance || 0), Number(r.fuel_allowance || 0), Number(r.business_trip_allowance || 0),
+          Number(r.total_allowance || 0), Number(r.total_income_with_allowance || 0), Number(r.total_pretax_income || 0),
+          Number(r.insurance_social || 0), Number(r.insurance_health || 0), Number(r.insurance_unemployment || 0),
+          Number(r.personal_deduction || 0), Number(r.dependent_deduction || 0), Number(r.dependent_count || 0), Number(r.total_family_deduction || 0),
+          Number(r.taxable_income || 0), Number(r.net_income_after_tax || 0), Number(r.tax_withheld || 0),
+          Number(r.meal_allowance || 0), Number(r.arrears_deduction || 0), Number(r.arrears_addition || 0), Number(r.transfer_amount || 0),
+          Number(r.comp_insurance_social || 0), Number(r.comp_insurance_health || 0), Number(r.comp_insurance_unemp || 0),
+          Number(r.comp_insurance_accident || 0), Number(r.comp_insurance_total || 0), Number(r.total_company_cost || 0),
+          r.is_signed ? 1 : 0
+        ).run();
+        payrollId = ins.meta.last_row_id;
+        created++;
+      }
+
+      // Automatically sync invoice (payslip) for employee so they immediately see the clean payslip
+      if (employeeId) {
+        const existingInv = await env.DB.prepare(
+          'SELECT id, status, locked_at FROM invoices WHERE user_id=? AND month=? AND year=? LIMIT 1'
+        ).bind(employeeId, invMonth, invYear).first();
+
+        if (existingInv && !existingInv.locked_at && existingInv.status !== 'paid') {
+          await env.DB.prepare(`
+            UPDATE invoices SET
+              payroll_id=?, base_salary=?, bonus=?, allowance=?, deduction=?, tax=?, insurance=?, net_salary=?,
+              work_days=?, standard_days=?, note=?,
+              position_salary=?, completion_bonus=?, total_income_agreed=?, insurance_base=?,
+              probation_days=?, official_days=?, unpaid_leave_days=?, work_income=?,
+              ot_normal_hours=?, ot_weekend_hours=?, ot_holiday_hours=?, base_hourly_rate=?, ot_total_income=?,
+              phone_allowance=?, attire_allowance=?, parking_allowance=?, fuel_allowance=?, business_trip_allowance=?,
+              total_allowance=?, total_income_with_allowance=?, total_pretax_income=?,
+              insurance_social=?, insurance_health=?, insurance_unemployment=?,
+              personal_deduction=?, dependent_deduction=?, dependent_count=?, total_family_deduction=?,
+              taxable_income=?, net_income_after_tax=?, tax_withheld=?,
+              meal_allowance=?, arrears_deduction=?, arrears_addition=?, transfer_amount=?, import_source='excel'
+            WHERE id=?
+          `).bind(
+            payrollId, baseSalary, Number(r.kpi_bonus || 0), Number(r.total_allowance || r.allowance || 0),
+            Number(r.arrears_deduction || 0), Number(r.tax || 0), Number(r.insurance || 0), netSalary,
+            Number(r.work_days || 0), Number(r.standard_days || 23), r.notes || '',
+            Number(r.position_salary || 0), Number(r.completion_bonus || 0), Number(r.total_income_agreed || 0), Number(r.insurance_base || 0),
+            Number(r.probation_days || 0), Number(r.official_days || 0), Number(r.unpaid_leave_days || 0), Number(r.work_income || 0),
+            Number(r.ot_normal_hours || 0), Number(r.ot_weekend_hours || 0), Number(r.ot_holiday_hours || 0), Number(r.base_hourly_rate || 0), Number(r.ot_total_income || 0),
+            Number(r.phone_allowance || 0), Number(r.attire_allowance || 0), Number(r.parking_allowance || 0), Number(r.fuel_allowance || 0), Number(r.business_trip_allowance || 0),
+            Number(r.total_allowance || 0), Number(r.total_income_with_allowance || 0), Number(r.total_pretax_income || 0),
+            Number(r.insurance_social || 0), Number(r.insurance_health || 0), Number(r.insurance_unemployment || 0),
+            Number(r.personal_deduction || 0), Number(r.dependent_deduction || 0), Number(r.dependent_count || 0), Number(r.total_family_deduction || 0),
+            Number(r.taxable_income || 0), Number(r.net_income_after_tax || 0), Number(r.tax_withheld || 0),
+            Number(r.meal_allowance || 0), Number(r.arrears_deduction || 0), Number(r.arrears_addition || 0), Number(r.transfer_amount || 0),
+            existingInv.id
+          ).run();
+        } else if (!existingInv) {
+          const invNum = await nextInvoiceNumber(env, invYear, invMonth);
+          await env.DB.prepare(`
+            INSERT INTO invoices (
+              invoice_number, user_id, month, year,
+              base_salary, bonus, allowance, deduction, tax, insurance, net_salary,
+              work_days, standard_days, status, note, payroll_id, issued_at, issued_by, issued_by_name,
+              position_salary, completion_bonus, total_income_agreed, insurance_base,
+              probation_days, official_days, unpaid_leave_days, work_income,
+              ot_normal_hours, ot_weekend_hours, ot_holiday_hours, base_hourly_rate, ot_total_income,
+              phone_allowance, attire_allowance, parking_allowance, fuel_allowance, business_trip_allowance,
+              total_allowance, total_income_with_allowance, total_pretax_income,
+              insurance_social, insurance_health, insurance_unemployment,
+              personal_deduction, dependent_deduction, dependent_count, total_family_deduction,
+              taxable_income, net_income_after_tax, tax_withheld,
+              meal_allowance, arrears_deduction, arrears_addition, transfer_amount, import_source
+            ) VALUES (
+              ?,?,?,?,
+              ?,?,?,?,?,?,?,
+              ?,?,?,?,?,datetime('now','localtime'),?,?,
+              ?,?,?,?,
+              ?,?,?,?,
+              ?,?,?,?,?,
+              ?,?,?,?,?,
+              ?,?,?,
+              ?,?,?,
+              ?,?,?,?,
+              ?,?,?,
+              ?,?,?,?,'excel'
+            )
+          `).bind(
+            invNum, employeeId, invMonth, invYear,
+            baseSalary, Number(r.kpi_bonus || 0), Number(r.total_allowance || r.allowance || 0),
+            Number(r.arrears_deduction || 0), Number(r.tax || 0), Number(r.insurance || 0), netSalary,
+            Number(r.work_days || 0), Number(r.standard_days || 23), 'issued', r.notes || '', payrollId, me.id, me.full_name || '',
+            Number(r.position_salary || 0), Number(r.completion_bonus || 0), Number(r.total_income_agreed || 0), Number(r.insurance_base || 0),
+            Number(r.probation_days || 0), Number(r.official_days || 0), Number(r.unpaid_leave_days || 0), Number(r.work_income || 0),
+            Number(r.ot_normal_hours || 0), Number(r.ot_weekend_hours || 0), Number(r.ot_holiday_hours || 0), Number(r.base_hourly_rate || 0), Number(r.ot_total_income || 0),
+            Number(r.phone_allowance || 0), Number(r.attire_allowance || 0), Number(r.parking_allowance || 0), Number(r.fuel_allowance || 0), Number(r.business_trip_allowance || 0),
+            Number(r.total_allowance || 0), Number(r.total_income_with_allowance || 0), Number(r.total_pretax_income || 0),
+            Number(r.insurance_social || 0), Number(r.insurance_health || 0), Number(r.insurance_unemployment || 0),
+            Number(r.personal_deduction || 0), Number(r.dependent_deduction || 0), Number(r.dependent_count || 0), Number(r.total_family_deduction || 0),
+            Number(r.taxable_income || 0), Number(r.net_income_after_tax || 0), Number(r.tax_withheld || 0),
+            Number(r.meal_allowance || 0), Number(r.arrears_deduction || 0), Number(r.arrears_addition || 0), Number(r.transfer_amount || 0)
+          ).run();
+        }
+      }
+    }
+
+    const estimatedTotal = rows.reduce((s, r) => s + Number(r.transfer_amount || r.net_salary || 0), 0);
+    await env.DB.prepare(`
+      INSERT INTO payroll_batches (month, status, total_employees, complete_employees, missing_employees, estimated_total, created_by, created_by_name, updated_at)
+      VALUES (?,'draft',?,?,0,?,?,?,datetime('now','localtime'))
+      ON CONFLICT(month) DO UPDATE SET total_employees=excluded.total_employees, complete_employees=excluded.complete_employees, estimated_total=excluded.estimated_total, updated_at=datetime('now','localtime')
+    `).bind(month, rows.length, matched, estimatedTotal, me.id, me.full_name || '').run();
+
+    await broadcastAppEvent(env, 'payroll', 'payroll:imported', {
+      month,
+      total: rows.length,
+      created,
+      updated,
+      matched,
+      unmatched: unmatchedCodes.length,
+    }, { actorId: me.id });
+    await broadcastAppEvent(env, 'invoices', 'invoices:imported', { month }, { actorId: me.id });
+
+    return json({
+      ok: true,
+      month,
+      total: rows.length,
+      created,
+      updated,
+      matched,
+      unmatched_codes: unmatchedCodes,
+    });
+  }
+
   if (path === '/api/payroll/load' && request.method === 'POST') {
     if (!(isAdmin || isHcns(me))) return json({ error: 'Khong co quyen' }, 403);
     const b = await request.json().catch(() => ({}));
@@ -9397,19 +10338,25 @@ const attendanceRateTo =
       const warnings = base > 0 ? '' : 'Thiếu cấu hình lương';
       if (base > 0) { ready++; estimatedTotal += base; }
       else missing++;
-      const exists = await env.DB.prepare('SELECT id FROM payroll WHERE employee_id=? AND month=? LIMIT 1')
+      const exists = await env.DB.prepare('SELECT id, import_source, net_salary, base_salary, transfer_amount FROM payroll WHERE employee_id=? AND month=? LIMIT 1')
         .bind(u.id, month).first();
       if (exists) {
+        if (exists.import_source === 'excel' || Number(exists.transfer_amount || 0) > 0) {
+          // BẢO VỆ DỮ LIỆU EXCEL: Giữ nguyên 100% dữ liệu kế toán đã chốt, không ghi đè lương cơ bản
+          ready++;
+          estimatedTotal += Number(exists.transfer_amount || exists.net_salary || exists.base_salary || 0);
+          continue;
+        }
         const row = await env.DB.prepare('SELECT kpi_bonus,allowance,deduction FROM payroll WHERE id=?').bind(exists.id).first();
         const kpi = Number(row?.kpi_bonus || 0), allowance = Number(row?.allowance || 0), deduction = Number(row?.deduction || 0);
         await env.DB.prepare(
-          "UPDATE payroll SET user_id=?,employee_name=?,employee_code=?,department=?,base_salary=?,net_salary=?,data_status=?,data_warnings=?,source_synced_at=datetime('now','localtime') WHERE id=?"
+          "UPDATE payroll SET user_id=?,employee_name=?,employee_code=?,department=?,base_salary=?,net_salary=?,data_status=?,data_warnings=?,import_source='system',source_synced_at=datetime('now','localtime') WHERE id=?"
         ).bind(String(me.id), u.full_name || '', u.employee_code || '', u.department || '', base, base + kpi + allowance - deduction, status, warnings, exists.id).run();
         updated++;
         continue;
       }
       await env.DB.prepare(
-        "INSERT INTO payroll (user_id,employee_id,employee_name,employee_code,department,month,base_salary,kpi_bonus,allowance,deduction,net_salary,data_status,data_warnings,source_synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))"
+        "INSERT INTO payroll (user_id,employee_id,employee_name,employee_code,department,month,base_salary,kpi_bonus,allowance,deduction,net_salary,data_status,data_warnings,import_source,source_synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'system',datetime('now','localtime'))"
       ).bind(String(me.id), u.id, u.full_name || '', u.employee_code || '', u.department || '', month, base, 0, 0, 0, base, status, warnings).run();
       created++;
     }
@@ -9440,6 +10387,16 @@ const attendanceRateTo =
     const [yearStr, mmStr] = month.split('-');
     const year = Number(yearStr);
     const invMonth = Number(mmStr);
+    const { results: allUsers = [] } = await env.DB.prepare(
+      'SELECT id, employee_code, full_name, department, position, salary FROM users'
+    ).all();
+    const userByCode = new Map();
+    const userByName = new Map();
+    for (const u of allUsers) {
+      if (u.employee_code) userByCode.set(String(u.employee_code).trim().toUpperCase(), u);
+      if (u.full_name) userByName.set(String(u.full_name).trim().toLowerCase(), u);
+    }
+
     const { results: rows = [] } = await env.DB.prepare(
       `SELECT p.*, u.id AS real_user_id, u.bank_account, u.bank_name
          FROM payroll p
@@ -9451,20 +10408,65 @@ const attendanceRateTo =
     const skippedRows = [];
     for (const p of rows) {
       try {
-        const employeeId = Number(p.employee_id || p.real_user_id || 0);
-        const status = p.data_status || (Number(p.base_salary || 0) > 0 ? 'ready' : 'missing_salary_config');
-        if (!employeeId || status !== 'ready' || Number(p.base_salary || 0) <= 0) {
+        let employeeId = Number(p.employee_id || p.real_user_id || 0);
+        if (!employeeId) {
+          const code = String(p.employee_code || '').trim().toUpperCase();
+          const name = String(p.employee_name || '').trim().toLowerCase();
+          const matched = (code ? userByCode.get(code) : null) || (name ? userByName.get(name) : null);
+          if (matched) {
+            employeeId = matched.id;
+            try {
+              await env.DB.prepare('UPDATE payroll SET employee_id=? WHERE id=?').bind(employeeId, p.id).run();
+            } catch (_) {}
+          }
+        }
+
+        const base = Number(p.base_salary || p.total_income_agreed || p.position_salary || 0);
+        const effectivePay = Number(p.transfer_amount || p.net_salary || base || 0);
+        const status = p.data_status || (effectivePay > 0 ? 'ready' : 'missing_salary_config');
+
+        if (!employeeId) {
           skipped++;
-          skippedRows.push({ payroll_id: p.id, employee_id: employeeId || null, employee_name: p.employee_name || '', reason: 'missing_salary_config' });
+          skippedRows.push({ payroll_id: p.id, employee_id: null, employee_name: p.employee_name || '', reason: 'no_user_account' });
           continue;
         }
-        const base = Number(p.base_salary || 0);
+
+        if (status === 'missing_salary_config' && effectivePay <= 0) {
+          skipped++;
+          skippedRows.push({ payroll_id: p.id, employee_id: employeeId, employee_name: p.employee_name || '', reason: 'missing_salary_config' });
+          continue;
+        }
+
         const bonus = Number(p.kpi_bonus || 0);
-        const allowance = Number(p.allowance || 0);
-        const deduction = Number(p.deduction || 0);
-        const workSummary = await buildMonthlyWorkSummary(env, employeeId, invMonth, year);
-        const overtime = await buildMonthlyOvertimeSummary(env, employeeId, invMonth, year, base);
-        const net = Number(base + bonus + allowance + overtime.overtimePay - deduction);
+        const allowance = Number(p.total_allowance || p.allowance || 0);
+        const deduction = Number(p.arrears_deduction || p.deduction || 0);
+        const isFromExcel = p.import_source === 'excel' || Number(p.transfer_amount || 0) > 0 || Number(p.work_days || 0) > 0;
+        let workSummary = null;
+        let overtime = { approvedOvertimeMinutes: 0, overtimePay: Number(p.ot_total_income || p.overtime_pay || 0) };
+        let actualWorkDays = Number(p.work_days || (Number(p.official_days || 0) + Number(p.probation_days || 0)) || 0);
+        let standardWorkDays = Number(p.standard_days || 23);
+        let absentDays = Number(p.unpaid_leave_days || 0);
+        let paidLeaveDays = Number(p.paid_leave_days || 0);
+        let lateDays = 0, lateMinutes = 0, earlyLeaveMinutes = 0, incompleteDays = 0;
+
+        if (!isFromExcel) {
+          // Chỉ chạy logic tính ngày công & OT tự động từ hệ thống chấm công nếu KHÔNG PHẢI dữ liệu kế toán import từ Excel
+          workSummary = await buildMonthlyWorkSummary(env, employeeId, invMonth, year);
+          overtime = await buildMonthlyOvertimeSummary(env, employeeId, invMonth, year, base);
+          if (workSummary && workSummary.actualWorkDays > 0) actualWorkDays = workSummary.actualWorkDays;
+          if (workSummary?.standardWorkDays) standardWorkDays = workSummary.standardWorkDays;
+          if (workSummary && workSummary.absentDays > 0) absentDays = workSummary.absentDays;
+          if (workSummary && workSummary.paidLeaveDays > 0) paidLeaveDays = workSummary.paidLeaveDays;
+          lateDays = workSummary ? (workSummary.lateDays || 0) : 0;
+          lateMinutes = workSummary ? (workSummary.lateMinutes || 0) : 0;
+          earlyLeaveMinutes = workSummary ? (workSummary.earlyLeaveMinutes || 0) : 0;
+          incompleteDays = workSummary ? (workSummary.incompleteDays || 0) : 0;
+        }
+
+        const net = Number(p.transfer_amount || 0) > 0 
+          ? Number(p.transfer_amount) 
+          : (Number(p.net_salary || 0) > 0 ? Number(p.net_salary) : Number(base + bonus + allowance + overtime.overtimePay - deduction));
+
         const existing = await env.DB.prepare(
           'SELECT * FROM invoices WHERE payroll_id=? OR (user_id=? AND month=? AND year=?) ORDER BY id DESC LIMIT 1'
         ).bind(p.id, employeeId, invMonth, year).first();
@@ -9478,21 +10480,37 @@ const attendanceRateTo =
         if (existing) {
           const fromStatus = existing.status || null;
           await env.DB.prepare(
-            `UPDATE invoices SET payroll_id=?,base_salary=?,bonus=?,allowance=?,deduction=?,tax=0,insurance=0,
+            `UPDATE invoices SET payroll_id=?,base_salary=?,bonus=?,allowance=?,deduction=?,tax=?,insurance=?,
                approved_overtime_minutes=?,overtime_pay=?,net_salary=?,
                work_days=?,absent_days=?,late_days=?,standard_days=?,paid_leave_days=?,late_minutes=?,early_leave_minutes=?,missing_checkinout_days=?,
+               position_salary=?,completion_bonus=?,total_income_agreed=?,insurance_base=?,
+               probation_days=?,official_days=?,unpaid_leave_days=?,work_income=?,
+               ot_normal_hours=?,ot_weekend_hours=?,ot_holiday_hours=?,base_hourly_rate=?,ot_total_income=?,
+               phone_allowance=?,attire_allowance=?,parking_allowance=?,fuel_allowance=?,business_trip_allowance=?,
+               total_allowance=?,total_income_with_allowance=?,total_pretax_income=?,
+               insurance_social=?,insurance_health=?,insurance_unemployment=?,
+               personal_deduction=?,dependent_deduction=?,dependent_count=?,total_family_deduction=?,
+               taxable_income=?,net_income_after_tax=?,tax_withheld=?,
+               meal_allowance=?,arrears_deduction=?,arrears_addition=?,transfer_amount=?,import_source=?,
                status='issued',issued_at=datetime('now','localtime'),issued_by=?,issued_by_name=?,
                review_resolved_at=CASE WHEN status='review_requested' THEN datetime('now','localtime') ELSE review_resolved_at END,
                review_status=CASE WHEN status='review_requested' THEN 'resolved' ELSE COALESCE(review_status,'none') END,
                review_note=CASE WHEN status='review_requested' THEN 'Reissued from payroll' ELSE review_note END
              WHERE id=?`
           ).bind(
-            p.id, base, bonus, allowance, deduction,
+            p.id, base, bonus, allowance, deduction, Number(p.tax || 0), Number(p.insurance || 0),
             overtime.approvedOvertimeMinutes, overtime.overtimePay, net,
-            workSummary.actualWorkDays, workSummary.absentDays, workSummary.lateDays,
-            workSummary.standardWorkDays, workSummary.paidLeaveDays, workSummary.lateMinutes,
-            workSummary.earlyLeaveMinutes, workSummary.incompleteDays,
-            me.id, me.full_name || '', existing.id
+            actualWorkDays, absentDays, lateDays, standardWorkDays, paidLeaveDays, lateMinutes, earlyLeaveMinutes, incompleteDays,
+            Number(p.position_salary || 0), Number(p.completion_bonus || 0), Number(p.total_income_agreed || 0), Number(p.insurance_base || 0),
+            Number(p.probation_days || 0), Number(p.official_days || 0), Number(p.unpaid_leave_days || 0), Number(p.work_income || 0),
+            Number(p.ot_normal_hours || 0), Number(p.ot_weekend_hours || 0), Number(p.ot_holiday_hours || 0), Number(p.base_hourly_rate || 0), Number(p.ot_total_income || 0),
+            Number(p.phone_allowance || 0), Number(p.attire_allowance || 0), Number(p.parking_allowance || 0), Number(p.fuel_allowance || 0), Number(p.business_trip_allowance || 0),
+            Number(p.total_allowance || 0), Number(p.total_income_with_allowance || 0), Number(p.total_pretax_income || 0),
+            Number(p.insurance_social || 0), Number(p.insurance_health || 0), Number(p.insurance_unemployment || 0),
+            Number(p.personal_deduction || 0), Number(p.dependent_deduction || 0), Number(p.dependent_count || 0), Number(p.total_family_deduction || 0),
+            Number(p.taxable_income || 0), Number(p.net_income_after_tax || 0), Number(p.tax_withheld || 0),
+            Number(p.meal_allowance || 0), Number(p.arrears_deduction || 0), Number(p.arrears_addition || 0), Number(p.transfer_amount || 0),
+            isFromExcel ? 'excel' : 'system', me.id, me.full_name || '', existing.id
           ).run();
           await env.DB.prepare(
             "UPDATE invoice_review_requests SET status='resolved',handled_by=?,handled_by_name=?,handled_note=COALESCE(handled_note,'Reissued from payroll'),handled_at=datetime('now','localtime'),updated_at=datetime('now','localtime') WHERE invoice_id=? AND status='open'"
@@ -9503,22 +10521,57 @@ const attendanceRateTo =
         } else {
           const invNum = await nextInvoiceNumber(env, year, invMonth);
           const r = await env.DB.prepare(
-            `INSERT INTO invoices (invoice_number,user_id,month,year,base_salary,bonus,allowance,deduction,tax,insurance,
-               approved_overtime_minutes,overtime_pay,net_salary,
-               work_days,absent_days,late_days,standard_days,paid_leave_days,late_minutes,early_leave_minutes,missing_checkinout_days,
-               status,note,payroll_id,issued_at,issued_by,issued_by_name,review_status)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'),?,?,'none')`
-          ).bind(invNum, employeeId, invMonth, year, base, bonus, allowance, deduction, 0, 0,
+            `INSERT INTO invoices (
+               invoice_number, user_id, month, year, base_salary, bonus, allowance, deduction, tax, insurance,
+               approved_overtime_minutes, overtime_pay, net_salary,
+               work_days, absent_days, late_days, standard_days, paid_leave_days, late_minutes, early_leave_minutes, missing_checkinout_days,
+               position_salary, completion_bonus, total_income_agreed, insurance_base,
+               probation_days, official_days, unpaid_leave_days, work_income,
+               ot_normal_hours, ot_weekend_hours, ot_holiday_hours, base_hourly_rate, ot_total_income,
+               phone_allowance, attire_allowance, parking_allowance, fuel_allowance, business_trip_allowance,
+               total_allowance, total_income_with_allowance, total_pretax_income,
+               insurance_social, insurance_health, insurance_unemployment,
+               personal_deduction, dependent_deduction, dependent_count, total_family_deduction,
+               taxable_income, net_income_after_tax, tax_withheld,
+               meal_allowance, arrears_deduction, arrears_addition, transfer_amount, import_source,
+               status, note, payroll_id, issued_at, issued_by, issued_by_name, review_status
+             ) VALUES (
+               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+               ?, ?, ?,
+               ?, ?, ?, ?, ?, ?, ?, ?,
+               ?, ?, ?, ?,
+               ?, ?, ?, ?,
+               ?, ?, ?, ?, ?,
+               ?, ?, ?, ?, ?,
+               ?, ?, ?,
+               ?, ?, ?,
+               ?, ?, ?, ?,
+               ?, ?, ?,
+               ?, ?, ?, ?, ?,
+               ?, ?, ?, datetime('now','localtime'), ?, ?, 'none'
+             )`
+          ).bind(
+            invNum, employeeId, invMonth, year, base, bonus, allowance, deduction, Number(p.tax || 0), Number(p.insurance || 0),
             overtime.approvedOvertimeMinutes, overtime.overtimePay, net,
-            workSummary.actualWorkDays, workSummary.absentDays, workSummary.lateDays,
-            workSummary.standardWorkDays, workSummary.paidLeaveDays, workSummary.lateMinutes,
-            workSummary.earlyLeaveMinutes, workSummary.incompleteDays,
-            'issued', 'Generated from payroll', p.id, me.id, me.full_name || '').run();
+            actualWorkDays, absentDays, lateDays, standardWorkDays, paidLeaveDays, lateMinutes, earlyLeaveMinutes, incompleteDays,
+            Number(p.position_salary || 0), Number(p.completion_bonus || 0), Number(p.total_income_agreed || 0), Number(p.insurance_base || 0),
+            Number(p.probation_days || 0), Number(p.official_days || 0), Number(p.unpaid_leave_days || 0), Number(p.work_income || 0),
+            Number(p.ot_normal_hours || 0), Number(p.ot_weekend_hours || 0), Number(p.ot_holiday_hours || 0), Number(p.base_hourly_rate || 0), Number(p.ot_total_income || 0),
+            Number(p.phone_allowance || 0), Number(p.attire_allowance || 0), Number(p.parking_allowance || 0), Number(p.fuel_allowance || 0), Number(p.business_trip_allowance || 0),
+            Number(p.total_allowance || 0), Number(p.total_income_with_allowance || 0), Number(p.total_pretax_income || 0),
+            Number(p.insurance_social || 0), Number(p.insurance_health || 0), Number(p.insurance_unemployment || 0),
+            Number(p.personal_deduction || 0), Number(p.dependent_deduction || 0), Number(p.dependent_count || 0), Number(p.total_family_deduction || 0),
+            Number(p.taxable_income || 0), Number(p.net_income_after_tax || 0), Number(p.tax_withheld || 0),
+            Number(p.meal_allowance || 0), Number(p.arrears_deduction || 0), Number(p.arrears_addition || 0), Number(p.transfer_amount || 0),
+            isFromExcel ? 'excel' : 'system',
+            'issued', 'Generated from payroll', p.id, me.id, me.full_name || ''
+          ).run();
           await env.DB.prepare('INSERT INTO invoice_history (invoice_id,from_status,to_status,changed_by,changed_by_name,note) VALUES (?,?,?,?,?,?)')
             .bind(r.meta.last_row_id, null, 'issued', me.id, me.full_name || '', 'Issued payslip from payroll').run();
           created++;
         }
       } catch (e) {
+        console.error(`Export payslip failed for payroll_id=${p.id}, emp=${p.employee_name}:`, e);
         skipped++;
         skippedRows.push({ payroll_id: p.id, employee_id: p.employee_id || null, employee_name: p.employee_name || '', reason: 'row_error', error: String(e?.message || e) });
         continue;
@@ -10406,106 +11459,36 @@ const attendanceRateTo =
 
   // ── Conversations ────────────────────────────────────────────────
   if (path === '/api/conversations' && request.method === 'GET') {
-    const search = (url.searchParams.get('q') || '').trim();
-    // Keep the conversation list available while a legacy D1 database is
-    // receiving the additive dissolve-audit table. The fallback is deliberately
-    // read-only: it never exposes data outside the current member's rows.
-    const buildConversationListQuery = (includeDissolvedFilter) => {
-      let sql = `SELECT c.id, c.type, c.name, c.team_id, c.project_id, c.created_by, c.created_at,
+    const companyChannelId = await ensureCompanyChannel(env);
+    if (!companyChannelId) return json({ conversations: [] });
+
+    const c = await env.DB.prepare(
+      `SELECT c.id, c.type, c.name, c.team_id, c.project_id, c.created_by, c.created_at,
         (SELECT COUNT(*) FROM conversation_members cm WHERE cm.conversation_id = c.id) AS member_count,
         (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.id > COALESCE((SELECT cm2.last_read_message_id FROM conversation_members cm2 WHERE cm2.conversation_id = c.id AND cm2.user_id = ?), 0) AND m.sender_id != ?) AS unread_count
        FROM conversations c
-       JOIN conversation_members cm ON cm.conversation_id = c.id AND cm.user_id = ?
-       WHERE 1=1`;
-      const binds = [me.id, me.id, me.id];
-      if (includeDissolvedFilter) sql += ' AND NOT EXISTS (SELECT 1 FROM dissolved_conversations dc WHERE dc.conversation_id=c.id)';
-      if (search) {
-        const like = `%${search}%`;
-        sql += ' AND (c.name LIKE ? OR EXISTS (SELECT 1 FROM conversation_members cm2 JOIN users u ON u.id = cm2.user_id WHERE cm2.conversation_id = c.id AND cm2.user_id != ? AND u.full_name LIKE ?))';
-        binds.push(like, me.id, like);
-      }
-      sql += ' ORDER BY (SELECT MAX(m.created_at) FROM messages m WHERE m.conversation_id = c.id) DESC';
-      return { sql, binds };
-    };
+       WHERE c.id = ?`
+    ).bind(me.id, me.id, companyChannelId).first();
 
-    let results = [];
-    try {
-      const query = buildConversationListQuery(true);
-      ({ results = [] } = await env.DB.prepare(query.sql).bind(...query.binds).all());
-    } catch (error) {
-      // A partial historical migration must not make the whole chat unusable.
-      // migrate() will retry table creation on the next cold start/request.
-      console.error('Conversation dissolve filter unavailable; using safe legacy list', error);
-      const query = buildConversationListQuery(false);
-      ({ results = [] } = await env.DB.prepare(query.sql).bind(...query.binds).all());
-    }
+    if (!c) return json({ conversations: [] });
 
-    const conversations = await Promise.all(results.map(async c => {
-      const lastMsg = await env.DB.prepare(
-        `SELECT m.id, m.content, m.created_at, m.sender_id, u.full_name AS sender_name, m.deleted_at
-         FROM messages m JOIN users u ON u.id = m.sender_id
-         WHERE m.conversation_id = ? ORDER BY m.id DESC LIMIT 1`
-      ).bind(c.id).first();
-      const members = await env.DB.prepare(
-        `SELECT cm.user_id, u.full_name, u.employee_code, u.avatar_url, cm.role
-         FROM conversation_members cm JOIN users u ON u.id = cm.user_id
-         WHERE cm.conversation_id = ?`
-      ).bind(c.id).all().then(r => r.results || []);
-      return { ...c, last_message: lastMsg || null, members };
-    }));
-    return json({ conversations });
+    const lastMsg = await env.DB.prepare(
+      `SELECT m.id, m.content, m.created_at, m.sender_id, u.full_name AS sender_name, m.deleted_at
+       FROM messages m JOIN users u ON u.id = m.sender_id
+       WHERE m.conversation_id = ? ORDER BY m.id DESC LIMIT 1`
+    ).bind(c.id).first();
+
+    const members = await env.DB.prepare(
+      `SELECT cm.user_id, u.full_name, u.employee_code, u.avatar_url, cm.role
+       FROM conversation_members cm JOIN users u ON u.id = cm.user_id
+       WHERE cm.conversation_id = ?`
+    ).bind(c.id).all().then(r => r.results || []);
+
+    return json({ conversations: [{ ...c, last_message: lastMsg || null, members }] });
   }
 
   if (path === '/api/conversations' && request.method === 'POST') {
-    const b = await request.json().catch(() => ({}));
-    const type = ['direct', 'group', 'team', 'project'].includes(b.type) ? b.type : 'direct';
-    const name = String(b.name || '').slice(0, 200) || null;
-    const memberIds = Array.isArray(b.member_ids) ? [...new Set(b.member_ids.map(Number).filter(id => id > 0 && id !== me.id))] : [];
-    if (type === 'direct' && memberIds.length !== 1) return json({ error: 'DM cần đúng 1 người nhận' }, 400);
-    if (type === 'direct') {
-      const existing = await env.DB.prepare(
-        `SELECT c.id FROM conversations c
-         WHERE c.type = 'direct'
-           AND EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.user_id = ?)
-           AND EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.user_id = ?)
-           AND (SELECT COUNT(*) FROM conversation_members cm WHERE cm.conversation_id = c.id) = 2`
-      ).bind(me.id, memberIds[0]).first();
-      if (existing) return json({ conversation_id: existing.id });
-    }
-    const result = await env.DB.prepare(
-      'INSERT INTO conversations (type, name, team_id, project_id, created_by) VALUES (?, ?, ?, ?, ?)'
-    ).bind(type, name, b.team_id || null, b.project_id || null, me.id).run();
-    const convId = result.meta?.last_row_id;
-    await env.DB.prepare('INSERT INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?)')
-      .bind(convId, me.id, 'owner').run();
-    for (const uid of memberIds) {
-      await env.DB.prepare('INSERT INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?)')
-        .bind(convId, uid, 'member').run();
-    }
-    const allMemberIds = [Number(me.id), ...memberIds];
-    const convRow = await env.DB.prepare('SELECT * FROM conversations WHERE id = ?').bind(convId).first();
-    const members = await env.DB.prepare(
-      `SELECT cm.user_id, u.full_name, u.employee_code, u.avatar_url, cm.role, cm.last_read_message_id
-       FROM conversation_members cm JOIN users u ON u.id = cm.user_id WHERE cm.conversation_id = ?`
-    ).bind(convId).all().then(r => r.results || []);
-
-    const createdConv = {
-      ...convRow,
-      members,
-      member_count: members.length,
-      unread_count: 0,
-      last_message: null,
-    };
-
-    await broadcastAppEvent(env, 'chat', 'chat:conversation_created', {
-      conversation_id: convId,
-      conversation: createdConv,
-    }, {
-      actorId: me.id,
-      targetUserIds: allMemberIds,
-    });
-
-    return json({ conversation_id: convId, conversation: createdConv });
+    return json({ error: 'Hệ thống sử dụng một kênh trao đổi chung duy nhất cho toàn công ty, không hỗ trợ tạo hội thoại riêng.' }, 403);
   }
 
   const convMatch = path.match(/^\/api\/conversations\/(\d+)$/);
@@ -10530,6 +11513,7 @@ const attendanceRateTo =
         WHERE c.id=? AND cm.user_id=?`
     ).bind(convId, me.id).first();
     if (!conv) return json({ error: 'Không tìm thấy nhóm' }, 404);
+    if (conv.type === 'company' || conv.name === 'Kênh chung công ty') return json({ error: 'Không thể giải tán kênh chung công ty' }, 400);
     if (conv.type === 'direct') return json({ error: 'Hội thoại trực tiếp không thể giải tán' }, 400);
     if (conv.is_dissolved) return json({ error: 'Nhóm này đã được giải tán' }, 400);
     if (conv.role !== 'owner') return json({ error: 'Chỉ Owner mới được giải tán nhóm' }, 403);
@@ -10945,8 +11929,9 @@ const attendanceRateTo =
       'SELECT conversation_id, sender_id FROM messages WHERE id = ? AND deleted_at IS NULL'
     ).bind(msgId).first();
     if (!existing) return json({ error: 'Không tìm thấy tin nhắn' }, 404);
-    if (Number(existing.sender_id) !== Number(me.id) && me.role !== 'admin' && me.role !== 'director') {
-      return json({ error: 'Chỉ người gửi mới được xóa tin nhắn' }, 403);
+    const canModerate = ['admin', 'director', 'manager'].includes(me.role) || isAttendanceHcns;
+    if (Number(existing.sender_id) !== Number(me.id) && !canModerate) {
+      return json({ error: 'Chỉ người gửi hoặc Quản lý/Quản trị viên mới được xóa tin nhắn' }, 403);
     }
 
     const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -10976,9 +11961,13 @@ const attendanceRateTo =
     const member = await env.DB.prepare(
       'SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?'
     ).bind(message.conversation_id, me.id).first();
-    if (!member) return json({ error: 'Không có quyền ghim tin nhắn này' }, 403);
+    if (!member) return json({ error: 'Không có quyền truy cập hội thoại này' }, 403);
 
     const isPinning = request.method === 'POST';
+    const canPin = ['admin', 'director', 'manager'].includes(me.role) || isAttendanceHcns;
+    if (isPinning && !canPin) {
+      return json({ error: 'Chỉ Quản trị viên và Quản lý mới có quyền ghim thông báo' }, 403);
+    }
     if (isPinning) {
       await env.DB.prepare('INSERT OR IGNORE INTO pinned_messages (conversation_id, message_id, pinned_by) VALUES (?, ?, ?)')
         .bind(message.conversation_id, messageId, me.id).run();
