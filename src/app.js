@@ -5,7 +5,7 @@ import { api, setToken, loadToken, getToken, clearCache } from './api.js?v=20260
 import { realtime } from './realtime.js';
 import { EventBus } from './event-bus.js';
 import { initNativeShell, verifyBiometricIfAvailable } from './native.js';
-import { setAvatar, toast, initials, avatarColor, closeModal, isHcnsDepartment, roleLabel, yieldToMain, emptyHTML } from './utils.js?v=20260826-role-label-fix-v1';
+import { setAvatar, toast, initials, avatarColor, closeModal, isHcnsDepartment, roleLabel, yieldToMain, emptyHTML, esc } from './utils.js?v=20260826-role-label-fix-v1';
 import { icon } from './icons.js';
 import { playChatSound, playMentionSound, playTaskSound, isSoundEnabled, toggleSound } from './sound.js';
 import { autoSyncPushSubscription } from './push.js';
@@ -25,7 +25,7 @@ async function getView(name) {
     else if (name === 'departments') _viewModules[name] = await import('./views/departments.js');
     else if (name === 'recruitment') _viewModules[name] = await import('./views/recruitment.js');
     else if (name === 'payroll')     _viewModules[name] = await import('./views/payroll.js?v=20260916-excel-payroll-v5');
-    else if (name === 'leave')       _viewModules[name] = await import('./views/leave.js?v=20260826-leave-annual-policy-v6');
+    else if (name === 'leave')       _viewModules[name] = await import('./views/leave.js?v=20260921-two-step-approval-v2');
     else if (name === 'campaigns')   _viewModules[name] = await import('./views/campaigns.js?v=20260811-hr-access-v1');
     else if (name === 'evaluation')  _viewModules[name] = await import('./views/evaluation.js?v=20260903-fix-v1');
     else if (name === 'kpis')        _viewModules[name] = await import('./views/kpis.js?v=20260730-manual-kpi');
@@ -33,6 +33,7 @@ async function getView(name) {
     else if (name === 'assets')      _viewModules[name] = await import('./views/assets.js?v=20260903-fix-v1');
     else if (name === 'db-admin')    _viewModules[name] = await import('./views/dbadmin.js');
     else if (name === 'chat')        _viewModules[name] = await import('./views/chat.js?v=20260826-audio-notification-chimes-v20');
+    else if (name === 'announcements') _viewModules[name] = await import('./views/announcements.js?v=20260919-announcements-v2');
   }
   return _viewModules[name];
 }
@@ -229,6 +230,144 @@ async function _doRefreshAnnouncementBadge() {
   }
 }
 
+// ── Employee Decision Popups ─────────────────────────
+let _pendingPopupsQueue = [];
+let _isShowingDecisionPopup = false;
+let _popupsFetching = false;
+
+export async function checkAndShowPendingDecisionPopups() {
+  if (!me?.id || _popupsFetching) return;
+  _popupsFetching = true;
+  try {
+    const { popups = [] } = await api.getPendingPopups();
+    if (Array.isArray(popups) && popups.length > 0) {
+      const existingIds = new Set(_pendingPopupsQueue.map(p => p.id));
+      for (const p of popups) {
+        if (!existingIds.has(p.id)) {
+          _pendingPopupsQueue.push(p);
+        }
+      }
+      if (!_isShowingDecisionPopup && _pendingPopupsQueue.length > 0) {
+        displayNextDecisionPopup();
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to check decision popups:', e);
+  } finally {
+    _popupsFetching = false;
+  }
+}
+
+function displayNextDecisionPopup() {
+  const overlay = document.getElementById('decision-popup-overlay');
+  const card = document.getElementById('decision-popup-card');
+  const body = document.getElementById('decision-popup-body');
+  if (!overlay || !card || !body) return;
+
+  if (!_pendingPopupsQueue.length) {
+    _isShowingDecisionPopup = false;
+    overlay.classList.add('hidden');
+    return;
+  }
+
+  _isShowingDecisionPopup = true;
+  const current = _pendingPopupsQueue.shift();
+  const isApproved = current.decision === 'approved';
+  
+  card.className = `decision-popup-card ${isApproved ? 'is-approved' : 'is-rejected'}`;
+
+  const typeLabels = {
+    wfh: 'Làm việc tại nhà (WFH)',
+    overtime: 'Làm thêm giờ (OT)',
+    overtime_form: 'Bảng kê OT tháng',
+    leave: 'Đơn xin nghỉ phép'
+  };
+  const typeLabel = typeLabels[current.request_type] || 'Đơn yêu cầu';
+
+  let details = {};
+  try {
+    details = typeof current.details_json === 'string' ? JSON.parse(current.details_json) : (current.details_json || current.details || {});
+  } catch (_) {}
+
+  const dateVal = details.date || details.work_date || (details.start_date ? `${details.start_date} → ${details.end_date}` : '') || details.period_month || '';
+  const reviewerVal = details.reviewer_name || current.actor_name || (isApproved ? 'Anh Hậu (Phó Tổng Giám Đốc)' : 'Quản trị viên');
+  const reasonVal = details.reason || details.note || '';
+
+  body.innerHTML = `
+    <div class="decision-popup-icon-wrap">
+      ${icon(isApproved ? 'check' : 'x', 'lg')}
+    </div>
+    <div class="decision-popup-chip">
+      ${icon(current.request_type === 'leave' ? 'calendar' : current.request_type === 'wfh' ? 'home' : 'clock3', 'xs')}
+      <span>${esc(typeLabel)}</span>
+    </div>
+    <h3 class="decision-popup-title" id="decision-popup-title">${esc(current.title || (isApproved ? 'Đơn đã được phê duyệt!' : 'Đơn bị từ chối'))}</h3>
+    <p class="decision-popup-message">${esc(current.message || '')}</p>
+
+    <div class="decision-popup-details">
+      <div class="decision-popup-detail-row">
+        <span class="decision-popup-detail-label">Kết quả:</span>
+        <span class="decision-popup-detail-val" style="color:${isApproved ? '#059669' : '#e11d48'};font-weight:700;">
+          ${isApproved ? 'ĐÃ PHÊ DUYỆT' : 'BỊ TỪ CHỐI'}
+        </span>
+      </div>
+      ${dateVal ? `
+        <div class="decision-popup-detail-row">
+          <span class="decision-popup-detail-label">Thời gian:</span>
+          <span class="decision-popup-detail-val">${esc(dateVal)}</span>
+        </div>
+      ` : ''}
+      ${details.approved_minutes ? `
+        <div class="decision-popup-detail-row">
+          <span class="decision-popup-detail-label">Số phút duyệt:</span>
+          <span class="decision-popup-detail-val">${details.approved_minutes} phút</span>
+        </div>
+      ` : ''}
+      <div class="decision-popup-detail-row">
+        <span class="decision-popup-detail-label">${isApproved ? 'Người duyệt:' : 'Người từ chối:'}</span>
+        <span class="decision-popup-detail-val">${esc(reviewerVal)}</span>
+      </div>
+      ${reasonVal ? `
+        <div class="decision-popup-detail-row" style="align-items:flex-start;">
+          <span class="decision-popup-detail-label">${isApproved ? 'Ghi chú:' : 'Lý do:'}</span>
+          <span class="decision-popup-detail-val" style="white-space:normal;text-align:right;">${esc(reasonVal)}</span>
+        </div>
+      ` : ''}
+    </div>
+
+    <div class="decision-popup-actions">
+      <button type="button" class="decision-popup-btn-confirm" id="btn-decision-popup-confirm">
+        ${icon('check', 'xs')}
+        <span>Đã hiểu</span>
+      </button>
+      <button type="button" class="decision-popup-btn-view" id="btn-decision-popup-view">
+        ${icon('externalLink', 'xs')}
+        <span>Xem chi tiết</span>
+      </button>
+    </div>
+  `;
+
+  overlay.classList.remove('hidden');
+  try { playTaskSound(); } catch (_) {}
+
+  document.getElementById('btn-decision-popup-confirm')?.addEventListener('click', async () => {
+    try {
+      if (current.id) await api.dismissPopup(current.id);
+    } catch (_) {}
+    displayNextDecisionPopup();
+  });
+
+  document.getElementById('btn-decision-popup-view')?.addEventListener('click', async () => {
+    try {
+      if (current.id) await api.dismissPopup(current.id);
+    } catch (_) {}
+    overlay.classList.add('hidden');
+    _isShowingDecisionPopup = false;
+    const targetRoute = current.request_type === 'leave' ? '#/leave' : '#/attendance';
+    navigate(targetRoute);
+  });
+}
+
 let _lastTaskMentionCount = null;
 let _lastChatUnreadCount = null;
 let _lastChatMentionKey = null;
@@ -264,17 +403,35 @@ async function _doRefreshTaskMentionBadge() {
   }
 }
 
-function setChatUnreadBadge(value) {
-  const count = Math.max(0, Number(value) || 0);
+function setChatUnreadBadge(unreadCount, mentionCount = 0) {
+  const unread = Math.max(0, Number(unreadCount) || 0);
+  const mentions = Math.max(0, Number(mentionCount) || 0);
+
+  // 1. Sidebar Chat item
+  const sidebarChatLink = document.getElementById('sidebar-chat-link');
+  const sidebarMentionBadge = document.getElementById('sidebar-chat-mention-badge');
+  const isInChat = location.hash.startsWith('#/chat');
+
+  if (sidebarChatLink) {
+    // Glow when there are unread messages, unless currently viewing chat
+    const shouldGlow = unread > 0 && !isInChat;
+    sidebarChatLink.classList.toggle('nav-item-glowing', shouldGlow);
+    sidebarChatLink.setAttribute('title', unread > 0 ? `Chat (${unread} tin nhắn mới)` : 'Chat');
+  }
+
+  if (sidebarMentionBadge) {
+    // Show red number badge when there are mentions (@bạn / @all), like tasks
+    if (mentions > 0 && !isInChat) {
+      sidebarMentionBadge.textContent = mentions > 99 ? '99+' : String(mentions);
+      sidebarMentionBadge.classList.remove('hidden');
+    } else {
+      sidebarMentionBadge.classList.add('hidden');
+    }
+  }
+
+  // 2. Top header chat button (keep hidden as chat is now in sidebar)
   const button = document.getElementById('header-chat-button');
-  const iconHost = document.getElementById('header-chat-icon');
-  const countHost = document.getElementById('header-chat-count');
-  if (iconHost && !iconHost.firstElementChild) iconHost.innerHTML = icon('messageCircle', 'sm');
-  if (!button || !countHost) return;
-  button.classList.remove('hidden');
-  countHost.textContent = count > 99 ? '99+' : String(count);
-  countHost.classList.toggle('hidden', count < 1);
-  button.setAttribute('aria-label', count > 0 ? `Chat, ${count > 99 ? '99+' : count} tin nhắn chưa đọc` : 'Mở Chat');
+  if (button) button.classList.add('hidden');
 }
 
 function clearChatAttention() {
@@ -325,6 +482,7 @@ async function refreshChatHeaderSummary() {
     const summary = await api.get('/api/chat/header-summary');
     if (!me || Number(me.id) !== Number(userIdAtStart)) return;
     const unread = Number(summary.unread_count || 0);
+    const mentionCount = Number(summary.mention_count || 0);
     const mention = summary.mention;
     const mentionKey = mention ? `${mention.conversation_id}:${mention.message_id}` : null;
 
@@ -342,7 +500,7 @@ async function refreshChatHeaderSummary() {
     }
     _lastChatUnreadCount = unread;
 
-    setChatUnreadBadge(unread);
+    setChatUnreadBadge(unread, mentionCount);
     setChatAttention(summary);
   } catch (_) {
     // Keep the last known header state when a transient request fails.
@@ -356,6 +514,7 @@ function onChatUnreadForeground() {
     refreshChatHeaderSummary();
     refreshTaskMentionBadge();
     refreshEmployeeAlertBadge();
+    checkAndShowPendingDecisionPopups();
     document.dispatchEvent(new CustomEvent('hr-window-focused'));
   }
 }
@@ -411,8 +570,18 @@ function setupRealtimeBusListeners() {
   _realtimeUnsubs.push(EventBus.on('attendance', () => refreshEmployeeAlertBadge()));
   _realtimeUnsubs.push(EventBus.on('attendance:*', () => refreshEmployeeAlertBadge()));
   _realtimeUnsubs.push(EventBus.on('invoices', () => refreshEmployeeAlertBadge()));
-  _realtimeUnsubs.push(EventBus.on('invoices:*', () => refreshEmployeeAlertBadge()));
   _realtimeUnsubs.push(EventBus.on('invoice:*', () => refreshEmployeeAlertBadge()));
+
+  // Decision popups for employee
+  _realtimeUnsubs.push(EventBus.on('popup:new', (event) => {
+    const payload = event?.payload || event || {};
+    if (Number(payload.user_id) === Number(me?.id)) {
+      _pendingPopupsQueue.push(payload);
+      if (!_isShowingDecisionPopup) {
+        displayNextDecisionPopup();
+      }
+    }
+  }));
 
   // User profile / avatar updates
   _realtimeUnsubs.push(EventBus.on('users', (event) => {
@@ -511,6 +680,7 @@ function initApp() {
   refreshEmployeeAlertBadge();
   refreshTaskMentionBadge();
   refreshAnnouncementBadge();
+  checkAndShowPendingDecisionPopups();
   if (!realtime.isConnected()) {
     const token = getToken();
     if (token) realtime.connect({ user: me, token });
@@ -691,6 +861,14 @@ async function route() {
   document.querySelectorAll('.nav-item[data-nav]').forEach(link => {
     link.classList.toggle('active', link.dataset.nav === path);
   });
+
+  // If navigating to chat, immediately dismiss chat glow and mention badge
+  if (path === 'chat') {
+    const chatLink = document.getElementById('sidebar-chat-link');
+    const chatMentionBadge = document.getElementById('sidebar-chat-mention-badge');
+    chatLink?.classList.remove('nav-item-glowing');
+    chatMentionBadge?.classList.add('hidden');
+  }
 
   syncBottomNav(hash, path, segments);
 

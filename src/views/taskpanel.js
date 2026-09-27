@@ -1,6 +1,6 @@
 import { api } from '../api.js';
 import { EventBus } from '../event-bus.js';
-import { esc, taskStatusBadge, priorityBadge, toast, loadingHTML, openModal, closeModal } from '../utils.js';
+import { esc, taskStatusBadge, priorityBadge, toast, loadingHTML, openModal, closeModal, fmtDate, fmtDateInput, parseDateInput } from '../utils.js';
 import { icon } from '../icons.js';
 import { openTaskForm, sanitizeRichText } from './tasks.js';
 
@@ -87,7 +87,9 @@ async function loadTask() {
   try {
     const { task, subtasks, followers } = await api.getTask(_currentTaskId);
     const { comments } = await api.getComments(_currentTaskId).catch(() => ({ comments: [] }));
-    const memberResponse = task.team_project_id ? await api.getTaskProjectMembers(task.team_project_id).catch(() => ({ members: [] })) : { members: [] };
+    const memberResponse = (task.team_project_id && typeof api.getTaskProjectMembers === 'function')
+      ? await api.getTaskProjectMembers(task.team_project_id).catch(() => ({ members: [] }))
+      : { members: [] };
     renderPanel(task, subtasks || [], followers || [], comments || [], memberResponse.members || []);
   } catch (e) {
     document.getElementById('task-panel-body').innerHTML = `<div class="empty-state"><div class="empty-icon">${icon('triangleAlert', 'xl')}</div><div class="empty-text">${esc(e.message)}</div></div>`;
@@ -156,7 +158,7 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
                 ${s.description ? `<div class="subtask-desc${s.is_done ? ' is-done' : ''}">${esc(s.description)}</div>` : ''}
                 <div class="subtask-meta">
                   ${s.assignee_name ? `<span class="subtask-meta-chip">${icon('user', 'xs')} ${esc(s.assignee_name)}</span>` : ''}
-                  ${s.due_date ? `<span class="subtask-meta-chip">${icon('clock3', 'xs')} Hạn: ${esc(s.due_date)}</span>` : ''}
+                  ${s.due_date ? `<span class="subtask-meta-chip">${icon('clock3', 'xs')} Hạn: ${esc(fmtDate(s.due_date))}</span>` : ''}
                 </div>
               </div>
               ${canEdit ? `<div class="subtask-actions"><button class="btn-secondary btn-xs sub-edit" data-sid="${s.id}">${icon('pencil', 'xs')} Sửa</button><button class="btn-icon sub-del" data-sid="${s.id}" title="Xóa subtask">${icon('trash2', 'xs')}</button></div>` : ''}
@@ -203,8 +205,8 @@ function renderPanel(task, subtasks, followers, comments, projectMembers = []) {
           <div class="detail-item"><div class="detail-label">Project</div><div class="detail-val">${task.project_name ? esc(task.project_name) : '—'}</div></div>
           <div class="detail-item"><div class="detail-label">Nhóm công việc</div><div class="detail-val">${task.group_name ? esc(task.group_name) : 'Công việc chung'}</div></div>
           <div class="detail-item"><div class="detail-label">Nhãn</div><div class="detail-val" style="display:flex;align-items:center;gap:6px;"><span style="width:12px;height:12px;border-radius:999px;background:${esc(labelColor)};display:inline-block;"></span>${task.label_name ? esc(task.label_name) : (quickLabelName(task.label_color_real || task.label_color) || 'Tự suy màu')}</div></div>
-          <div class="detail-item"><div class="detail-label">Ngày</div><div class="detail-val">${esc(task.date || '—')}</div></div>
-          <div class="detail-item"><div class="detail-label">Hạn chót</div><div class="detail-val">${esc(task.due_date || '—')}</div></div>
+          <div class="detail-item"><div class="detail-label">Ngày</div><div class="detail-val">${esc(task.date ? fmtDate(task.date) : '—')}</div></div>
+          <div class="detail-item"><div class="detail-label">Hạn chót</div><div class="detail-val">${esc(task.due_date ? fmtDate(task.due_date) : '—')}</div></div>
           <div class="detail-item"><div class="detail-label">Phòng ban</div><div class="detail-val">${esc(task.department || task.assignee_department || '—')}</div></div>
         </div>
       </div>
@@ -487,7 +489,7 @@ function openSubtaskForm(taskId, subtask = null) {
     <div class="field" style="margin-top:10px;"><label>Mô tả</label><textarea id="sf-desc" rows="4" style="min-height:90px;resize:vertical;" placeholder="Mô tả chi tiết công việc con (tuỳ chọn)">${esc(subtask?.description || '')}</textarea></div>
     <div class="input-row">
       <div class="field"><label>Giao cho</label><select id="sf-assignee"><option value="">-- Chưa giao --</option>${_users.map(u => `<option value="${u.id}" ${subtask?.assigned_to==u.id ? 'selected' : ''}>${esc(u.full_name)}${u.employee_code ? ` · ${esc(u.employee_code)}` : ''}</option>`).join('')}</select></div>
-      <div class="field"><label>Hạn chót</label><input type="date" id="sf-due" value="${esc(subtask?.due_date || '')}"/></div>
+      <div class="field"><label>Hạn chót (dd/mm/yyyy)</label><input type="text" id="sf-due" value="${esc(fmtDateInput(subtask?.due_date))}" placeholder="dd/mm/yyyy" inputmode="numeric"/></div>
     </div>
   `, `
     <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Hủy</button>
@@ -501,7 +503,7 @@ function openSubtaskForm(taskId, subtask = null) {
       description: document.getElementById('sf-desc').value,
       is_done: subtask?.is_done ?? 0,
       assigned_to: parseInt(document.getElementById('sf-assignee').value) || null,
-      due_date: document.getElementById('sf-due').value || null,
+      due_date: parseDateInput(document.getElementById('sf-due').value) || null,
     };
     try {
       if (subtask) await api.updateSubtask(subtask.id, data);

@@ -1,4 +1,3 @@
-```
 # Logs and temp files
 *.log
 *.tmp
@@ -6,6 +5,8 @@
 .wrangler/
 .wrangler-local/
 .local-public/
+backups/
+
 # Environment
 .env
 .env.local
@@ -17,4 +18,3 @@
 
 # Dependencies
 node_modules/
-```

@@ -15,7 +15,7 @@ let _migrated = false;
 // Chat interactions self-heal additively before the version fast path below.
 // Bumped to re-run additive migrations for WFH approval columns, announcements
 // tables, and all other schema additions since the previous version.
-const SCHEMA_VERSION = '2026-09-18-wfh-announcements-v1';
+const SCHEMA_VERSION = '2026-09-19-two-step-approvals-v1';
 const SEED_VERSION = '2026-08-13-add-phong-it-v1';
 
 const LEAVE_DOCUMENT_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
@@ -72,6 +72,83 @@ async function ensureLeavePolicySchema(env) {
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_leave_documents_request ON leave_request_documents(leave_request_id,owner_id)'); } catch (_) {}
 }
 
+async function ensureTwoStepApprovalSchema(env) {
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS employee_popups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    request_type TEXT NOT NULL,
+    request_id INTEGER NOT NULL,
+    decision TEXT NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    details_json TEXT,
+    actor_id INTEGER,
+    actor_name TEXT,
+    is_dismissed INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    dismissed_at TEXT
+  )`);
+  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_employee_popups_pending ON employee_popups(user_id, is_dismissed, id ASC)'); } catch (_) {}
+
+  // Overtime requests step 1 fields
+  for (const [col, def] of Object.entries({
+    step1_reviewer_id: 'INTEGER',
+    step1_reviewer_name: 'TEXT',
+    step1_reviewed_at: 'TEXT',
+    step1_note: 'TEXT',
+  })) {
+    try { await env.DB.exec(`ALTER TABLE overtime_requests ADD COLUMN ${col} ${def}`); } catch (_) {}
+  }
+
+  // Overtime forms step 1 fields
+  for (const [col, def] of Object.entries({
+    step1_reviewer_id: 'INTEGER',
+    step1_reviewer_name: 'TEXT',
+    step1_reviewed_at: 'TEXT',
+    step1_note: 'TEXT',
+  })) {
+    try { await env.DB.exec(`ALTER TABLE overtime_forms ADD COLUMN ${col} ${def}`); } catch (_) {}
+  }
+
+  // Attendance (WFH) step 1 fields
+  for (const [col, def] of Object.entries({
+    wfh_step1_reviewer_id: 'INTEGER',
+    wfh_step1_reviewer_name: 'TEXT',
+    wfh_step1_reviewed_at: 'TEXT',
+    wfh_step1_note: 'TEXT',
+  })) {
+    try { await env.DB.exec(`ALTER TABLE attendance ADD COLUMN ${col} ${def}`); } catch (_) {}
+  }
+
+  // Leave requests step 1 fields
+  for (const [col, def] of Object.entries({
+    step1_reviewer_id: 'INTEGER',
+    step1_reviewer_name: 'TEXT',
+    step1_reviewed_at: 'TEXT',
+    step1_note: 'TEXT',
+  })) {
+    try { await env.DB.exec(`ALTER TABLE leave_requests ADD COLUMN ${col} ${def}`); } catch (_) {}
+  }
+
+  // Notifications table
+  try {
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      type TEXT DEFAULT 'general',
+      link TEXT,
+      is_read INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    )`);
+    await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read, created_at DESC)');
+  } catch (_) {}
+
+  // Ensure national_id_issue_date column exists
+  try { await env.DB.exec('ALTER TABLE users ADD COLUMN national_id_issue_date TEXT'); } catch (_) {}
+}
+
 // This audit table was introduced after some production databases had already
 // reached the schema-version fast path. Keep its creation idempotent and call
 // it again immediately before payroll line adjustments so an audit migration
@@ -125,6 +202,7 @@ async function ensurePayrollDetailSchema(env) {
     insurance_base: 'REAL DEFAULT 0',
     probation_days: 'REAL DEFAULT 0',
     official_days: 'REAL DEFAULT 0',
+    paid_leave_days: 'REAL DEFAULT 0',
     unpaid_leave_days: 'REAL DEFAULT 0',
     work_income: 'REAL DEFAULT 0',
     ot_normal_hours: 'REAL DEFAULT 0',
@@ -172,6 +250,7 @@ async function ensurePayrollDetailSchema(env) {
     insurance_base: 'REAL DEFAULT 0',
     probation_days: 'REAL DEFAULT 0',
     official_days: 'REAL DEFAULT 0',
+    paid_leave_days: 'REAL DEFAULT 0',
     unpaid_leave_days: 'REAL DEFAULT 0',
     work_income: 'REAL DEFAULT 0',
     ot_normal_hours: 'REAL DEFAULT 0',
@@ -447,6 +526,8 @@ export async function sendWebPushNotification(env, userIds, payloadObj) {
 
 export async function migrate(env) {
   if (_migrated) return;
+  try { await ensureAnnouncementsSchema(env); } catch (error) { console.error('Announcements schema check failed', error); }
+  try { await ensureTwoStepApprovalSchema(env); } catch (error) { console.error('Two-step approval schema check failed', error); }
   try {
     const row = await env.DB.prepare("SELECT setting_value FROM settings WHERE setting_key='schema_version'").first();
     if (row?.setting_value === SCHEMA_VERSION) {
@@ -887,6 +968,16 @@ export async function migrate(env) {
       user_id INTEGER NOT NULL,
       read_at TEXT DEFAULT (datetime('now','localtime')),
       PRIMARY KEY (announcement_id, user_id)
+    )`);
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS announcement_files (
+      id TEXT PRIMARY KEY,
+      uploader_id INTEGER NOT NULL,
+      filename TEXT NOT NULL,
+      content_type TEXT,
+      byte_size INTEGER,
+      storage_key TEXT,
+      data_base64 TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
     )`);
     await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_announcements_created ON announcements(created_at DESC)');
     await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_announcement_reads_user ON announcement_reads(user_id, announcement_id)');
@@ -1833,6 +1924,81 @@ function isDeptManager(u, ownerDept) {
   return !!u && u.role === 'manager' && !!ownerDept && u.department === ownerDept;
 }
 
+function isDirectorHau(u) {
+  if (!u) return false;
+  if (u.role === 'admin') return true;
+  const code = String(u.employee_code || '').trim().toUpperCase();
+  if (code === 'HAUNV') return true;
+  const email = String(u.email || '').toLowerCase().trim();
+  if (email.startsWith('haunv@')) return true;
+  const dept = normalizeDeptName(u.department);
+  const pos = String(u.position || '').toLowerCase();
+  if (dept === 'Ban Giám Đốc' && (pos.includes('tổng giám đốc') || pos.includes('ceo') || pos.includes('giám đốc'))) {
+    return true;
+  }
+  return false;
+}
+
+function isStep1Approver(u) {
+  if (!u) return false;
+  if (u.role === 'admin') return true;
+  if (normalizeDeptName(u.department) === 'Phòng HCNS') return true;
+  return false;
+}
+
+async function createEmployeePopup(env, {
+  userId,
+  requestType,
+  requestId,
+  decision,
+  title,
+  message,
+  details = {},
+  actorId = null,
+  actorName = ''
+}) {
+  try {
+    const detailsJson = typeof details === 'object' ? JSON.stringify(details) : String(details || '{}');
+    const r = await env.DB.prepare(`
+      INSERT INTO employee_popups (
+        user_id, request_type, request_id, decision, title, message, details_json, actor_id, actor_name, is_dismissed, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now','localtime'))
+    `).bind(userId, requestType, requestId, decision, title, message, detailsJson, actorId, actorName).run();
+
+    const popupId = r?.meta?.last_row_id;
+
+    try {
+      await env.DB.prepare(`
+        INSERT INTO notifications (user_id, title, content, type, link) VALUES (?, ?, ?, ?, ?)
+      `).bind(
+        userId,
+        title,
+        message,
+        requestType === 'leave' ? 'leave' : 'attendance',
+        requestType === 'leave' ? '/leave' : '/attendance'
+      ).run();
+    } catch (_) {}
+
+    await broadcastAppEvent(env, 'notifications', 'popup:new', {
+      popup_id: popupId,
+      user_id: userId,
+      request_type: requestType,
+      request_id: requestId,
+      decision,
+      title,
+      message,
+      details,
+      actor_id: actorId,
+      actor_name: actorName,
+    }, { actorId, targetUserIds: [userId] });
+
+    return popupId;
+  } catch (err) {
+    console.error('Failed to create employee popup:', err);
+    return null;
+  }
+}
+
 const LIFECYCLE_STATUSES = ['Chờ tiếp nhận', 'Thực tập', 'Thử việc', 'Cộng tác viên', 'Chính thức', 'Đã nghỉ'];
 
 // Private employee files stay in R2; only this Worker can read the bucket.
@@ -1872,7 +2038,7 @@ const EMPLOYEE_DOCUMENT_TYPES = ['application/pdf', 'image/jpeg', 'image/png', '
 const EMPLOYEE_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
 const EMPLOYEE_CONTRACT_TYPES = ['Thử việc', 'HĐCT', 'CTV', 'Thỏa thuận TTS', 'Chính thức', 'Cộng tác viên', 'Thực tập sinh', 'Khác'];
 const EMPLOYEE_PROFILE_FIELDS = {
-  personal: ['full_name','email','phone','birth_date','gender','national_id','national_id_expiry_date','home_address','school_name','emergency_contact_name','emergency_contact_phone'],
+  personal: ['full_name','email','phone','birth_date','gender','national_id','national_id_issue_date','national_id_expiry_date','home_address','school_name','emergency_contact_name','emergency_contact_phone'],
   employment: ['employee_type','position','department','direct_manager_id','work_location'],
   contract: ['contract_type','hire_date','contract_start_date','contract_end_date','contract_signed_date','probation_end_date','official_date','termination_date'],
   compensation: ['salary','allowance','insurance_salary','dependent_count','bank_account','bank_name','bank_account_holder','tax_code','social_insurance_number','insurance_hospital'],
@@ -1939,7 +2105,15 @@ function normalizeEmployeeProfileValue(field, value) {
   if (field === 'department') return normalizeDeptName(String(value || ''));
   if (field === 'employee_type') return employeeTypeCode(value);
   if (field === 'work_location') return normalizeWorkLocation(value);
-  if (field.endsWith('_date') || field === 'hire_date' || field === 'national_id_expiry_date') return value || null;
+  if (field.endsWith('_date') || field === 'hire_date' || field === 'national_id_expiry_date') {
+    if (!value || value === '—' || value === '-' || value === 'null' || value === 'undefined' || value === '') return null;
+    const str = String(value).trim();
+    const dmy = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (dmy) return `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
+    const dmyDash = str.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+    if (dmyDash) return `${dmyDash[3]}-${dmyDash[2].padStart(2, '0')}-${dmyDash[1].padStart(2, '0')}`;
+    return str;
+  }
   return typeof value === 'string' ? value.trim() : value;
 }
 
@@ -1948,7 +2122,7 @@ function validateEmployeeProfile(profile, changedFields = []) {
   if (!String(profile.full_name || '').trim() || !String(profile.email || '').trim() || !String(profile.department || '').trim()) {
     return 'Họ tên, email và phòng ban là bắt buộc';
   }
-  const requiredFields = ['full_name','email','phone','birth_date','national_id','home_address','position','department','direct_manager_id','work_location','contract_type','hire_date'];
+  const requiredFields = ['full_name','email','phone','birth_date','national_id','national_id_issue_date','home_address','position','department','direct_manager_id','work_location','contract_type'];
   if (requiredFields.some(field => changed.has(field) && !String(profile[field] ?? '').trim())) return 'Không được để trống trường bắt buộc';
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(profile.email || ''))) return 'Email không hợp lệ';
   if (changed.has('phone') && !/^\+?\d{8,15}$/.test(String(profile.phone || ''))) return 'Số điện thoại phải gồm 8 đến 15 chữ số';
@@ -1957,15 +2131,31 @@ function validateEmployeeProfile(profile, changedFields = []) {
   if (profile.direct_manager_id && Number(profile.direct_manager_id) === Number(profile.id)) return 'Quản lý trực tiếp không thể là chính nhân viên';
   if (changed.has('contract_type') && profile.contract_type && !EMPLOYEE_CONTRACT_TYPES.includes(profile.contract_type)) return 'Loại hợp đồng không hợp lệ';
   for (const field of changed) {
-    if ((field.endsWith('_date') || field === 'hire_date') && profile[field] && !/^\d{4}-\d{2}-\d{2}$/.test(String(profile[field]))) {
-      return 'Ngày tháng phải có định dạng YYYY-MM-DD';
+    if (field.endsWith('_date') || field === 'hire_date') {
+      const raw = profile[field];
+      if (raw === '—' || raw === '-' || raw === 'null' || raw === 'undefined' || raw === '' || raw === null || raw === undefined) {
+        profile[field] = null;
+        continue;
+      }
+      const str = String(raw).trim();
+      const dmy = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      if (dmy) {
+        profile[field] = `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
+      } else if (/^(\d{1,2})-(\d{1,2})-(\d{4})$/.test(str)) {
+        const dmyDash = str.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+        profile[field] = `${dmyDash[3]}-${dmyDash[2].padStart(2, '0')}-${dmyDash[1].padStart(2, '0')}`;
+      } else if (!/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+        return 'Ngày tháng không đúng định dạng (dd/mm/yyyy)';
+      }
     }
   }
   const orderedPairs = [
-    ['hire_date','probation_end_date','Ngày kết thúc thử việc phải sau ngày vào làm'],
-    ['hire_date','official_date','Ngày chính thức phải sau ngày vào làm'],
+    ['national_id_issue_date','national_id_expiry_date','Hạn CCCD phải sau ngày cấp CCCD'],
+    ['probation_end_date','contract_signed_date','Ngày kết thúc thử việc phải trước hoặc bằng ngày ký hợp đồng'],
+    ['probation_end_date','official_date','Ngày chính thức phải sau ngày kết thúc thử việc'],
     ['contract_start_date','contract_end_date','Ngày hết hạn hợp đồng phải sau ngày bắt đầu'],
-    ['hire_date','termination_date','Ngày nghỉ việc phải sau ngày vào làm'],
+    ['contract_signed_date','contract_end_date','Ngày hết hạn hợp đồng phải sau ngày ký hợp đồng'],
+    ['contract_signed_date','termination_date','Ngày nghỉ việc phải sau ngày ký hợp đồng'],
   ];
   for (const [start, end, message] of orderedPairs) {
     if ((changed.has(start) || changed.has(end)) && profile[start] && profile[end] && String(profile[end]) < String(profile[start])) return message;
@@ -2538,6 +2728,56 @@ export async function ensureSubtaskSchema(env) {
   // Additive for legacy databases that already carry the table without the column.
   // If the column already exists the ALTER throws and is safely swallowed.
   try { await env.DB.prepare('ALTER TABLE subtasks ADD COLUMN description TEXT').run(); } catch (_) {}
+}
+
+export async function ensureAnnouncementsSchema(env) {
+  if (!env?.DB) return;
+  try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS announcements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      priority TEXT DEFAULT 'normal',
+      target_scope TEXT DEFAULT 'all',
+      target_department TEXT,
+      attachment_url TEXT,
+      attachment_name TEXT,
+      created_by INTEGER NOT NULL,
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      updated_at TEXT
+    )`).run();
+  } catch (error) {
+    console.error('ensureAnnouncementsSchema announcements failed', error);
+  }
+
+  try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS announcement_reads (
+      announcement_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      read_at TEXT DEFAULT (datetime('now','localtime')),
+      PRIMARY KEY (announcement_id, user_id)
+    )`).run();
+  } catch (error) {
+    console.error('ensureAnnouncementsSchema announcement_reads failed', error);
+  }
+
+  try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS announcement_files (
+      id TEXT PRIMARY KEY,
+      uploader_id INTEGER NOT NULL,
+      filename TEXT NOT NULL,
+      content_type TEXT,
+      byte_size INTEGER,
+      storage_key TEXT,
+      data_base64 TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    )`).run();
+  } catch (error) {
+    console.error('ensureAnnouncementsSchema announcement_files failed', error);
+  }
+
+  try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_announcements_created ON announcements(created_at DESC)').run(); } catch (_) {}
+  try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_announcement_reads_user ON announcement_reads(user_id, announcement_id)').run(); } catch (_) {}
 }
 
 export async function ensurePerformanceIndexes(env) {
@@ -3507,15 +3747,103 @@ export async function runAutoCheckout(env) {
   return { closed, today };
 }
 
-export async function handleScheduled(_event, env) {
+// ── AUTOMATED MONTHLY BACKUP TO CLOUDFLARE R2 ─────────────────────
+// Complete snapshot of all SQLite/D1 tables and schemas saved directly
+// to R2 bucket under backups/db/ with indefinite retention.
+export async function runMonthlyBackup(env, options = {}) {
+  const isManual = !!options.manual;
+  const triggeredBy = options.triggeredBy || 'system_cron';
+  const now = new Date(Date.now() + 7 * 3600000); // VN Time UTC+7
+  const pad = (n) => String(n).padStart(2, '0');
+  const timestamp = `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}_${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
+  const filename = `backup_${timestamp}.json`;
+  const storageKey = `backups/db/${filename}`;
+
+  // 1. Get all tables in D1 database
+  const { results: tableRows = [] } = await env.DB.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name"
+  ).all();
+
+  const backupData = {
+    version: 1,
+    appName: 'nexrall-hr-manager',
+    createdAt: now.toISOString(),
+    createdAtVN: `${now.getUTCFullYear()}-${pad(now.getUTCMonth() + 1)}-${pad(now.getUTCDate())} ${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}:${pad(now.getUTCSeconds())}`,
+    triggeredBy,
+    isManual,
+    tableCount: tableRows.length,
+    tables: {},
+  };
+
+  let totalRows = 0;
+  for (const row of tableRows) {
+    const tableName = row.name;
+    try {
+      const { results: rows = [] } = await env.DB.prepare(`SELECT * FROM "${tableName}"`).all();
+      backupData.tables[tableName] = rows;
+      totalRows += rows.length;
+    } catch (err) {
+      console.error(`Failed to export table ${tableName}`, err);
+      backupData.tables[tableName] = { error: String(err?.message || err) };
+    }
+  }
+
+  backupData.totalRows = totalRows;
+
+  // 2. Put snapshot into R2 Bucket
+  let sizeBytes = 0;
+  if (env.HR_DOCUMENTS) {
+    const jsonStr = JSON.stringify(backupData);
+    sizeBytes = jsonStr.length;
+    await env.HR_DOCUMENTS.put(storageKey, jsonStr, {
+      httpMetadata: { contentType: 'application/json; charset=utf-8' },
+      customMetadata: {
+        totalRows: String(totalRows),
+        tableCount: String(tableRows.length),
+        createdAt: backupData.createdAt,
+        triggeredBy,
+        isManual: String(isManual),
+      },
+    });
+  }
+
+  return {
+    success: true,
+    storageKey,
+    filename,
+    tableCount: tableRows.length,
+    totalRows,
+    sizeBytes,
+    createdAt: backupData.createdAt,
+    createdAtVN: backupData.createdAtVN,
+  };
+}
+
+export async function handleScheduled(event, env) {
+  const results = {};
   try {
-    const result = await runAutoCheckout(env);
-    console.log('auto-checkout completed', JSON.stringify(result));
-    return result;
+    results.autoCheckout = await runAutoCheckout(env);
+    console.log('auto-checkout completed', JSON.stringify(results.autoCheckout));
   } catch (error) {
     console.error('auto-checkout failed', String(error?.message || error), error?.stack);
-    return { error: String(error?.message || error) };
+    results.autoCheckout = { error: String(error?.message || error) };
   }
+
+  // Monthly backup: triggers on day 1 of month or when matched by monthly cron
+  try {
+    const vnDate = new Date(Date.now() + 7 * 3600000);
+    const isFirstDayOfMonth = vnDate.getUTCDate() === 1;
+    const cronSchedule = event?.cron;
+    if (isFirstDayOfMonth || cronSchedule === '0 18 1 * *') {
+      results.monthlyBackup = await runMonthlyBackup(env, { triggeredBy: `cron:${cronSchedule || 'day_1'}` });
+      console.log('monthly-backup completed', JSON.stringify(results.monthlyBackup));
+    }
+  } catch (backupError) {
+    console.error('monthly-backup failed', String(backupError?.message || backupError), backupError?.stack);
+    results.monthlyBackup = { error: String(backupError?.message || backupError) };
+  }
+
+  return results;
 }
 
 function clientIpFromRequest(request) {
@@ -3789,6 +4117,183 @@ async function ensureDefaultTaskGroup(env, projectId, userId = null) {
     "INSERT INTO task_groups (project_id,name,position,color,created_by) VALUES (?,?,?,?,?)"
   ).bind(projectId, 'Công việc chung', 0, '#6366F1', userId).run();
   return await env.DB.prepare('SELECT * FROM task_groups WHERE id=?').bind(r.meta.last_row_id).first();
+}
+
+async function ensureEmployeePersonalProject(env, user, actorId = 1) {
+  if (!user || !user.id || !user.full_name) return null;
+  const name = String(user.full_name).trim();
+  if (!name) return null;
+
+  let project = await env.DB.prepare(
+    "SELECT id, name, department, manager_id FROM task_projects WHERE manager_id = ? OR (name = ? AND department = ?) LIMIT 1"
+  ).bind(user.id, name, name).first();
+
+  let projectId;
+  if (!project) {
+    const code = String(user.employee_code || '').trim();
+    const r = await env.DB.prepare(
+      `INSERT INTO task_projects (workspace_id, name, code, type, description, department, manager_id, status, created_by, updated_at)
+       VALUES (1, ?, ?, 'project', 'Không gian công việc cá nhân', ?, ?, 'active', ?, datetime('now','localtime'))`
+    ).bind(name, code, name, user.id, actorId || 1).run();
+    projectId = r.meta.last_row_id;
+  } else {
+    projectId = project.id;
+    if (!project.manager_id || Number(project.manager_id) !== Number(user.id)) {
+      await env.DB.prepare("UPDATE task_projects SET manager_id = ? WHERE id = ?").bind(user.id, projectId).run();
+    }
+  }
+
+  await ensureDefaultTaskGroup(env, projectId, actorId || 1);
+
+  const haunv = await env.DB.prepare("SELECT id FROM users WHERE UPPER(employee_code)='HAUNV' OR email='haunguyen.me@gmail.com' LIMIT 1").first();
+  const thuydt = await env.DB.prepare("SELECT id FROM users WHERE UPPER(employee_code)='THUYDT' OR email='thuydt@netviet.com.vn' LIMIT 1").first();
+  const haunvId = haunv?.id || 528;
+  const thuydtId = thuydt?.id || 531;
+
+  const targetMembers = [
+    { id: Number(user.id), role: 'owner' },
+    { id: Number(haunvId), role: 'member' },
+    { id: Number(thuydtId), role: 'member' }
+  ];
+
+  for (const m of targetMembers) {
+    if (m.id) {
+      await env.DB.prepare(
+        "INSERT OR IGNORE INTO task_project_members (project_id, user_id, role, added_by) VALUES (?, ?, ?, ?)"
+      ).bind(projectId, m.id, m.role, actorId || 1).run();
+    }
+  }
+
+  return projectId;
+}
+
+async function checkUserDeletionEligibility(env, userId) {
+  const user = await env.DB.prepare(
+    'SELECT id, full_name, employee_code, termination_date, hire_date, created_at FROM users WHERE id=?'
+  ).bind(userId).first();
+  if (!user) return { eligible: false, error: 'Không tìm thấy tài khoản nhân viên' };
+
+  // Check if account has any attendance, payroll or invoice records at all
+  const attCountRow = await env.DB.prepare('SELECT COUNT(*) as c FROM attendance WHERE user_id=?').bind(userId).first();
+  const payrollCountRow = await env.DB.prepare('SELECT COUNT(*) as c FROM payroll WHERE employee_id=? OR user_id=?').bind(userId, String(userId)).first();
+  const invoiceCountRow = await env.DB.prepare('SELECT COUNT(*) as c FROM invoices WHERE user_id=?').bind(userId).first();
+
+  const totalAtt = Number(attCountRow?.c || 0);
+  const totalPayroll = Number(payrollCountRow?.c || 0);
+  const totalInvoices = Number(invoiceCountRow?.c || 0);
+
+  // Accidental / test account with 0 work/salary activity
+  if (totalAtt === 0 && totalPayroll === 0 && totalInvoices === 0) {
+    return { eligible: true, is_test_account: true };
+  }
+
+  // Determine target final working month & year
+  let targetMonth = null;
+  let targetYear = null;
+
+  // 1. Check termination_date first
+  if (user.termination_date) {
+    const raw = String(user.termination_date).trim();
+    if (/^\d{4}-\d{2}/.test(raw)) {
+      const parts = raw.split('-');
+      targetYear = parseInt(parts[0], 10);
+      targetMonth = parseInt(parts[1], 10);
+    } else if (/^\d{1,2}\/\d{1,2}\/\d{4}/.test(raw)) {
+      const parts = raw.split('/');
+      targetMonth = parseInt(parts[1], 10);
+      targetYear = parseInt(parts[2], 10);
+    }
+  }
+
+  // 2. If no valid termination_date, check latest attendance date
+  if (!targetMonth || !targetYear) {
+    const latestAtt = await env.DB.prepare(
+      'SELECT MAX(date) as max_date FROM attendance WHERE user_id=?'
+    ).bind(userId).first();
+    if (latestAtt?.max_date) {
+      const raw = String(latestAtt.max_date).trim();
+      if (/^\d{4}-\d{2}/.test(raw)) {
+        const parts = raw.split('-');
+        targetYear = parseInt(parts[0], 10);
+        targetMonth = parseInt(parts[1], 10);
+      } else if (/^\d{1,2}\/\d{1,2}\/\d{4}/.test(raw)) {
+        const parts = raw.split('/');
+        targetMonth = parseInt(parts[1], 10);
+        targetYear = parseInt(parts[2], 10);
+      }
+    }
+  }
+
+  // 3. If still no date, check latest payroll or invoice month
+  if (!targetMonth || !targetYear) {
+    const latestInv = await env.DB.prepare(
+      'SELECT year, month FROM invoices WHERE user_id=? ORDER BY year DESC, month DESC LIMIT 1'
+    ).bind(userId).first();
+    if (latestInv) {
+      targetYear = Number(latestInv.year);
+      targetMonth = Number(latestInv.month);
+    }
+  }
+
+  // 4. Fallback: if user is active up to now, previous month relative to now (Vietnam time UTC+7)
+  const now = new Date(Date.now() + 7 * 3600000);
+  const currentYear = now.getUTCFullYear();
+  const currentMonth = now.getUTCMonth() + 1; // 1-12
+
+  if (!targetMonth || !targetYear) {
+    if (currentMonth === 1) {
+      targetMonth = 12;
+      targetYear = currentYear - 1;
+    } else {
+      targetMonth = currentMonth - 1;
+      targetYear = currentYear;
+    }
+  }
+
+  // Format month string for display: e.g. "09/2026"
+  const monthStr = `${String(targetMonth).padStart(2, '0')}/${targetYear}`;
+
+  // Check the invoice for targetMonth/targetYear
+  const invoice = await env.DB.prepare(
+    'SELECT id, invoice_number, status, employee_confirmed_at FROM invoices WHERE user_id=? AND month=? AND year=? LIMIT 1'
+  ).bind(userId, targetMonth, targetYear).first();
+
+  if (!invoice) {
+    return {
+      eligible: false,
+      target_month: targetMonth,
+      target_year: targetYear,
+      month_str: monthStr,
+      has_invoice: false,
+      is_confirmed: false,
+      reason: `Chưa có phiếu lương tháng ${monthStr} trên hệ thống.`
+    };
+  }
+
+  const isConfirmed = !!(invoice.employee_confirmed_at || invoice.status === 'employee_confirmed' || invoice.status === 'paid');
+
+  if (!isConfirmed) {
+    return {
+      eligible: false,
+      target_month: targetMonth,
+      target_year: targetYear,
+      month_str: monthStr,
+      has_invoice: true,
+      invoice_number: invoice.invoice_number,
+      is_confirmed: false,
+      reason: `Nhân viên chưa bấm xác nhận phiếu lương tháng ${monthStr} (${invoice.invoice_number}) trên ứng dụng.`
+    };
+  }
+
+  return {
+    eligible: true,
+    target_month: targetMonth,
+    target_year: targetYear,
+    month_str: monthStr,
+    has_invoice: true,
+    invoice_number: invoice.invoice_number,
+    is_confirmed: true
+  };
 }
 
 async function ensureMyxteamTaskImportSchema(env) {
@@ -4218,27 +4723,30 @@ function canManageLeaveRequest(me, request) {
 
 function canAdvanceLeaveApproval(me, request) {
   if (!me || !request) return false;
-  // Admin hoặc HR (HCNS) có toàn quyền duyệt đơn nghỉ phép của nhân viên, không cần chờ ai
-  if (me?.role === 'admin' || isHcns(me)) {
-    // Không cho phép tự duyệt đơn của chính mình nếu không phải admin
-    if (Number(request.employee_id) === Number(me.id) && me?.role !== 'admin') {
-      return false;
-    }
-    return true;
+  if (['approved', 'rejected'].includes(request.status)) return false;
+
+  // Không cho phép tự duyệt đơn của chính mình (trừ khi là admin)
+  if (Number(request.employee_id) === Number(me.id) || String(request.user_id) === String(me.id) || String(request.user_id) === String(me.employee_code || '')) {
+    if (me?.role !== 'admin') return false;
   }
-  // Không cho phép tự duyệt đơn của chính mình
-  if (Number(request.employee_id) === Number(me.id) || String(request.user_id) === String(me.id) || String(request.user_id) === String(me.employee_code || '')) return false;
+
+  // Anh Hậu (Phó Tổng Giám Đốc) hoặc Quản trị viên (admin) có toàn quyền duyệt ở bất kỳ bước nào
+  if (isDirectorHau(me)) return true;
 
   const currentLevel = Number(request.approval_level || 1);
-  // Level 1: Quản lý trực tiếp phòng ban
-  if (currentLevel === 1) {
+  const status = String(request.status || '');
+  // Bước 2: Trạng thái 'pending_director' hoặc approval_level === 2 -> Chỉ anh Hậu (hoặc Admin) duyệt chốt
+  if (status === 'pending_director' || currentLevel === 2) {
+    return isDirectorHau(me);
+  }
+
+  // Bước 1: Trạng thái 'pending' hoặc approval_level === 1 -> HCNS hoặc Quản lý phòng ban duyệt sơ bộ
+  if (status === 'pending' || currentLevel === 1) {
+    if (isStep1Approver(me)) return true;
     const isDeptMgr = me?.role === 'manager' && !!request?.department && normalizeDeptName(me?.department) === normalizeDeptName(request?.department);
     return isDeptMgr;
   }
-  // Level 2: HCNS
-  if (currentLevel === 2) return isHcns(me);
-  // Level 3: Ban Giám Đốc (BGD)
-  if (currentLevel === 3) return isBgd(me);
+
   return false;
 }
 
@@ -4534,15 +5042,18 @@ export async function handle(request, env) {
       bank_account: user.bank_account, bank_name: user.bank_name,
       lifecycle_status: user.lifecycle_status, must_change_password: !!user.must_change_password,
     };
+    const loginHeaders = new Headers({
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store, max-age=0',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+      'Referrer-Policy': 'no-referrer',
+    });
+    loginHeaders.append('Set-Cookie', `hr_token=${token}; Path=/; HttpOnly; Secure; Max-Age=2592000; SameSite=Lax`);
+    loginHeaders.append('Set-Cookie', `hr_token=${token}; Domain=.netviet.live; Path=/; HttpOnly; Secure; Max-Age=2592000; SameSite=Lax`);
+    loginHeaders.append('Set-Cookie', `hr_sso_active=1; Domain=.netviet.live; Path=/; Secure; Max-Age=2592000; SameSite=Lax`);
     return new Response(JSON.stringify({ token, user: userData }), {
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Cache-Control': 'no-store, max-age=0',
-        'X-Content-Type-Options': 'nosniff',
-        'X-Frame-Options': 'DENY',
-        'Referrer-Policy': 'no-referrer',
-        'Set-Cookie': `hr_token=${token}; Path=/; HttpOnly; Secure; Max-Age=28800; SameSite=Lax`,
-      },
+      headers: loginHeaders,
     });
   }
 
@@ -4558,11 +5069,14 @@ export async function handle(request, env) {
       await env.DB.prepare('UPDATE sessions SET revoked=1 WHERE token=?').bind(revokeToken).run();
       await env.DB.prepare('DELETE FROM sessions WHERE token=?').bind(revokeToken).run();
     }
+    const logoutHeaders = new Headers({
+      'Content-Type': 'application/json',
+    });
+    logoutHeaders.append('Set-Cookie', 'hr_token=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax');
+    logoutHeaders.append('Set-Cookie', 'hr_token=; Domain=.netviet.live; Path=/; HttpOnly; Max-Age=0; SameSite=Lax');
+    logoutHeaders.append('Set-Cookie', 'hr_sso_active=; Domain=.netviet.live; Path=/; Max-Age=0; SameSite=Lax');
     return new Response(JSON.stringify({ ok: true }), {
-      headers: {
-        'Content-Type': 'application/json',
-        'Set-Cookie': 'hr_token=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax',
-      },
+      headers: logoutHeaders,
     });
   }
 
@@ -4571,7 +5085,19 @@ export async function handle(request, env) {
     const { session, explicitBadToken } = await resolveSession(request, env);
     if (!session) return json({ error: 'Chưa đăng nhập', code: 'UNAUTHORIZED' }, 401);
     const userId = session.uid ?? session.id;
-    return json({
+    const { token: currentToken } = extractHrToken(request, env);
+    const meHeaders = new Headers({
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store, max-age=0',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+      'Referrer-Policy': 'no-referrer',
+    });
+    if (currentToken && /^[0-9a-f]{64}$/i.test(currentToken)) {
+      meHeaders.append('Set-Cookie', `hr_token=${currentToken}; Domain=.netviet.live; Path=/; HttpOnly; Secure; Max-Age=2592000; SameSite=Lax`);
+      meHeaders.append('Set-Cookie', `hr_sso_active=1; Domain=.netviet.live; Path=/; Secure; Max-Age=2592000; SameSite=Lax`);
+    }
+    return new Response(JSON.stringify({
       user: {
         id: userId, full_name: session.full_name, email: session.email,
         role: session.role, department: session.department, position: session.position,
@@ -4581,7 +5107,7 @@ export async function handle(request, env) {
         bank_name: session.bank_name, is_active: session.is_active,
         lifecycle_status: session.lifecycle_status, must_change_password: !!session.must_change_password,
       }
-    });
+    }), { headers: meHeaders });
   }
 
   // ── AUTH: CHANGE PASSWORD ────────────────────────────────────────
@@ -4653,6 +5179,27 @@ export async function handle(request, env) {
 
   if (me.must_change_password) {
     return json({ error: 'Bạn phải đổi mật khẩu tạm trước khi tiếp tục', code: 'PASSWORD_CHANGE_REQUIRED' }, 403);
+  }
+
+  // ── EMPLOYEE DECISION POPUPS ─────────────────────────────────────
+  if (path === '/api/employee/popups/pending' && request.method === 'GET') {
+    const { results = [] } = await env.DB.prepare(`
+      SELECT * FROM employee_popups
+      WHERE user_id = ? AND is_dismissed = 0
+      ORDER BY id ASC
+    `).bind(me.id).all();
+    return json({ popups: results });
+  }
+
+  const dismissPopupMatch = path.match(/^\/api\/employee\/popups\/(\d+)\/dismiss$/);
+  if (dismissPopupMatch && request.method === 'POST') {
+    const popupId = parseInt(dismissPopupMatch[1], 10);
+    await env.DB.prepare(`
+      UPDATE employee_popups
+      SET is_dismissed = 1, dismissed_at = datetime('now','localtime')
+      WHERE id = ? AND user_id = ?
+    `).bind(popupId, me.id).run();
+    return json({ ok: true });
   }
 
   // Executive dashboard deliberately returns aggregates only.  It is an Admin
@@ -5209,7 +5756,7 @@ export async function handle(request, env) {
     const { results: allUsers = [] } = await env.DB.prepare(
       `SELECT u.id,u.employee_code,u.employee_type,u.full_name,u.email,u.department,u.position,
               u.avatar_color,u.avatar_initials,u.avatar_url,u.is_active,u.lifecycle_status,
-              u.work_location,u.contract_type,u.contract_end_date,u.probation_end_date,u.national_id_expiry_date
+              u.work_location,u.contract_type,u.contract_end_date,u.probation_end_date,u.national_id_issue_date,u.national_id_expiry_date
        FROM users u${where}`
     ).bind(...binds).all();
     const sortedUsers = sortVietnameseNames(allUsers, 'full_name');
@@ -5570,6 +6117,96 @@ export async function handle(request, env) {
   // ── Announcements (Admin / Company Announcements) ────────────────
   const canManageAnnouncements = ['admin', 'director'].includes(me.role) || isHcns(me) || isAttendanceHcns;
 
+  function sanitizeAnnouncementHtmlServer(dirty) {
+    if (!dirty || typeof dirty !== 'string') return '';
+    let clean = dirty;
+    clean = clean.replace(/<(script|style|iframe|object|embed|applet|meta|link|base|form|input|button|select|textarea)\b[^>]*>[\s\S]*?<\/\1>/gi, '');
+    clean = clean.replace(/<(script|style|iframe|object|embed|applet|meta|link|base|form|input|button|select|textarea)\b[^>]*\/?>/gi, '');
+    clean = clean.replace(/\s+on[a-z0-9_-]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+    clean = clean.replace(/\b(href|src)\s*=\s*["']?\s*(?:javascript|vbscript):[^"'>\s]*/gi, '');
+    clean = clean.replace(/\bhref\s*=\s*["']?\s*data:[^"'>\s]*/gi, '');
+    return clean;
+  }
+
+  if (path.startsWith('/api/announcements')) {
+    try { await ensureAnnouncementsSchema(env); } catch (_) {}
+  }
+
+  if (path === '/api/announcements/upload' && request.method === 'POST') {
+    if (!canManageAnnouncements) {
+      return json({ error: 'Chỉ Quản trị viên và HCNS mới có quyền tải tệp lên' }, 403);
+    }
+    const form = await request.formData().catch(() => null);
+    const file = form?.get('file');
+    if (!file || typeof file.stream !== 'function') return json({ error: 'Vui lòng chọn tệp đính kèm' }, 400);
+
+    const maxBytes = 25 * 1024 * 1024; // 25 MB
+    if (!Number.isFinite(file.size) || file.size < 1 || file.size > maxBytes) {
+      return json({ error: 'Dung lượng tệp tối đa là 25 MB' }, 400);
+    }
+
+    const filename = safeDownloadName(file.name, 'attachment');
+    const contentType = String(file.type || 'application/octet-stream').toLowerCase();
+    const documentId = crypto.randomUUID();
+    const bytes = await file.arrayBuffer();
+
+    if (env.HR_DOCUMENTS) {
+      const storageKey = `announcements/${documentId}/${filename}`;
+      await env.HR_DOCUMENTS.put(storageKey, bytes, {
+        httpMetadata: { contentType, cacheControl: 'public, max-age=86400' },
+        customMetadata: { uploader_id: String(me.id) }
+      });
+      await env.DB.prepare('INSERT INTO announcement_files (id, uploader_id, filename, content_type, byte_size, storage_key, data_base64) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .bind(documentId, me.id, filename, contentType, file.size, storageKey, null).run();
+    } else {
+      const b64 = Buffer.from(bytes).toString('base64');
+      await env.DB.prepare('INSERT INTO announcement_files (id, uploader_id, filename, content_type, byte_size, storage_key, data_base64) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .bind(documentId, me.id, filename, contentType, file.size, null, b64).run();
+    }
+
+    const fileUrl = `/api/announcements/attachments/${documentId}`;
+    return json({ ok: true, document_id: documentId, filename, file_url: fileUrl, file_size: file.size });
+  }
+
+  const annAttachmentMatch = path.match(/^\/api\/announcements\/attachments\/([0-9a-fA-F-]{36})$/);
+  if (annAttachmentMatch && request.method === 'GET') {
+    const docId = annAttachmentMatch[1];
+    const row = await env.DB.prepare('SELECT * FROM announcement_files WHERE id = ?').bind(docId).first();
+    if (!row) return json({ error: 'Tệp không tồn tại' }, 404);
+
+    const disposition = url.searchParams.get('disposition') === 'inline' ? 'inline' : 'attachment';
+    const filename = safeDownloadName(row.filename || 'attachment');
+    const contentType = row.content_type || 'application/octet-stream';
+
+    if (env.HR_DOCUMENTS && row.storage_key) {
+      const object = await env.HR_DOCUMENTS.get(row.storage_key);
+      if (object) {
+        return new Response(object.body, {
+          headers: {
+            'Content-Type': contentType,
+            'Content-Disposition': `${disposition}; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+            'Cache-Control': 'public, max-age=86400',
+            'X-Content-Type-Options': 'nosniff',
+          }
+        });
+      }
+    }
+
+    if (row.data_base64) {
+      const buf = Buffer.from(row.data_base64, 'base64');
+      return new Response(buf, {
+        headers: {
+          'Content-Type': contentType,
+          'Content-Disposition': `${disposition}; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+          'Cache-Control': 'public, max-age=86400',
+          'X-Content-Type-Options': 'nosniff',
+        }
+      });
+    }
+
+    return json({ error: 'Nội dung tệp không khả dụng' }, 404);
+  }
+
   if (path === '/api/announcements' && request.method === 'GET') {
     const scopeFilter = url.searchParams.get('scope') || '';
     const priorityFilter = url.searchParams.get('priority') || '';
@@ -5616,7 +6253,7 @@ export async function handle(request, env) {
     }
     const b = await request.json().catch(() => ({}));
     const title = String(b.title || '').trim();
-    const content = String(b.content || '').trim();
+    const content = sanitizeAnnouncementHtmlServer(String(b.content || '').trim());
     const priority = ['normal', 'important'].includes(b.priority) ? b.priority : 'normal';
     const targetScope = b.target_scope === 'department' ? 'department' : 'all';
     const targetDepartment = targetScope === 'department' ? String(b.target_department || '').trim() : null;
@@ -5678,12 +6315,12 @@ export async function handle(request, env) {
     }
 
     if (request.method === 'PUT') {
-      const canEdit = ['admin', 'director'].includes(me.role) || existing.created_by === me.id;
+      const canEdit = ['admin', 'director'].includes(me.role) || (canManageAnnouncements && existing.created_by === me.id);
       if (!canEdit) return json({ error: 'Không có quyền chỉnh sửa thông báo này' }, 403);
 
       const b = await request.json().catch(() => ({}));
       const title = String(b.title || '').trim();
-      const content = String(b.content || '').trim();
+      const content = sanitizeAnnouncementHtmlServer(String(b.content || '').trim());
       const priority = ['normal', 'important'].includes(b.priority) ? b.priority : (existing.priority || 'normal');
       const targetScope = b.target_scope === 'department' ? 'department' : (b.target_scope === 'all' ? 'all' : existing.target_scope);
       const targetDepartment = targetScope === 'department' ? String(b.target_department || '').trim() : null;
@@ -5716,7 +6353,7 @@ export async function handle(request, env) {
     }
 
     if (request.method === 'DELETE') {
-      const canDelete = ['admin', 'director'].includes(me.role) || existing.created_by === me.id;
+      const canDelete = ['admin', 'director'].includes(me.role) || (canManageAnnouncements && existing.created_by === me.id);
       if (!canDelete) return json({ error: 'Không có quyền xóa thông báo này' }, 403);
 
       await env.DB.prepare('DELETE FROM announcement_reads WHERE announcement_id = ?').bind(annId).run();
@@ -5762,7 +6399,7 @@ export async function handle(request, env) {
       const isSelf = Number(me.id) === userId;
       if (!hasHrScope && !isSelf) {
         for (const field of [...EMPLOYEE_PROFILE_FIELDS.contract, ...EMPLOYEE_PROFILE_FIELDS.compensation]) delete profile[field];
-        for (const field of ['birth_date','gender','national_id','national_id_expiry_date','home_address','school_name','emergency_contact_name','emergency_contact_phone']) {
+        for (const field of ['birth_date','gender','national_id','national_id_issue_date','national_id_expiry_date','home_address','school_name','emergency_contact_name','emergency_contact_phone']) {
           delete profile[field];
         }
         delete profile.tax_code;
@@ -5775,8 +6412,8 @@ export async function handle(request, env) {
       let completion = null;
       if (permissions.can_view_documents) {
         const requiredFields = [
-          'full_name','email','phone','birth_date','national_id','home_address','position','department',
-          'direct_manager_id','work_location','contract_type','hire_date',
+          'full_name','email','phone','birth_date','national_id','national_id_issue_date','home_address','position','department',
+          'direct_manager_id','work_location','contract_type',
         ];
         const requiredDocuments = target.employee_type === 'TTS'
           ? ['cv','national_id','internship_agreement']
@@ -5828,6 +6465,15 @@ export async function handle(request, env) {
       if (typeof changes[field] === 'number' && !Number.isFinite(changes[field])) return json({ error: `Giá trị ${field} không hợp lệ` }, 400);
     }
     if (!Object.keys(changes).length) return json({ ok: true, unchanged: true });
+    if (changes.contract_type !== undefined) {
+      const ctLower = String(changes.contract_type || '').toLowerCase();
+      changes.employee_type = (ctLower.includes('thực tập') || ctLower.includes('tts')) ? 'TTS' : 'NV';
+    }
+    if (changes.contract_signed_date !== undefined) {
+      changes.hire_date = changes.contract_signed_date || changes.contract_start_date || null;
+    } else if (changes.contract_start_date !== undefined && !target.hire_date) {
+      changes.hire_date = changes.contract_start_date;
+    }
     const merged = { ...target, ...changes };
     if (merged.employee_type !== 'TTS' && merged.school_name) {
       changes.school_name = '';
@@ -5869,6 +6515,14 @@ export async function handle(request, env) {
     return json({ ok: true, change_set_id: changeSetId, changed_fields: actualChanges.map(([field]) => field) });
   }
 
+  const userDeleteEligibilityMatch = path.match(/^\/api\/users\/(\d+)\/delete-eligibility$/);
+  if (userDeleteEligibilityMatch && request.method === 'GET') {
+    if (!(isAdmin || isHcns(me))) return json({ error: 'Chỉ HCNS hoặc Admin mới có quyền kiểm tra' }, 403);
+    const userId = parseInt(userDeleteEligibilityMatch[1], 10);
+    const result = await checkUserDeletionEligibility(env, userId);
+    return json(result);
+  }
+
   const userDeleteMatch = path.match(/^\/api\/users\/(\d+)$/);
   if (userDeleteMatch && request.method === 'DELETE') {
     if (!(isAdmin || isHcns(me))) return json({ error: 'Chỉ HCNS hoặc Admin mới có quyền xóa tài khoản nhân viên' }, 403);
@@ -5876,6 +6530,14 @@ export async function handle(request, env) {
     if (Number(me.id) === userId) return json({ error: 'Không thể tự xóa tài khoản của chính mình' }, 400);
     const target = await env.DB.prepare('SELECT id, full_name, employee_code FROM users WHERE id=?').bind(userId).first();
     if (!target) return json({ error: 'Không tìm thấy tài khoản nhân viên' }, 404);
+
+    const eligibility = await checkUserDeletionEligibility(env, userId);
+    if (!eligibility.eligible) {
+      return json({
+        error: `Không thể xóa tài khoản của ${target.full_name}: ${eligibility.reason || 'Nhân viên chưa xác nhận phiếu lương tháng làm việc cuối cùng trên ứng dụng.'}`,
+        eligibility
+      }, 400);
+    }
 
     try {
       // Clean up child tables first to avoid FOREIGN KEY constraint failure
@@ -6156,7 +6818,7 @@ export async function handle(request, env) {
     if (!isManager) return json({ error: 'Không có quyền' }, 403);
     const hasHrScope = isAdmin || isHcns(me);
     const baseFields = hasHrScope
-      ? 'id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at,birth_date,gender,national_id,national_id_expiry_date,home_address,school_name,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,hire_date,contract_start_date,contract_end_date,contract_signed_date,probation_end_date,official_date,termination_date,allowance,insurance_salary,dependent_count,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url,updated_at,updated_by'
+      ? 'id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at,birth_date,gender,national_id,national_id_issue_date,national_id_expiry_date,home_address,school_name,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,hire_date,contract_start_date,contract_end_date,contract_signed_date,probation_end_date,official_date,termination_date,allowance,insurance_salary,dependent_count,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url,updated_at,updated_by'
       : 'id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,is_active,lifecycle_status,created_at,direct_manager_id,work_location,avatar_url';
     const stmt = env.DB.prepare(`SELECT ${baseFields} FROM users${hasHrScope ? '' : ' WHERE department=?'} ORDER BY id`);
     const { results } = hasHrScope ? await stmt.all() : await stmt.bind(me.department).all();
@@ -6171,7 +6833,8 @@ export async function handle(request, env) {
       return json({ error: 'Vui lòng nhập họ và tên nhân viên' }, 400);
     }
     let code = String(b.employee_code || '').trim().toUpperCase();
-    const isTts = code.startsWith('TTS') || b.employee_type === 'TTS';
+    const ctLower = String(b.contract_type || '').toLowerCase();
+    const isTts = code.startsWith('TTS') || b.employee_type === 'TTS' || ctLower.includes('thực tập') || ctLower.includes('tts');
     const empType = isTts ? 'TTS' : employeeTypeCode(b.employee_type || 'NV');
     const dept = normalizeDeptName(b.department || (isTts ? 'Thực Tập Sinh' : 'Phòng Marketing'));
 
@@ -6217,6 +6880,9 @@ export async function handle(request, env) {
           await env.DB.prepare('INSERT OR IGNORE INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?)')
             .bind(companyChannelId, newUserId, b.role === 'manager' ? 'admin' : (['admin', 'director'].includes(b.role) ? 'owner' : 'member')).run();
         }
+      } catch (_) {}
+      try {
+        await ensureEmployeePersonalProject(env, { id: newUserId, full_name: fullName, employee_code: code }, me.id);
       } catch (_) {}
       await broadcastAppEvent(env, 'users', 'user:created', {
         id: newUserId,
@@ -6477,7 +7143,7 @@ export async function handle(request, env) {
       if (!isManager && me.id !== uid) return json({ error: 'Không có quyền' }, 403);
       if (isManager && !isAdmin && !isHcns(me) && me.id !== uid && target.department !== me.department) return json({ error: 'Không có quyền' }, 403);
       const row = await env.DB.prepare(
-        'SELECT id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at,birth_date,gender,national_id,national_id_expiry_date,home_address,school_name,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,hire_date,contract_start_date,contract_end_date,contract_signed_date,probation_end_date,official_date,termination_date,allowance,insurance_salary,dependent_count,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url,updated_at,updated_by FROM users WHERE id=?'
+        'SELECT id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at,birth_date,gender,national_id,national_id_issue_date,national_id_expiry_date,home_address,school_name,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,hire_date,contract_start_date,contract_end_date,contract_signed_date,probation_end_date,official_date,termination_date,allowance,insurance_salary,dependent_count,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url,updated_at,updated_by FROM users WHERE id=?'
       ).bind(uid).first();
       if (!row) return json({ error: 'Không tìm thấy' }, 404);
       return json({ user: row });
@@ -6495,7 +7161,7 @@ export async function handle(request, env) {
       // authorization so absent fields can never zero out personnel data.
       const b = { ...target, ...input };
       const legacyTrackedFields = [
-        'full_name','email','department','position','phone','birth_date','gender','national_id','home_address',
+        'full_name','email','department','position','phone','birth_date','gender','national_id','national_id_issue_date','national_id_expiry_date','home_address',
         'emergency_contact_name','emergency_contact_phone','direct_manager_id','work_location','contract_type',
         'contract_start_date','contract_end_date','contract_signed_date','official_date','termination_date','salary',
         'allowance','insurance_salary','bank_account','bank_name','bank_account_holder','tax_code',
@@ -6524,11 +7190,11 @@ export async function handle(request, env) {
         extraSql = ', password_hash=?, must_change_password=1';
         extraBinds = [newHash];
       }
-      const binds = [b.full_name,b.email,b.role||'employee',normalizeDeptName(b.department||''),b.position||'',b.avatar_color||'#4F46E5',ini,b.phone||'',b.salary||0,b.bank_account||'',b.bank_name||'',b.is_active??1,b.birth_date||null,b.gender||'',b.national_id||'',b.home_address||'',b.emergency_contact_name||'',b.emergency_contact_phone||'',b.direct_manager_id||null,b.work_location||'',b.contract_type||'',b.contract_start_date||null,b.contract_end_date||null,b.contract_signed_date||null,b.official_date||null,b.termination_date||null,b.allowance||0,b.insurance_salary||0,b.bank_account_holder||'',b.tax_code||'',b.social_insurance_number||'',b.insurance_hospital||'',b.avatar_url||'',b.national_id_document_url||'',b.degree_document_url||'',b.contract_document_url||'',b.personnel_decision_url||'',...extraBinds,me.id,uid];
+      const binds = [b.full_name,b.email,b.role||'employee',normalizeDeptName(b.department||''),b.position||'',b.avatar_color||'#4F46E5',ini,b.phone||'',b.salary||0,b.bank_account||'',b.bank_name||'',b.is_active??1,b.birth_date||null,b.gender||'',b.national_id||'',b.national_id_issue_date||null,b.national_id_expiry_date||null,b.home_address||'',b.emergency_contact_name||'',b.emergency_contact_phone||'',b.direct_manager_id||null,b.work_location||'',b.contract_type||'',b.contract_start_date||null,b.contract_end_date||null,b.contract_signed_date||null,b.official_date||null,b.termination_date||null,b.allowance||0,b.insurance_salary||0,b.bank_account_holder||'',b.tax_code||'',b.social_insurance_number||'',b.insurance_hospital||'',b.avatar_url||'',b.national_id_document_url||'',b.degree_document_url||'',b.contract_document_url||'',b.personnel_decision_url||'',...extraBinds,me.id,uid];
       const changeSetId = crypto.randomUUID();
       await env.DB.batch([
         env.DB.prepare(
-          `UPDATE users SET full_name=?,email=?,role=?,department=?,position=?,avatar_color=?,avatar_initials=?,phone=?,salary=?,bank_account=?,bank_name=?,is_active=?,birth_date=?,gender=?,national_id=?,home_address=?,emergency_contact_name=?,emergency_contact_phone=?,direct_manager_id=?,work_location=?,contract_type=?,contract_start_date=?,contract_end_date=?,contract_signed_date=?,official_date=?,termination_date=?,allowance=?,insurance_salary=?,bank_account_holder=?,tax_code=?,social_insurance_number=?,insurance_hospital=?,avatar_url=?,national_id_document_url=?,degree_document_url=?,contract_document_url=?,personnel_decision_url=?${extraSql},updated_at=datetime('now','localtime'),updated_by=? WHERE id=?`
+          `UPDATE users SET full_name=?,email=?,role=?,department=?,position=?,avatar_color=?,avatar_initials=?,phone=?,salary=?,bank_account=?,bank_name=?,is_active=?,birth_date=?,gender=?,national_id=?,national_id_issue_date=?,national_id_expiry_date=?,home_address=?,emergency_contact_name=?,emergency_contact_phone=?,direct_manager_id=?,work_location=?,contract_type=?,contract_start_date=?,contract_end_date=?,contract_signed_date=?,official_date=?,termination_date=?,allowance=?,insurance_salary=?,bank_account_holder=?,tax_code=?,social_insurance_number=?,insurance_hospital=?,avatar_url=?,national_id_document_url=?,degree_document_url=?,contract_document_url=?,personnel_decision_url=?${extraSql},updated_at=datetime('now','localtime'),updated_by=? WHERE id=?`
         ).bind(...binds),
         ...legacyChanges.map(([field, value]) => employeeAuditStatement(env, {
           userId: uid,
@@ -7374,15 +8040,15 @@ const attendanceRateTo =
     const month = String(url.searchParams.get('month') || '');
     const status = String(url.searchParams.get('status') || '');
     const date = String(url.searchParams.get('date') || '');
-    let q = `SELECT a.*, u.full_name, u.employee_code, u.department, u.avatar
+    let q = `SELECT a.*, u.full_name, u.employee_code, u.department, u.avatar_url, u.avatar_color, u.avatar_initials
              FROM attendance a
              JOIN users u ON u.id = a.user_id
              WHERE a.work_type = 'wfh' AND a.wfh_status IS NOT NULL`;
     const binds = [];
-    if (!isAttendanceAdmin) {
+    if (!isAttendanceAdmin && !isDirectorHau(me)) {
       q += ' AND a.user_id = ?';
       binds.push(me.id);
-    } else if (me.role === 'manager' && !isAdmin && !isAttendanceHcns) {
+    } else if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && !isDirectorHau(me)) {
       q += ' AND u.department = ?';
       binds.push(me.department);
     }
@@ -7394,56 +8060,148 @@ const attendanceRateTo =
       q += " AND a.date = ?";
       binds.push(date);
     }
-    if (['pending', 'approved', 'rejected'].includes(status)) {
+    if (['pending', 'pending_director', 'approved', 'rejected'].includes(status)) {
       q += ' AND a.wfh_status = ?';
       binds.push(status);
     }
-    q += " ORDER BY CASE a.wfh_status WHEN 'pending' THEN 0 WHEN 'rejected' THEN 1 ELSE 2 END, a.date DESC, a.id DESC";
+    q += " ORDER BY CASE a.wfh_status WHEN 'pending' THEN 0 WHEN 'pending_director' THEN 1 WHEN 'rejected' THEN 2 ELSE 3 END, a.date DESC, a.id DESC";
     const { results = [] } = await (binds.length ? env.DB.prepare(q).bind(...binds) : env.DB.prepare(q)).all();
     return json({ wfh_requests: results });
   }
 
   const wfhDecisionMatch = path.match(/^\/api\/attendance\/(\d+)\/wfh-decision$/);
   if (wfhDecisionMatch && request.method === 'POST') {
-    if (!isAttendanceAdmin) return json({ error: 'Không có quyền duyệt yêu cầu WFH' }, 403);
+    if (!isAttendanceAdmin && !isDirectorHau(me)) return json({ error: 'Không có quyền duyệt yêu cầu WFH' }, 403);
     const id = parseInt(wfhDecisionMatch[1]);
     const record = await env.DB.prepare('SELECT a.*, u.full_name, u.employee_code, u.department FROM attendance a JOIN users u ON u.id=a.user_id WHERE a.id=?').bind(id).first();
     if (!record || record.work_type !== 'wfh') return json({ error: 'Không tìm thấy bản ghi WFH hợp lệ' }, 404);
-    if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && record.department !== me.department) {
+    if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && !isDirectorHau(me) && record.department !== me.department) {
       return json({ error: 'Không có quyền duyệt yêu cầu ngoài phòng ban' }, 403);
     }
+    const currentStatus = record.wfh_status || 'pending';
+    if (!['pending', 'pending_director'].includes(currentStatus)) {
+      return json({ error: 'Yêu cầu WFH đã được xử lý' }, 400);
+    }
+
+    const isHau = isDirectorHau(me);
+    if (currentStatus === 'pending_director' && !isHau) {
+      return json({ error: 'Chỉ anh Hậu (Phó Tổng Giám Đốc) hoặc Quản trị viên mới có quyền phê duyệt bước cuối cùng.' }, 403);
+    }
+
     const b = await request.json().catch(() => ({}));
     const action = b.action === 'reject' ? 'reject' : 'approve';
     const note = String(b.review_note || '').trim();
     if (action === 'reject' && !note) {
       return json({ error: 'Vui lòng nhập lý do từ chối WFH' }, 400);
     }
-    const nextStatus = action === 'approve' ? 'approved' : 'rejected';
-    await env.DB.prepare(
-      "UPDATE attendance SET wfh_status=?, wfh_reviewer_id=?, wfh_reviewer_name=?, wfh_review_note=?, wfh_reviewed_at=datetime('now','localtime') WHERE id=?"
-    ).bind(nextStatus, me.id, me.full_name || '', note || null, id).run();
 
-    try {
-      const notifTitle = action === 'approve' ? 'Yêu cầu WFH đã được duyệt' : 'Yêu cầu WFH đã bị từ chối';
-      const notifContent = action === 'approve'
-        ? `Yêu cầu WFH ngày ${record.date} của bạn đã được ${me.full_name || 'Quản lý'} phê duyệt.${note ? ` Ghi chú: ${note}` : ''}`
-        : `Yêu cầu WFH ngày ${record.date} của bạn đã bị từ chối bởi ${me.full_name || 'Quản lý'}. Lý do: ${note}`;
+    if (action === 'reject') {
+      const nextStatus = 'rejected';
       await env.DB.prepare(
-        "INSERT INTO notifications (user_id, title, content, type, link) VALUES (?, ?, ?, 'attendance', '/attendance')"
-      ).bind(record.user_id, notifTitle, notifContent).run();
-    } catch (_) {}
+        "UPDATE attendance SET wfh_status=?, wfh_reviewer_id=?, wfh_reviewer_name=?, wfh_review_note=?, wfh_reviewed_at=datetime('now','localtime') WHERE id=?"
+      ).bind(nextStatus, me.id, me.full_name || '', note || null, id).run();
 
-    await broadcastAppEvent(env, 'attendance', action === 'approve' ? 'attendance:wfh_approved' : 'attendance:wfh_rejected', {
-      id,
-      user_id: record.user_id,
-      date: record.date,
-      wfh_status: nextStatus,
-      reviewer_id: me.id,
-      reviewer_name: me.full_name || '',
-      review_note: note || null,
-    }, { actorId: me.id });
+      await createEmployeePopup(env, {
+        userId: record.user_id,
+        requestType: 'wfh',
+        requestId: id,
+        decision: 'rejected',
+        title: 'Đơn làm việc tại nhà (WFH) bị từ chối',
+        message: `Yêu cầu WFH ngày ${record.date} của bạn đã bị từ chối bởi ${me.full_name || 'Quản lý'}.${note ? ` Lý do: ${note}` : ''}`,
+        details: {
+          request_type: 'wfh',
+          request_id: id,
+          date: record.date,
+          shift: record.shift,
+          reviewer_name: me.full_name,
+          reason: note,
+        },
+        actorId: me.id,
+        actorName: me.full_name || '',
+      });
 
-    return json({ ok: true, wfh_status: nextStatus });
+      await broadcastAppEvent(env, 'attendance', 'attendance:wfh_rejected', {
+        id,
+        user_id: record.user_id,
+        wfh_status: nextStatus,
+        wfh_reviewer_id: me.id,
+        wfh_reviewer_name: me.full_name || '',
+        wfh_review_note: note || null,
+        final: true,
+      }, { actorId: me.id });
+
+      return json({ ok: true, wfh_status: nextStatus, final: true });
+    }
+
+    // action === 'approve'
+    const isFinalApproval = currentStatus === 'pending_director' || isHau;
+    if (isFinalApproval) {
+      const nextStatus = 'approved';
+      await env.DB.prepare(
+        "UPDATE attendance SET wfh_status=?, wfh_reviewer_id=?, wfh_reviewer_name=?, wfh_review_note=?, wfh_reviewed_at=datetime('now','localtime') WHERE id=?"
+      ).bind(nextStatus, me.id, me.full_name || '', note || null, id).run();
+
+      await createEmployeePopup(env, {
+        userId: record.user_id,
+        requestType: 'wfh',
+        requestId: id,
+        decision: 'approved',
+        title: 'Đơn làm việc tại nhà (WFH) đã được duyệt!',
+        message: `Yêu cầu WFH ngày ${record.date} của bạn đã được ${isHau ? 'anh Hậu (Phó Tổng Giám Đốc)' : (me.full_name || 'Ban Giám Đốc')} phê duyệt chính thức.${note ? ` Ghi chú: ${note}` : ''}`,
+        details: {
+          request_type: 'wfh',
+          request_id: id,
+          date: record.date,
+          shift: record.shift,
+          reviewer_name: isHau ? 'Anh Hậu (Phó Tổng Giám Đốc)' : me.full_name,
+          note,
+        },
+        actorId: me.id,
+        actorName: me.full_name || '',
+      });
+
+      await broadcastAppEvent(env, 'attendance', 'attendance:wfh_approved', {
+        id,
+        user_id: record.user_id,
+        date: record.date,
+        wfh_status: nextStatus,
+        reviewer_id: me.id,
+        reviewer_name: me.full_name || '',
+        review_note: note || null,
+        final: true,
+      }, { actorId: me.id });
+
+      return json({ ok: true, wfh_status: nextStatus, final: true });
+    } else {
+      // Step 1 approval by HCNS -> pending_director
+      const nextStatus = 'pending_director';
+      await env.DB.prepare(
+        "UPDATE attendance SET wfh_status=?, wfh_step1_reviewer_id=?, wfh_step1_reviewer_name=?, wfh_step1_reviewed_at=datetime('now','localtime'), wfh_step1_note=? WHERE id=?"
+      ).bind(nextStatus, me.id, me.full_name || '', note || null, id).run();
+
+      try {
+        await env.DB.prepare(
+          "INSERT INTO notifications (user_id, title, content, type, link) VALUES (?, ?, ?, 'attendance', '/attendance')"
+        ).bind(
+          record.user_id,
+          'Tiến độ yêu cầu WFH (Bước 1 đã duyệt)',
+          `HCNS (${me.full_name}) đã duyệt bước 1 yêu cầu WFH ngày ${record.date} của bạn. Đang chờ anh Hậu phê duyệt chốt.`
+        ).run();
+      } catch (_) {}
+
+      await broadcastAppEvent(env, 'attendance', 'attendance:wfh_forwarded', {
+        id,
+        user_id: record.user_id,
+        date: record.date,
+        wfh_status: nextStatus,
+        step1_reviewer_id: me.id,
+        step1_reviewer_name: me.full_name || '',
+        step1_note: note || null,
+        final: false,
+      }, { actorId: me.id });
+
+      return json({ ok: true, wfh_status: nextStatus, final: false });
+    }
   }
 
   // ── OVERTIME ────────────────────────────────────────────────────
@@ -7452,11 +8210,11 @@ const attendanceRateTo =
     const status = String(url.searchParams.get('status') || '');
     let q = `SELECT o.*,u.full_name,u.employee_code,u.department FROM overtime_requests o JOIN users u ON u.id=o.user_id WHERE 1=1`;
     const binds = [];
-    if (!isAttendanceAdmin) { q += ' AND o.user_id=?'; binds.push(me.id); }
-    else if (me.role === 'manager' && !isAdmin && !isAttendanceHcns) { q += ' AND u.department=?'; binds.push(me.department); }
+    if (!isAttendanceAdmin && !isDirectorHau(me)) { q += ' AND o.user_id=?'; binds.push(me.id); }
+    else if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && !isDirectorHau(me)) { q += ' AND u.department=?'; binds.push(me.department); }
     if (/^\d{4}-\d{2}$/.test(month)) { q += " AND strftime('%Y-%m',o.work_date)=?"; binds.push(month); }
-    if (['pending','approved','rejected'].includes(status)) { q += ' AND o.status=?'; binds.push(status); }
-    q += ' ORDER BY CASE o.status WHEN \'pending\' THEN 0 ELSE 1 END,o.work_date DESC,o.id DESC';
+    if (['pending','pending_director','approved','rejected'].includes(status)) { q += ' AND o.status=?'; binds.push(status); }
+    q += " ORDER BY CASE o.status WHEN 'pending' THEN 0 WHEN 'pending_director' THEN 1 ELSE 2 END,o.work_date DESC,o.id DESC";
     const { results = [] } = await (binds.length ? env.DB.prepare(q).bind(...binds) : env.DB.prepare(q)).all();
     return json({ overtime_requests: results });
   }
@@ -7499,35 +8257,137 @@ const attendanceRateTo =
 
   const overtimeAction = path.match(/^\/api\/overtime-requests\/(\d+)\/(approve|reject)$/);
   if (overtimeAction && request.method === 'POST') {
-    if (!isAttendanceAdmin) return json({ error: 'Không có quyền duyệt làm thêm giờ' }, 403);
+    if (!isAttendanceAdmin && !isDirectorHau(me)) return json({ error: 'Không có quyền duyệt làm thêm giờ' }, 403);
     const retryAfter = rateLimit(request, `overtime-review:${me.id}`, 30, 60 * 60 * 1000);
     if (retryAfter) return json({ error: 'Đã vượt giới hạn duyệt trong một giờ', code: 'RATE_LIMITED' }, 429, { 'Retry-After': String(retryAfter) });
     const id = parseInt(overtimeAction[1]); const action = overtimeAction[2];
     const requestRow = await env.DB.prepare('SELECT o.*,u.department FROM overtime_requests o JOIN users u ON u.id=o.user_id WHERE o.id=?').bind(id).first();
     if (!requestRow) return json({ error: 'Không tìm thấy yêu cầu làm thêm giờ' }, 404);
-    if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && requestRow.department !== me.department) return json({ error: 'Không có quyền duyệt yêu cầu ngoài phòng ban' }, 403);
-    if (requestRow.status !== 'pending') return json({ error: 'Yêu cầu đã được xử lý' }, 400);
+    if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && !isDirectorHau(me) && requestRow.department !== me.department) return json({ error: 'Không có quyền duyệt yêu cầu ngoài phòng ban' }, 403);
+    
+    const currentStatus = requestRow.status || 'pending';
+    if (!['pending', 'pending_director'].includes(currentStatus)) return json({ error: 'Yêu cầu đã được xử lý' }, 400);
+
+    const isHau = isDirectorHau(me);
+    if (currentStatus === 'pending_director' && !isHau) {
+      return json({ error: 'Chỉ anh Hậu (Phó Tổng Giám Đốc) hoặc Quản trị viên mới có quyền phê duyệt bước cuối cùng.' }, 403);
+    }
+
     const b = await request.json().catch(() => ({}));
     const note = String(b.review_note || '').trim();
     if (action === 'reject' && !note) return json({ error: 'Vui lòng nhập lý do từ chối' }, 400);
     const approvedMinutes = action === 'approve' ? Math.min(Math.max(0, parseInt(b.approved_minutes ?? requestRow.requested_minutes) || 0), requestRow.requested_minutes) : 0;
     if (action === 'approve' && approvedMinutes < 1) return json({ error: 'Số phút được duyệt phải lớn hơn 0' }, 400);
-    const nextStatus = action === 'approve' ? 'approved' : 'rejected';
-    await env.DB.prepare('UPDATE overtime_requests SET status=?,approved_minutes=?,reviewer_id=?,reviewer_name=?,review_note=?,reviewed_at=datetime(\'now\',\'localtime\'),updated_at=datetime(\'now\',\'localtime\') WHERE id=?')
-      .bind(nextStatus, approvedMinutes, me.id, me.full_name || '', note || null, id).run();
-    const d = new Date(`${requestRow.work_date}T00:00:00`);
-    const ot = await refreshInvoiceOvertime(env, requestRow.user_id, d.getMonth() + 1, d.getFullYear(), me);
-    await broadcastAppEvent(env, 'attendance', action === 'approve' ? 'overtime:approved' : 'overtime:rejected', {
-      id,
-      user_id: requestRow.user_id,
-      status: nextStatus,
-      approved_minutes: approvedMinutes,
-      reviewer_id: me.id,
-      reviewer_name: me.full_name || '',
-      review_note: note || null,
-      overtime: ot,
-    }, { actorId: me.id });
-    return json({ ok: true, status: nextStatus, approved_minutes: approvedMinutes, overtime: ot });
+
+    if (action === 'reject') {
+      const nextStatus = 'rejected';
+      await env.DB.prepare("UPDATE overtime_requests SET status=?,approved_minutes=0,reviewer_id=?,reviewer_name=?,review_note=?,reviewed_at=datetime('now','localtime'),updated_at=datetime('now','localtime') WHERE id=?")
+        .bind(nextStatus, me.id, me.full_name || '', note || null, id).run();
+
+      await createEmployeePopup(env, {
+        userId: requestRow.user_id,
+        requestType: 'overtime',
+        requestId: id,
+        decision: 'rejected',
+        title: 'Đơn làm thêm giờ (OT) bị từ chối',
+        message: `Yêu cầu làm thêm giờ ngày ${requestRow.work_date} của bạn đã bị từ chối bởi ${me.full_name || 'Quản lý'}.${note ? ` Lý do: ${note}` : ''}`,
+        details: {
+          request_type: 'overtime',
+          request_id: id,
+          work_date: requestRow.work_date,
+          requested_minutes: requestRow.requested_minutes,
+          reviewer_name: me.full_name,
+          reason: note,
+        },
+        actorId: me.id,
+        actorName: me.full_name || '',
+      });
+
+      await broadcastAppEvent(env, 'attendance', 'overtime:rejected', {
+        id,
+        user_id: requestRow.user_id,
+        status: nextStatus,
+        approved_minutes: 0,
+        reviewer_id: me.id,
+        reviewer_name: me.full_name || '',
+        review_note: note || null,
+        final: true,
+      }, { actorId: me.id });
+
+      return json({ ok: true, status: nextStatus, approved_minutes: 0, final: true });
+    }
+
+    // action === 'approve'
+    const isFinalApproval = currentStatus === 'pending_director' || isHau;
+    if (isFinalApproval) {
+      const nextStatus = 'approved';
+      await env.DB.prepare("UPDATE overtime_requests SET status=?,approved_minutes=?,reviewer_id=?,reviewer_name=?,review_note=?,reviewed_at=datetime('now','localtime'),updated_at=datetime('now','localtime') WHERE id=?")
+        .bind(nextStatus, approvedMinutes, me.id, me.full_name || '', note || null, id).run();
+      const d = new Date(`${requestRow.work_date}T00:00:00`);
+      const ot = await refreshInvoiceOvertime(env, requestRow.user_id, d.getMonth() + 1, d.getFullYear(), me);
+
+      await createEmployeePopup(env, {
+        userId: requestRow.user_id,
+        requestType: 'overtime',
+        requestId: id,
+        decision: 'approved',
+        title: 'Đơn làm thêm giờ (OT) đã được phê duyệt!',
+        message: `Yêu cầu làm thêm giờ ngày ${requestRow.work_date} (${approvedMinutes} phút) đã được ${isHau ? 'anh Hậu (Phó Tổng Giám Đốc)' : (me.full_name || 'Ban Giám Đốc')} phê duyệt chính thức.${note ? ` Ghi chú: ${note}` : ''}`,
+        details: {
+          request_type: 'overtime',
+          request_id: id,
+          work_date: requestRow.work_date,
+          requested_minutes: requestRow.requested_minutes,
+          approved_minutes: approvedMinutes,
+          reviewer_name: isHau ? 'Anh Hậu (Phó Tổng Giám Đốc)' : me.full_name,
+          note,
+        },
+        actorId: me.id,
+        actorName: me.full_name || '',
+      });
+
+      await broadcastAppEvent(env, 'attendance', 'overtime:approved', {
+        id,
+        user_id: requestRow.user_id,
+        status: nextStatus,
+        approved_minutes: approvedMinutes,
+        reviewer_id: me.id,
+        reviewer_name: me.full_name || '',
+        review_note: note || null,
+        overtime: ot,
+        final: true,
+      }, { actorId: me.id });
+
+      return json({ ok: true, status: nextStatus, approved_minutes: approvedMinutes, overtime: ot, final: true });
+    } else {
+      // Step 1 approval by HCNS -> pending_director
+      const nextStatus = 'pending_director';
+      await env.DB.prepare("UPDATE overtime_requests SET status=?,approved_minutes=?,step1_reviewer_id=?,step1_reviewer_name=?,step1_reviewed_at=datetime('now','localtime'),step1_note=?,updated_at=datetime('now','localtime') WHERE id=?")
+        .bind(nextStatus, approvedMinutes, me.id, me.full_name || '', note || null, id).run();
+
+      try {
+        await env.DB.prepare(
+          "INSERT INTO notifications (user_id, title, content, type, link) VALUES (?, ?, ?, 'attendance', '/attendance')"
+        ).bind(
+          requestRow.user_id,
+          'Tiến độ yêu cầu OT (Bước 1 đã duyệt)',
+          `HCNS (${me.full_name}) đã duyệt bước 1 yêu cầu làm thêm giờ ngày ${requestRow.work_date} (${approvedMinutes} phút). Đang chờ anh Hậu phê duyệt chốt.`
+        ).run();
+      } catch (_) {}
+
+      await broadcastAppEvent(env, 'attendance', 'overtime:forwarded', {
+        id,
+        user_id: requestRow.user_id,
+        status: nextStatus,
+        approved_minutes: approvedMinutes,
+        step1_reviewer_id: me.id,
+        step1_reviewer_name: me.full_name || '',
+        step1_note: note || null,
+        final: false,
+      }, { actorId: me.id });
+
+      return json({ ok: true, status: nextStatus, approved_minutes: approvedMinutes, final: false });
+    }
   }
 
   // ── MONTHLY OVERTIME FORMS ──────────────────────────────────────
@@ -7538,11 +8398,11 @@ const attendanceRateTo =
     const status = String(url.searchParams.get('status') || '');
     let q = `SELECT f.*,u.full_name,u.employee_code,u.department FROM overtime_forms f JOIN users u ON u.id=f.user_id WHERE 1=1`;
     const binds = [];
-    if (!isAttendanceAdmin) { q += ' AND f.user_id=?'; binds.push(me.id); }
-    else if (me.role === 'manager' && !isAdmin && !isAttendanceHcns) { q += ' AND u.department=?'; binds.push(me.department); }
+    if (!isAttendanceAdmin && !isDirectorHau(me)) { q += ' AND f.user_id=?'; binds.push(me.id); }
+    else if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && !isDirectorHau(me)) { q += ' AND u.department=?'; binds.push(me.department); }
     if (/^\d{4}-\d{2}$/.test(month)) { q += ' AND f.period_month=?'; binds.push(month); }
-    if (['draft','pending','approved','partially_approved','rejected'].includes(status)) { q += ' AND f.status=?'; binds.push(status); }
-    q += " ORDER BY CASE f.status WHEN 'pending' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END,f.period_month DESC,f.id DESC";
+    if (['draft','pending','pending_director','approved','partially_approved','rejected'].includes(status)) { q += ' AND f.status=?'; binds.push(status); }
+    q += " ORDER BY CASE f.status WHEN 'pending' THEN 0 WHEN 'pending_director' THEN 1 WHEN 'draft' THEN 2 ELSE 3 END,f.period_month DESC,f.id DESC";
     const { results: forms = [] } = await (binds.length ? env.DB.prepare(q).bind(...binds) : env.DB.prepare(q)).all();
     for (const form of forms) {
       form.items = (await env.DB.prepare('SELECT * FROM overtime_form_items WHERE form_id=? ORDER BY start_at,id').bind(form.id).all()).results || [];
@@ -7618,12 +8478,20 @@ const attendanceRateTo =
 
   const overtimeFormDecision = path.match(/^\/api\/overtime-forms\/(\d+)\/decision$/);
   if (overtimeFormDecision && request.method === 'POST') {
-    if (!isAttendanceAdmin) return json({ error: 'Không có quyền duyệt form OT' }, 403);
+    if (!isAttendanceAdmin && !isDirectorHau(me)) return json({ error: 'Không có quyền duyệt form OT' }, 403);
     const formId = parseInt(overtimeFormDecision[1], 10);
     const form = await env.DB.prepare('SELECT f.*,u.department FROM overtime_forms f JOIN users u ON u.id=f.user_id WHERE f.id=?').bind(formId).first();
     if (!form) return json({ error: 'Không tìm thấy form OT' }, 404);
-    if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && form.department !== me.department) return json({ error: 'Không có quyền duyệt form ngoài phòng ban' }, 403);
-    if (form.status !== 'pending') return json({ error: 'Form OT đã được xử lý' }, 400);
+    if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && !isDirectorHau(me) && form.department !== me.department) return json({ error: 'Không có quyền duyệt form ngoài phòng ban' }, 403);
+    
+    const currentStatus = form.status || 'pending';
+    if (!['pending', 'pending_director'].includes(currentStatus)) return json({ error: 'Form OT đã được xử lý' }, 400);
+
+    const isHau = isDirectorHau(me);
+    if (currentStatus === 'pending_director' && !isHau) {
+      return json({ error: 'Chỉ anh Hậu (Phó Tổng Giám Đốc) hoặc Quản trị viên mới có quyền phê duyệt bước cuối cùng.' }, 403);
+    }
+
     const b = await request.json().catch(() => ({}));
     const action = b.action === 'reject' ? 'reject' : 'approve';
     const note = String(b.review_note || '').trim();
@@ -7638,19 +8506,111 @@ const attendanceRateTo =
       updates.push(env.DB.prepare("UPDATE overtime_form_items SET approved_minutes=?,updated_at=datetime('now','localtime') WHERE id=?").bind(Math.round(approved), item.id));
     }
     const requestedTotal = items.reduce((sum, item) => sum + Number(item.requested_minutes || 0), 0);
-    const nextStatus = action === 'reject' ? 'rejected' : approvedTotal === requestedTotal ? 'approved' : 'partially_approved';
-    updates.push(env.DB.prepare("UPDATE overtime_forms SET status=?,review_note=?,reviewer_id=?,reviewer_name=?,reviewed_at=datetime('now','localtime'),updated_at=datetime('now','localtime') WHERE id=?").bind(nextStatus, note || null, me.id, me.full_name || '', formId));
-    await env.DB.batch(updates);
-    const [year, month] = form.period_month.split('-').map(Number);
-    const overtime = await refreshInvoiceOvertime(env, form.user_id, month, year, me);
-    await broadcastAppEvent(env, 'attendance', 'overtime_form:decided', {
-      id: formId,
-      user_id: form.user_id,
-      status: nextStatus,
-      approved_minutes: approvedTotal,
-      overtime,
-    }, { actorId: me.id });
-    return json({ ok: true, status: nextStatus, approved_minutes: approvedTotal, overtime });
+
+    if (action === 'reject') {
+      const nextStatus = 'rejected';
+      updates.push(env.DB.prepare("UPDATE overtime_forms SET status=?,review_note=?,reviewer_id=?,reviewer_name=?,reviewed_at=datetime('now','localtime'),updated_at=datetime('now','localtime') WHERE id=?").bind(nextStatus, note || null, me.id, me.full_name || '', formId));
+      await env.DB.batch(updates);
+
+      await createEmployeePopup(env, {
+        userId: form.user_id,
+        requestType: 'overtime_form',
+        requestId: formId,
+        decision: 'rejected',
+        title: 'Bảng kê OT tháng bị từ chối',
+        message: `Bảng kê làm thêm giờ tháng ${form.period_month} của bạn đã bị từ chối bởi ${me.full_name || 'Quản lý'}.${note ? ` Lý do: ${note}` : ''}`,
+        details: {
+          request_type: 'overtime_form',
+          request_id: formId,
+          period_month: form.period_month,
+          requested_minutes: requestedTotal,
+          reviewer_name: me.full_name,
+          reason: note,
+        },
+        actorId: me.id,
+        actorName: me.full_name || '',
+      });
+
+      await broadcastAppEvent(env, 'attendance', 'overtime_form:decided', {
+        id: formId,
+        user_id: form.user_id,
+        status: nextStatus,
+        approved_minutes: 0,
+        final: true,
+      }, { actorId: me.id });
+
+      return json({ ok: true, status: nextStatus, approved_minutes: 0, final: true });
+    }
+
+    // action === 'approve'
+    const isFinalApproval = currentStatus === 'pending_director' || isHau;
+    if (isFinalApproval) {
+      const nextStatus = approvedTotal === requestedTotal ? 'approved' : 'partially_approved';
+      updates.push(env.DB.prepare("UPDATE overtime_forms SET status=?,review_note=?,reviewer_id=?,reviewer_name=?,reviewed_at=datetime('now','localtime'),updated_at=datetime('now','localtime') WHERE id=?").bind(nextStatus, note || null, me.id, me.full_name || '', formId));
+      await env.DB.batch(updates);
+
+      const [year, month] = form.period_month.split('-').map(Number);
+      const overtime = await refreshInvoiceOvertime(env, form.user_id, month, year, me);
+
+      await createEmployeePopup(env, {
+        userId: form.user_id,
+        requestType: 'overtime_form',
+        requestId: formId,
+        decision: 'approved',
+        title: 'Bảng kê OT tháng đã được phê duyệt!',
+        message: `Bảng kê làm thêm giờ tháng ${form.period_month} (${approvedTotal} phút) đã được ${isHau ? 'anh Hậu (Phó Tổng Giám Đốc)' : (me.full_name || 'Ban Giám Đốc')} phê duyệt chính thức.${note ? ` Ghi chú: ${note}` : ''}`,
+        details: {
+          request_type: 'overtime_form',
+          request_id: formId,
+          period_month: form.period_month,
+          requested_minutes: requestedTotal,
+          approved_minutes: approvedTotal,
+          reviewer_name: isHau ? 'Anh Hậu (Phó Tổng Giám Đốc)' : me.full_name,
+          note,
+        },
+        actorId: me.id,
+        actorName: me.full_name || '',
+      });
+
+      await broadcastAppEvent(env, 'attendance', 'overtime_form:decided', {
+        id: formId,
+        user_id: form.user_id,
+        status: nextStatus,
+        approved_minutes: approvedTotal,
+        overtime,
+        final: true,
+      }, { actorId: me.id });
+
+      return json({ ok: true, status: nextStatus, approved_minutes: approvedTotal, overtime, final: true });
+    } else {
+      // Step 1 approval by HCNS -> pending_director
+      const nextStatus = 'pending_director';
+      updates.push(env.DB.prepare("UPDATE overtime_forms SET status=?,step1_note=?,step1_reviewer_id=?,step1_reviewer_name=?,step1_reviewed_at=datetime('now','localtime'),updated_at=datetime('now','localtime') WHERE id=?").bind(nextStatus, note || null, me.id, me.full_name || '', formId));
+      await env.DB.batch(updates);
+
+      try {
+        await env.DB.prepare(
+          "INSERT INTO notifications (user_id, title, content, type, link) VALUES (?, ?, ?, 'attendance', '/attendance')"
+        ).bind(
+          form.user_id,
+          'Tiến độ bảng kê OT (Bước 1 đã duyệt)',
+          `HCNS (${me.full_name}) đã duyệt bước 1 bảng kê OT tháng ${form.period_month} (${approvedTotal} phút). Đang chờ anh Hậu phê duyệt chốt.`
+        ).run();
+      } catch (_) {}
+
+      await broadcastAppEvent(env, 'attendance', 'overtime_form:forwarded', {
+        id: formId,
+        user_id: form.user_id,
+        status: nextStatus,
+        approved_minutes: approvedTotal,
+        step1_reviewer_id: me.id,
+        step1_reviewer_name: me.full_name || '',
+        step1_note: note || null,
+        final: false,
+      }, { actorId: me.id });
+
+      return json({ ok: true, status: nextStatus, approved_minutes: approvedTotal, final: false });
+    }
   }
 
   if (path === '/api/company-holidays' && request.method === 'GET') {
@@ -8249,6 +9209,21 @@ const attendanceRateTo =
     }
     await broadcastAppEvent(env, 'tasks', 'task_project_group:members_updated', { department, count: groupProjects.length }, { actorId: me.id });
     return json({ ok: true, count: groupProjects.length });
+  }
+
+  if (path === '/api/task-projects/sync-all-employees' && request.method === 'POST') {
+    if (!isTaskAdmin(me)) return json({ error: 'Khong co quyen' }, 403);
+    const { results: activeUsers = [] } = await env.DB.prepare(
+      "SELECT id, full_name, employee_code FROM users WHERE is_active=1 AND COALESCE(lifecycle_status,'') != 'Đã nghỉ' ORDER BY id"
+    ).all();
+    let synced = 0;
+    for (const u of activeUsers) {
+      if (u.full_name) {
+        await ensureEmployeePersonalProject(env, u, me.id);
+        synced++;
+      }
+    }
+    return json({ ok: true, synced, total: activeUsers.length });
   }
 
   if (path === '/api/task-groups' && request.method === 'GET') {
@@ -9333,12 +10308,66 @@ const attendanceRateTo =
     return json({ ok: true });
   }
 
+  // ── BACKUP & DISASTER RECOVERY ───────────────────────────────────
+  if (path === '/api/admin/backups' && request.method === 'GET') {
+    if (!isAdmin && !isHcns(me)) return json({ error: 'Không có quyền truy cập sao lưu' }, 403);
+    if (!env.HR_DOCUMENTS) return json({ backups: [] });
+    try {
+      const listed = await env.HR_DOCUMENTS.list({ prefix: 'backups/db/' });
+      const backups = (listed.objects || []).map(obj => ({
+        key: obj.key,
+        filename: obj.key.replace(/^backups\/db\//, ''),
+        size: obj.size,
+        uploaded: obj.uploaded,
+        customMetadata: obj.customMetadata || {},
+      })).sort((a, b) => new Date(b.uploaded).getTime() - new Date(a.uploaded).getTime());
+      return json({ backups });
+    } catch (e) {
+      console.error('Failed to list backups', e);
+      return json({ error: 'Không thể lấy danh sách bản sao lưu: ' + String(e?.message || e) }, 500);
+    }
+  }
+
+  if (path === '/api/admin/backups/create' && request.method === 'POST') {
+    if (!isAdmin && !isHcns(me)) return json({ error: 'Không có quyền tạo bản sao lưu' }, 403);
+    try {
+      const backupResult = await runMonthlyBackup(env, {
+        manual: true,
+        triggeredBy: `${me.full_name} (${me.employee_code || me.id})`,
+      });
+      return json({ ok: true, backup: backupResult });
+    } catch (e) {
+      console.error('Manual backup failed', e);
+      return json({ error: 'Không thể tạo bản sao lưu: ' + String(e?.message || e) }, 500);
+    }
+  }
+
+  if (path === '/api/admin/backups/download' && request.method === 'GET') {
+    if (!isAdmin && !isHcns(me)) return json({ error: 'Không có quyền tải bản sao lưu' }, 403);
+    const key = url.searchParams.get('key');
+    if (!key || !key.startsWith('backups/db/')) {
+      return json({ error: 'Đường dẫn tệp sao lưu không hợp lệ' }, 400);
+    }
+    if (!env.HR_DOCUMENTS) return json({ error: 'Dịch vụ lưu trữ R2 chưa sẵn sàng' }, 503);
+    const object = await env.HR_DOCUMENTS.get(key);
+    if (!object) return json({ error: 'Không tìm thấy tệp sao lưu' }, 404);
+    const filename = key.split('/').pop() || 'backup.json';
+    return new Response(object.body, {
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Cache-Control': 'no-store, max-age=0',
+      },
+    });
+  }
+
   // ── DEPARTMENTS ──────────────────────────────────────────────────
   if (path === '/api/departments' && request.method === 'GET') {
     // App-wide departments (shared), no per-user filter
     const { results } = await env.DB.prepare(`
       SELECT d.*, u.full_name AS manager_name, u.employee_code AS manager_employee_code,
-             u.department AS manager_department, u.position AS manager_position
+             u.department AS manager_department, u.position AS manager_position,
+             (SELECT count(*) FROM users u2 WHERE lower(trim(u2.department)) = lower(trim(d.name)) AND u2.is_active=1) as employee_count
         FROM departments d
         LEFT JOIN users u ON u.id = d.manager_id
        ORDER BY d.name
@@ -9346,6 +10375,7 @@ const attendanceRateTo =
     return json({ departments: results });
   }
   if (path === '/api/departments' && request.method === 'POST') {
+    if (!(isAdmin || isHcns(me))) return json({ error: 'Chỉ Admin hoặc nhân viên Phòng HCNS mới có quyền thêm phòng ban' }, 403);
     const b = await request.json().catch(() => ({}));
     const name = normalizeDeptName(b.name);
     if (!name) return json({ error: 'Thiếu tên phòng ban' }, 400);
@@ -9368,6 +10398,7 @@ const attendanceRateTo =
   if (deptMatch) {
     const id = parseInt(deptMatch[1]);
     if (request.method === 'PUT') {
+      if (!(isAdmin || isHcns(me))) return json({ error: 'Chỉ Admin hoặc nhân viên Phòng HCNS mới có quyền sửa phòng ban' }, 403);
       const b = await request.json().catch(() => ({}));
       const name = normalizeDeptName(b.name);
       if (!name) return json({ error: 'Thiếu tên phòng ban' }, 400);
@@ -9382,6 +10413,13 @@ const attendanceRateTo =
       return json({ ok: true });
     }
     if (request.method === 'DELETE') {
+      if (!(isAdmin || isHcns(me))) return json({ error: 'Chỉ Admin hoặc nhân viên Phòng HCNS mới có quyền xóa phòng ban' }, 403);
+      const dept = await env.DB.prepare('SELECT name FROM departments WHERE id=?').bind(id).first();
+      if (!dept) return json({ error: 'Không tìm thấy phòng ban' }, 404);
+      const inUse = await env.DB.prepare('SELECT count(*) as total FROM users WHERE lower(trim(department))=lower(trim(?)) AND is_active=1').bind(dept.name).first();
+      if (inUse && inUse.total > 0) {
+        return json({ error: `Không thể xóa phòng ban "${dept.name}" vì đang có ${inUse.total} nhân sự trực thuộc. Vui lòng chuyển nhân sự sang phòng ban khác trước!` }, 400);
+      }
       await env.DB.prepare('DELETE FROM departments WHERE id=?').bind(id).run();
       return json({ ok: true });
     }
@@ -9545,20 +10583,20 @@ const attendanceRateTo =
       }
     }
     if (statusFilter) { query += ' AND lr.status=?'; params.push(statusFilter); }
-    query += " ORDER BY CASE WHEN lr.status = 'pending' THEN 0 ELSE 1 END ASC, COALESCE(lr.submitted_at, lr.id) DESC, lr.id DESC";
+    query += " ORDER BY CASE WHEN lr.status = 'pending' THEN 0 WHEN lr.status = 'pending_director' THEN 1 ELSE 2 END ASC, COALESCE(lr.submitted_at, lr.id) DESC, lr.id DESC";
     try {
       await env.DB.prepare("UPDATE leave_requests SET current_approver='Quản lý / HR' WHERE status='pending' AND current_approver IN ('Quản lý trực tiếp', 'Ban Giám đốc')").run();
     } catch (_) {}
     const { results } = await env.DB.prepare(query).bind(...params).all();
     const leave = await Promise.all(results.map(async row => {
       const docs = await env.DB.prepare('SELECT id,original_filename,content_type,byte_size,required_label FROM leave_request_documents WHERE leave_request_id=?').bind(row.id).all();
-      const approverHint = (row.current_approver === 'Quản lý trực tiếp' || row.current_approver === 'Ban Giám đốc') ? 'Quản lý / HR' : (row.current_approver || 'Quản lý / HR');
+      const approverHint = row.current_approver === 'HAUNV' ? 'Anh Hậu (Phó Tổng Giám Đốc)' : (row.current_approver === 'Quản lý trực tiếp' || row.current_approver === 'Ban Giám đốc') ? 'Quản lý / HR' : (row.current_approver || (row.status === 'pending_director' ? 'Anh Hậu (Phó Tổng Giám Đốc)' : 'Quản lý / HR'));
       return {
         ...row,
         current_approver: approverHint,
         type_name: row.type_name || row.type,
         paid_label: leavePaidLabel(row.paid_policy),
-        can_action: row.status === 'pending' && canAdvanceLeaveApproval(me, row),
+        can_action: ['pending', 'pending_director'].includes(row.status) && canAdvanceLeaveApproval(me, row),
         document_count: Number(docs.results?.length || 0),
         documents: docs.results || [],
       };
@@ -9691,6 +10729,28 @@ const attendanceRateTo =
           ]);
         }
         await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(id, currentLevel, me.id, me.full_name, 'rejected', noteText).run();
+
+        await createEmployeePopup(env, {
+          userId: leaveReq.employee_id,
+          requestType: 'leave',
+          requestId: id,
+          decision: 'rejected',
+          title: 'Đơn xin nghỉ phép bị từ chối',
+          message: `Đơn nghỉ phép từ ${leaveReq.start_date} đến ${leaveReq.end_date} của bạn đã bị từ chối bởi ${me.full_name || 'Quản lý'}.${noteText ? ` Lý do: ${noteText}` : ''}`,
+          details: {
+            request_type: 'leave',
+            request_id: id,
+            start_date: leaveReq.start_date,
+            end_date: leaveReq.end_date,
+            leave_session: leaveReq.leave_session,
+            total_days: leaveReq.total_days,
+            reviewer_name: me.full_name,
+            reason: noteText,
+          },
+          actorId: me.id,
+          actorName: me.full_name || '',
+        });
+
         await broadcastAppEvent(env, 'leave', 'leave:rejected', {
           id,
           user_id: leaveReq.employee_id,
@@ -9698,35 +10758,19 @@ const attendanceRateTo =
           note: noteText,
           rejected_by_name: me.full_name,
         }, { actorId: me.id });
-        return json({ ok: true });
+        return json({ ok: true, status: 'rejected', final: true });
       }
       if (b.status === 'approved') {
         if (!canAdvanceLeaveApproval(me, leaveReq)) return json({ error: 'Chưa đến bước phê duyệt của bạn' }, 403);
         const currentLevel = Number(leaveReq.approval_level || 1);
-        const isApproverAdmin = me.role === 'admin';
-        const isApproverHcns = isHcns(me);
-        const isApproverBgd = isBgd(me);
-        const isDeptMgr = me.role === 'manager' && !!leaveReq.department && normalizeDeptName(me.department) === normalizeDeptName(leaveReq.department);
-
-        let nextLevel = 99;
-        let nextApprover = null;
-
-        if (isApproverAdmin || isApproverHcns || isApproverBgd) {
-          // HR (HCNS), Admin và Ban Giám Đốc duyệt: hoàn tất phê duyệt ngay lập tức (level 99), không cần chờ ai hết
-          nextLevel = 99;
-          nextApprover = null;
-        } else if (isDeptMgr) {
-          // Quản lý trực tiếp duyệt ở level 1 -> chuyển tiếp tới HCNS
-          nextLevel = 2;
-          nextApprover = 'HCNS';
-        } else {
-          nextLevel = 99;
-        }
-
-        const finalApproved = nextLevel === 99;
+        const isHau = isDirectorHau(me);
+        const isFinalApproved = leaveReq.status === 'pending_director' || currentLevel === 2 || isHau;
         const noteText = String(b.note || '').trim();
 
-        if (finalApproved) {
+        if (isFinalApproved) {
+          const nextLevel = 99;
+          const nextApprover = null;
+
           await env.DB.prepare(`
             UPDATE leave_requests SET
               status='approved',
@@ -9737,22 +10781,84 @@ const attendanceRateTo =
               approved_at=datetime('now','localtime')
             WHERE id=?
           `).bind(nextLevel, nextApprover, me.id, me.full_name, id).run();
-        } else {
-          await env.DB.prepare('UPDATE leave_requests SET status=?,approval_level=?,current_approver=? WHERE id=?').bind('pending', nextLevel, nextApprover, id).run();
-        }
 
-        await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(id, currentLevel, me.id, me.full_name, finalApproved ? 'approved' : 'forwarded', noteText).run();
-        await broadcastAppEvent(env, 'leave', finalApproved ? 'leave:approved' : 'leave:forwarded', {
-          id,
-          user_id: leaveReq.employee_id,
-          status: finalApproved ? 'approved' : 'pending',
-          approval_level: nextLevel,
-          current_approver: nextApprover,
-          final: finalApproved,
-          note: noteText,
-          approved_by_name: finalApproved ? me.full_name : undefined,
-        }, { actorId: me.id });
-        return json({ ok: true, final: finalApproved });
+          await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(id, currentLevel, me.id, me.full_name, 'approved', noteText).run();
+
+          await createEmployeePopup(env, {
+            userId: leaveReq.employee_id,
+            requestType: 'leave',
+            requestId: id,
+            decision: 'approved',
+            title: 'Đơn xin nghỉ phép đã được phê duyệt!',
+            message: `Đơn nghỉ phép từ ${leaveReq.start_date} đến ${leaveReq.end_date} của bạn đã được ${isHau ? 'anh Hậu (Phó Tổng Giám Đốc)' : (me.full_name || 'Ban Giám Đốc')} phê duyệt chính thức.${noteText ? ` Ghi chú: ${noteText}` : ''}`,
+            details: {
+              request_type: 'leave',
+              request_id: id,
+              start_date: leaveReq.start_date,
+              end_date: leaveReq.end_date,
+              leave_session: leaveReq.leave_session,
+              total_days: leaveReq.total_days,
+              reviewer_name: isHau ? 'Anh Hậu (Phó Tổng Giám Đốc)' : me.full_name,
+              note: noteText,
+            },
+            actorId: me.id,
+            actorName: me.full_name || '',
+          });
+
+          await broadcastAppEvent(env, 'leave', 'leave:approved', {
+            id,
+            user_id: leaveReq.employee_id,
+            status: 'approved',
+            approval_level: nextLevel,
+            current_approver: nextApprover,
+            final: true,
+            note: noteText,
+            approved_by_name: me.full_name,
+          }, { actorId: me.id });
+
+          return json({ ok: true, status: 'approved', final: true });
+        } else {
+          // Step 1 approval by HCNS / Manager -> pending_director
+          const nextLevel = 2;
+          const nextApprover = 'HAUNV';
+
+          await env.DB.prepare(`
+            UPDATE leave_requests SET
+              status='pending_director',
+              approval_level=?,
+              current_approver=?,
+              step1_reviewer_id=?,
+              step1_reviewer_name=?,
+              step1_reviewed_at=datetime('now','localtime'),
+              step1_note=?
+            WHERE id=?
+          `).bind(nextLevel, nextApprover, me.id, me.full_name, noteText || null, id).run();
+
+          await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(id, currentLevel, me.id, me.full_name, 'forwarded', noteText).run();
+
+          try {
+            await env.DB.prepare(`
+              INSERT INTO notifications (user_id, title, content, type, link) VALUES (?, ?, ?, 'leave', '/leave')
+            `).bind(
+              leaveReq.employee_id,
+              'Tiến độ đơn nghỉ phép (Bước 1 đã duyệt)',
+              `HCNS (${me.full_name}) đã duyệt bước 1 đơn nghỉ phép từ ${leaveReq.start_date} đến ${leaveReq.end_date}. Đơn đang được chuyển tiếp tới anh Hậu phê duyệt chốt.`
+            ).run();
+          } catch (_) {}
+
+          await broadcastAppEvent(env, 'leave', 'leave:forwarded', {
+            id,
+            user_id: leaveReq.employee_id,
+            status: 'pending_director',
+            approval_level: nextLevel,
+            current_approver: nextApprover,
+            final: false,
+            step1_reviewer_name: me.full_name,
+            note: noteText,
+          }, { actorId: me.id });
+
+          return json({ ok: true, status: 'pending_director', final: false });
+        }
       }
       if (Number(leaveReq.employee_id) !== Number(me.id) || leaveReq.status !== 'pending') return json({ error: 'Chỉ được sửa đơn của bạn khi đang chờ duyệt' }, 403);
       const updates = [], vals = [];
@@ -9967,193 +11073,97 @@ const attendanceRateTo =
 
   if (path === '/api/payroll/import' && request.method === 'POST') {
     if (!(isAdmin || isHcns(me))) return json({ error: 'Không có quyền thực hiện' }, 403);
-    await ensurePayrollDetailSchema(env);
-    const b = await request.json().catch(() => ({}));
-    const month = String(b.month || '').trim();
-    if (!/^\d{4}-\d{2}$/.test(month)) return json({ error: 'Thiếu hoặc sai định dạng tháng lương (YYYY-MM)' }, 400);
+    try {
+      await ensurePayrollDetailSchema(env);
+      const b = await request.json().catch(() => ({}));
+      const month = String(b.month || '').trim();
+      if (!/^\d{4}-\d{2}$/.test(month)) return json({ error: 'Thiếu hoặc sai định dạng tháng lương (YYYY-MM)' }, 400);
 
-    const batch = await env.DB.prepare('SELECT * FROM payroll_batches WHERE month=?').bind(month).first();
-    if (batch && ['locked', 'paid'].includes(String(batch.status || '').toLowerCase())) {
-      return json({ error: 'Bảng lương tháng này đã khóa, không thể import đè.' }, 409);
-    }
-
-    const rows = Array.isArray(b.rows) ? b.rows : [];
-    if (!rows.length) return json({ error: 'Không có dữ liệu nhân viên để import' }, 400);
-
-    const [yearStr, mmStr] = month.split('-');
-    const invYear = Number(yearStr);
-    const invMonth = Number(mmStr);
-
-    const { results: users = [] } = await env.DB.prepare(
-      'SELECT id, employee_code, full_name, department, position, contract_type, salary FROM users'
-    ).all();
-
-    const userByCode = new Map();
-    const userByName = new Map();
-    for (const u of users) {
-      if (u.employee_code) userByCode.set(String(u.employee_code).trim().toUpperCase(), u);
-      if (u.full_name) userByName.set(String(u.full_name).trim().toLowerCase(), u);
-    }
-
-    let created = 0, updated = 0, matched = 0;
-    const unmatchedCodes = [];
-
-    for (const r of rows) {
-      const code = String(r.employee_code || '').trim().toUpperCase();
-      const name = String(r.full_name || '').trim();
-      const normName = name.toLowerCase();
-
-      const matchedUser = (code && userByCode.get(code)) || userByName.get(normName) || null;
-      const employeeId = matchedUser ? matchedUser.id : null;
-      if (matchedUser) matched++;
-      else if (code) unmatchedCodes.push(`${code} (${name})`);
-
-      const dept = r.department || (matchedUser ? matchedUser.department : '') || '';
-      const baseSalary = Number(r.total_income_agreed || r.base_salary || r.position_salary || (matchedUser ? matchedUser.salary : 0) || 0);
-      const netSalary = Number(r.transfer_amount || r.net_income_after_tax || r.net_salary || 0);
-      const dataStatus = 'ready';
-      const dataWarnings = '';
-
-      let existing = null;
-      if (employeeId) {
-        existing = await env.DB.prepare('SELECT id FROM payroll WHERE month=? AND employee_id=? LIMIT 1')
-          .bind(month, employeeId).first();
-      }
-      if (!existing && code) {
-        existing = await env.DB.prepare('SELECT id FROM payroll WHERE month=? AND UPPER(employee_code)=? LIMIT 1')
-          .bind(month, code).first();
-      }
-      if (!existing && name) {
-        existing = await env.DB.prepare('SELECT id FROM payroll WHERE month=? AND employee_name=? LIMIT 1')
-          .bind(month, name).first();
+      const batch = await env.DB.prepare('SELECT * FROM payroll_batches WHERE month=?').bind(month).first();
+      if (batch && ['locked', 'paid'].includes(String(batch.status || '').toLowerCase())) {
+        return json({ error: 'Bảng lương tháng này đã khóa, không thể import đè.' }, 409);
       }
 
-      let payrollId = null;
-      if (existing) {
-        payrollId = existing.id;
-        await env.DB.prepare(`
-          UPDATE payroll SET
-            user_id=?, employee_id=?, employee_name=?, employee_code=?, department=?,
-            base_salary=?, kpi_bonus=?, allowance=?, deduction=?, overtime_pay=?, tax=?, insurance=?,
-            work_days=?, standard_days=?, note=?, net_salary=?, data_status=?, data_warnings=?,
-            position_salary=?, completion_bonus=?, total_income_agreed=?, insurance_base=?,
-            probation_days=?, official_days=?, unpaid_leave_days=?, work_income=?,
-            ot_normal_hours=?, ot_weekend_hours=?, ot_holiday_hours=?, base_hourly_rate=?, ot_total_income=?,
-            phone_allowance=?, attire_allowance=?, parking_allowance=?, fuel_allowance=?, business_trip_allowance=?,
-            total_allowance=?, total_income_with_allowance=?, total_pretax_income=?,
-            insurance_social=?, insurance_health=?, insurance_unemployment=?,
-            personal_deduction=?, dependent_deduction=?, dependent_count=?, total_family_deduction=?,
-            taxable_income=?, net_income_after_tax=?, tax_withheld=?,
-            meal_allowance=?, arrears_deduction=?, arrears_addition=?, transfer_amount=?,
-            comp_insurance_social=?, comp_insurance_health=?, comp_insurance_unemp=?,
-            comp_insurance_accident=?, comp_insurance_total=?, total_company_cost=?,
-            is_signed=?, import_source='excel', source_synced_at=datetime('now','localtime')
-          WHERE id=?
-        `).bind(
-          String(me.id), employeeId, name, code, dept,
-          baseSalary, Number(r.kpi_bonus || 0), Number(r.total_allowance || r.allowance || 0),
-          Number(r.arrears_deduction || 0), Number(r.ot_total_income || r.overtime_pay || 0),
-          Number(r.tax || 0), Number(r.insurance || 0),
-          Number(r.work_days || 0), Number(r.standard_days || 23), r.notes || '', netSalary, dataStatus, dataWarnings,
-          Number(r.position_salary || 0), Number(r.completion_bonus || 0), Number(r.total_income_agreed || 0), Number(r.insurance_base || 0),
-          Number(r.probation_days || 0), Number(r.official_days || 0), Number(r.unpaid_leave_days || 0), Number(r.work_income || 0),
-          Number(r.ot_normal_hours || 0), Number(r.ot_weekend_hours || 0), Number(r.ot_holiday_hours || 0), Number(r.base_hourly_rate || 0), Number(r.ot_total_income || 0),
-          Number(r.phone_allowance || 0), Number(r.attire_allowance || 0), Number(r.parking_allowance || 0), Number(r.fuel_allowance || 0), Number(r.business_trip_allowance || 0),
-          Number(r.total_allowance || 0), Number(r.total_income_with_allowance || 0), Number(r.total_pretax_income || 0),
-          Number(r.insurance_social || 0), Number(r.insurance_health || 0), Number(r.insurance_unemployment || 0),
-          Number(r.personal_deduction || 0), Number(r.dependent_deduction || 0), Number(r.dependent_count || 0), Number(r.total_family_deduction || 0),
-          Number(r.taxable_income || 0), Number(r.net_income_after_tax || 0), Number(r.tax_withheld || 0),
-          Number(r.meal_allowance || 0), Number(r.arrears_deduction || 0), Number(r.arrears_addition || 0), Number(r.transfer_amount || 0),
-          Number(r.comp_insurance_social || 0), Number(r.comp_insurance_health || 0), Number(r.comp_insurance_unemp || 0),
-          Number(r.comp_insurance_accident || 0), Number(r.comp_insurance_total || 0), Number(r.total_company_cost || 0),
-          r.is_signed ? 1 : 0, existing.id
-        ).run();
-        updated++;
-      } else {
-        const ins = await env.DB.prepare(`
-          INSERT INTO payroll (
-            user_id, employee_id, employee_name, employee_code, department, month,
-            base_salary, kpi_bonus, allowance, deduction, overtime_pay, tax, insurance,
-            work_days, standard_days, note, net_salary, data_status, data_warnings,
-            position_salary, completion_bonus, total_income_agreed, insurance_base,
-            probation_days, official_days, unpaid_leave_days, work_income,
-            ot_normal_hours, ot_weekend_hours, ot_holiday_hours, base_hourly_rate, ot_total_income,
-            phone_allowance, attire_allowance, parking_allowance, fuel_allowance, business_trip_allowance,
-            total_allowance, total_income_with_allowance, total_pretax_income,
-            insurance_social, insurance_health, insurance_unemployment,
-            personal_deduction, dependent_deduction, dependent_count, total_family_deduction,
-            taxable_income, net_income_after_tax, tax_withheld,
-            meal_allowance, arrears_deduction, arrears_addition, transfer_amount,
-            comp_insurance_social, comp_insurance_health, comp_insurance_unemp,
-            comp_insurance_accident, comp_insurance_total, total_company_cost,
-            is_signed, import_source, source_synced_at
-          ) VALUES (
-            ?,?,?,?,?,?,
-            ?,?,?,?,?,?,?,
-            ?,?,?,?,?,?,
-            ?,?,?,?,
-            ?,?,?,?,
-            ?,?,?,?,?,
-            ?,?,?,?,?,
-            ?,?,?,
-            ?,?,?,
-            ?,?,?,?,
-            ?,?,?,
-            ?,?,?,?,
-            ?,?,?,
-            ?,?,?,
-            ?,'excel',datetime('now','localtime')
-          )
-        `).bind(
-          String(me.id), employeeId, name, code, dept, month,
-          baseSalary, Number(r.kpi_bonus || 0), Number(r.total_allowance || r.allowance || 0),
-          Number(r.arrears_deduction || 0), Number(r.ot_total_income || r.overtime_pay || 0),
-          Number(r.tax || 0), Number(r.insurance || 0),
-          Number(r.work_days || 0), Number(r.standard_days || 23), r.notes || '', netSalary, dataStatus, dataWarnings,
-          Number(r.position_salary || 0), Number(r.completion_bonus || 0), Number(r.total_income_agreed || 0), Number(r.insurance_base || 0),
-          Number(r.probation_days || 0), Number(r.official_days || 0), Number(r.unpaid_leave_days || 0), Number(r.work_income || 0),
-          Number(r.ot_normal_hours || 0), Number(r.ot_weekend_hours || 0), Number(r.ot_holiday_hours || 0), Number(r.base_hourly_rate || 0), Number(r.ot_total_income || 0),
-          Number(r.phone_allowance || 0), Number(r.attire_allowance || 0), Number(r.parking_allowance || 0), Number(r.fuel_allowance || 0), Number(r.business_trip_allowance || 0),
-          Number(r.total_allowance || 0), Number(r.total_income_with_allowance || 0), Number(r.total_pretax_income || 0),
-          Number(r.insurance_social || 0), Number(r.insurance_health || 0), Number(r.insurance_unemployment || 0),
-          Number(r.personal_deduction || 0), Number(r.dependent_deduction || 0), Number(r.dependent_count || 0), Number(r.total_family_deduction || 0),
-          Number(r.taxable_income || 0), Number(r.net_income_after_tax || 0), Number(r.tax_withheld || 0),
-          Number(r.meal_allowance || 0), Number(r.arrears_deduction || 0), Number(r.arrears_addition || 0), Number(r.transfer_amount || 0),
-          Number(r.comp_insurance_social || 0), Number(r.comp_insurance_health || 0), Number(r.comp_insurance_unemp || 0),
-          Number(r.comp_insurance_accident || 0), Number(r.comp_insurance_total || 0), Number(r.total_company_cost || 0),
-          r.is_signed ? 1 : 0
-        ).run();
-        payrollId = ins.meta.last_row_id;
-        created++;
+      const rows = Array.isArray(b.rows) ? b.rows : [];
+      if (!rows.length) return json({ error: 'Không có dữ liệu nhân viên để import' }, 400);
+
+      const [yearStr, mmStr] = month.split('-');
+      const invYear = Number(yearStr);
+      const invMonth = Number(mmStr);
+
+      const { results: users = [] } = await env.DB.prepare(
+        'SELECT id, employee_code, full_name, department, position, contract_type, salary FROM users'
+      ).all();
+
+      const userByCode = new Map();
+      const userByName = new Map();
+      for (const u of users) {
+        if (u.employee_code) userByCode.set(String(u.employee_code).trim().toUpperCase(), u);
+        if (u.full_name) userByName.set(String(u.full_name).trim().toLowerCase(), u);
       }
 
-      // Automatically sync invoice (payslip) for employee so they immediately see the clean payslip
-      if (employeeId) {
-        const existingInv = await env.DB.prepare(
-          'SELECT id, status, locked_at FROM invoices WHERE user_id=? AND month=? AND year=? LIMIT 1'
-        ).bind(employeeId, invMonth, invYear).first();
+      let created = 0, updated = 0, matched = 0;
+      const unmatchedCodes = [];
 
-        if (existingInv && !existingInv.locked_at && existingInv.status !== 'paid') {
+      for (const r of rows) {
+        const code = String(r.employee_code || '').trim().toUpperCase();
+        const name = String(r.full_name || '').trim();
+        const normName = name.toLowerCase();
+
+        const matchedUser = (code && userByCode.get(code)) || userByName.get(normName) || null;
+        const employeeId = matchedUser ? matchedUser.id : null;
+        if (matchedUser) matched++;
+        else if (code) unmatchedCodes.push(`${code} (${name})`);
+
+        const dept = r.department || (matchedUser ? matchedUser.department : '') || '';
+        const baseSalary = Number(r.total_income_agreed || r.base_salary || r.position_salary || (matchedUser ? matchedUser.salary : 0) || 0);
+        const netSalary = Number(r.transfer_amount || r.net_income_after_tax || r.net_salary || 0);
+        const dataStatus = 'ready';
+        const dataWarnings = '';
+
+        let existing = null;
+        if (employeeId) {
+          existing = await env.DB.prepare('SELECT id FROM payroll WHERE month=? AND employee_id=? LIMIT 1')
+            .bind(month, employeeId).first();
+        }
+        if (!existing && code) {
+          existing = await env.DB.prepare('SELECT id FROM payroll WHERE month=? AND UPPER(employee_code)=? LIMIT 1')
+            .bind(month, code).first();
+        }
+        if (!existing && name) {
+          existing = await env.DB.prepare('SELECT id FROM payroll WHERE month=? AND employee_name=? LIMIT 1')
+            .bind(month, name).first();
+        }
+
+        let payrollId = null;
+        if (existing) {
+          payrollId = existing.id;
           await env.DB.prepare(`
-            UPDATE invoices SET
-              payroll_id=?, base_salary=?, bonus=?, allowance=?, deduction=?, tax=?, insurance=?, net_salary=?,
-              work_days=?, standard_days=?, note=?,
+            UPDATE payroll SET
+              user_id=?, employee_id=?, employee_name=?, employee_code=?, department=?,
+              base_salary=?, kpi_bonus=?, allowance=?, deduction=?, overtime_pay=?, tax=?, insurance=?,
+              work_days=?, standard_days=?, note=?, net_salary=?, data_status=?, data_warnings=?,
               position_salary=?, completion_bonus=?, total_income_agreed=?, insurance_base=?,
-              probation_days=?, official_days=?, unpaid_leave_days=?, work_income=?,
+              probation_days=?, official_days=?, paid_leave_days=?, unpaid_leave_days=?, work_income=?,
               ot_normal_hours=?, ot_weekend_hours=?, ot_holiday_hours=?, base_hourly_rate=?, ot_total_income=?,
               phone_allowance=?, attire_allowance=?, parking_allowance=?, fuel_allowance=?, business_trip_allowance=?,
               total_allowance=?, total_income_with_allowance=?, total_pretax_income=?,
               insurance_social=?, insurance_health=?, insurance_unemployment=?,
               personal_deduction=?, dependent_deduction=?, dependent_count=?, total_family_deduction=?,
               taxable_income=?, net_income_after_tax=?, tax_withheld=?,
-              meal_allowance=?, arrears_deduction=?, arrears_addition=?, transfer_amount=?, import_source='excel'
+              meal_allowance=?, arrears_deduction=?, arrears_addition=?, transfer_amount=?,
+              comp_insurance_social=?, comp_insurance_health=?, comp_insurance_unemp=?,
+              comp_insurance_accident=?, comp_insurance_total=?, total_company_cost=?,
+              is_signed=?, import_source='excel', source_synced_at=datetime('now','localtime')
             WHERE id=?
           `).bind(
-            payrollId, baseSalary, Number(r.kpi_bonus || 0), Number(r.total_allowance || r.allowance || 0),
-            Number(r.arrears_deduction || 0), Number(r.tax || 0), Number(r.insurance || 0), netSalary,
-            Number(r.work_days || 0), Number(r.standard_days || 23), r.notes || '',
+            String(me.id), employeeId, name, code, dept,
+            baseSalary, Number(r.kpi_bonus || 0), Number(r.total_allowance || r.allowance || 0),
+            Number(r.arrears_deduction || 0), Number(r.ot_total_income || r.overtime_pay || 0),
+            Number(r.tax || 0), Number(r.insurance || 0),
+            Number(r.work_days || 0), Number(r.standard_days || 23), r.notes || '', netSalary, dataStatus, dataWarnings,
             Number(r.position_salary || 0), Number(r.completion_bonus || 0), Number(r.total_income_agreed || 0), Number(r.insurance_base || 0),
-            Number(r.probation_days || 0), Number(r.official_days || 0), Number(r.unpaid_leave_days || 0), Number(r.work_income || 0),
+            Number(r.probation_days || 0), Number(r.official_days || 0), Number(r.paid_leave_days || 0), Number(r.unpaid_leave_days || 0), Number(r.work_income || 0),
             Number(r.ot_normal_hours || 0), Number(r.ot_weekend_hours || 0), Number(r.ot_holiday_hours || 0), Number(r.base_hourly_rate || 0), Number(r.ot_total_income || 0),
             Number(r.phone_allowance || 0), Number(r.attire_allowance || 0), Number(r.parking_allowance || 0), Number(r.fuel_allowance || 0), Number(r.business_trip_allowance || 0),
             Number(r.total_allowance || 0), Number(r.total_income_with_allowance || 0), Number(r.total_pretax_income || 0),
@@ -10161,83 +11171,184 @@ const attendanceRateTo =
             Number(r.personal_deduction || 0), Number(r.dependent_deduction || 0), Number(r.dependent_count || 0), Number(r.total_family_deduction || 0),
             Number(r.taxable_income || 0), Number(r.net_income_after_tax || 0), Number(r.tax_withheld || 0),
             Number(r.meal_allowance || 0), Number(r.arrears_deduction || 0), Number(r.arrears_addition || 0), Number(r.transfer_amount || 0),
-            existingInv.id
+            Number(r.comp_insurance_social || 0), Number(r.comp_insurance_health || 0), Number(r.comp_insurance_unemp || 0),
+            Number(r.comp_insurance_accident || 0), Number(r.comp_insurance_total || 0), Number(r.total_company_cost || 0),
+            r.is_signed ? 1 : 0, existing.id
           ).run();
-        } else if (!existingInv) {
-          const invNum = await nextInvoiceNumber(env, invYear, invMonth);
-          await env.DB.prepare(`
-            INSERT INTO invoices (
-              invoice_number, user_id, month, year,
-              base_salary, bonus, allowance, deduction, tax, insurance, net_salary,
-              work_days, standard_days, status, note, payroll_id, issued_at, issued_by, issued_by_name,
+          updated++;
+        } else {
+          const ins = await env.DB.prepare(`
+            INSERT INTO payroll (
+              user_id, employee_id, employee_name, employee_code, department, month,
+              base_salary, kpi_bonus, allowance, deduction, overtime_pay, tax, insurance,
+              work_days, standard_days, note, net_salary, data_status, data_warnings,
               position_salary, completion_bonus, total_income_agreed, insurance_base,
-              probation_days, official_days, unpaid_leave_days, work_income,
+              probation_days, official_days, paid_leave_days, unpaid_leave_days, work_income,
               ot_normal_hours, ot_weekend_hours, ot_holiday_hours, base_hourly_rate, ot_total_income,
               phone_allowance, attire_allowance, parking_allowance, fuel_allowance, business_trip_allowance,
               total_allowance, total_income_with_allowance, total_pretax_income,
               insurance_social, insurance_health, insurance_unemployment,
               personal_deduction, dependent_deduction, dependent_count, total_family_deduction,
               taxable_income, net_income_after_tax, tax_withheld,
-              meal_allowance, arrears_deduction, arrears_addition, transfer_amount, import_source
+              meal_allowance, arrears_deduction, arrears_addition, transfer_amount,
+              comp_insurance_social, comp_insurance_health, comp_insurance_unemp,
+              comp_insurance_accident, comp_insurance_total, total_company_cost,
+              is_signed, import_source, source_synced_at
             ) VALUES (
-              ?,?,?,?,
+              ?,?,?,?,?,?,
               ?,?,?,?,?,?,?,
-              ?,?,?,?,?,datetime('now','localtime'),?,?,
-              ?,?,?,?,
+              ?,?,?,?,?,?,
               ?,?,?,?,
               ?,?,?,?,?,
               ?,?,?,?,?,
+              ?,?,?,?,?,
               ?,?,?,
               ?,?,?,
               ?,?,?,?,
               ?,?,?,
-              ?,?,?,?,'excel'
+              ?,?,?,?,
+              ?,?,?,
+              ?,?,?,
+              ?,'excel',datetime('now','localtime')
             )
           `).bind(
-            invNum, employeeId, invMonth, invYear,
+            String(me.id), employeeId, name, code, dept, month,
             baseSalary, Number(r.kpi_bonus || 0), Number(r.total_allowance || r.allowance || 0),
-            Number(r.arrears_deduction || 0), Number(r.tax || 0), Number(r.insurance || 0), netSalary,
-            Number(r.work_days || 0), Number(r.standard_days || 23), 'issued', r.notes || '', payrollId, me.id, me.full_name || '',
+            Number(r.arrears_deduction || 0), Number(r.ot_total_income || r.overtime_pay || 0),
+            Number(r.tax || 0), Number(r.insurance || 0),
+            Number(r.work_days || 0), Number(r.standard_days || 23), r.notes || '', netSalary, dataStatus, dataWarnings,
             Number(r.position_salary || 0), Number(r.completion_bonus || 0), Number(r.total_income_agreed || 0), Number(r.insurance_base || 0),
-            Number(r.probation_days || 0), Number(r.official_days || 0), Number(r.unpaid_leave_days || 0), Number(r.work_income || 0),
+            Number(r.probation_days || 0), Number(r.official_days || 0), Number(r.paid_leave_days || 0), Number(r.unpaid_leave_days || 0), Number(r.work_income || 0),
             Number(r.ot_normal_hours || 0), Number(r.ot_weekend_hours || 0), Number(r.ot_holiday_hours || 0), Number(r.base_hourly_rate || 0), Number(r.ot_total_income || 0),
             Number(r.phone_allowance || 0), Number(r.attire_allowance || 0), Number(r.parking_allowance || 0), Number(r.fuel_allowance || 0), Number(r.business_trip_allowance || 0),
             Number(r.total_allowance || 0), Number(r.total_income_with_allowance || 0), Number(r.total_pretax_income || 0),
             Number(r.insurance_social || 0), Number(r.insurance_health || 0), Number(r.insurance_unemployment || 0),
             Number(r.personal_deduction || 0), Number(r.dependent_deduction || 0), Number(r.dependent_count || 0), Number(r.total_family_deduction || 0),
             Number(r.taxable_income || 0), Number(r.net_income_after_tax || 0), Number(r.tax_withheld || 0),
-            Number(r.meal_allowance || 0), Number(r.arrears_deduction || 0), Number(r.arrears_addition || 0), Number(r.transfer_amount || 0)
+            Number(r.meal_allowance || 0), Number(r.arrears_deduction || 0), Number(r.arrears_addition || 0), Number(r.transfer_amount || 0),
+            Number(r.comp_insurance_social || 0), Number(r.comp_insurance_health || 0), Number(r.comp_insurance_unemp || 0),
+            Number(r.comp_insurance_accident || 0), Number(r.comp_insurance_total || 0), Number(r.total_company_cost || 0),
+            r.is_signed ? 1 : 0
           ).run();
+          payrollId = ins.meta.last_row_id;
+          created++;
+        }
+
+        // Automatically sync invoice (payslip) for employee so they immediately see the clean payslip
+        if (employeeId) {
+          const existingInv = await env.DB.prepare(
+            'SELECT id, status, locked_at FROM invoices WHERE user_id=? AND month=? AND year=? LIMIT 1'
+          ).bind(employeeId, invMonth, invYear).first();
+
+          if (existingInv && !existingInv.locked_at && existingInv.status !== 'paid') {
+            await env.DB.prepare(`
+              UPDATE invoices SET
+                payroll_id=?, base_salary=?, bonus=?, allowance=?, deduction=?, tax=?, insurance=?, net_salary=?,
+                work_days=?, standard_days=?, note=?,
+                position_salary=?, completion_bonus=?, total_income_agreed=?, insurance_base=?,
+                probation_days=?, official_days=?, paid_leave_days=?, unpaid_leave_days=?, work_income=?,
+                ot_normal_hours=?, ot_weekend_hours=?, ot_holiday_hours=?, base_hourly_rate=?, ot_total_income=?,
+                phone_allowance=?, attire_allowance=?, parking_allowance=?, fuel_allowance=?, business_trip_allowance=?,
+                total_allowance=?, total_income_with_allowance=?, total_pretax_income=?,
+                insurance_social=?, insurance_health=?, insurance_unemployment=?,
+                personal_deduction=?, dependent_deduction=?, dependent_count=?, total_family_deduction=?,
+                taxable_income=?, net_income_after_tax=?, tax_withheld=?,
+                meal_allowance=?, arrears_deduction=?, arrears_addition=?, transfer_amount=?, import_source='excel'
+              WHERE id=?
+            `).bind(
+              payrollId, baseSalary, Number(r.kpi_bonus || 0), Number(r.total_allowance || r.allowance || 0),
+              Number(r.arrears_deduction || 0), Number(r.tax || 0), Number(r.insurance || 0), netSalary,
+              Number(r.work_days || 0), Number(r.standard_days || 23), r.notes || '',
+              Number(r.position_salary || 0), Number(r.completion_bonus || 0), Number(r.total_income_agreed || 0), Number(r.insurance_base || 0),
+              Number(r.probation_days || 0), Number(r.official_days || 0), Number(r.paid_leave_days || 0), Number(r.unpaid_leave_days || 0), Number(r.work_income || 0),
+              Number(r.ot_normal_hours || 0), Number(r.ot_weekend_hours || 0), Number(r.ot_holiday_hours || 0), Number(r.base_hourly_rate || 0), Number(r.ot_total_income || 0),
+              Number(r.phone_allowance || 0), Number(r.attire_allowance || 0), Number(r.parking_allowance || 0), Number(r.fuel_allowance || 0), Number(r.business_trip_allowance || 0),
+              Number(r.total_allowance || 0), Number(r.total_income_with_allowance || 0), Number(r.total_pretax_income || 0),
+              Number(r.insurance_social || 0), Number(r.insurance_health || 0), Number(r.insurance_unemployment || 0),
+              Number(r.personal_deduction || 0), Number(r.dependent_deduction || 0), Number(r.dependent_count || 0), Number(r.total_family_deduction || 0),
+              Number(r.taxable_income || 0), Number(r.net_income_after_tax || 0), Number(r.tax_withheld || 0),
+              Number(r.meal_allowance || 0), Number(r.arrears_deduction || 0), Number(r.arrears_addition || 0), Number(r.transfer_amount || 0),
+              existingInv.id
+            ).run();
+          } else if (!existingInv) {
+            const invNum = await nextInvoiceNumber(env, invYear, invMonth);
+            await env.DB.prepare(`
+              INSERT INTO invoices (
+                invoice_number, user_id, month, year,
+                base_salary, bonus, allowance, deduction, tax, insurance, net_salary,
+                work_days, standard_days, status, note, payroll_id, issued_at, issued_by, issued_by_name,
+                position_salary, completion_bonus, total_income_agreed, insurance_base,
+                probation_days, official_days, paid_leave_days, unpaid_leave_days, work_income,
+                ot_normal_hours, ot_weekend_hours, ot_holiday_hours, base_hourly_rate, ot_total_income,
+                phone_allowance, attire_allowance, parking_allowance, fuel_allowance, business_trip_allowance,
+                total_allowance, total_income_with_allowance, total_pretax_income,
+                insurance_social, insurance_health, insurance_unemployment,
+                personal_deduction, dependent_deduction, dependent_count, total_family_deduction,
+                taxable_income, net_income_after_tax, tax_withheld,
+                meal_allowance, arrears_deduction, arrears_addition, transfer_amount, import_source
+              ) VALUES (
+                ?,?,?,?,
+                ?,?,?,?,?,?,?,
+                ?,?,?,?,?,datetime('now','localtime'),?,?,
+                ?,?,?,?,
+                ?,?,?,?,?,
+                ?,?,?,?,?,
+                ?,?,?,?,?,
+                ?,?,?,
+                ?,?,?,
+                ?,?,?,?,
+                ?,?,?,
+                ?,?,?,?,'excel'
+              )
+            `).bind(
+              invNum, employeeId, invMonth, invYear,
+              baseSalary, Number(r.kpi_bonus || 0), Number(r.total_allowance || r.allowance || 0),
+              Number(r.arrears_deduction || 0), Number(r.tax || 0), Number(r.insurance || 0), netSalary,
+              Number(r.work_days || 0), Number(r.standard_days || 23), 'issued', r.notes || '', payrollId, me.id, me.full_name || '',
+              Number(r.position_salary || 0), Number(r.completion_bonus || 0), Number(r.total_income_agreed || 0), Number(r.insurance_base || 0),
+              Number(r.probation_days || 0), Number(r.official_days || 0), Number(r.paid_leave_days || 0), Number(r.unpaid_leave_days || 0), Number(r.work_income || 0),
+              Number(r.ot_normal_hours || 0), Number(r.ot_weekend_hours || 0), Number(r.ot_holiday_hours || 0), Number(r.base_hourly_rate || 0), Number(r.ot_total_income || 0),
+              Number(r.phone_allowance || 0), Number(r.attire_allowance || 0), Number(r.parking_allowance || 0), Number(r.fuel_allowance || 0), Number(r.business_trip_allowance || 0),
+              Number(r.total_allowance || 0), Number(r.total_income_with_allowance || 0), Number(r.total_pretax_income || 0),
+              Number(r.insurance_social || 0), Number(r.insurance_health || 0), Number(r.insurance_unemployment || 0),
+              Number(r.personal_deduction || 0), Number(r.dependent_deduction || 0), Number(r.dependent_count || 0), Number(r.total_family_deduction || 0),
+              Number(r.taxable_income || 0), Number(r.net_income_after_tax || 0), Number(r.tax_withheld || 0),
+              Number(r.meal_allowance || 0), Number(r.arrears_deduction || 0), Number(r.arrears_addition || 0), Number(r.transfer_amount || 0)
+            ).run();
+          }
         }
       }
+
+      const estimatedTotal = rows.reduce((s, r) => s + Number(r.transfer_amount || r.net_salary || 0), 0);
+      await env.DB.prepare(`
+        INSERT INTO payroll_batches (month, status, total_employees, complete_employees, missing_employees, estimated_total, created_by, created_by_name, updated_at)
+        VALUES (?,'draft',?,?,0,?,?,?,datetime('now','localtime'))
+        ON CONFLICT(month) DO UPDATE SET total_employees=excluded.total_employees, complete_employees=excluded.complete_employees, estimated_total=excluded.estimated_total, updated_at=datetime('now','localtime')
+      `).bind(month, rows.length, matched, estimatedTotal, me.id, me.full_name || '').run();
+
+      await broadcastAppEvent(env, 'payroll', 'payroll:imported', {
+        month,
+        total: rows.length,
+        created,
+        updated,
+        matched,
+        unmatched: unmatchedCodes.length,
+      }, { actorId: me.id });
+      await broadcastAppEvent(env, 'invoices', 'invoices:imported', { month }, { actorId: me.id });
+
+      return json({
+        ok: true,
+        month,
+        total: rows.length,
+        created,
+        updated,
+        matched,
+        unmatched_codes: unmatchedCodes,
+      });
+    } catch (importErr) {
+      console.error('Lỗi khi lưu import bảng lương:', importErr);
+      return json({ error: `Lỗi lưu bảng lương: ${importErr?.message || importErr}` }, 500);
     }
-
-    const estimatedTotal = rows.reduce((s, r) => s + Number(r.transfer_amount || r.net_salary || 0), 0);
-    await env.DB.prepare(`
-      INSERT INTO payroll_batches (month, status, total_employees, complete_employees, missing_employees, estimated_total, created_by, created_by_name, updated_at)
-      VALUES (?,'draft',?,?,0,?,?,?,datetime('now','localtime'))
-      ON CONFLICT(month) DO UPDATE SET total_employees=excluded.total_employees, complete_employees=excluded.complete_employees, estimated_total=excluded.estimated_total, updated_at=datetime('now','localtime')
-    `).bind(month, rows.length, matched, estimatedTotal, me.id, me.full_name || '').run();
-
-    await broadcastAppEvent(env, 'payroll', 'payroll:imported', {
-      month,
-      total: rows.length,
-      created,
-      updated,
-      matched,
-      unmatched: unmatchedCodes.length,
-    }, { actorId: me.id });
-    await broadcastAppEvent(env, 'invoices', 'invoices:imported', { month }, { actorId: me.id });
-
-    return json({
-      ok: true,
-      month,
-      total: rows.length,
-      created,
-      updated,
-      matched,
-      unmatched_codes: unmatchedCodes,
-    });
   }
 
   if (path === '/api/payroll/load' && request.method === 'POST') {
@@ -11419,6 +12530,18 @@ const attendanceRateTo =
         WHERE m.deleted_at IS NULL AND m.sender_id != ?
           AND m.id > COALESCE(cm.last_read_message_id,0) AND ${dissolvedFilter}`
     ).bind(me.id, me.id).first();
+    const mentionCountRow = await env.DB.prepare(
+      `SELECT COUNT(DISTINCT m.id) AS mention_count
+         FROM messages m
+         JOIN conversation_members cm ON cm.conversation_id=m.conversation_id AND cm.user_id=?
+         JOIN conversations c ON c.id=m.conversation_id
+         LEFT JOIN message_mentions mm ON mm.message_id=m.id AND mm.mentioned_user_id=?
+         LEFT JOIN message_all_mentions ma ON ma.message_id=m.id
+        WHERE m.deleted_at IS NULL AND m.sender_id != ?
+          AND m.id > COALESCE(cm.last_read_message_id,0)
+          AND (mm.mentioned_user_id IS NOT NULL OR ma.message_id IS NOT NULL)
+          AND ${dissolvedFilter}`
+    ).bind(me.id, me.id, me.id).first();
     const mention = await env.DB.prepare(
       `SELECT m.id AS message_id,m.conversation_id,c.name AS conversation_name,m.sender_id,u.full_name AS sender_name,
               m.content AS preview,m.created_at,CASE WHEN ma.message_id IS NULL THEN 0 ELSE 1 END AS mention_all
@@ -11449,11 +12572,16 @@ const attendanceRateTo =
                       WHEN datetime(e.start_at) <= datetime(?,'+30 minutes') THEN 1 ELSE 2 END,
                  datetime(e.start_at) ASC LIMIT 1`
     ).bind(me.id, me.id, nowHcm, nowHcm, nowHcm, nowHcm).first();
-    return json({ unread_count: Number(unread?.unread_count || 0), mention: mention || null, upcoming_event: upcomingEvent || null });
+    return json({
+      unread_count: Number(unread?.unread_count || 0),
+      mention_count: Number(mentionCountRow?.mention_count || 0),
+      mention: mention || null,
+      upcoming_event: upcomingEvent || null
+    });
     } catch (_) {
       // Header decoration must never make the active page fail while a legacy
       // chat schema is receiving its additive migrations.
-      return json({ unread_count: 0, mention: null, upcoming_event: null });
+      return json({ unread_count: 0, mention_count: 0, mention: null, upcoming_event: null });
     }
   }
 

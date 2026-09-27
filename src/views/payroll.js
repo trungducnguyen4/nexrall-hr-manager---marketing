@@ -1,6 +1,6 @@
 import { api } from '../api.js?v=20260811-penalty-policy-v3';
 import { EventBus } from '../event-bus.js';
-import { esc, fmtMoney, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination, avatarColor, initials, isHcnsDepartment, sortVietnameseNames, compareVietnameseNames } from '../utils.js?v=20260811-hr-access-v1';
+import { esc, fmtMoney, fmtDate, parseDateInput, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, DEPARTMENTS, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination, avatarColor, initials, isHcnsDepartment, sortVietnameseNames, compareVietnameseNames } from '../utils.js?v=20260811-hr-access-v1';
 import { payslipDetailHTML, hydratePayslipAttendance, preparePayslipModal } from './payslip-detail.js?v=20260916-excel-payroll-v1';
 import { icon } from '../icons.js';
 import { parsePayrollExcelText } from '../excel-payroll-parser.js';
@@ -115,8 +115,8 @@ function payrollRowHTML(p) {
   return html;
 }
 
-const fmtNum = (n) => (n ? Number(n).toLocaleString('vi-VN') : '-');
-const fmtM = (n) => (n ? fmtMoney(n) : '-');
+const fmtNum = (n) => (n !== null && n !== undefined && n !== '' && !isNaN(Number(n)) ? Number(n).toLocaleString('vi-VN') : '-');
+const fmtM = (n) => (n !== null && n !== undefined && n !== '' && Number(n) !== 0 ? fmtMoney(n) : '-');
 
 const PAYROLL_COLUMNS = [
   // 1. THÔNG TIN NHÂN VIÊN (4 columns)
@@ -869,6 +869,9 @@ function initPayrollTableScrollSync() {
 
 function openImportExcelModal(month, onDone) {
   let parsedResult = null;
+  let currentWorkbook = null;
+  let currentFileName = '';
+
   openModal('Nhập bảng lương từ Excel (Chuẩn 51 cột)', `
     <div class="payroll-import-modal-content">
       <div class="payroll-import-banner">
@@ -880,6 +883,10 @@ function openImportExcelModal(month, onDone) {
           <label for="import-excel-month" style="font-size:12px;font-weight:600;color:var(--text-2);display:block;margin-bottom:4px;">Kỳ lương:</label>
           <input type="month" id="import-excel-month" class="input-sm" value="${esc(month)}" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-weight:600;"/>
         </div>
+        <div class="payroll-import-field" id="import-sheet-wrap" style="display:none;">
+          <label for="import-sheet-select" style="font-size:12px;font-weight:600;color:var(--primary);display:block;margin-bottom:4px;">Chọn Sheet dữ liệu:</label>
+          <select id="import-sheet-select" class="input-sm" style="padding:6px 10px;border:1px solid var(--primary);border-radius:var(--radius-sm);font-weight:600;background:#F0FDF4;color:var(--text);min-width:180px;"></select>
+        </div>
         <div class="payroll-import-field">
           <label for="import-std-days" style="font-size:12px;font-weight:600;color:var(--text-2);display:block;margin-bottom:4px;">Định mức VP (ngày):</label>
           <input type="number" id="import-std-days" class="input-sm" value="23" style="width:80px;padding:6px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);"/>
@@ -890,27 +897,18 @@ function openImportExcelModal(month, onDone) {
         </div>
       </div>
 
-      <div class="payroll-import-tabs" style="display:flex;gap:8px;border-bottom:1px solid var(--border);margin-bottom:12px;">
-        <button type="button" class="tab-btn active" id="import-tab-paste" style="padding:8px 16px;font-size:13px;font-weight:600;background:transparent;border:none;border-bottom:2px solid var(--primary);color:var(--primary);cursor:pointer;">1. Dán trực tiếp từ Excel (Ctrl+V)</button>
-        <button type="button" class="tab-btn" id="import-tab-file" style="padding:8px 16px;font-size:13px;font-weight:600;background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-2);cursor:pointer;">2. Tải tệp Excel (.xlsx / .csv)</button>
+      <div class="file-dropzone" id="import-dropzone" style="border:2px dashed #CBD5E1;border-radius:8px;padding:24px;text-align:center;background:#F8FAFC;cursor:pointer;margin-bottom:12px;">
+        <input type="file" id="import-file-elem" accept=".xlsx,.xls,.csv,.tsv,.txt" style="display:none;"/>
+        <div>${icon('upload', 'lg')}</div>
+        <button type="button" class="btn-secondary btn-sm" id="btn-browse-file" style="margin-top:8px;">Chọn tệp Excel từ máy tính</button>
+        <p id="import-file-name" style="margin:8px 0 0;font-size:12px;color:var(--text-3);">Hỗ trợ file .xlsx, .xls, .csv, .tsv</p>
       </div>
 
-      <div id="import-pane-paste" class="import-tab-pane">
-        <textarea id="import-paste-textarea" rows="7" style="width:100%;box-sizing:border-box;padding:10px;font-family:monospace;font-size:12px;border:1px solid var(--border);border-radius:6px;resize:vertical;" placeholder="Mở file Excel -> Bôi đen toàn bộ dữ liệu (từ dòng tiêu đề tới dòng nhân viên cuối cùng) -> Nhấn Ctrl+C -> Bấm vào ô này và nhấn Ctrl+V..."></textarea>
-      </div>
-
-      <div id="import-pane-file" class="import-tab-pane" style="display:none;">
-        <div class="file-dropzone" id="import-dropzone" style="border:2px dashed #CBD5E1;border-radius:8px;padding:24px;text-align:center;background:#F8FAFC;cursor:pointer;">
-          <input type="file" id="import-file-elem" accept=".xlsx,.xls,.csv,.tsv,.txt" style="display:none;"/>
-          <div>${icon('upload', 'lg')}</div>
-          <button type="button" class="btn-secondary btn-sm" id="btn-browse-file" style="margin-top:8px;">Chọn tệp Excel từ máy tính</button>
-          <p id="import-file-name" style="margin:8px 0 0;font-size:12px;color:var(--text-3);">Hỗ trợ file .xlsx, .xls, .csv, .tsv</p>
-        </div>
-      </div>
+      <textarea id="import-paste-textarea" style="display:none;"></textarea>
 
       <div style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;">
-        <button type="button" class="btn-secondary btn-sm" id="btn-do-parse">${icon('refreshCw', 'xs')} <span>Phân tích dữ liệu</span></button>
-        <span id="import-parse-status" style="font-size:12px;color:var(--text-2);">Chưa có dữ liệu phân tích</span>
+        <button type="button" class="btn-secondary btn-sm" id="btn-do-parse">${icon('refreshCw', 'xs')} <span>Phân tích lại dữ liệu</span></button>
+        <span id="import-parse-status" style="font-size:12px;color:var(--text-2);">Chưa chọn tệp Excel</span>
       </div>
 
       <div id="import-preview-container" style="display:none;margin-top:14px;border-top:1px solid var(--border);padding-top:14px;">
@@ -923,47 +921,83 @@ function openImportExcelModal(month, onDone) {
 
   document.getElementById('modal')?.classList.add('modal--payroll-import');
 
-  const tabPaste = document.getElementById('import-tab-paste');
-  const tabFile = document.getElementById('import-tab-file');
-  const panePaste = document.getElementById('import-pane-paste');
-  const paneFile = document.getElementById('import-pane-file');
   const pasteTextarea = document.getElementById('import-paste-textarea');
   const fileElem = document.getElementById('import-file-elem');
   const btnBrowse = document.getElementById('btn-browse-file');
+  const dropzone = document.getElementById('import-dropzone');
   const fileNameLabel = document.getElementById('import-file-name');
   const btnDoParse = document.getElementById('btn-do-parse');
   const parseStatus = document.getElementById('import-parse-status');
   const previewContainer = document.getElementById('import-preview-container');
   const btnSubmit = document.getElementById('btn-import-submit');
+  const sheetWrap = document.getElementById('import-sheet-wrap');
+  const sheetSelect = document.getElementById('import-sheet-select');
+  const monthInput = document.getElementById('import-excel-month');
 
-  tabPaste?.addEventListener('click', () => {
-    tabPaste.classList.add('active');
-    tabPaste.style.color = 'var(--primary)';
-    tabPaste.style.borderBottomColor = 'var(--primary)';
-    tabFile.classList.remove('active');
-    tabFile.style.color = 'var(--text-2)';
-    tabFile.style.borderBottomColor = 'transparent';
-    panePaste.style.display = 'block';
-    paneFile.style.display = 'none';
+  dropzone?.addEventListener('click', (e) => {
+    if (e.target !== btnBrowse) fileElem?.click();
   });
 
-  tabFile?.addEventListener('click', () => {
-    tabFile.classList.add('active');
-    tabFile.style.color = 'var(--primary)';
-    tabFile.style.borderBottomColor = 'var(--primary)';
-    tabPaste.classList.remove('active');
-    tabPaste.style.color = 'var(--text-2)';
-    tabPaste.style.borderBottomColor = 'transparent';
-    paneFile.style.display = 'block';
-    panePaste.style.display = 'none';
+  function findBestMatchingSheet(sheetNames, targetMonthStr) {
+    if (!sheetNames || !sheetNames.length) return '';
+    const mNum = parseInt(String(targetMonthStr || '').split('-')[1], 10);
+    if (!mNum) return sheetNames[0];
+
+    const mPad = String(mNum).padStart(2, '0');
+    // Ưu tiên khớp chính xác: 'T7', 'Tháng 7', 'Thang 7', '07', 'T07'
+    for (const s of sheetNames) {
+      const norm = s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+      if (norm === `t${mNum}` || norm === `t${mPad}` || norm === `thang ${mNum}` || norm === `thang${mNum}` || norm === `thang ${mPad}` || norm === `thang${mPad}`) {
+        return s;
+      }
+    }
+    // Ưu tiên khớp chứa:
+    for (const s of sheetNames) {
+      const norm = s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+      if (norm.includes(`t${mNum}`) || norm.includes(`thang ${mNum}`) || norm.includes(`thang${mNum}`) || norm.includes(`t${mPad}`) || norm.includes(`thang ${mPad}`) || norm.includes(mPad)) {
+        return s;
+      }
+    }
+    return sheetNames[0];
+  }
+
+  function loadWorkbookSheet(sheetName) {
+    if (!currentWorkbook) return;
+    const XLSX = window.XLSX;
+    if (!XLSX) return;
+    const sheet = currentWorkbook.Sheets[sheetName];
+    if (!sheet) return;
+    const tsv = XLSX.utils.sheet_to_csv(sheet, { FS: '\t' });
+    pasteTextarea.value = tsv;
+    fileNameLabel.textContent = `Đã chọn: ${currentFileName} — Sheet: [${sheetName}]`;
+    runParse(tsv);
+  }
+
+  sheetSelect?.addEventListener('change', (e) => {
+    loadWorkbookSheet(e.target.value);
   });
+
+  monthInput?.addEventListener('change', (e) => {
+    if (currentWorkbook && currentWorkbook.SheetNames?.length > 1) {
+      const best = findBestMatchingSheet(currentWorkbook.SheetNames, e.target.value);
+      if (best && best !== sheetSelect.value) {
+        sheetSelect.value = best;
+        loadWorkbookSheet(best);
+      }
+    }
+  });
+
+
 
   btnBrowse?.addEventListener('click', () => fileElem?.click());
   fileElem?.addEventListener('change', async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    currentFileName = file.name;
     fileNameLabel.textContent = `Đã chọn: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
     if (file.name.endsWith('.csv') || file.name.endsWith('.tsv') || file.name.endsWith('.txt')) {
+      sheetWrap.style.display = 'none';
+      currentWorkbook = null;
       const text = await file.text();
       pasteTextarea.value = text;
       runParse(text);
@@ -983,10 +1017,22 @@ function openImportExcelModal(month, onDone) {
         }
         const ab = await file.arrayBuffer();
         const wb = XLSX.read(ab, { type: 'array' });
-        const sheet = wb.Sheets[wb.SheetNames[0]];
-        const tsv = XLSX.utils.sheet_to_csv(sheet, { FS: '\t' });
-        pasteTextarea.value = tsv;
-        runParse(tsv);
+        currentWorkbook = wb;
+        const sheetNames = wb.SheetNames || [];
+
+        if (sheetNames.length > 1) {
+          sheetWrap.style.display = 'block';
+          sheetSelect.innerHTML = sheetNames.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+          const curTargetMonth = monthInput?.value || month;
+          const bestSheet = findBestMatchingSheet(sheetNames, curTargetMonth);
+          sheetSelect.value = bestSheet;
+          loadWorkbookSheet(bestSheet);
+        } else if (sheetNames.length === 1) {
+          sheetWrap.style.display = 'none';
+          loadWorkbookSheet(sheetNames[0]);
+        } else {
+          throw new Error('Tệp Excel không chứa sheet dữ liệu nào.');
+        }
       } catch (err) {
         parseStatus.textContent = `Lỗi đọc file Excel: ${err.message}`;
         toast(err.message, 'error');
@@ -1164,11 +1210,9 @@ export async function renderPayroll(el, me) {
     </div>
     <div id="payroll-load-status" class="payroll-status-note"></div>
 
-    <!-- Interactive Charts Grid (Dumbbell Chart, Budget by Dept & Attendance Breakdown) -->
-    <div id="payroll-charts-container" class="payroll-charts-grid">
-      <div class="payroll-chart-card payroll-dumbbell-card" style="min-height:220px;display:flex;align-items:center;justify-content:center;color:var(--text-3);font-size:13px;">Đang tính toán so sánh % Nhân sự ↔ % Quỹ lương...</div>
-      <div class="payroll-chart-card" style="min-height:220px;display:flex;align-items:center;justify-content:center;color:var(--text-3);font-size:13px;">Đang tính toán phân bổ ngân sách...</div>
-      <div class="payroll-chart-card" style="min-height:220px;display:flex;align-items:center;justify-content:center;color:var(--text-3);font-size:13px;">Đang tính toán cơ cấu chấm công...</div>
+    <!-- Interactive Charts Card (Dumbbell Chart, Budget by Dept & Attendance Breakdown) -->
+    <div id="payroll-charts-container" class="payroll-unified-card">
+      <div style="min-height:180px;display:flex;align-items:center;justify-content:center;color:var(--text-3);font-size:13px;">Đang tải biểu đồ phân tích nhân sự &amp; quỹ lương...</div>
     </div>
 
     <!-- Adjustments Suggestion Panel -->
@@ -1415,13 +1459,13 @@ export async function renderPayroll(el, me) {
     if (!employees) return toast('Hãy tải bảng lương trước khi tạo phạt thủ công', 'error');
     openModal('Phạt điểm thủ công', `<div class="field"><label>Nhân sự *</label><select id="manual-penalty-employee"><option value="">Chọn nhân sự</option>${employees}</select></div>
       <div class="field"><label>Vi phạm *</label><select id="manual-penalty-kind"><option value="report">Không chủ động báo cáo — trừ 3 điểm</option><option value="progress">Quản lý phải hỏi tiến độ — trừ 5 điểm</option></select></div>
-      <div class="field"><label>Ngày vi phạm</label><input id="manual-penalty-date" type="date" min="${monthInput.value}-01" max="${monthInput.value}-31"></div>
+      <div class="field"><label>Ngày vi phạm (dd/mm/yyyy)</label><input id="manual-penalty-date" type="text" placeholder="dd/mm/yyyy" inputmode="numeric"></div>
       <div class="field"><label>Ghi chú / căn cứ *</label><textarea id="manual-penalty-reason" rows="3" placeholder="Mô tả sự việc, thời điểm hoặc nguồn xác minh"></textarea></div>`, '<button class="btn-secondary" id="manual-penalty-cancel">Hủy</button><button class="btn-primary" id="manual-penalty-save">Áp dụng</button>');
     document.getElementById('manual-penalty-cancel')?.addEventListener('click', closeModal);
     document.getElementById('manual-penalty-save')?.addEventListener('click', async event => {
       const select = document.getElementById('manual-penalty-employee');
       const kind = document.getElementById('manual-penalty-kind')?.value;
-      const violationDate = document.getElementById('manual-penalty-date')?.value || null;
+      const violationDate = parseDateInput(document.getElementById('manual-penalty-date')?.value) || null;
       const reason = document.getElementById('manual-penalty-reason')?.value.trim() || '';
       const employeeId = Number(select?.value || 0);
       const payrollId = Number(select?.selectedOptions?.[0]?.dataset.payrollId || 0) || null;
@@ -1605,7 +1649,7 @@ export async function renderPayroll(el, me) {
         if (!payrolls.length) {
           chartsEl.style.display = 'none';
         } else {
-          chartsEl.style.display = 'grid';
+          chartsEl.style.display = 'flex';
 
           // 1. Dumbbell Chart: So sánh % Nhân sự ↔ % Quỹ lương theo phòng ban
           const deptMap = new Map();
@@ -1795,8 +1839,8 @@ export async function renderPayroll(el, me) {
           }).join('');
 
           chartsEl.innerHTML = `
-            <!-- Chart 1: Dumbbell Chart: % Nhân sự ↔ % Quỹ lương theo phòng ban -->
-            <div class="payroll-chart-card payroll-dumbbell-card">
+            <!-- Phần 1: Dumbbell Chart: % Nhân sự ↔ % Quỹ lương theo phòng ban -->
+            <div class="payroll-unified-section payroll-unified-dumbbell">
               <div class="payroll-chart-header">
                 <div class="payroll-chart-title-wrap">
                   <div class="payroll-chart-icon" style="background:#EFF6FF;color:#2563EB;">${icon('chartLine', 'sm')}</div>
@@ -1830,50 +1874,56 @@ export async function renderPayroll(el, me) {
               </div>
             </div>
 
-            <!-- Chart 2: Quỹ lương theo phòng ban (Donut Chart) -->
-            <div class="payroll-chart-card">
-              <div class="payroll-chart-header">
-                <div class="payroll-chart-title-wrap">
-                  <div class="payroll-chart-icon">${icon('banknote', 'sm')}</div>
-                  <div>
-                    <h3 class="payroll-chart-title">Quỹ lương theo phòng ban</h3>
-                    <p class="payroll-chart-sub">Tỷ lệ phân bổ chi phí tháng ${formatMonth(month)}</p>
-                  </div>
-                </div>
-                <span class="payroll-chart-badge">${fmtMoney(totalNet)}</span>
-              </div>
-              <div class="payroll-chart-body">
-                <div class="payroll-donut-wrap">
-                  ${renderDonutChartSVG(deptSlices, 'Tổng quỹ', fmtMoney(totalNet))}
-                </div>
-                <div class="payroll-legend-list">
-                  ${deptLegendHTML}
-                </div>
-              </div>
-            </div>
+            <!-- Đường kẻ phân tách tinh tế -->
+            <div class="payroll-unified-divider"></div>
 
-            <!-- Chart 3: Chuyên cần & Chấm công (Donut Chart) -->
-            <div class="payroll-chart-card">
-              <div class="payroll-chart-header">
-                <div class="payroll-chart-title-wrap">
-                  <div class="payroll-chart-icon payroll-chart-icon--emerald">${icon('clock3', 'sm')}</div>
-                  <div>
-                    <h3 class="payroll-chart-title">Chuyên cần & Chấm công</h3>
-                    <p class="payroll-chart-sub">Tỷ lệ đúng giờ tính đến hiện tại</p>
+            <!-- Phần 2 & 3: Hai biểu đồ tròn chia 2 cột -->
+            <div class="payroll-unified-donuts-row">
+              <!-- Cột 1: Quỹ lương theo phòng ban -->
+              <div class="payroll-unified-donut-col">
+                <div class="payroll-chart-header">
+                  <div class="payroll-chart-title-wrap">
+                    <div class="payroll-chart-icon">${icon('banknote', 'sm')}</div>
+                    <div>
+                      <h3 class="payroll-chart-title">Quỹ lương theo phòng ban</h3>
+                      <p class="payroll-chart-sub">Tỷ lệ phân bổ chi phí tháng ${formatMonth(month)}</p>
+                    </div>
+                  </div>
+                  <span class="payroll-chart-badge">${fmtMoney(totalNet)}</span>
+                </div>
+                <div class="payroll-chart-body">
+                  <div class="payroll-donut-wrap">
+                    ${renderDonutChartSVG(deptSlices, 'Tổng quỹ', fmtMoney(totalNet))}
+                  </div>
+                  <div class="payroll-legend-list">
+                    ${deptLegendHTML}
                   </div>
                 </div>
-                <span class="payroll-chart-badge payroll-chart-badge--emerald">${onTimeRate}% đúng giờ</span>
               </div>
-              <div class="payroll-chart-body">
-                <div class="payroll-donut-wrap">
-                  ${renderDonutChartSVG(attSlices, 'Đúng giờ', `${onTimeRate}%`)}
+
+              <!-- Cột 2: Chuyên cần & Chấm công -->
+              <div class="payroll-unified-donut-col">
+                <div class="payroll-chart-header">
+                  <div class="payroll-chart-title-wrap">
+                    <div class="payroll-chart-icon payroll-chart-icon--emerald">${icon('clock3', 'sm')}</div>
+                    <div>
+                      <h3 class="payroll-chart-title">Chuyên cần & Chấm công</h3>
+                      <p class="payroll-chart-sub">Tỷ lệ đúng giờ tính đến hiện tại</p>
+                    </div>
+                  </div>
+                  <span class="payroll-chart-badge payroll-chart-badge--emerald">${onTimeRate}% đúng giờ</span>
                 </div>
-                <div class="payroll-legend-list">
-                  ${attLegendHTML}
+                <div class="payroll-chart-body">
+                  <div class="payroll-donut-wrap">
+                    ${renderDonutChartSVG(attSlices, 'Đúng giờ', `${onTimeRate}%`)}
+                  </div>
+                  <div class="payroll-legend-list">
+                    ${attLegendHTML}
+                  </div>
                 </div>
-              </div>
-              <div class="payroll-chart-footer-note">
-                * So sánh tính đến ${isCurMonth ? `hôm nay (${todayStr.split('-').reverse().slice(0,2).join('/')}) là 100% kỳ vọng` : `cuối tháng ${formatMonth(month)}`}.
+                <div class="payroll-chart-footer-note">
+                  * So sánh tính đến ${isCurMonth ? `hôm nay (${todayStr.split('-').reverse().slice(0,2).join('/')}) là 100% kỳ vọng` : `cuối tháng ${formatMonth(month)}`}.
+                </div>
               </div>
             </div>
           `;

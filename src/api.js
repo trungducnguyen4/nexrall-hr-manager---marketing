@@ -295,6 +295,7 @@ export const api = {
   uploadUserDocument: (id, kind, file) => uploadFile(`/api/users/${id}/documents/${kind}`, file).then(r => { inv('/api/users'); return r; }),
   deleteUserDocument: (id, kind) => req('DELETE', `/api/users/${id}/documents/${kind}`).then(r => { inv('/api/users'); return r; }),
   deleteUser: (id) => req('DELETE', `/api/users/${id}`).then(r => { inv('/api/users', '/api/employees', '/api/attendance', '/api/tasks', '/api/invoices'); return r; }),
+  checkUserDeleteEligibility: (id) => req('GET', `/api/users/${id}/delete-eligibility`),
   // Safe minimal user fields
   getUsersBasic: () => req('GET', '/api/users/basic'),
   // Public reference data is fetched through our Worker
@@ -302,6 +303,12 @@ export const api = {
   // Lifecycle status
   changeLifecycleStatus: (id, status, reason) =>
     req('PUT', `/api/users/${id}/lifecycle`, { status, reason }).then(r => { inv('/api/users'); return r; }),
+
+  // Departments
+  getDepartments: () => req('GET', '/api/departments'),
+  createDepartment: (d) => req('POST', '/api/departments', d).then(r => { inv('/api/departments', '/api/users'); return r; }),
+  updateDepartment: (id, d) => req('PUT', `/api/departments/${id}`, d).then(r => { inv('/api/departments', '/api/users'); return r; }),
+  deleteDepartment: (id) => req('DELETE', `/api/departments/${id}`).then(r => { inv('/api/departments', '/api/users'); return r; }),
 
   // Asset handover
   getAssets: () => req('GET', '/api/assets'),
@@ -588,4 +595,14 @@ export const api = {
   deleteAnnouncement: (id) => req('DELETE', `/api/announcements/${id}`).then(r => { inv('/api/announcements'); return r; }),
   markAnnouncementRead: (id) => req('POST', `/api/announcements/${id}/read`).then(r => { inv('/api/announcements'); return r; }),
   markAllAnnouncementsRead: () => req('POST', '/api/announcements/read-all').then(r => { inv('/api/announcements'); return r; }),
+  uploadAnnouncementAttachment: (file) => uploadFile('/api/announcements/upload', file),
+
+  // Employee Decision Popups
+  getPendingPopups: () => req('GET', '/api/employee/popups/pending'),
+  dismissPopup: (id) => req('POST', `/api/employee/popups/${id}/dismiss`),
+
+  // Backups & Disaster Recovery
+  getBackups: () => req('GET', '/api/admin/backups'),
+  createBackup: () => req('POST', '/api/admin/backups/create'),
+  getBackupDownloadUrl: (key) => `/api/admin/backups/download?key=${encodeURIComponent(key)}&token=${encodeURIComponent(getToken() || '')}`,
 };

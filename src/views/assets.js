@@ -7,7 +7,7 @@
 // ════════════════════════════════════════════════
 import { api } from '../api.js';
 import { EventBus } from '../event-bus.js';
-import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, assetStatusBadge, lifecycleBadge, fmtDate, DEPARTMENTS, noop, safeCb, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js';
+import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, assetStatusBadge, lifecycleBadge, fmtDate, fmtDateInput, parseDateInput, DEPARTMENTS, noop, safeCb, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination } from '../utils.js';
 import { icon } from '../icons.js';
 
 // HCNS (Phòng HCNS) and Ban Giám Đốc are DEPARTMENTS (not roles).
@@ -123,7 +123,7 @@ function renderManageSection(assets) {
         <option value="handed_over">Đã bàn giao</option>
       </select></div>
     </div>
-    <div class="field"><label>Ngày dự kiến bàn giao (đến ngày)</label><input type="date" id="asset-f-date"/></div>
+    <div class="field"><label>Ngày dự kiến bàn giao (đến ngày) (dd/mm/yyyy)</label><input type="text" id="asset-f-date" placeholder="dd/mm/yyyy" inputmode="numeric"/></div>
     <div id="asset-all-list">${renderAssetList(assets, 'manage')}</div>
   `;
 }
@@ -147,7 +147,7 @@ function filterAssets(assets) {
   const empType = document.getElementById('asset-f-emptype')?.value || '';
   const assetType = document.getElementById('asset-f-type')?.value || '';
   const status = document.getElementById('asset-f-status')?.value || '';
-  const beforeDate = document.getElementById('asset-f-date')?.value || '';
+  const beforeDate = parseDateInput(document.getElementById('asset-f-date')?.value) || '';
   let list = filterBySearch(assets, search, ['owner_name', 'owner_code', 'asset_name', 'platform']);
   list = filterByDepartment(list, dept, ['owner_department']);
   if (empType) list = list.filter(a => (a.owner_employee_type || 'NV') === empType);
@@ -323,7 +323,7 @@ async function openAssetForm(asset, me, onRefresh = noop, opts = {}) {
         ${people.map(u => `<option value="${u.id}" ${asset?.mentor_id === u.id ? 'selected' : ''}>${esc(u.full_name)}</option>`).join('')}
       </select>
     </div>
-    <div class="field"><label>Ngày dự kiến bàn giao</label><input type="date" id="af-expdate" value="${esc(asset?.expected_handover_date || '')}"/></div>
+    <div class="field"><label>Ngày dự kiến bàn giao (dd/mm/yyyy)</label><input type="text" id="af-expdate" value="${esc(fmtDateInput(asset?.expected_handover_date))}" placeholder="dd/mm/yyyy" inputmode="numeric"/></div>
     <div class="field"><label>Trạng thái gửi</label><div class="detail-val">${asset?.status === 'needs_update' ? 'Cập nhật và gửi lại Mentor xác nhận' : 'Gửi Mentor xác nhận'}</div></div>
     <div class="field"><label>Ghi chú</label><textarea id="af-note" rows="3">${esc(asset?.note || '')}</textarea></div>
   `, `
@@ -355,7 +355,7 @@ async function openAssetForm(asset, me, onRefresh = noop, opts = {}) {
       mentor_name: mentorName,
       status: 'pending_review',
       note: document.getElementById('af-note').value.trim(),
-      expected_handover_date: document.getElementById('af-expdate').value || null,
+      expected_handover_date: parseDateInput(document.getElementById('af-expdate').value) || null,
     };
     if (cred) data.credential = cred;
     if (ownerId) data.user_id = parseInt(ownerId);

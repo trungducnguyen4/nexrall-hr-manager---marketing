@@ -1,15 +1,16 @@
 import { api } from '../api.js';
 import { EventBus } from '../event-bus.js';
 import {
-  esc, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtMoney, fmtDate,
+  esc, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtMoney, fmtDate, fmtDateInput,
   fmtDateTime, initials, avatarColor, lifecycleBadge, LIFECYCLE_STATUSES, safeCb, isHcnsDepartment,
+  parseDateInput,
 } from '../utils.js?v=20260811-hr-access-v1';
 import { icon } from '../icons.js';
 import { navigate, invalidateView } from '../app.js';
 
 const FIELD_LABELS = {
   full_name: 'Họ và tên', email: 'Email', phone: 'Số điện thoại', birth_date: 'Ngày sinh',
-  gender: 'Giới tính', national_id: 'Số CCCD', national_id_expiry_date: 'Hạn CCCD',
+  gender: 'Giới tính', national_id: 'Số CCCD', national_id_issue_date: 'Ngày cấp CCCD', national_id_expiry_date: 'Hạn CCCD',
   home_address: 'Địa chỉ liên hệ', school_name: 'Trường học',
   emergency_contact_name: 'Người liên hệ khẩn cấp', emergency_contact_phone: 'SĐT khẩn cấp',
   employee_type: 'Loại nhân sự', position: 'Vị trí', department: 'Phòng ban',
@@ -26,8 +27,8 @@ const FIELD_LABELS = {
 };
 
 const REQUIRED_PROFILE_FIELDS = [
-  'full_name', 'email', 'phone', 'birth_date', 'national_id', 'home_address',
-  'position', 'department', 'direct_manager_id', 'work_location', 'contract_type', 'hire_date',
+  'full_name', 'email', 'phone', 'birth_date', 'national_id', 'national_id_issue_date', 'home_address',
+  'position', 'department', 'direct_manager_id', 'work_location', 'contract_type',
 ];
 
 const TAB_ITEMS = [
@@ -198,6 +199,7 @@ async function renderEmployeeDirectory(el, me) {
           </div>
         </div>
         <div class="employee-header-actions">
+          ${isHr(me) ? `<button class="btn-secondary btn-sm" id="employee-manage-depts">${icon('building2', 'sm')} <span>Phòng ban</span></button>` : ''}
           ${isHr(me) ? `<button class="btn-secondary btn-sm" id="employee-export">${icon('arrowDown', 'sm')} <span>Xuất Excel</span></button>` : ''}
           ${isHr(me) ? `<button class="btn-primary btn-sm" id="employee-create">${icon('plus', 'sm')} <span>Thêm nhân viên</span></button>` : ''}
         </div>
@@ -349,6 +351,17 @@ async function renderEmployeeDirectory(el, me) {
       toast('Đã xuất danh sách nhân viên', 'success');
     } catch (error) { toast(error.message, 'error'); }
     finally { button.disabled = false; }
+  });
+  document.getElementById('employee-manage-depts')?.addEventListener('click', () => {
+    openManageDepartmentsModal(async () => {
+      try {
+        const deptRes = await api.getDepartments();
+        const deptNames = (deptRes.departments || []).map(d => d.name).filter(Boolean);
+        filterOptions.departments = deptNames;
+        syncFilterOptions();
+        loadDirectory();
+      } catch (_) {}
+    });
   });
   document.getElementById('employee-create')?.addEventListener('click', async () => {
     try {
@@ -505,6 +518,7 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
             'badgeCheck',
             `
               ${Object.prototype.hasOwnProperty.call(user, 'national_id') ? renderFieldCell('Số CCCD / CMND', user.national_id, { copyable: true }) : ''}
+              ${Object.prototype.hasOwnProperty.call(user, 'national_id_issue_date') ? renderFieldCell('Ngày cấp CCCD', user.national_id_issue_date, { formatter: fmtDate }) : ''}
               ${Object.prototype.hasOwnProperty.call(user, 'national_id_expiry_date') ? renderFieldCell('Hạn sử dụng CCCD', user.national_id_expiry_date, { formatter: fmtDate }) : ''}
             `,
             permissions.can_edit_personal ? 'employee-edit-personal-cccd' : null
@@ -562,8 +576,6 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
                     : '12 ngày / năm';
                 return renderFieldCell('Phép năm', leaveText, { highlight: isOfficial });
               })()}
-              ${renderFieldCell('Ngày vào làm việc', user.hire_date, { formatter: fmtDate })}
-              ${renderFieldCell('Ngày bắt đầu HĐ', user.contract_start_date, { formatter: fmtDate })}
               ${renderFieldCell('Ngày ký hợp đồng', user.contract_signed_date, { formatter: fmtDate })}
               ${renderFieldCell('Ngày hết hạn HĐ', user.contract_end_date, { formatter: fmtDate })}
               ${renderFieldCell('Kết thúc thử việc', user.probation_end_date, { formatter: fmtDate })}
@@ -674,6 +686,7 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
           ${renderFieldCell('Số điện thoại', user.phone)}
           ${renderFieldCell('Ngày sinh', user.birth_date, { formatter: fmtDate })}
           ${renderFieldCell('Số CCCD', user.national_id)}
+          ${renderFieldCell('Ngày cấp CCCD', user.national_id_issue_date, { formatter: fmtDate })}
           ${renderFieldCell('Hạn CCCD', user.national_id_expiry_date, { formatter: fmtDate })}
           ${renderFieldCell('Địa chỉ liên hệ', user.home_address, { fullWidth: true })}
           ${user.employee_type === 'TTS' ? renderFieldCell('Trường học', user.school_name) : ''}
@@ -684,7 +697,6 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
           ${renderFieldCell('Quản lý trực tiếp', managerName())}
           ${renderFieldCell('Địa điểm làm việc', user.work_location)}
           ${renderFieldCell('Loại hợp đồng', user.contract_type)}
-          ${renderFieldCell('Ngày vào làm', user.hire_date, { formatter: fmtDate })}
           ${renderFieldCell('Ngày hết hạn hợp đồng', user.contract_end_date, { formatter: fmtDate })}
           ${renderFieldCell('Ngày chính thức', user.official_date, { formatter: fmtDate })}
           ${user.lifecycle_status === 'Đã nghỉ' ? renderFieldCell('Ngày nghỉ việc', user.termination_date, { formatter: fmtDate }) : ''}
@@ -721,18 +733,72 @@ async function renderEmployeeProfile(el, me, employeeId, route = {}) {
     }
   });
   $('#employee-delete-account')?.addEventListener('click', async event => {
-    if (!confirm(`Bạn có chắc chắn muốn XÓA VĨNH VIỄN tài khoản của ${user.full_name} (${user.employee_code || ''})?\n\nHành động này sẽ xóa hồ sơ nhân viên và dữ liệu liên quan. Không thể hoàn tác!`)) return;
     const button = event.currentTarget;
+    const origHTML = button.innerHTML;
     button.disabled = true;
-    button.textContent = 'Đang xóa...';
+    button.innerHTML = `${icon('loader', 'sm')} <span>Đang kiểm tra...</span>`;
     try {
+      const eligibility = await api.checkUserDeleteEligibility(user.id).catch(() => ({ eligible: true }));
+      if (!eligibility.eligible) {
+        button.disabled = false;
+        button.innerHTML = origHTML;
+        openModal(
+          'Chưa thể xóa tài khoản',
+          `<div style="display:flex;flex-direction:column;gap:14px;padding:4px 0;">
+            <div style="display:flex;align-items:flex-start;gap:12px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:10px;padding:12px 14px;">
+              <span style="color:var(--danger);display:inline-flex;margin-top:2px;">${icon('triangleAlert', 'md')}</span>
+              <div>
+                <strong style="color:var(--danger);font-size:14px;display:block;margin-bottom:4px;">Ràng buộc xác nhận phiếu lương</strong>
+                <div style="font-size:13px;line-height:1.5;color:var(--text);">
+                  Tài khoản của <strong>${esc(user.full_name)}</strong> (${esc(user.employee_code || '')}) chưa đủ điều kiện để xóa.
+                </div>
+              </div>
+            </div>
+
+            <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.6;">
+              <div style="display:flex;justify-content:space-between;padding-bottom:6px;border-bottom:1px solid var(--border);margin-bottom:8px;">
+                <span style="color:var(--text-2);">Tháng làm việc đối chiếu:</span>
+                <strong>Tháng ${esc(eligibility.month_str || '--')}</strong>
+              </div>
+              <div style="display:flex;justify-content:space-between;padding-bottom:6px;border-bottom:1px solid var(--border);margin-bottom:8px;">
+                <span style="color:var(--text-2);">Tình trạng phiếu lương:</span>
+                <span style="color:${eligibility.has_invoice ? (eligibility.is_confirmed ? 'var(--success)' : 'var(--warning)') : 'var(--danger)'};font-weight:600;">
+                  ${eligibility.has_invoice ? (eligibility.is_confirmed ? 'Đã xác nhận' : 'Chờ nhân viên xác nhận') : 'Chưa lập phiếu lương'}
+                </span>
+              </div>
+              <div style="color:var(--text-2);font-size:12px;margin-top:6px;">
+                Chi tiết: <span style="color:var(--text);font-weight:500;">${esc(eligibility.reason || '')}</span>
+              </div>
+            </div>
+
+            <div style="font-size:12px;color:var(--text-2);line-height:1.5;background:rgba(99,102,241,0.06);border-radius:8px;padding:10px 12px;border:1px solid rgba(99,102,241,0.15);">
+              ℹ️ <strong>Chính sách minh bạch & bảo vệ quyền lợi người lao động:</strong><br>
+              Để bảo vệ quyền lợi nhân sự và chống quỵt lương sau nghỉ việc, nhân viên cần mở ứng dụng <strong>NetViet HR</strong>, vào mục <strong>Phiếu lương</strong> và bấm <strong>"Xác nhận phiếu lương"</strong> tháng làm việc cuối cùng thì hệ thống mới cho phép xóa tài khoản.
+            </div>
+          </div>`,
+          `<button type="button" class="btn-primary" id="modal-ack-btn">Đã hiểu</button>`
+        );
+        document.getElementById('modal-ack-btn')?.addEventListener('click', closeModal);
+        return;
+      }
+
+      button.disabled = false;
+      button.innerHTML = origHTML;
+      const noteExtra = eligibility.is_test_account 
+        ? '\n(Tài khoản chưa phát sinh ngày công và phiếu lương nào)' 
+        : `\n(Phiếu lương tháng ${eligibility.month_str} đã được nhân viên bấm xác nhận)`;
+
+      if (!confirm(`Bạn có chắc chắn muốn XÓA VĨNH VIỄN tài khoản của ${user.full_name} (${user.employee_code || ''})?${noteExtra}\n\nHành động này sẽ xóa hồ sơ nhân viên và dữ liệu liên quan. Không thể hoàn tác!`)) return;
+
+      button.disabled = true;
+      button.textContent = 'Đang xóa...';
       await api.deleteUser(user.id);
       toast(`Đã xóa tài khoản ${user.full_name}`, 'success');
       navigate('#/users');
     } catch (error) {
       toast(error.message || 'Không thể xóa tài khoản', 'error');
       button.disabled = false;
-      button.innerHTML = `${icon('trash2', 'sm')} <span>Xóa tài khoản</span>`;
+      button.innerHTML = origHTML;
     }
   });
 
@@ -848,15 +914,16 @@ function openProfileEditor(user, section, context, onSaved) {
   const field = (id, label, type = 'text', value = '', extra = '') => `
     <label class="field"><span>${esc(label)}</span><input id="${id}" type="${type}" value="${esc(value ?? '')}" ${extra}/><small class="field-error" data-error-for="${id}"></small></label>`;
   let body = '';
-  if (section === 'personal') {
+    if (section === 'personal') {
     body = `<div class="employee-edit-grid">
       ${field('ep-full-name','Họ và tên *','text',user.full_name,'required')}
       ${field('ep-email','Email *','email',user.email,'required')}
       ${field('ep-phone','Số điện thoại *','tel',user.phone,'required inputmode="tel"')}
-      ${field('ep-birth','Ngày sinh *','date',user.birth_date,'required')}
+      ${field('ep-birth','Ngày sinh (dd/mm/yyyy) *','text',fmtDateInput(user.birth_date),'required placeholder="dd/mm/yyyy" inputmode="numeric"')}
       <label class="field"><span>Giới tính</span><select id="ep-gender"><option value="">Chọn</option>${['Nam','Nữ','Khác'].map(value => `<option ${user.gender === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
       ${field('ep-national-id','Số CCCD *','text',user.national_id,'required inputmode="numeric"')}
-      ${field('ep-national-expiry','Hạn CCCD','date',user.national_id_expiry_date)}
+      ${field('ep-national-issue','Ngày cấp CCCD (dd/mm/yyyy) *','text',fmtDateInput(user.national_id_issue_date),'required placeholder="dd/mm/yyyy" inputmode="numeric"')}
+      ${field('ep-national-expiry','Hạn CCCD (dd/mm/yyyy)','text',fmtDateInput(user.national_id_expiry_date),'placeholder="dd/mm/yyyy" inputmode="numeric"')}
       ${field('ep-address','Địa chỉ liên hệ *','text',user.home_address,'required')}
       ${user.employee_type === 'TTS' ? field('ep-school','Trường học','text',user.school_name) : ''}
       ${field('ep-emergency-name','Người liên hệ khẩn cấp','text',user.emergency_contact_name)}
@@ -864,7 +931,7 @@ function openProfileEditor(user, section, context, onSaved) {
     </div>`;
   } else if (section === 'employment') {
     body = `<div class="employee-edit-grid">
-      ${permissions.can_edit_contract ? `<label class="field"><span>Loại nhân sự *</span><select id="ep-type"><option value="NV" ${user.employee_type !== 'TTS' ? 'selected' : ''}>Nhân viên</option><option value="TTS" ${user.employee_type === 'TTS' ? 'selected' : ''}>Thực tập sinh</option></select></label>` : ''}
+      ${permissions.can_edit_contract ? `<label class="field"><span>Loại hợp đồng *</span><select id="ep-contract-type" required><option value="">Chọn hợp đồng</option>${(metadata.contract_types || []).map(value => `<option value="${esc(value)}" ${user.contract_type === value ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select></label>` : ''}
       ${field('ep-position','Vị trí *','text',user.position,'required')}
       <label class="field"><span>Phòng ban *</span><select id="ep-department" required><option value="">Chọn phòng ban</option>${departmentNames.map(value => `<option value="${esc(value)}" ${user.department === value ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select></label>
       <label class="field"><span>Quản lý trực tiếp *</span><select id="ep-manager" required><option value="">Chọn quản lý</option>${basicUsers.filter(item => Number(item.id) !== Number(user.id)).map(item => `<option value="${item.id}" ${Number(user.direct_manager_id) === Number(item.id) ? 'selected' : ''}>${esc(item.full_name)} - ${esc(item.position || '')}</option>`).join('')}</select></label>
@@ -873,14 +940,12 @@ function openProfileEditor(user, section, context, onSaved) {
         <option value="HN" ${user.work_location === 'HN' ? 'selected' : ''}>HN</option>
         <option value="Phim trường Netviet" ${user.work_location === 'Phim trường Netviet' ? 'selected' : ''}>Phim trường Netviet</option>
       </select></label>
-      ${permissions.can_edit_contract ? `<label class="field"><span>Loại hợp đồng *</span><select id="ep-contract-type" required><option value="">Chọn hợp đồng</option>${(metadata.contract_types || []).map(value => `<option value="${esc(value)}" ${user.contract_type === value ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select></label>
-      ${field('ep-hire-date','Ngày vào làm *','date',user.hire_date,'required')}
-      ${field('ep-contract-start','Ngày bắt đầu hợp đồng','date',user.contract_start_date)}
-      ${field('ep-contract-signed','Ngày ký hợp đồng','date',user.contract_signed_date)}
-      ${field('ep-contract-end','Ngày hết hạn hợp đồng','date',user.contract_end_date)}
-      ${field('ep-probation-end','Ngày kết thúc thử việc','date',user.probation_end_date)}
-      ${field('ep-official-date','Ngày chính thức','date',user.official_date)}
-      ${user.lifecycle_status === 'Đã nghỉ' ? field('ep-termination-date','Ngày nghỉ việc','date',user.termination_date) : ''}` : ''}
+      ${permissions.can_edit_contract ? `
+      ${field('ep-contract-signed','Ngày ký hợp đồng (dd/mm/yyyy)','text',fmtDateInput(user.contract_signed_date),'placeholder="dd/mm/yyyy" inputmode="numeric"')}
+      ${field('ep-contract-end','Ngày hết hạn hợp đồng (dd/mm/yyyy)','text',fmtDateInput(user.contract_end_date),'placeholder="dd/mm/yyyy" inputmode="numeric"')}
+      ${field('ep-probation-end','Ngày kết thúc thử việc (dd/mm/yyyy)','text',fmtDateInput(user.probation_end_date),'placeholder="dd/mm/yyyy" inputmode="numeric"')}
+      ${field('ep-official-date','Ngày chính thức (dd/mm/yyyy)','text',fmtDateInput(user.official_date),'placeholder="dd/mm/yyyy" inputmode="numeric"')}
+      ${user.lifecycle_status === 'Đã nghỉ' ? field('ep-termination-date','Ngày nghỉ việc (dd/mm/yyyy)','text',fmtDateInput(user.termination_date),'placeholder="dd/mm/yyyy" inputmode="numeric"') : ''}` : ''}
     </div>`;
   } else {
     body = `<div class="employee-edit-grid">
@@ -906,22 +971,30 @@ function openProfileEditor(user, section, context, onSaved) {
     let data;
     if (section === 'personal') data = {
       full_name: value('ep-full-name'), email: value('ep-email'), phone: value('ep-phone'),
-      birth_date: value('ep-birth'), gender: value('ep-gender'), national_id: value('ep-national-id'),
-      national_id_expiry_date: value('ep-national-expiry'), home_address: value('ep-address'),
+      birth_date: parseDateInput(value('ep-birth')), gender: value('ep-gender'), national_id: value('ep-national-id'),
+      national_id_issue_date: parseDateInput(value('ep-national-issue')),
+      national_id_expiry_date: parseDateInput(value('ep-national-expiry')), home_address: value('ep-address'),
       school_name: value('ep-school'), emergency_contact_name: value('ep-emergency-name'),
       emergency_contact_phone: value('ep-emergency-phone'),
     };
-    else if (section === 'employment') data = {
-      ...(permissions.can_edit_contract ? { employee_type: value('ep-type') } : {}),
-      position: value('ep-position'), department: value('ep-department'),
-      direct_manager_id: value('ep-manager') || null, work_location: value('ep-location'),
-      ...(permissions.can_edit_contract ? {
-        contract_type: value('ep-contract-type'), hire_date: value('ep-hire-date'),
-        contract_start_date: value('ep-contract-start'), contract_signed_date: value('ep-contract-signed'),
-        contract_end_date: value('ep-contract-end'), probation_end_date: value('ep-probation-end'),
-        official_date: value('ep-official-date'), termination_date: value('ep-termination-date'),
-      } : {}),
-    };
+    else if (section === 'employment') {
+      const contractType = value('ep-contract-type');
+      const ctLower = (contractType || '').toLowerCase();
+      const derivedType = (ctLower.includes('thực tập') || ctLower.includes('tts')) ? 'TTS' : 'NV';
+      data = {
+        position: value('ep-position'), department: value('ep-department'),
+        direct_manager_id: value('ep-manager') || null, work_location: value('ep-location'),
+        ...(permissions.can_edit_contract ? {
+          employee_type: derivedType,
+          contract_type: contractType,
+          contract_signed_date: parseDateInput(value('ep-contract-signed')),
+          contract_end_date: parseDateInput(value('ep-contract-end')),
+          probation_end_date: parseDateInput(value('ep-probation-end')),
+          official_date: parseDateInput(value('ep-official-date')),
+          termination_date: parseDateInput(value('ep-termination-date')),
+        } : {}),
+      };
+    }
     else data = {
       salary: Number(value('ep-salary') || 0), allowance: Number(value('ep-allowance') || 0),
       insurance_salary: Number(value('ep-insurance-salary') || 0), dependent_count: Number(value('ep-dependent-count') || 0),
@@ -955,7 +1028,7 @@ function openDocumentUpload(user, categories, onSaved) {
     <div class="employee-edit-grid">
       <label class="field"><span>Danh mục *</span><select id="document-category" required><option value="">Chọn danh mục</option>${categoryOptions}</select></label>
       <label class="field"><span>Tên hiển thị</span><input id="document-title" type="text" maxlength="160"/></label>
-      <label class="field"><span>Ngày hết hạn</span><input id="document-expiry" type="date"/></label>
+      <label class="field"><span>Ngày hết hạn (dd/mm/yyyy)</span><input id="document-expiry" type="text" placeholder="dd/mm/yyyy" inputmode="numeric"/></label>
       <label class="field employee-file-field"><span>Tệp *</span><input id="document-file" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" required/><small>PDF, JPG, PNG hoặc WebP, tối đa 10 MB.</small></label>
     </div>`, `<button class="btn-secondary" id="document-cancel">Hủy</button><button class="btn-primary" id="document-save">Tải lên</button>`);
   document.getElementById('document-cancel')?.addEventListener('click', closeModal);
@@ -970,7 +1043,7 @@ function openDocumentUpload(user, categories, onSaved) {
       await api.uploadEmployeeDocument(user.id, {
         category,
         title: document.getElementById('document-title').value.trim(),
-        expires_on: document.getElementById('document-expiry').value,
+        expires_on: parseDateInput(document.getElementById('document-expiry').value),
       }, file);
       unsavedGuard.commit();
       closeModal();
@@ -1061,6 +1134,159 @@ function openAvatarEditor(user, onSaved) {
       close(); toast('Đã cập nhật ảnh đại diện', 'success'); onSaved();
     } catch (error) { toast(error.message, 'error'); event.currentTarget.disabled = false; event.currentTarget.textContent = 'Lưu ảnh'; }
   });
+}
+
+async function openManageDepartmentsModal(onUpdated) {
+  let depts = [];
+  try {
+    const res = await api.getDepartments();
+    depts = res.departments || [];
+  } catch (err) {
+    toast(err.message || 'Không thể tải danh sách phòng ban', 'error');
+    return;
+  }
+
+  function renderModalContent() {
+    return `
+      <div class="dept-manager-wrap" style="display:flex;flex-direction:column;gap:18px;">
+        <div style="background:var(--surface-2, #F8FAFC);border:1px solid var(--border, #E2E8F0);border-radius:12px;padding:14px;">
+          <h4 style="font-size:13px;font-weight:700;margin-bottom:8px;color:var(--text);">+ Thêm phòng ban mới</h4>
+          <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:flex-end;">
+            <div class="field" style="margin-bottom:0;">
+              <label style="font-size:11.5px;font-weight:600;margin-bottom:4px;display:block;">Tên phòng ban <span style="color:var(--danger);">*</span></label>
+              <input id="new-dept-name" type="text" placeholder="Ví dụ: Phòng Kỹ Thuật" style="height:38px;font-size:13px;" />
+            </div>
+            <div class="field" style="margin-bottom:0;">
+              <label style="font-size:11.5px;font-weight:600;margin-bottom:4px;display:block;">Mô tả</label>
+              <input id="new-dept-desc" type="text" placeholder="Mô tả chức năng..." style="height:38px;font-size:13px;" />
+            </div>
+            <button class="btn-primary" id="btn-submit-new-dept" style="height:38px;padding:0 16px;white-space:nowrap;">
+              ${icon('plus', 'sm')} <span>Thêm</span>
+            </button>
+          </div>
+          <div id="new-dept-error" style="color:var(--danger);font-size:12px;font-weight:600;margin-top:6px;min-height:16px;"></div>
+        </div>
+
+        <div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+            <h4 style="font-size:13px;font-weight:700;color:var(--text);">Danh sách phòng ban hiện tại (${depts.length})</h4>
+          </div>
+          <div class="dept-list-table-wrap" style="max-height:360px;overflow-y:auto;border:1px solid var(--border, #E2E8F0);border-radius:10px;">
+            <table style="width:100%;border-collapse:collapse;font-size:13px;">
+              <thead>
+                <tr style="background:var(--surface-2, #F8FAFC);border-bottom:1px solid var(--border, #E2E8F0);text-align:left;">
+                  <th style="padding:10px 12px;font-weight:600;color:var(--text-2);">Tên phòng ban</th>
+                  <th style="padding:10px 12px;font-weight:600;color:var(--text-2);">Mô tả</th>
+                  <th style="padding:10px 12px;font-weight:600;color:var(--text-2);text-align:center;">Nhân sự</th>
+                  <th style="padding:10px 12px;font-weight:600;color:var(--text-2);text-align:right;">Hành động</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${depts.length ? depts.map(d => {
+                  const count = d.employee_count || 0;
+                  return `
+                    <tr style="border-bottom:1px solid var(--border, #E2E8F0);">
+                      <td style="padding:10px 12px;font-weight:600;color:var(--text);">${esc(d.name)}</td>
+                      <td style="padding:10px 12px;color:var(--text-2);font-size:12px;">${esc(d.description || '—')}</td>
+                      <td style="padding:10px 12px;text-align:center;">
+                        <span class="badge ${count > 0 ? 'badge-primary' : 'badge-gray'}" style="font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600;">
+                          ${count} nhân sự
+                        </span>
+                      </td>
+                      <td style="padding:10px 12px;text-align:right;">
+                        ${count > 0 
+                          ? `<span title="Đang có ${count} nhân sự trực thuộc, không thể xóa" style="opacity:0.3;cursor:not-allowed;display:inline-flex;padding:6px;color:var(--text-3);">${icon('trash2', 'sm')}</span>` 
+                          : `<button class="btn-icon btn-sm dept-delete-btn" data-id="${d.id}" data-name="${esc(d.name)}" title="Xóa phòng ban" style="color:var(--danger);border-color:transparent;background:none;cursor:pointer;padding:6px;">${icon('trash2', 'sm')}</button>`
+                        }
+                      </td>
+                    </tr>
+                  `;
+                }).join('') : `
+                  <tr><td colspan="4" style="padding:20px;text-align:center;color:var(--text-3);">Chưa có phòng ban nào</td></tr>
+                `}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function bindModalEvents() {
+    const submitBtn = document.getElementById('btn-submit-new-dept');
+    const nameInput = document.getElementById('new-dept-name');
+    const descInput = document.getElementById('new-dept-desc');
+    const errorEl = document.getElementById('new-dept-error');
+
+    nameInput?.focus();
+
+    submitBtn?.addEventListener('click', async () => {
+      const name = (nameInput?.value || '').trim();
+      const desc = (descInput?.value || '').trim();
+      if (!name) {
+        if (errorEl) errorEl.textContent = 'Vui lòng nhập tên phòng ban';
+        nameInput?.focus();
+        return;
+      }
+      if (errorEl) errorEl.textContent = '';
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Đang thêm...';
+      try {
+        await api.createDepartment({ name, description: desc });
+        toast(`Đã thêm phòng ban "${name}" thành công!`, 'success');
+        const res = await api.getDepartments();
+        depts = res.departments || [];
+        const bodyEl = document.querySelector('#modal .modal-body') || document.querySelector('.modal-body') || document.getElementById('modal');
+        if (bodyEl) {
+          const wrap = bodyEl.querySelector('.dept-manager-wrap');
+          if (wrap) {
+            wrap.outerHTML = renderModalContent();
+            bindModalEvents();
+          }
+        }
+        if (onUpdated) onUpdated();
+      } catch (err) {
+        if (errorEl) errorEl.textContent = err.message || 'Lỗi khi thêm phòng ban';
+        toast(err.message || 'Lỗi khi thêm phòng ban', 'error');
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = `${icon('plus', 'sm')} <span>Thêm</span>`;
+      }
+    });
+
+    document.querySelectorAll('.dept-delete-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.id;
+        const name = btn.dataset.name;
+        if (!confirm(`Bạn có chắc chắn muốn xóa phòng ban "${name}"?`)) return;
+        btn.disabled = true;
+        try {
+          await api.deleteDepartment(id);
+          toast(`Đã xóa phòng ban "${name}" thành công!`, 'success');
+          const res = await api.getDepartments();
+          depts = res.departments || [];
+          const bodyEl = document.querySelector('#modal .modal-body') || document.querySelector('.modal-body') || document.getElementById('modal');
+          if (bodyEl) {
+            const wrap = bodyEl.querySelector('.dept-manager-wrap');
+            if (wrap) {
+              wrap.outerHTML = renderModalContent();
+              bindModalEvents();
+            }
+          }
+          if (onUpdated) onUpdated();
+        } catch (err) {
+          toast(err.message || 'Lỗi khi xóa phòng ban', 'error');
+          btn.disabled = false;
+        }
+      });
+    });
+  }
+
+  openModal('Quản lý phòng ban', renderModalContent(), `
+    <button class="btn-secondary" id="dept-modal-close">Đóng</button>
+  `);
+  document.getElementById('modal')?.classList.add('modal--dept-manager');
+  document.getElementById('dept-modal-close')?.addEventListener('click', closeModal);
+  bindModalEvents();
 }
 
 function openCreateEmployee(users, departments, onSaved) {

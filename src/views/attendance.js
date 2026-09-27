@@ -19,9 +19,22 @@ function formatAttendanceNote(note) {
 }
 
 export async function renderAttendance(el, me, route = {}) {
+  const isDirectorHau = (u) => {
+    if (!u) return false;
+    if (u.role === 'admin') return true;
+    const code = String(u.employee_code || '').trim().toUpperCase();
+    if (code === 'HAUNV') return true;
+    const email = String(u.email || '').toLowerCase().trim();
+    if (email.startsWith('haunv@')) return true;
+    const dept = String(u.department || '').toLowerCase();
+    const pos = String(u.position || '').toLowerCase();
+    return dept.includes('ban giám đốc') && (pos.includes('tổng giám đốc') || pos.includes('ceo') || pos.includes('giám đốc'));
+  };
+  const isHau = isDirectorHau(me);
+  const isHcns = isHcnsDepartment(me.department) || me.role === 'admin';
   const isManager = me.role === 'admin' || me.role === 'manager';
-  const canManageAttendance = isManager || isHcnsDepartment(me.department);
-  const canImportHistorical = me.role === 'admin' || isHcnsDepartment(me.department);
+  const canManageAttendance = isManager || isHcns || isHau;
+  const canImportHistorical = isHcns;
   const routeEmployeeId = /^\d+$/.test(String(route.segments?.[1] || '')) ? Number(route.segments[1]) : null;
   const routeDate = /^\d{4}-\d{2}-\d{2}$/.test(String(route.segments?.[2] || route.segments?.[1] || '')) ? String(route.segments[2] || route.segments[1]) : '';
   const closingMonth = attendanceClosingMonth();
@@ -176,17 +189,18 @@ export async function renderAttendance(el, me, route = {}) {
       <div class="card-header">
         <div class="card-title">${icon('home', 'sm')} <span>Yêu cầu duyệt WFH</span></div>
         <select id="wfh-status-filter" class="btn-secondary btn-sm">
-          <option value="pending">Chờ duyệt</option>
+          <option value="">Tất cả trạng thái</option>
+          <option value="pending">Chờ duyệt B1 (HCNS)</option>
+          <option value="pending_director">Chờ duyệt B2 (Anh Hậu)</option>
           <option value="approved">Đã duyệt</option>
           <option value="rejected">Đã từ chối</option>
-          <option value="">Tất cả</option>
         </select>
       </div>
       <div id="wfh-request-list">${loadingHTML()}</div>
     </div>` : ''}
 
     ${canManageAttendance ? `<div class="card" style="margin:14px 0;">
-      <div class="card-header"><div class="card-title">${icon('clock3', 'sm')} <span>Yêu cầu làm thêm giờ</span></div><select id="ot-status-filter" class="btn-secondary btn-sm"><option value="pending">Chờ duyệt</option><option value="approved">Đã duyệt</option><option value="rejected">Đã từ chối</option><option value="">Tất cả</option></select></div>
+      <div class="card-header"><div class="card-title">${icon('clock3', 'sm')} <span>Yêu cầu làm thêm giờ</span></div><select id="ot-status-filter" class="btn-secondary btn-sm"><option value="">Tất cả trạng thái</option><option value="pending">Chờ duyệt B1 (HCNS)</option><option value="pending_director">Chờ duyệt B2 (Anh Hậu)</option><option value="approved">Đã duyệt</option><option value="rejected">Đã từ chối</option></select></div>
       <div id="ot-request-list">${loadingHTML()}</div>
     </div>` : ''}
   `;
@@ -646,8 +660,11 @@ document.getElementById('btn-register').addEventListener('click', async () => {
   let overtimeForms = [];
 
   const formStatus = status => ({
-    draft: '<span class="badge badge-gray">Nháp</span>', pending: '<span class="badge badge-warning">Chờ duyệt</span>',
-    approved: '<span class="badge badge-success">Đã duyệt</span>', partially_approved: '<span class="badge badge-info">Duyệt một phần</span>',
+    draft: '<span class="badge badge-gray">Nháp</span>',
+    pending: '<span class="badge badge-step1">Chờ HCNS duyệt (B1)</span>',
+    pending_director: '<span class="badge badge-step2">Chờ anh Hậu duyệt (B2)</span>',
+    approved: '<span class="badge badge-success">Đã duyệt</span>',
+    partially_approved: '<span class="badge badge-info">Duyệt một phần</span>',
     rejected: '<span class="badge badge-danger">Từ chối</span>',
   }[status] || esc(status));
 
@@ -668,9 +685,34 @@ document.getElementById('btn-register').addEventListener('click', async () => {
           </div>
         `).join('<hr style="border:0;border-top:1px solid var(--border);margin:7px 0">');
         const minutes = `${(Number(form.requested_minutes || 0) / 60).toFixed(2)}h${form.status !== 'draft' ? ` / ${(Number(form.approved_minutes || 0) / 60).toFixed(2)}h` : ''}`;
-        const canDecide = canManageAttendance && form.status === 'pending';
+        const isPendingB1 = form.status === 'pending';
+        const isPendingB2 = form.status === 'pending_director';
         const canSubmit = Number(form.user_id) === Number(me.id) && form.status === 'draft';
-        return `<tr><td><b>${esc(form.full_name)}</b><br><small style="color:var(--text-2);font-size:11.5px;">${esc(form.employee_code || '')}</small></td><td>${detail}</td><td><strong>${minutes}</strong></td><td>${formStatus(form.status)}${form.review_note ? `<br><small style="color:var(--text-2);">${esc(form.review_note)}</small>` : ''}</td><td>${canDecide ? `<button class="btn-secondary btn-sm ot-form-decide" data-id="${form.id}">Duyệt</button>` : ''}${canSubmit ? `<button class="btn-primary btn-sm ot-form-submit" data-id="${form.id}">Gửi</button>` : ''}${form.reviewer_name ? `<small style="color:var(--text-2);display:block;margin-top:2px;">${esc(form.reviewer_name)}</small>` : ''}</td></tr>`;
+        
+        let actionButtons = '';
+        if (isPendingB1) {
+          if (isHau) {
+            actionButtons = `<button class="btn-primary btn-sm ot-form-decide" data-id="${form.id}" data-step="director" title="Duyệt thẳng (TGĐ)">Duyệt chốt</button>`;
+          } else if (canManageAttendance) {
+            actionButtons = `<button class="btn-secondary btn-sm ot-form-decide" data-id="${form.id}" data-step="step1" title="Duyệt Bước 1">Duyệt B1</button>`;
+          }
+        } else if (isPendingB2) {
+          if (isHau) {
+            actionButtons = `<button class="btn-primary btn-sm ot-form-decide" data-id="${form.id}" data-step="director" title="Phê duyệt cuối cùng">Duyệt B2 (Chốt)</button>`;
+          } else {
+            actionButtons = `<span style="color:var(--text-3);font-size:12px;">Chờ anh Hậu duyệt</span>`;
+          }
+        }
+        if (canSubmit) {
+          actionButtons += `${actionButtons ? ' ' : ''}<button class="btn-primary btn-sm ot-form-submit" data-id="${form.id}">Gửi</button>`;
+        }
+        if (form.reviewer_name) {
+          actionButtons += `<small style="color:var(--text-2);display:block;margin-top:2px;">Duyệt: ${esc(form.reviewer_name)}</small>`;
+        } else if (form.step1_reviewer_name) {
+          actionButtons += `<small style="color:var(--text-2);display:block;margin-top:2px;">B1: ${esc(form.step1_reviewer_name)}</small>`;
+        }
+
+        return `<tr><td><b>${esc(form.full_name)}</b><br><small style="color:var(--text-2);font-size:11.5px;">${esc(form.employee_code || '')}</small></td><td>${detail}</td><td><strong>${minutes}</strong></td><td>${formStatus(form.status)}${form.review_note ? `<br><small style="color:var(--text-2);">${esc(form.review_note)}</small>` : ''}</td><td>${actionButtons || '—'}</td></tr>`;
       }).join('')}</tbody></table></div>${paginationHTML(pageData)}` : emptyHTML('fileText', 'Chưa có form làm thêm giờ trong kỳ này');
       bindPagination(list, page => { otFormPage = page; loadOvertimeForms(); });
       list.querySelectorAll('.ot-form-decide').forEach(button => button.addEventListener('click', () => openOvertimeFormDecision(Number(button.dataset.id))));
@@ -718,14 +760,28 @@ document.getElementById('btn-register').addEventListener('click', async () => {
   function openOvertimeFormDecision(formId) {
     const form = overtimeForms.find(item => Number(item.id) === Number(formId));
     if (!form) return;
+    const isPendingB1 = form.status === 'pending';
+    const isFinalStep = form.status === 'pending_director' || isHau;
+    const modalTitle = isFinalStep ? 'Phê duyệt cuối cùng (Phó Tổng Giám Đốc) - Form OT' : 'Duyệt Bước 1 (HCNS) - Form OT';
+    const approveBtnLabel = isFinalStep ? 'Phê duyệt chốt' : 'Duyệt Bước 1';
+
     const rows = form.items.map(item => `<tr><td>${esc(item.start_at.replace('T', ' '))}<br>${esc(item.end_at.replace('T', ' '))}</td><td>${esc(item.reason)}</td><td>${Number(item.requested_minutes)} phút</td><td><input class="ot-form-approved" data-id="${item.id}" type="number" min="0" max="${item.requested_minutes}" value="${item.requested_minutes}"/></td></tr>`).join('');
-    openModal('Duyệt form làm thêm giờ', `<div class="table-wrap"><table><thead><tr><th>Thời gian</th><th>Lý do</th><th>Đề nghị</th><th>Duyệt phút</th></tr></thead><tbody>${rows}</tbody></table></div><div class="field"><label>Ghi chú duyệt/từ chối</label><textarea id="ot-form-review-note" rows="3"></textarea></div>`, '<button class="btn-danger" id="ot-form-reject">Từ chối</button><button class="btn-primary" id="ot-form-approve">Duyệt</button>');
+    openModal(modalTitle, `<div class="table-wrap"><table><thead><tr><th>Thời gian</th><th>Lý do</th><th>Đề nghị</th><th>Duyệt phút</th></tr></thead><tbody>${rows}</tbody></table></div><div class="field"><label>Ghi chú duyệt/từ chối</label><textarea id="ot-form-review-note" rows="3"></textarea></div>`, `<button class="btn-danger" id="ot-form-reject">Từ chối</button><button class="btn-primary" id="ot-form-approve">${approveBtnLabel}</button>`);
     const decide = async action => {
       const review_note = document.getElementById('ot-form-review-note').value.trim();
       if (action === 'reject' && !review_note) { toast('Vui lòng nhập lý do từ chối', 'error'); return; }
       const items = [...document.querySelectorAll('.ot-form-approved')].map(input => ({ id: Number(input.dataset.id), approved_minutes: Number(input.value) }));
-      try { await api.decideOvertimeForm(form.id, { action, review_note, items }); closeModal(); toast(action === 'approve' ? 'Đã duyệt form OT' : 'Đã từ chối form OT', 'success'); loadOvertimeForms(); loadHistory(); }
-      catch (error) { toast(error.message, 'error'); }
+      try {
+        const res = await api.decideOvertimeForm(form.id, { action, review_note, items });
+        closeModal();
+        if (res.final === false) {
+          toast('Đã duyệt bước 1 (HCNS), chuyển tiếp tới anh Hậu duyệt chốt', 'success');
+        } else {
+          toast(action === 'approve' ? 'Đã phê duyệt hoàn tất form OT' : 'Đã từ chối form OT', 'success');
+        }
+        loadOvertimeForms();
+        loadHistory();
+      } catch (error) { toast(error.message, 'error'); }
     };
     document.getElementById('ot-form-approve').onclick = () => decide('approve');
     document.getElementById('ot-form-reject').onclick = () => decide('reject');
@@ -909,18 +965,43 @@ document.getElementById('btn-register').addEventListener('click', async () => {
                 const proofHtml = r.wfh_proof_url
                   ? `<button type="button" class="btn-secondary btn-xs btn-wfh-table-proof" data-url="${esc(r.wfh_proof_url)}" data-filename="${esc(r.wfh_proof_filename || 'Minh chứng')}" style="display:inline-flex;align-items:center;gap:4px;">${icon('paperclip', 'xs')} <span>Xem minh chứng</span></button>`
                   : '<span style="color:var(--text-3);font-size:12px;">Không có</span>';
-                const statusBadgeHtml = r.wfh_status === 'pending'
-                  ? '<span class="badge badge-warning">Chờ duyệt</span>'
-                  : r.wfh_status === 'approved'
-                    ? `<span class="badge badge-success">Đã duyệt</span>${r.wfh_reviewer_name ? `<br><small style="color:var(--text-2);">${esc(r.wfh_reviewer_name)}</small>` : ''}`
-                    : `<span class="badge badge-danger">Từ chối</span>${r.wfh_review_note ? `<br><small style="color:var(--danger)">Lý do: ${esc(r.wfh_review_note)}</small>` : ''}`;
-                const actionHtml = r.wfh_status === 'pending'
-                  ? `<button class="btn-secondary btn-sm wfh-decide" data-id="${r.id}" data-action="approve">Duyệt</button> <button class="btn-danger btn-sm wfh-decide" data-id="${r.id}" data-action="reject">Từ chối</button>`
-                  : `<button class="btn-secondary btn-xs wfh-decide" data-id="${r.id}" data-action="${r.wfh_status === 'approved' ? 'reject' : 'approve'}" title="Đổi quyết định">${r.wfh_status === 'approved' ? 'Hủy duyệt' : 'Duyệt lại'}</button>`;
+                
+                let statusBadgeHtml = '';
+                if (r.wfh_status === 'pending') {
+                  statusBadgeHtml = '<span class="badge badge-step1">Chờ duyệt B1 (HCNS)</span>';
+                } else if (r.wfh_status === 'pending_director') {
+                  statusBadgeHtml = `<span class="badge badge-step2">Chờ anh Hậu duyệt (B2)</span>${r.wfh_step1_reviewer_name ? `<br><small style="color:var(--text-2);font-size:11px;">B1: ${esc(r.wfh_step1_reviewer_name)}</small>` : ''}`;
+                } else if (r.wfh_status === 'approved') {
+                  statusBadgeHtml = `<span class="badge badge-success">Đã duyệt</span>${r.wfh_reviewer_name ? `<br><small style="color:var(--text-2);font-size:11px;">${esc(r.wfh_reviewer_name)}</small>` : ''}`;
+                } else {
+                  statusBadgeHtml = `<span class="badge badge-danger">Từ chối</span>${r.wfh_review_note ? `<br><small style="color:var(--danger);font-size:11px;">Lý do: ${esc(r.wfh_review_note)}</small>` : ''}`;
+                }
+
+                let actionHtml = '';
+                if (r.wfh_status === 'pending') {
+                  if (isHau) {
+                    actionHtml = `<button class="btn-primary btn-sm wfh-decide" data-id="${r.id}" data-status="pending" data-action="approve">Duyệt chốt</button> <button class="btn-danger btn-sm wfh-decide" data-id="${r.id}" data-status="pending" data-action="reject">Từ chối</button>`;
+                  } else {
+                    actionHtml = `<button class="btn-secondary btn-sm wfh-decide" data-id="${r.id}" data-status="pending" data-action="approve">Duyệt B1</button> <button class="btn-danger btn-sm wfh-decide" data-id="${r.id}" data-status="pending" data-action="reject">Từ chối</button>`;
+                  }
+                } else if (r.wfh_status === 'pending_director') {
+                  if (isHau) {
+                    actionHtml = `<button class="btn-primary btn-sm wfh-decide" data-id="${r.id}" data-status="pending_director" data-action="approve">Duyệt B2 (Chốt)</button> <button class="btn-danger btn-sm wfh-decide" data-id="${r.id}" data-status="pending_director" data-action="reject">Từ chối</button>`;
+                  } else {
+                    actionHtml = `<span style="color:var(--text-3);font-size:12px;">Chờ anh Hậu duyệt</span> <button class="btn-danger btn-xs wfh-decide" data-id="${r.id}" data-status="pending_director" data-action="reject" title="Từ chối">Từ chối</button>`;
+                  }
+                } else {
+                  if (isHau || me.role === 'admin') {
+                    actionHtml = `<button class="btn-secondary btn-xs wfh-decide" data-id="${r.id}" data-status="${r.wfh_status}" data-action="${r.wfh_status === 'approved' ? 'reject' : 'approve'}" title="Đổi quyết định">${r.wfh_status === 'approved' ? 'Hủy duyệt' : 'Duyệt lại'}</button>`;
+                  } else {
+                    actionHtml = `<span style="color:var(--text-3);font-size:12px;">—</span>`;
+                  }
+                }
+
                 return `
                   <tr>
                     <td><b>${esc(r.full_name)}</b><br><small style="color:var(--text-2);font-size:11.5px;">${esc(r.employee_code || '')} · ${esc(r.department || '')}</small></td>
-                    <td style="white-space:nowrap;"><b>${esc(r.date)}</b><br><small style="color:var(--text-2);">${esc(shiftText)}</small></td>
+                    <td style="white-space:nowrap;"><b>${esc(fmtDate(r.date))}</b><br><small style="color:var(--text-2);">${esc(shiftText)}</small></td>
                     <td style="white-space:nowrap;">${inOutText}</td>
                     <td><strong>${hoursText}</strong></td>
                     <td style="max-width:240px;word-break:break-word;">${esc(r.wfh_reason || '—')}</td>
@@ -947,15 +1028,22 @@ document.getElementById('btn-register').addEventListener('click', async () => {
 
   function openWfhDecision(data) {
     const approving = data.action === 'approve';
+    const isStep1 = data.status === 'pending' && !isHau;
+    const title = approving
+      ? (isStep1 ? 'Duyệt bước 1 (HCNS) yêu cầu WFH' : 'Duyệt chốt (Anh Hậu) yêu cầu WFH')
+      : 'Từ chối yêu cầu WFH';
+    const confirmText = approving
+      ? (isStep1 ? 'Xác nhận duyệt B1' : 'Phê duyệt chốt')
+      : 'Từ chối WFH';
     openModal(
-      approving ? 'Duyệt yêu cầu WFH' : 'Từ chối yêu cầu WFH',
+      title,
       `
         <div class="field">
           <label style="font-weight:600;">${approving ? 'Ghi chú phê duyệt (tuỳ chọn)' : 'Lý do từ chối *'}</label>
-          <textarea id="wfh-review-note" rows="3" placeholder="${approving ? 'Ghi chú thêm cho nhân viên nếu có...' : 'Nhập lý do từ chối yêu cầu WFH (bắt buộc)...'}"></textarea>
+          <textarea id="wfh-review-note" rows="3" placeholder="${approving ? (isStep1 ? 'Ghi chú chuyển tiếp tới anh Hậu / nhân viên...' : 'Ghi chú thêm cho nhân viên nếu có...') : 'Nhập lý do từ chối yêu cầu WFH (bắt buộc)...'}"></textarea>
         </div>
       `,
-      `<button class="btn-secondary" id="wfh-decision-cancel">Hủy</button><button class="${approving ? 'btn-primary' : 'btn-danger'}" id="wfh-decision-confirm">${approving ? 'Phê duyệt WFH' : 'Từ chối WFH'}</button>`
+      `<button class="btn-secondary" id="wfh-decision-cancel">Hủy</button><button class="${approving ? 'btn-primary' : 'btn-danger'}" id="wfh-decision-confirm">${confirmText}</button>`
     );
     document.getElementById('wfh-decision-cancel')?.addEventListener('click', closeModal);
     document.getElementById('wfh-decision-confirm')?.addEventListener('click', async () => {
@@ -965,9 +1053,17 @@ document.getElementById('btn-register').addEventListener('click', async () => {
         return;
       }
       try {
-        await api.decideWfhRequest(data.id, { action: data.action, review_note });
+        const res = await api.decideWfhRequest(data.id, { action: data.action, review_note });
         closeModal();
-        toast(approving ? 'Đã duyệt yêu cầu WFH' : 'Đã từ chối yêu cầu WFH', 'success');
+        if (approving) {
+          if (res?.final === false) {
+            toast('Đã duyệt bước 1 (HCNS), đã chuyển tiếp tới anh Hậu duyệt chốt', 'success');
+          } else {
+            toast('Đã phê duyệt chốt yêu cầu WFH thành công', 'success');
+          }
+        } else {
+          toast('Đã từ chối yêu cầu WFH', 'success');
+        }
         loadWfhRequests();
         loadHistory();
       } catch (e) {
@@ -983,20 +1079,109 @@ document.getElementById('btn-register').addEventListener('click', async () => {
       const month = document.getElementById('att-month-filter')?.value || closingMonth;
       const status = document.getElementById('ot-status-filter')?.value || '';
       const { overtime_requests: rows = [] } = await api.getOvertimeRequests({ month, status });
-      list.innerHTML = rows.length ? `<div class="table-wrap"><table><thead><tr><th>Nhân viên</th><th>Ngày</th><th>Checkout / hết ca</th><th>Đề nghị</th><th>Lý do</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>${rows.map(r => `<tr><td><b>${esc(r.full_name)}</b><br><small>${esc(r.employee_code || '')}</small></td><td>${esc(r.work_date)}</td><td>${esc(r.checkout_time)} / ${esc(r.shift_end_time)}</td><td>${r.requested_minutes} phút${r.approved_minutes != null ? `<br><small>Duyệt: ${r.approved_minutes} phút</small>` : ''}</td><td style="max-width:220px;">${esc(r.reason)}</td><td>${r.status === 'pending' ? '<span class="badge badge-warning">Chờ duyệt</span>' : r.status === 'approved' ? '<span class="badge badge-success">Đã duyệt</span>' : '<span class="badge badge-danger">Từ chối</span>'}${r.status === 'rejected' && r.review_note ? `<br><small style="color:var(--danger)">Lý do: ${esc(r.review_note)}</small>` : ''}</td><td>${r.status === 'pending' ? `<button class="btn-secondary btn-sm ot-decide" data-id="${r.id}" data-minutes="${r.requested_minutes}" data-action="approve">Duyệt</button> <button class="btn-danger btn-sm ot-decide" data-id="${r.id}" data-action="reject">Từ chối</button>` : esc(r.reviewer_name || '—')}</td></tr>`).join('')}</tbody></table></div>` : emptyHTML('clock3', 'Không có yêu cầu làm thêm giờ');
+      list.innerHTML = rows.length ? `
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Nhân viên</th>
+                <th>Ngày</th>
+                <th>Checkout / hết ca</th>
+                <th>Đề nghị</th>
+                <th>Lý do</th>
+                <th>Trạng thái</th>
+                <th>Thao tác</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map(r => {
+                let statusBadgeHtml = '';
+                if (r.status === 'pending') {
+                  statusBadgeHtml = '<span class="badge badge-step1">Chờ duyệt B1 (HCNS)</span>';
+                } else if (r.status === 'pending_director') {
+                  statusBadgeHtml = `<span class="badge badge-step2">Chờ anh Hậu duyệt (B2)</span>${r.step1_reviewer_name ? `<br><small style="color:var(--text-2);font-size:11px;">B1: ${esc(r.step1_reviewer_name)}</small>` : ''}`;
+                } else if (r.status === 'approved') {
+                  statusBadgeHtml = `<span class="badge badge-success">Đã duyệt</span>${r.reviewer_name ? `<br><small style="color:var(--text-2);font-size:11px;">${esc(r.reviewer_name)}</small>` : ''}`;
+                } else {
+                  statusBadgeHtml = `<span class="badge badge-danger">Từ chối</span>${r.review_note ? `<br><small style="color:var(--danger);font-size:11px;">Lý do: ${esc(r.review_note)}</small>` : ''}`;
+                }
+
+                let actionHtml = '';
+                if (r.status === 'pending') {
+                  if (isHau) {
+                    actionHtml = `<button class="btn-primary btn-sm ot-decide" data-id="${r.id}" data-status="pending" data-minutes="${r.requested_minutes}" data-action="approve">Duyệt chốt</button> <button class="btn-danger btn-sm ot-decide" data-id="${r.id}" data-status="pending" data-minutes="${r.requested_minutes}" data-action="reject">Từ chối</button>`;
+                  } else {
+                    actionHtml = `<button class="btn-secondary btn-sm ot-decide" data-id="${r.id}" data-status="pending" data-minutes="${r.requested_minutes}" data-action="approve">Duyệt B1</button> <button class="btn-danger btn-sm ot-decide" data-id="${r.id}" data-status="pending" data-minutes="${r.requested_minutes}" data-action="reject">Từ chối</button>`;
+                  }
+                } else if (r.status === 'pending_director') {
+                  if (isHau) {
+                    actionHtml = `<button class="btn-primary btn-sm ot-decide" data-id="${r.id}" data-status="pending_director" data-minutes="${r.requested_minutes}" data-action="approve">Duyệt B2 (Chốt)</button> <button class="btn-danger btn-sm ot-decide" data-id="${r.id}" data-status="pending_director" data-action="reject">Từ chối</button>`;
+                  } else {
+                    actionHtml = `<span style="color:var(--text-3);font-size:12px;">Chờ anh Hậu duyệt</span> <button class="btn-danger btn-xs ot-decide" data-id="${r.id}" data-status="pending_director" data-action="reject" title="Từ chối">Từ chối</button>`;
+                  }
+                } else {
+                  actionHtml = esc(r.reviewer_name || '—');
+                }
+
+                return `
+                  <tr>
+                    <td><b>${esc(r.full_name)}</b><br><small style="color:var(--text-2);font-size:11.5px;">${esc(r.employee_code || '')} · ${esc(r.department || '')}</small></td>
+                    <td style="white-space:nowrap;">${esc(fmtDate(r.work_date))}</td>
+                    <td style="white-space:nowrap;">${esc(r.checkout_time)} / ${esc(r.shift_end_time)}</td>
+                    <td>${r.requested_minutes} phút${r.approved_minutes != null ? `<br><small style="color:var(--success);font-size:11px;">Duyệt: ${r.approved_minutes} phút</small>` : ''}</td>
+                    <td style="max-width:220px;word-break:break-word;">${esc(r.reason)}</td>
+                    <td>${statusBadgeHtml}</td>
+                    <td style="white-space:nowrap;">${actionHtml}</td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      ` : emptyHTML('clock3', 'Không có yêu cầu làm thêm giờ');
       list.querySelectorAll('.ot-decide').forEach(btn => btn.addEventListener('click', () => openOvertimeDecision(btn.dataset)));
     } catch (e) { list.innerHTML = emptyHTML('triangleAlert', e.message || 'Không thể tải yêu cầu OT'); }
   }
 
   function openOvertimeDecision(data) {
     const approving = data.action === 'approve';
-    openModal(approving ? 'Duyệt làm thêm giờ' : 'Từ chối làm thêm giờ', `${approving ? `<div class="field"><label>Số phút được duyệt</label><input type="number" id="ot-approved-minutes" min="1" max="${data.minutes}" value="${data.minutes}"/></div>` : ''}<div class="field"><label>${approving ? 'Ghi chú (tuỳ chọn)' : 'Lý do từ chối'}</label><textarea id="ot-review-note" rows="3"></textarea></div>`, `<button class="btn-secondary" id="ot-cancel">Hủy</button><button class="btn-primary" id="ot-confirm">${approving ? 'Duyệt OT' : 'Từ chối'}</button>`);
+    const isStep1 = data.status === 'pending' && !isHau;
+    const title = approving
+      ? (isStep1 ? 'Duyệt bước 1 (HCNS) làm thêm giờ' : 'Duyệt chốt (Anh Hậu) làm thêm giờ')
+      : 'Từ chối làm thêm giờ';
+    const confirmText = approving
+      ? (isStep1 ? 'Duyệt B1' : 'Duyệt OT (Chốt)')
+      : 'Từ chối';
+
+    openModal(
+      title,
+      `${approving ? `<div class="field"><label style="font-weight:600;">Số phút được duyệt</label><input type="number" id="ot-approved-minutes" min="1" max="${data.minutes}" value="${data.minutes}"/></div>` : ''}<div class="field"><label style="font-weight:600;">${approving ? 'Ghi chú (tuỳ chọn)' : 'Lý do từ chối *'}</label><textarea id="ot-review-note" rows="3" placeholder="${approving ? (isStep1 ? 'Ghi chú chuyển anh Hậu / nhân viên...' : 'Ghi chú...') : 'Lý do từ chối (bắt buộc)...'}"></textarea></div>`,
+      `<button class="btn-secondary" id="ot-cancel">Hủy</button><button class="${approving ? 'btn-primary' : 'btn-danger'}" id="ot-confirm">${confirmText}</button>`
+    );
     document.getElementById('ot-cancel')?.addEventListener('click', closeModal);
     document.getElementById('ot-confirm')?.addEventListener('click', async () => {
       const review_note = document.getElementById('ot-review-note')?.value.trim() || '';
       if (!approving && !review_note) { toast('Vui lòng nhập lý do từ chối', 'error'); return; }
-      try { await api.decideOvertimeRequest(data.id, data.action, { approved_minutes: approving ? Number(document.getElementById('ot-approved-minutes').value) : 0, review_note }); closeModal(); toast(approving ? 'Đã duyệt làm thêm giờ' : 'Đã từ chối yêu cầu', 'success'); loadOvertimeRequests(); loadHistory(); }
-      catch (e) { toast(e.message || 'Không thể xử lý yêu cầu OT', 'error'); }
+      try {
+        const res = await api.decideOvertimeRequest(data.id, data.action, {
+          approved_minutes: approving ? Number(document.getElementById('ot-approved-minutes')?.value || data.minutes) : 0,
+          review_note,
+        });
+        closeModal();
+        if (approving) {
+          if (res?.final === false) {
+            toast('Đã duyệt bước 1 (HCNS), chuyển tới anh Hậu duyệt chốt', 'success');
+          } else {
+            toast('Đã duyệt làm thêm giờ thành công', 'success');
+          }
+        } else {
+          toast('Đã từ chối yêu cầu làm thêm giờ', 'success');
+        }
+        loadOvertimeRequests();
+        loadHistory();
+      } catch (e) {
+        toast(e.message || 'Không thể xử lý yêu cầu OT', 'error');
+      }
     });
   }
   document.getElementById('wfh-status-filter')?.addEventListener('change', loadWfhRequests);
@@ -1422,7 +1607,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
                   : '';
                 return `
                 <tr>
-                  <td style="white-space:nowrap">${esc(a.date)}</td>
+                  <td style="white-space:nowrap">${esc(fmtDate(a.date))}</td>
                   <td style="white-space:nowrap"><b>${esc((WORK_TYPE_LABEL[a.work_type] || WORK_TYPE_LABEL.office))}</b>${wfhBadge}${wfhProofLink}</td>
                   <td style="white-space:nowrap">${esc(SHIFT_LABEL_SHORT[a.shift] || SHIFT_LABEL_SHORT.full)}${a.work_type === 'business' ? `<br><span style="font-size:11px;color:var(--text-2)">${esc(a.expected_start||'—')}–${esc(a.expected_end||'—')}</span>` : ''}</td>
                   <td>${timeCell(a.checkin_time, checkinValid)}</td>
@@ -1537,7 +1722,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
             const reasonLine = r.wfh_reason ? `<small style="display:block;color:var(--text-2);font-size:11px;max-width:160px;white-space:normal;line-height:1.2;margin-top:2px;">Lý do: ${esc(r.wfh_reason)}</small>` : '';
             wfhDetailHtml = `<div style="margin-top:2px;">${badge}${proofBtn}${reasonLine}</div>`;
           }
-          return `<tr><td>${esc(r.date)}</td><td>${esc(new Date(r.date + 'T00:00:00').toLocaleDateString('vi-VN', { weekday: 'short' }))}</td><td><b>${esc(WORK_TYPE_LABEL[r.work_type] || WORK_TYPE_LABEL.office)}</b>${wfhDetailHtml}</td><td>${esc(SHIFT_LABEL_SHORT[r.shift] || SHIFT_LABEL_SHORT.full)}</td><td>${timeCell(r.checkin_time, checkinValid)}</td><td>${timeCell(r.checkout_time, checkoutValid)}</td><td>${r.work_hours ? Number(r.work_hours).toFixed(1) + 'h' : '—'}</td><td>${r.late_minutes ? r.late_minutes + 'p' : '—'}</td><td>${r.early_minutes ? r.early_minutes + 'p' : '—'}</td><td>${displayStatus}${locReviewHtml}</td><td>${formatAttendanceNote(r.note)}</td>${isManager ? `<td style="white-space:nowrap">${actions.join(' ')}</td>` : ''}</tr>`;
+          return `<tr><td>${esc(fmtDate(r.date))}</td><td>${esc(new Date(r.date + 'T00:00:00').toLocaleDateString('vi-VN', { weekday: 'short' }))}</td><td><b>${esc(WORK_TYPE_LABEL[r.work_type] || WORK_TYPE_LABEL.office)}</b>${wfhDetailHtml}</td><td>${esc(SHIFT_LABEL_SHORT[r.shift] || SHIFT_LABEL_SHORT.full)}</td><td>${timeCell(r.checkin_time, checkinValid)}</td><td>${timeCell(r.checkout_time, checkoutValid)}</td><td>${r.work_hours ? Number(r.work_hours).toFixed(1) + 'h' : '—'}</td><td>${r.late_minutes ? r.late_minutes + 'p' : '—'}</td><td>${r.early_minutes ? r.early_minutes + 'p' : '—'}</td><td>${displayStatus}${locReviewHtml}</td><td>${formatAttendanceNote(r.note)}</td>${isManager ? `<td style="white-space:nowrap">${actions.join(' ')}</td>` : ''}</tr>`;
         }).join('') : `<tr><td colspan="${isManager ? 12 : 11}" class="att-summary-empty">Không có bản ghi phù hợp.</td></tr>`;
         document.querySelectorAll('.btn-summary-view-proof').forEach(btn => btn.addEventListener('click', () => viewProofModal(btn.dataset.url, btn.dataset.filename)));
         document.querySelectorAll('.att-summary-edit').forEach(btn => btn.addEventListener('click', () => openEditAttModal(btn.dataset)));
@@ -1565,48 +1750,81 @@ document.getElementById('btn-register').addEventListener('click', async () => {
   document.getElementById('btn-ot-summary-board')?.addEventListener('click', openOvertimeSummaryBoard);
 
   function openEditAttModal(data) {
-    const standard = { morning: { lateAfter: '08:45', end: '12:00' }, afternoon: { lateAfter: '13:45', end: '17:00' }, full: { lateAfter: '08:45', end: '17:00' } }[data.shift] || { lateAfter: '08:45', end: '17:00' };
-    const lateAfter = data.workType === 'business' ? (data.expectedStart || standard.lateAfter) : standard.lateAfter;
-    const shiftEnd = data.workType === 'business' ? (data.expectedEnd || standard.end) : standard.end;
+    const curWorkType = data.workType || 'office';
+    const curShift = (!data.shift || data.shift === 'full') ? 'full' : data.shift;
+    const curStatus = data.status || 'present';
+    const standard = { morning: { lateAfter: '08:45', end: '12:00' }, afternoon: { lateAfter: '13:45', end: '17:00' }, full: { lateAfter: '08:45', end: '17:00' } }[curShift] || { lateAfter: '08:45', end: '17:00' };
+    const lateAfter = curWorkType === 'business' ? (data.expectedStart || standard.lateAfter) : standard.lateAfter;
+    const shiftEnd = curWorkType === 'business' ? (data.expectedEnd || standard.end) : standard.end;
     const minutes = value => /^\d{2}:\d{2}$/.test(value || '') ? Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5)) : null;
     const allowedCheckoutMinutes = Math.max(0, (minutes(shiftEnd) || 0) - 10);
     const allowedCheckout = `${String(Math.floor(allowedCheckoutMinutes / 60)).padStart(2, '0')}:${String(allowedCheckoutMinutes % 60).padStart(2, '0')}`;
     openModal('Sửa chấm công', `
-      <div class="field"><label>Check in</label><input type="time" id="edit-ci" value="${esc(data.checkin||'')}"/></div>
-      <div class="field"><label>Check out</label><input type="time" id="edit-co" value="${esc(data.checkout||'')}"/></div>
+      <div class="input-row" style="margin-bottom:14px;">
+        <div class="field" style="margin-bottom:0;"><label>Check in</label><input type="time" id="edit-ci" value="${esc(data.checkin||'')}"/></div>
+        <div class="field" style="margin-bottom:0;"><label>Check out</label><input type="time" id="edit-co" value="${esc(data.checkout||'')}"/></div>
+      </div>
       <div class="field"><label>Hình thức làm việc</label>
-        <select id="edit-worktype">
-          <option value="office" ${data.workType==='office'?'selected':''}>Làm tại công ty</option>
-          <option value="wfh" ${data.workType==='wfh'?'selected':''}>WFH</option>
-          <option value="business" ${data.workType==='business'?'selected':''}>Công tác</option>
-        </select>
+        <input type="hidden" id="edit-worktype" value="${esc(curWorkType)}"/>
+        <div class="att-segmented-group" data-target="edit-worktype">
+          <button type="button" class="att-seg-btn ${curWorkType==='office'?'active':''}" data-val="office">Làm tại công ty</button>
+          <button type="button" class="att-seg-btn ${curWorkType==='wfh'?'active':''}" data-val="wfh">WFH</button>
+          <button type="button" class="att-seg-btn ${curWorkType==='business'?'active':''}" data-val="business">Công tác</button>
+        </div>
       </div>
       <div class="field"><label>Ca làm việc</label>
-        <select id="edit-shift">
-          <option value="morning" ${data.shift==='morning'?'selected':''}>Ca sáng (08:30–12:00)</option>
-          <option value="afternoon" ${data.shift==='afternoon'?'selected':''}>Ca chiều (13:30–17:00)</option>
-          <option value="full" ${(!data.shift || data.shift==='full')?'selected':''}>Cả ngày</option>
-        </select>
+        <input type="hidden" id="edit-shift" value="${esc(curShift)}"/>
+        <div class="att-segmented-group" data-target="edit-shift">
+          <button type="button" class="att-seg-btn ${curShift==='full'?'active':''}" data-val="full" title="08:30–17:00">Cả ngày</button>
+          <button type="button" class="att-seg-btn ${curShift==='morning'?'active':''}" data-val="morning" title="08:30–12:00">Ca sáng</button>
+          <button type="button" class="att-seg-btn ${curShift==='afternoon'?'active':''}" data-val="afternoon" title="13:30–17:00">Ca chiều</button>
+        </div>
       </div>
       <div class="field"><label>Trạng thái</label>
-        <select id="edit-ast">
-          <option value="present" ${data.status==='present'?'selected':''}>Đúng giờ</option>
-          <option value="late" ${data.status==='late'?'selected':''}>Đi muộn</option>
-          <option value="absent" ${data.status==='absent'?'selected':''}>Vắng</option>
-          <option value="leave" ${data.status==='leave'?'selected':''}>Nghỉ phép</option>
-        </select>
+        <input type="hidden" id="edit-ast" value="${esc(curStatus)}"/>
+        <div class="att-segmented-group" data-target="edit-ast">
+          <button type="button" class="att-seg-btn ${curStatus==='present'?'active':''}" data-val="present">
+            <span class="att-seg-dot present"></span> Đúng giờ
+          </button>
+          <button type="button" class="att-seg-btn ${curStatus==='late'?'active':''}" data-val="late">
+            <span class="att-seg-dot late"></span> Đi muộn
+          </button>
+          <button type="button" class="att-seg-btn ${curStatus==='absent'?'active':''}" data-val="absent">
+            <span class="att-seg-dot absent"></span> Vắng
+          </button>
+          <button type="button" class="att-seg-btn ${curStatus==='leave'?'active':''}" data-val="leave">
+            <span class="att-seg-dot leave"></span> Nghỉ phép
+          </button>
+        </div>
       </div>
       <div id="edit-att-rule" style="padding:9px 10px;border-radius:8px;background:#FFF7ED;border:1px solid #FED7AA;color:#9A3412;font-size:12px;line-height:1.45;">Chọn <b>Đúng giờ</b> chỉ khi check-in không muộn hơn <b>${esc(lateAfter)}</b> và check-out không sớm hơn <b>${esc(allowedCheckout)}</b> (được sớm 10 phút). Hệ thống sẽ tự tính lại phút đi muộn/về sớm theo giờ đã nhập.</div>
-      <div class="field"><label>Ghi chú</label><input type="text" id="edit-anote" value="${esc(data.note||'')}"/></div>
+      <div class="field" style="margin-top:14px;"><label>Ghi chú</label><input type="text" id="edit-anote" value="${esc(data.note||'')}"/></div>
     `, `
       <button class="btn-danger" id="delete-att-btn" style="display:inline-flex;align-items:center;gap:4px;">${icon('trash2', 'xs')} <span>Xóa</span></button>
       <button class="btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Hủy</button>
       <button class="btn-primary" id="save-att-btn">Lưu</button>
     `);
     let savingEdit = false;
+
+    // Segmented button events
+    document.querySelectorAll('.att-segmented-group').forEach(group => {
+      const targetId = group.dataset.target;
+      const targetInput = document.getElementById(targetId);
+      group.querySelectorAll('.att-seg-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          group.querySelectorAll('.att-seg-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          if (targetInput) {
+            targetInput.value = btn.dataset.val;
+            targetInput.dispatchEvent(new Event('change'));
+          }
+        });
+      });
+    });
+
     const activeRule = () => {
-      const shift = document.getElementById('edit-shift')?.value || data.shift || 'full';
-      const workType = document.getElementById('edit-worktype')?.value || data.workType || 'office';
+      const shift = document.getElementById('edit-shift')?.value || curShift;
+      const workType = document.getElementById('edit-worktype')?.value || curWorkType;
       const currentStandard = { morning: { lateAfter: '08:45', end: '12:00' }, afternoon: { lateAfter: '13:45', end: '17:00' }, full: { lateAfter: '08:45', end: '17:00' } }[shift] || standard;
       const currentLateAfter = workType === 'business' ? (data.expectedStart || currentStandard.lateAfter) : currentStandard.lateAfter;
       const currentShiftEnd = workType === 'business' ? (data.expectedEnd || currentStandard.end) : currentStandard.end;

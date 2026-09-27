@@ -65,4 +65,48 @@ if (huong.insurance !== 840000) {
   process.exit(1);
 }
 
+// Test case cho kỳ T7 của Thực tập sinh (ví dụ Phạm Hoàng Anh - TTS-05)
+const t7SampleText = `TT\tHọ và tên\tMã NV\tMức lương thỏa thuận\tCông thử việc\tCông chính thức\tThu nhập theo ngày công\tPhụ cấp\tTổng thu nhập & phụ cấp\tTổng thu nhập trước thuế\tThực lĩnh\tChuyển khoản
+THỰC TẬP SINH HỒ CHÍ MINH
+1\tPhạm Hoàng Anh\tTTS-05\t2,000,000\t0\t18\t1,565,217\t150,000\t1,715,217\t1,715,217\t1,715,217\t1,715,217
+`;
+
+const resT7 = parsePayrollExcelText(t7SampleText);
+console.log('T7 parsed rows:', resT7.rows.length);
+const pha = resT7.rows.find(r => r.employee_code === 'TTS-05');
+if (!pha) {
+  console.error('TTS-05 Pham Hoang Anh not found in T7 sample!');
+  process.exit(1);
+}
+console.log('✓ TTS-05 parsed correctly:', {
+  name: pha.full_name,
+  code: pha.employee_code,
+  official_days: pha.official_days,
+  work_income: pha.work_income,
+  allowance: pha.total_allowance,
+  transfer: pha.transfer_amount,
+  net: pha.net_salary,
+});
+
+if (pha.official_days !== 18) {
+  console.error('TTS-05 official_days mismatch! Expected 18, got', pha.official_days);
+  process.exit(1);
+}
+if (pha.work_income !== 1565217) {
+  console.error('TTS-05 work_income mismatch! Expected 1565217, got', pha.work_income);
+  process.exit(1);
+}
+if (pha.total_allowance !== 150000) {
+  console.error('TTS-05 total_allowance mismatch! Expected 150000, got', pha.total_allowance);
+  process.exit(1);
+}
+if (pha.transfer_amount !== 1715217) {
+  console.error('TTS-05 transfer_amount mismatch! Expected 1715217, got', pha.transfer_amount);
+  process.exit(1);
+}
+if (pha.net_salary !== 1715217) {
+  console.error('TTS-05 net_salary mismatch! Expected 1715217, got', pha.net_salary);
+  process.exit(1);
+}
+
 console.log('All tests passed successfully!');

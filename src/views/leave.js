@@ -1,6 +1,6 @@
 import { api } from '../api.js';
 import { EventBus } from '../event-bus.js';
-import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, paginationHTML, paginateRows, bindPagination, sortVietnameseNames, compareVietnameseNames } from '../utils.js';
+import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, noop, safeCb, paginationHTML, paginateRows, bindPagination, sortVietnameseNames, compareVietnameseNames, fmtDate, parseDateInput } from '../utils.js';
 import { icon } from '../icons.js';
 
 const FALLBACK_TYPES = [
@@ -18,10 +18,22 @@ const paidLabel = type => type.paid_policy === 'unpaid' ? 'Không hưởng lươ
 const paidClass = type => type.paid_policy === 'unpaid' ? 'unpaid' : type.paid_policy === 'configurable' ? 'config' : 'paid';
 const sessionLabel = value => ({ full:'Cả ngày', morning:'Buổi sáng', afternoon:'Buổi chiều' })[value] || 'Cả ngày';
 const statusData = status => ({
-  pending: ['pending', 'Chờ duyệt'],
+  pending: ['pending', 'Chờ duyệt B1 (HCNS)'],
+  pending_director: ['pending_director', 'Chờ anh Hậu duyệt (B2)'],
   approved: ['approved', 'Đã duyệt'],
   rejected: ['rejected', 'Từ chối']
 }[status] || ['pending', status]);
+
+const isDirectorHau = (u) => {
+  if (!u) return false;
+  const code = String(u.employee_code || '').trim().toUpperCase();
+  if (code === 'HAUNV') return true;
+  const email = String(u.email || '').toLowerCase().trim();
+  if (email.startsWith('haunv@')) return true;
+  const dept = String(u.department || '').toLowerCase();
+  const pos = String(u.position || '').toLowerCase();
+  return dept.includes('ban giám đốc') && (pos.includes('tổng giám đốc') || pos.includes('ceo') || pos.includes('giám đốc'));
+};
 
 const daysBetween = (start, end, session = 'full') => {
   if (!start || !end || start > end) return 0;
@@ -53,6 +65,18 @@ function formatDocSize(bytes) {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatShortDocName(name, maxLen = 22) {
+  if (!name || name.length <= maxLen) return name || 'Tệp';
+  const lastDot = name.lastIndexOf('.');
+  if (lastDot > 0 && lastDot > name.length - 8) {
+    const ext = name.slice(lastDot);
+    const base = name.slice(0, lastDot);
+    const keepChars = Math.max(4, maxLen - ext.length - 3);
+    return `${base.slice(0, keepChars)}...${ext}`;
+  }
+  return name.slice(0, maxLen - 3) + '...';
 }
 
 function nameInitials(name) {
@@ -103,9 +127,10 @@ async function previewLeaveDocument(leaveId, docId, docName = 'tai-lieu', conten
 }
 
 export async function renderLeave(el, me) {
+  const isHau = isDirectorHau(me);
   const isManager = me.role === 'admin' || me.role === 'manager';
   const canConfigure = me.role === 'admin' || isHcnsDepartment(me.department);
-  const canReview = canConfigure || isManager || isBodDepartment(me.department);
+  const canReview = canConfigure || isManager || isBodDepartment(me.department) || isHau;
 
   let types = FALLBACK_TYPES;
   let currentTab = 'mine'; // 'mine' | 'review'
@@ -173,7 +198,10 @@ export async function renderLeave(el, me) {
           <span>Tất cả</span><span class="leave-seg-count" id="leave-count-all">0</span>
         </button>
         <button type="button" class="leave-status-seg-btn ${currentStatus === 'pending' ? 'active' : ''}" data-status="pending">
-          <span class="leave-seg-dot pending"></span><span>Chờ duyệt</span><span class="leave-seg-count" id="leave-count-pending">0</span>
+          <span class="leave-seg-dot pending"></span><span>Chờ duyệt B1</span><span class="leave-seg-count" id="leave-count-pending">0</span>
+        </button>
+        <button type="button" class="leave-status-seg-btn ${currentStatus === 'pending_director' ? 'active' : ''}" data-status="pending_director">
+          <span class="leave-seg-dot pending_director"></span><span>Chờ anh Hậu (B2)</span><span class="leave-seg-count" id="leave-count-pending-director">0</span>
         </button>
         <button type="button" class="leave-status-seg-btn ${currentStatus === 'approved' ? 'active' : ''}" data-status="approved">
           <span class="leave-seg-dot approved"></span><span>Đã duyệt</span><span class="leave-seg-count" id="leave-count-approved">0</span>
@@ -249,7 +277,7 @@ export async function renderLeave(el, me) {
     const badge = el.querySelector('#leave-pending-badge');
     if (!badge) return;
     try {
-      const { leave = [] } = await api.getLeave({ scope: 'team', status: 'pending' });
+      const { leave = [] } = await api.getLeave({ scope: 'team', status: isHau ? 'pending_director' : 'pending' });
       const pendingCount = leave.length;
       badge.textContent = pendingCount > 99 ? '99+' : String(pendingCount);
       badge.classList.toggle('hidden', pendingCount < 1);
@@ -274,17 +302,20 @@ export async function renderLeave(el, me) {
 
       // Update status filter counts
       const pendingCount = cachedLeaveList.filter(x => x.status === 'pending').length;
+      const pendingDirectorCount = cachedLeaveList.filter(x => x.status === 'pending_director').length;
       const approvedCount = cachedLeaveList.filter(x => x.status === 'approved').length;
       const rejectedCount = cachedLeaveList.filter(x => x.status === 'rejected').length;
       const totalCount = cachedLeaveList.length;
 
       const cAll = el.querySelector('#leave-count-all');
       const cPending = el.querySelector('#leave-count-pending');
+      const cPendingDirector = el.querySelector('#leave-count-pending-director');
       const cApproved = el.querySelector('#leave-count-approved');
       const cRejected = el.querySelector('#leave-count-rejected');
 
       if (cAll) cAll.textContent = totalCount;
       if (cPending) cPending.textContent = pendingCount;
+      if (cPendingDirector) cPendingDirector.textContent = pendingDirectorCount;
       if (cApproved) cApproved.textContent = approvedCount;
       if (cRejected) cRejected.textContent = rejectedCount;
 
@@ -312,10 +343,14 @@ export async function renderLeave(el, me) {
 
     const isReview = currentTab === 'review';
     const displayRows = [...filtered].sort((a, b) => {
-      // 1. Pending (đơn chưa duyệt) always on top
-      const aPending = a.status === 'pending' ? 1 : 0;
-      const bPending = b.status === 'pending' ? 1 : 0;
-      if (bPending !== aPending) return bPending - aPending;
+      // 1. Pending / Pending Director on top
+      const getPriority = (status) => {
+        if (status === 'pending') return 2;
+        if (status === 'pending_director') return 1;
+        return 0;
+      };
+      const diff = getPriority(b.status) - getPriority(a.status);
+      if (diff !== 0) return diff;
 
       // 2. Sort by form submission / creation time descending (newest first)
       const timeA = new Date(a.submitted_at ? a.submitted_at.replace(' ', 'T') : (a.created_at || a.start_date || 0)).getTime();
@@ -340,12 +375,12 @@ export async function renderLeave(el, me) {
           <table class="leave-table">
             <thead>
               <tr>
-                ${isReview ? '<th>Nhân viên</th>' : ''}
-                <th>Loại nghỉ</th>
-                <th>Thời gian nghỉ</th>
-                <th>Lý do & Bàn giao</th>
-                <th>Trạng thái</th>
-                <th style="text-align:right;">Thao tác</th>
+                ${isReview ? '<th style="min-width:180px;">Nhân viên</th>' : ''}
+                <th style="min-width:120px;">Loại nghỉ</th>
+                <th style="min-width:140px;">Thời gian nghỉ</th>
+                <th style="min-width:240px;">Lý do & Bàn giao</th>
+                <th style="min-width:160px;">Trạng thái</th>
+                <th style="text-align:right;min-width:100px;">Thao tác</th>
               </tr>
             </thead>
             <tbody>
@@ -382,9 +417,9 @@ export async function renderLeave(el, me) {
                     </td>
                     <td>
                       <div class="leave-period-text">
-                        <span>${esc(row.start_date)}</span>
+                        <span>${esc(fmtDate(row.start_date))}</span>
                         <span style="color:var(--text-3);font-size:12px;">→</span>
-                        <span>${esc(row.end_date)}</span>
+                        <span>${esc(fmtDate(row.end_date))}</span>
                       </div>
                       <div class="leave-period-sub">
                         ${sessionLabel(row.leave_session)} · <strong>${days} ngày</strong>
@@ -396,29 +431,31 @@ export async function renderLeave(el, me) {
                       ` : ''}
                     </td>
                     <td>
-                      <div class="leave-reason-text">
-                        ${esc(row.reason || '—')}
-                      </div>
-                      ${row.handover_user_name ? `
-                        <div class="leave-handover-text">
-                          <span style="display:inline-flex;align-items:center;gap:4px;opacity:0.8;">${icon('handshake', 'xs')} <span>Bàn giao:</span></span> <strong>${esc(row.handover_user_name)}</strong>
+                      <div class="leave-reason-cell">
+                        <div class="leave-reason-text">
+                          ${esc(row.reason || '—')}
                         </div>
-                      ` : ''}
-                      ${docs.length ? `
-                        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;">
-                          ${docs.map(doc => `
-                            <button type="button" class="leave-doc-chip leave-doc-item-btn" data-leave-id="${row.id}" data-doc-id="${doc.id}" data-doc-name="${esc(doc.original_filename)}" data-doc-type="${esc(doc.content_type || '')}">
-                              ${icon('paperclip', 'xs')} <span>${esc(doc.original_filename || 'Tệp')}</span> <small style="color:var(--text-3);">(${formatDocSize(doc.byte_size)})</small>
+                        ${row.handover_user_name ? `
+                          <div class="leave-handover-text">
+                            <span class="leave-handover-label">${icon('handshake', 'xs')} <span>Bàn giao:</span></span> <strong>${esc(row.handover_user_name)}</strong>
+                          </div>
+                        ` : ''}
+                        ${docs.length ? `
+                          <div class="leave-docs-list">
+                            ${docs.map(doc => `
+                              <button type="button" class="leave-doc-chip leave-doc-item-btn" data-leave-id="${row.id}" data-doc-id="${doc.id}" data-doc-name="${esc(doc.original_filename)}" data-doc-type="${esc(doc.content_type || '')}" title="${esc(doc.original_filename)} (${formatDocSize(doc.byte_size)})">
+                                ${icon('paperclip', 'xs')} <span class="leave-doc-name">${esc(formatShortDocName(doc.original_filename, 22))}</span> <small class="leave-doc-size">(${formatDocSize(doc.byte_size)})</small>
+                              </button>
+                            `).join('')}
+                          </div>
+                        ` : (row.document_count ? `
+                          <div class="leave-docs-list">
+                            <button type="button" class="leave-doc-chip leave-doc-fetch-btn" data-leave-id="${row.id}">
+                              ${icon('paperclip', 'xs')} <span>Xem ${row.document_count} tệp</span>
                             </button>
-                          `).join('')}
-                        </div>
-                      ` : (row.document_count ? `
-                        <div style="margin-top:6px;">
-                          <button type="button" class="leave-doc-chip leave-doc-fetch-btn" data-leave-id="${row.id}">
-                            ${icon('paperclip', 'xs')} <span>Xem ${row.document_count} tệp</span>
-                          </button>
-                        </div>
-                      ` : '')}
+                          </div>
+                        ` : '')}
+                      </div>
                     </td>
                     <td>
                       <div class="leave-status-cell">
@@ -428,18 +465,24 @@ export async function renderLeave(el, me) {
                         </span>
                         ${row.status === 'pending' ? `
                           <div class="leave-approver-hint">
-                            Chờ: <em>${esc(row.current_approver && !['Quản lý trực tiếp', 'Ban Giám đốc'].includes(row.current_approver) ? row.current_approver : 'Quản lý / HR')}</em>
+                            <div class="leave-hint-line">Chờ: <em>${esc(row.current_approver && !['Quản lý trực tiếp', 'Ban Giám đốc'].includes(row.current_approver) ? row.current_approver : 'Quản lý / HCNS')}</em></div>
+                          </div>
+                        ` : ''}
+                        ${row.status === 'pending_director' ? `
+                          <div class="leave-approver-hint">
+                            <div class="leave-hint-line">Chờ: <em>Anh Hậu (Phó Tổng Giám Đốc)</em></div>
+                            ${row.step1_reviewer_name ? `<div class="leave-hint-sub">Đã duyệt B1: <strong>${esc(row.step1_reviewer_name)}</strong></div>` : ''}
                           </div>
                         ` : ''}
                         ${row.status === 'approved' ? `
                           <div class="leave-approver-hint leave-decision-approved">
-                            <span class="leave-decision-actor">${icon('check', 'xs')} Duyệt bởi: <strong>${esc(row.approved_by_name || 'Quản lý')}</strong></span>
+                            <div class="leave-decision-actor">${icon('check', 'xs')} <span>Duyệt bởi: <strong>${esc(row.approved_by_name || 'Quản lý')}</strong></span></div>
                             ${row.approved_at ? `<div class="leave-decision-time">${formatLeaveDateTime(row.approved_at)}</div>` : ''}
                           </div>
                         ` : ''}
                         ${row.status === 'rejected' ? `
                           <div class="leave-approver-hint leave-decision-rejected">
-                            <span class="leave-decision-actor">${icon('x', 'xs')} Từ chối bởi: <strong>${esc(row.rejected_by_name || 'Quản lý')}</strong></span>
+                            <div class="leave-decision-actor">${icon('x', 'xs')} <span>Từ chối bởi: <strong>${esc(row.rejected_by_name || 'Quản lý')}</strong></span></div>
                             ${row.rejected_at ? `<div class="leave-decision-time">${formatLeaveDateTime(row.rejected_at)}</div>` : ''}
                             ${row.rejection_note ? `<div class="leave-rejection-note" title="${esc(row.rejection_note)}">Lý do: ${esc(row.rejection_note)}</div>` : ''}
                           </div>
@@ -449,10 +492,10 @@ export async function renderLeave(el, me) {
                     <td>
                       <div class="leave-actions-cell">
                         ${row.can_action ? `
-                          <button class="btn-primary btn-xs leave-approve" data-id="${row.id}" title="Phê duyệt đơn nghỉ phép">${icon('check', 'xs')} <span>Duyệt</span></button>
-                          <button class="btn-secondary btn-xs leave-reject" data-id="${row.id}" title="Từ chối đơn" style="color:var(--danger);border-color:rgba(239,68,68,0.25);">${icon('x', 'xs')} <span>Từ chối</span></button>
+                          <button class="btn-primary btn-xs leave-approve" data-id="${row.id}" data-status="${row.status}" title="Phê duyệt đơn nghỉ phép">${icon('check', 'xs')} <span>${row.status === 'pending_director' || isHau ? 'Duyệt chốt' : 'Duyệt B1'}</span></button>
+                          <button class="btn-secondary btn-xs leave-reject" data-id="${row.id}" data-status="${row.status}" title="Từ chối đơn" style="color:var(--danger);border-color:rgba(239,68,68,0.25);">${icon('x', 'xs')} <span>Từ chối</span></button>
                         ` : ''}
-                        ${isApplicant && row.status === 'pending' ? `
+                        ${isApplicant && (row.status === 'pending' || row.status === 'pending_director') ? `
                           <button class="btn-secondary btn-xs leave-delete" data-id="${row.id}" title="Hủy đơn xin nghỉ này">${icon('trash2', 'xs')} <span>Hủy đơn</span></button>
                         ` : ''}
                       </div>
@@ -536,8 +579,12 @@ export async function renderLeave(el, me) {
       const leaveId = button.dataset.id;
       try {
         button.disabled = true;
-        await api.updateLeave(leaveId, { status: 'approved' });
-        toast('Đã phê duyệt đơn nghỉ phép thành công', 'success');
+        const res = await api.updateLeave(leaveId, { status: 'approved' });
+        if (res?.final === false) {
+          toast('Đã duyệt bước 1 (HCNS), chuyển tới anh Hậu duyệt chốt', 'success');
+        } else {
+          toast('Đã phê duyệt đơn nghỉ phép thành công', 'success');
+        }
         loadLeave();
       } catch (error) {
         toast(error.message, 'error');
@@ -548,10 +595,15 @@ export async function renderLeave(el, me) {
 
     list.querySelectorAll('.leave-reject').forEach(button => button.addEventListener('click', async () => {
       const leaveId = button.dataset.id;
-      const note = prompt('Ghi chú lý do từ chối (không bắt buộc):') || '';
+      const note = prompt('Nhập lý do từ chối đơn nghỉ phép:');
+      if (note === null) return;
+      if (!note.trim()) {
+        toast('Vui lòng nhập lý do từ chối đơn nghỉ phép', 'error');
+        return;
+      }
       try {
         button.disabled = true;
-        await api.updateLeave(leaveId, { status: 'rejected', note });
+        await api.updateLeave(leaveId, { status: 'rejected', note: note.trim() });
         toast('Đã từ chối đơn nghỉ phép', 'info');
         loadLeave();
       } catch (error) {
@@ -578,7 +630,10 @@ export async function renderLeave(el, me) {
     });
   }
 
-  el._cleanup = () => {};
+  const prevCleanup = el._cleanup;
+  el._cleanup = () => {
+    if (typeof prevCleanup === 'function') prevCleanup();
+  };
 
   EventBus.bindView(el, 'leave', () => loadLeave());
   EventBus.bindView(el, 'leave:*', () => loadLeave());
@@ -638,12 +693,12 @@ async function openLeaveForm(me, types, refresh = noop) {
       ` : ''}
       <div class="input-row">
         <div class="field">
-          <label>${maternity ? 'Ngày dự kiến bắt đầu' : 'Từ ngày'} *</label>
-          <input type="date" id="lf-start" value="${today}"/>
+          <label>${maternity ? 'Ngày dự kiến bắt đầu (dd/mm/yyyy)' : 'Từ ngày (dd/mm/yyyy)'} *</label>
+          <input type="text" id="lf-start" value="${fmtDate(today)}" placeholder="dd/mm/yyyy" inputmode="numeric"/>
         </div>
         <div class="field">
-          <label>${maternity ? 'Ngày dự kiến kết thúc' : 'Đến ngày'} *</label>
-          <input type="date" id="lf-end" value="${today}"/>
+          <label>${maternity ? 'Ngày dự kiến kết thúc (dd/mm/yyyy)' : 'Đến ngày (dd/mm/yyyy)'} *</label>
+          <input type="text" id="lf-end" value="${fmtDate(today)}" placeholder="dd/mm/yyyy" inputmode="numeric"/>
         </div>
       </div>
       ${maternity ? '' : `
@@ -685,11 +740,15 @@ async function openLeaveForm(me, types, refresh = noop) {
     const typeSelect = document.getElementById('lf-type');
     typeSelect.addEventListener('change', () => { body.innerHTML = render(typeSelect.value); bind(); });
     const updateTotal = () => {
-      const days = daysBetween(document.getElementById('lf-start').value, document.getElementById('lf-end').value, document.getElementById('lf-session')?.value || 'full');
+      const s = parseDateInput(document.getElementById('lf-start')?.value);
+      const e = parseDateInput(document.getElementById('lf-end')?.value);
+      const days = daysBetween(s, e, document.getElementById('lf-session')?.value || 'full');
       document.getElementById('lf-total').textContent = days ? `Tổng cộng: ${days} ngày nghỉ` : 'Chọn khoảng thời gian hợp lệ';
     };
-    document.getElementById('lf-start').addEventListener('change', updateTotal);
-    document.getElementById('lf-end').addEventListener('change', updateTotal);
+    document.getElementById('lf-start')?.addEventListener('input', updateTotal);
+    document.getElementById('lf-end')?.addEventListener('input', updateTotal);
+    document.getElementById('lf-start')?.addEventListener('change', updateTotal);
+    document.getElementById('lf-end')?.addEventListener('change', updateTotal);
     document.getElementById('lf-session')?.addEventListener('change', updateTotal);
     updateTotal();
   };
@@ -697,8 +756,8 @@ async function openLeaveForm(me, types, refresh = noop) {
 
   document.getElementById('lf-save').addEventListener('click', async () => {
     const type = document.getElementById('lf-type').value;
-    const start = document.getElementById('lf-start').value;
-    const end = document.getElementById('lf-end').value;
+    const start = parseDateInput(document.getElementById('lf-start').value);
+    const end = parseDateInput(document.getElementById('lf-end').value);
     const session = document.getElementById('lf-session')?.value || 'full';
     const reason = document.getElementById('lf-reason').value.trim();
     const policy = types.find(x => x.code === type);

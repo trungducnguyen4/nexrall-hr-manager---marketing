@@ -1,6 +1,6 @@
 import { api } from '../api.js';
 import { EventBus } from '../event-bus.js';
-import { esc, taskStatusBadge, priorityBadge, toast, openModal, closeModal, loadingHTML, emptyHTML, today, normalizeVietnameseSearch, isHcnsDepartment, sortVietnameseNames, compareVietnameseNames } from '../utils.js';
+import { esc, taskStatusBadge, priorityBadge, toast, openModal, closeModal, loadingHTML, emptyHTML, today, normalizeVietnameseSearch, isHcnsDepartment, sortVietnameseNames, compareVietnameseNames, fmtDate, fmtDateInput, parseDateInput } from '../utils.js';
 import { icon } from '../icons.js';
 import { openTaskPanel } from '../app.js';
 
@@ -874,7 +874,7 @@ export async function renderTasks(el, me) {
         api.getTaskGroups({ project_id: selectedProjectId, include_archived: 1 }),
         api.getTaskLabels({ project_id: selectedProjectId }),
         api.getTasks(params),
-        api.getTaskProjectMembers(selectedProjectId).catch(() => ({ members: [] })),
+        (typeof api.getTaskProjectMembers === 'function' ? api.getTaskProjectMembers(selectedProjectId) : Promise.resolve({ members: [] })).catch(() => ({ members: [] })),
         refreshUnreadMentionCount(),
       ]);
       const allGroups = groupRes?.groups || [];
@@ -883,7 +883,7 @@ export async function renderTasks(el, me) {
       labels = labelRes?.labels || [];
       tasks = taskRes?.tasks || [];
       projectMembers = memberRes?.members || [];
-      canManage = canManageTasks(me) || !!groupRes?.canManage;
+      canManage = canManageTasks(me);
       renderProjects();
       renderBoard(options);
     } catch (err) {
@@ -901,6 +901,7 @@ export async function renderTasks(el, me) {
   }
 
   function openProjectMembers(project) {
+    const canEditMembers = canManageTasks(me);
     const normDept = (project?.department || '').trim();
     const groupMemberIds = getDepartmentMemberIds(normDept, projects, users);
     const existingMemberIds = projectMembers.map(member => Number(member.user_id)).filter(Boolean);
@@ -912,7 +913,7 @@ export async function renderTasks(el, me) {
       const search = (document.getElementById('project-member-search')?.value || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
       if (count) count.textContent = `${selected.size} thành viên`;
       if (!list) return;
-      const candidates = canManage ? users : projectMembers;
+      const candidates = canEditMembers ? users : projectMembers;
       const filtered = candidates.filter(u => {
         if (!search) return true;
         const haystack = `${u.full_name || ''} ${u.employee_code || ''} ${u.email || ''} ${u.department || ''}`.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -922,8 +923,8 @@ export async function renderTasks(el, me) {
         const id = Number(user.user_id || user.id);
         const isChecked = selected.has(id);
         const inGroup = groupMemberIds.includes(id);
-        return `<label class="task-project-member-row" style="cursor:${canManage ? 'pointer' : 'default'};display:grid;grid-template-columns:${canManage ? '24px ' : ''}32px minmax(0,1fr);gap:10px;align-items:center;padding:8px 10px;background:var(--surface);border-radius:8px;border:1px solid ${isChecked ? 'var(--primary)' : 'var(--border)'};margin-bottom:6px;">
-          ${canManage ? `<input type="checkbox" data-project-member="${id}" ${isChecked ? 'checked' : ''} style="cursor:pointer;width:16px;height:16px;accent-color:var(--primary);"/>` : ''}
+        return `<label class="task-project-member-row" style="cursor:${canEditMembers ? 'pointer' : 'default'};display:grid;grid-template-columns:${canEditMembers ? '24px ' : ''}32px minmax(0,1fr);gap:10px;align-items:center;padding:8px 10px;background:var(--surface);border-radius:8px;border:1px solid ${isChecked ? 'var(--primary)' : 'var(--border)'};margin-bottom:6px;">
+          ${canEditMembers ? `<input type="checkbox" data-project-member="${id}" ${isChecked ? 'checked' : ''} style="cursor:pointer;width:16px;height:16px;accent-color:var(--primary);"/>` : ''}
           ${memberAvatar(user)}
           <span style="overflow:hidden;">
             <strong style="font-size:13px;color:var(--text);display:flex;align-items:center;gap:6px;">
@@ -935,45 +936,52 @@ export async function renderTasks(el, me) {
         </label>`;
       }).join('') || '<div class="task-project-member-empty">Không tìm thấy thành viên.</div>';
 
-      list.querySelectorAll('[data-project-member]').forEach(input => input.addEventListener('change', () => {
-        const id = Number(input.dataset.projectMember);
-        if (input.checked) selected.add(id); else selected.delete(id);
-        const count = document.getElementById('project-member-modal-count');
-        if (count) count.textContent = `${selected.size} thành viên`;
-        const row = input.closest('.task-project-member-row');
-        if (row) row.style.borderColor = input.checked ? 'var(--primary)' : 'var(--border)';
-      }));
+      if (canEditMembers) {
+        list.querySelectorAll('[data-project-member]').forEach(input => input.addEventListener('change', () => {
+          const id = Number(input.dataset.projectMember);
+          if (input.checked) selected.add(id); else selected.delete(id);
+          const count = document.getElementById('project-member-modal-count');
+          if (count) count.textContent = `${selected.size} thành viên`;
+          const row = input.closest('.task-project-member-row');
+          if (row) row.style.borderColor = input.checked ? 'var(--primary)' : 'var(--border)';
+        }));
+      }
     };
 
     openModal(`Thành viên · ${projectLabel(project)}`, `
       <div class="task-project-member-modal-head">
         <div id="project-member-modal-count">${selected.size} thành viên</div>
-        <span>${canManage ? 'Chọn người để thêm hoặc bỏ khỏi Project.' : 'Bạn có thể xem danh sách thành viên Project.'}</span>
+        <span>${canEditMembers ? 'Chọn người để thêm hoặc bỏ khỏi Project.' : 'Danh sách thành viên trong Project.'}</span>
       </div>
       <div style="margin-bottom:10px;">
         <input type="text" id="project-member-search" placeholder="Tìm tên, mã NV, email, phòng ban..." style="width:100%;height:38px;padding:0 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;outline:none;box-sizing:border-box;background:var(--surface);"/>
       </div>
       <div id="project-member-modal-list" class="task-project-member-list"></div>
-      <div style="margin-top:10px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:11.5px;color:var(--text-2);line-height:1.4;display:flex;align-items:flex-start;gap:6px;">
-        <span style="display:inline-flex;align-items:center;margin-top:2px;">${icon('circleInfo', 'xs')}</span> <span>Danh sách thành viên được tích sẵn theo nhóm dự án "${esc(normDept)}". Bạn có thể tích chọn thêm hoặc bỏ bớt thành viên cho riêng Project này.</span>
-      </div>
-    `, `<button type="button" class="btn-secondary" id="project-member-close">Đóng</button>${canManage ? '<button type="button" class="btn-primary" id="project-member-save">Lưu thành viên</button>' : ''}`);
+      ${canEditMembers ? `
+        <div style="margin-top:10px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:11.5px;color:var(--text-2);line-height:1.4;display:flex;align-items:flex-start;gap:6px;">
+          <span style="display:inline-flex;align-items:center;margin-top:2px;">${icon('circleInfo', 'xs')}</span> <span>Danh sách thành viên được tích sẵn theo nhóm dự án "${esc(normDept)}". Bạn có thể tích chọn thêm hoặc bỏ bớt thành viên cho riêng Project này.</span>
+        </div>
+      ` : ''}
+    `, `<button type="button" class="btn-secondary" id="project-member-close">Đóng</button>${canEditMembers ? '<button type="button" class="btn-primary" id="project-member-save">Lưu thành viên</button>' : ''}`);
 
     render();
     document.getElementById('project-member-search')?.addEventListener('input', render);
     document.getElementById('project-member-close')?.addEventListener('click', closeModal);
-    document.getElementById('project-member-save')?.addEventListener('click', async () => {
-      try {
-        await api.saveTaskProjectMembers(project.id, [...selected]);
-        closeModal();
-        toast('Đã cập nhật thành viên Project', 'success');
-        await loadProjects();
-      }
-      catch (error) { toast(error.message, 'error'); }
-    });
+    if (canEditMembers) {
+      document.getElementById('project-member-save')?.addEventListener('click', async () => {
+        try {
+          await api.saveTaskProjectMembers(project.id, [...selected]);
+          closeModal();
+          toast('Đã cập nhật thành viên Project', 'success');
+          await loadProjects();
+        }
+        catch (error) { toast(error.message, 'error'); }
+      });
+    }
   }
 
   function openDepartmentMembers(departmentName, deptProjects, onDone) {
+    const canEditDeptMembers = canManageTasks(me);
     const normDept = (departmentName || '').trim();
     const initialIds = getDepartmentMemberIds(normDept, projects, users);
     const selected = new Set(initialIds);
@@ -985,7 +993,8 @@ export async function renderTasks(el, me) {
       if (count) count.textContent = `${selected.size} thành viên`;
       if (!list) return;
 
-      const filtered = users.filter(u => {
+      const candidates = canEditDeptMembers ? users : users.filter(u => selected.has(Number(u.id)));
+      const filtered = candidates.filter(u => {
         if (!search) return true;
         const haystack = `${u.full_name || ''} ${u.employee_code || ''} ${u.email || ''} ${u.department || ''}`.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
         return haystack.includes(search);
@@ -993,50 +1002,55 @@ export async function renderTasks(el, me) {
 
       list.innerHTML = filtered.map(user => {
         const id = Number(user.id);
-        return `<label class="task-project-member-row">
-          <input type="checkbox" data-dept-member="${id}" ${selected.has(id) ? 'checked' : ''}/>
+        const isChecked = selected.has(id);
+        return `<label class="task-project-member-row" style="cursor:${canEditDeptMembers ? 'pointer' : 'default'};">
+          ${canEditDeptMembers ? `<input type="checkbox" data-dept-member="${id}" ${isChecked ? 'checked' : ''}/>` : ''}
           ${memberAvatar(user)}
           <span><strong>${esc(user.full_name || '')}</strong><small>${esc(user.employee_code || '')}${user.department ? ` · ${esc(user.department)}` : ''}</small></span>
         </label>`;
       }).join('') || '<div class="task-project-member-empty">Không tìm thấy thành viên phù hợp.</div>';
 
-      list.querySelectorAll('[data-dept-member]').forEach(input => input.addEventListener('change', () => {
-        const id = Number(input.dataset.deptMember);
-        if (input.checked) selected.add(id); else selected.delete(id);
-        const count = document.getElementById('dept-member-modal-count');
-        if (count) count.textContent = `${selected.size} thành viên`;
-      }));
+      if (canEditDeptMembers) {
+        list.querySelectorAll('[data-dept-member]').forEach(input => input.addEventListener('change', () => {
+          const id = Number(input.dataset.deptMember);
+          if (input.checked) selected.add(id); else selected.delete(id);
+          const count = document.getElementById('dept-member-modal-count');
+          if (count) count.textContent = `${selected.size} thành viên`;
+        }));
+      }
     };
 
     openModal(`Thành viên · ${departmentName}`, `
       <div class="task-project-member-modal-head">
         <div id="dept-member-modal-count">${selected.size} thành viên</div>
-        <span>${canManage ? 'Chọn người để thêm hoặc bỏ khỏi nhóm dự án.' : 'Danh sách thành viên nhóm dự án.'}</span>
+        <span>${canEditDeptMembers ? 'Chọn người để thêm hoặc bỏ khỏi nhóm dự án.' : 'Danh sách thành viên nhóm dự án.'}</span>
       </div>
       <div style="margin-bottom:10px;">
         <input type="text" id="dept-member-search" placeholder="Tìm tên, mã NV, email, phòng ban..." style="width:100%;height:38px;padding:0 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;outline:none;box-sizing:border-box;"/>
       </div>
       <div id="dept-member-modal-list" class="task-project-member-list"></div>
-    `, `<button type="button" class="btn-secondary" id="dept-member-close">Đóng</button>${canManage ? '<button type="button" class="btn-primary" id="dept-member-save">Lưu thành viên</button>' : ''}`);
+    `, `<button type="button" class="btn-secondary" id="dept-member-close">Đóng</button>${canEditDeptMembers ? '<button type="button" class="btn-primary" id="dept-member-save">Lưu thành viên</button>' : ''}`);
 
     render();
     document.getElementById('dept-member-search')?.addEventListener('input', render);
     document.getElementById('dept-member-close')?.addEventListener('click', closeModal);
-    document.getElementById('dept-member-save')?.addEventListener('click', async () => {
-      const saveBtn = document.getElementById('dept-member-save');
-      if (saveBtn) saveBtn.disabled = true;
-      const memberList = Array.from(selected).map(Number).filter(Boolean);
-      try {
-        saveDepartmentMemberIds(normDept, memberList);
-        await api.saveTaskProjectGroupMembers(normDept, memberList);
-        closeModal();
-        toast(`Đã cập nhật thành viên cho nhóm "${normDept}"`, 'success');
-        onDone?.();
-      } catch (error) {
-        toast(error.message || 'Lỗi khi lưu thành viên nhóm', 'error');
-        if (saveBtn) saveBtn.disabled = false;
-      }
-    });
+    if (canEditDeptMembers) {
+      document.getElementById('dept-member-save')?.addEventListener('click', async () => {
+        const saveBtn = document.getElementById('dept-member-save');
+        if (saveBtn) saveBtn.disabled = true;
+        const memberList = Array.from(selected).map(Number).filter(Boolean);
+        try {
+          saveDepartmentMemberIds(normDept, memberList);
+          await api.saveTaskProjectGroupMembers(normDept, memberList);
+          closeModal();
+          toast(`Đã cập nhật thành viên cho nhóm "${normDept}"`, 'success');
+          onDone?.();
+        } catch (error) {
+          toast(error.message || 'Lỗi khi lưu thành viên nhóm', 'error');
+          if (saveBtn) saveBtn.disabled = false;
+        }
+      });
+    }
   }
 
   async function openNotificationManagementModal(onSaved) {
@@ -1809,7 +1823,7 @@ export async function renderTasks(el, me) {
           ${priorityBadge(t.priority)}
           ${t.label_name ? `<span class="badge badge-gray" style="display:inline-flex;gap:5px;align-items:center;">${labelDot(color)}${esc(t.label_name)}</span>` : ''}
           ${t.assignee_name ? `<span class="task-card-assignee" title="Người được giao"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg> ${esc(t.assignee_name)}${t.assignee_code ? ` · ${esc(t.assignee_code)}` : ''}</span>` : ''}
-          ${t.due_date ? `<span class="task-card-due" title="Hạn hoàn thành"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> ${esc(t.due_date)}</span>` : ''}
+          ${t.due_date ? `<span class="task-card-due" title="Hạn hoàn thành"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> ${esc(fmtDate(t.due_date))}</span>` : ''}
           ${(Number(t.subtask_total) > 0) ? `<span class="task-card-subtasks" title="Checklist"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> ${Number(t.subtask_done || 0)}/${Number(t.subtask_total)}</span>` : ''}
           ${Number(t.follower_count) > 0 ? `<span class="task-card-followers" title="Người theo dõi"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> ${Number(t.follower_count)}</span>` : ''}
         </div>
@@ -2013,8 +2027,8 @@ export function openTaskForm(task, users, me, onDone, options = {}) {
         </div>
         <div class="field"><label>Giao cho</label><select id="tf-assignee"><option value="">-- Chưa giao --</option>${users.map(u => `<option value="${u.id}" ${task?.assigned_to==u.id?'selected':''}>${esc(u.full_name)}${u.employee_code ? ` · ${esc(u.employee_code)}` : ''}</option>`).join('')}</select></div>
         <div class="input-row">
-          <div class="field"><label>Ngày</label><input type="date" id="tf-date" value="${esc(task?.date||today())}"/></div>
-          <div class="field"><label>Hạn chót</label><input type="date" id="tf-due" value="${esc(task?.due_date||'')}"/></div>
+          <div class="field"><label>Ngày (dd/mm/yyyy)</label><input type="text" id="tf-date" value="${esc(fmtDateInput(task?.date||today()))}" placeholder="dd/mm/yyyy" inputmode="numeric"/></div>
+          <div class="field"><label>Hạn chót (dd/mm/yyyy)</label><input type="text" id="tf-due" value="${esc(fmtDateInput(task?.due_date))}" placeholder="dd/mm/yyyy" inputmode="numeric"/></div>
         </div>
         <div class="input-row">
           <div class="field"><label>Ưu tiên</label><select id="tf-priority"><option value="low" ${task?.priority==='low'?'selected':''}>Thấp</option><option value="normal" ${(!task||task?.priority==='normal')?'selected':''}>Bình thường</option><option value="high" ${task?.priority==='high'?'selected':''}>Cao</option><option value="urgent" ${task?.priority==='urgent'?'selected':''}>Khẩn cấp</option></select></div>
@@ -2043,8 +2057,8 @@ export function openTaskForm(task, users, me, onDone, options = {}) {
       description: sanitizeRichText(document.getElementById('tf-desc').innerHTML),
       team_project_id: projectId,
       group_id: groupId,
-      date: document.getElementById('tf-date').value || null,
-      due_date: document.getElementById('tf-due').value || null,
+      date: parseDateInput(document.getElementById('tf-date').value) || null,
+      due_date: parseDateInput(document.getElementById('tf-due').value) || null,
       priority: document.getElementById('tf-priority').value,
       status: document.getElementById('tf-status').value,
       assigned_to: parseInt(document.getElementById('tf-assignee').value) || null,
@@ -2082,8 +2096,8 @@ function openProjectFormOld(project, users, departments, onDone) {
     </div>
     <div class="field"><label>Quản lý</label><select id="pf-manager"><option value="">-- Chưa chọn --</option>${users.map(u => `<option value="${u.id}" ${project?.manager_id==u.id?'selected':''}>${esc(u.full_name)}${u.employee_code ? ` · ${esc(u.employee_code)}` : ''}</option>`).join('')}</select></div>
     <div class="input-row">
-      <div class="field"><label>Bắt đầu</label><input type="date" id="pf-start" value="${esc(project?.start_date || '')}"/></div>
-      <div class="field"><label>Kết thúc</label><input type="date" id="pf-end" value="${esc(project?.end_date || '')}"/></div>
+      <div class="field"><label>Bắt đầu (dd/mm/yyyy)</label><input type="text" id="pf-start" value="${esc(fmtDateInput(project?.start_date))}" placeholder="dd/mm/yyyy" inputmode="numeric"/></div>
+      <div class="field"><label>Kết thúc (dd/mm/yyyy)</label><input type="text" id="pf-end" value="${esc(fmtDateInput(project?.end_date))}" placeholder="dd/mm/yyyy" inputmode="numeric"/></div>
     </div>
     <div class="field"><label>Mô tả</label><textarea id="pf-desc">${esc(project?.description || '')}</textarea></div>
     <div class="field"><label>Thành viên</label><select id="pf-members" multiple size="7">${users.map(u => `<option value="${u.id}" ${memberIds.has(Number(u.id)) ? 'selected' : ''}>${esc(u.full_name)}${u.employee_code ? ` · ${esc(u.employee_code)}` : ''}</option>`).join('')}</select></div>
@@ -2104,8 +2118,8 @@ function openProjectFormOld(project, users, departments, onDone) {
       status: document.getElementById('pf-status').value,
       department: document.getElementById('pf-dept').value,
       manager_id: parseInt(document.getElementById('pf-manager').value) || null,
-      start_date: document.getElementById('pf-start').value || null,
-      end_date: document.getElementById('pf-end').value || null,
+      start_date: parseDateInput(document.getElementById('pf-start').value) || null,
+      end_date: parseDateInput(document.getElementById('pf-end').value) || null,
       description: document.getElementById('pf-desc').value,
       members,
     };
@@ -2196,8 +2210,8 @@ function openProjectForm(project, users, departments, projects, prefillGroup, on
         </div>
         <div class="field"><label>Quản lý</label><select id="pf-manager"><option value="">-- Chưa chọn --</option>${users.map(u => `<option value="${u.id}" ${project?.manager_id==u.id?'selected':''}>${esc(u.full_name)}${u.employee_code ? ` · ${esc(u.employee_code)}` : ''}</option>`).join('')}</select></div>
         <div class="input-row">
-          <div class="field"><label>Bắt đầu</label><input type="date" id="pf-start" value="${esc(project?.start_date || '')}"/></div>
-          <div class="field"><label>Kết thúc</label><input type="date" id="pf-end" value="${esc(project?.end_date || '')}"/></div>
+          <div class="field"><label>Bắt đầu (dd/mm/yyyy)</label><input type="text" id="pf-start" value="${esc(fmtDateInput(project?.start_date))}" placeholder="dd/mm/yyyy" inputmode="numeric"/></div>
+          <div class="field"><label>Kết thúc (dd/mm/yyyy)</label><input type="text" id="pf-end" value="${esc(fmtDateInput(project?.end_date))}" placeholder="dd/mm/yyyy" inputmode="numeric"/></div>
         </div>
         <div class="field"><label>Mô tả</label><textarea id="pf-desc" style="min-height:132px;">${esc(project?.description || '')}</textarea></div>
       </div>
@@ -2332,8 +2346,8 @@ function openProjectForm(project, users, departments, projects, prefillGroup, on
       status: document.getElementById('pf-status').value,
       department: chosenDept,
       manager_id: managerId,
-      start_date: document.getElementById('pf-start').value || null,
-      end_date: document.getElementById('pf-end').value || null,
+      start_date: parseDateInput(document.getElementById('pf-start').value) || null,
+      end_date: parseDateInput(document.getElementById('pf-end').value) || null,
       description: document.getElementById('pf-desc').value,
       members,
     };

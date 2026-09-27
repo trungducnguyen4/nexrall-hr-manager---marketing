@@ -1,6 +1,6 @@
 import { api } from '../api.js';
 import { EventBus } from '../event-bus.js';
-import { esc, fmtDate, openModal, closeModal, toast } from '../utils.js';
+import { esc, fmtDate, openModal, closeModal, toast, isHcnsDepartment, sanitizeAnnouncementHtml } from '../utils.js';
 import { icon } from '../icons.js';
 import { refreshAnnouncementBadge } from '../app.js';
 
@@ -19,11 +19,290 @@ function announcementSkeleton() {
   `;
 }
 
+/**
+ * Word-like Rich Text Editor (WYSIWYG) Component
+ */
+function createRichEditor(containerEl, initialHtml = '') {
+  containerEl.innerHTML = `
+    <div class="rich-editor-wrapper">
+      <div class="rich-editor-toolbar" role="toolbar" aria-label="Định dạng văn bản">
+        <!-- Paragraph / Headings -->
+        <div class="rich-toolbar-group">
+          <select class="rich-toolbar-select" data-cmd="formatBlock" title="Kiểu định dạng đoạn văn">
+            <option value="p">Đoạn văn (Normal)</option>
+            <option value="h1">Tiêu đề lớn (H1)</option>
+            <option value="h2">Tiêu đề vừa (H2)</option>
+            <option value="h3">Tiêu đề nhỏ (H3)</option>
+          </select>
+        </div>
+
+        <div class="rich-toolbar-divider"></div>
+
+        <!-- Inline Formats: Bold, Italic, Underline, Strikethrough -->
+        <div class="rich-toolbar-group">
+          <button type="button" class="rich-btn" data-cmd="bold" title="In đậm (Ctrl+B)"><strong>B</strong></button>
+          <button type="button" class="rich-btn" data-cmd="italic" title="In nghiêng (Ctrl+I)"><em>I</em></button>
+          <button type="button" class="rich-btn" data-cmd="underline" title="Gạch chân (Ctrl+U)"><u>U</u></button>
+          <button type="button" class="rich-btn" data-cmd="strikeThrough" title="Gạch ngang"><s>S</s></button>
+        </div>
+
+        <div class="rich-toolbar-divider"></div>
+
+        <!-- Text & Highlight Color -->
+        <div class="rich-toolbar-group">
+          <label class="rich-color-label" title="Màu chữ">
+            <span style="font-weight:800;font-size:13px;color:#EA580C;border-bottom:2px solid #EA580C;line-height:1;">A</span>
+            <input type="color" class="rich-color-input" data-color-cmd="foreColor" value="#1E293B"/>
+          </label>
+          <label class="rich-color-label" title="Màu nền nổi bật (Highlight)">
+            <span style="font-weight:700;font-size:11px;background:#FEF08A;color:#854D0E;padding:1px 3px;border-radius:2px;">HL</span>
+            <input type="color" class="rich-color-input" data-color-cmd="hiliteColor" value="#FEF08A"/>
+          </label>
+        </div>
+
+        <div class="rich-toolbar-divider"></div>
+
+        <!-- Text Alignment -->
+        <div class="rich-toolbar-group">
+          <button type="button" class="rich-btn" data-cmd="justifyLeft" title="Căn trái"><span data-icon="alignLeft" data-icon-size="xs"></span></button>
+          <button type="button" class="rich-btn" data-cmd="justifyCenter" title="Căn giữa"><span data-icon="alignCenter" data-icon-size="xs"></span></button>
+          <button type="button" class="rich-btn" data-cmd="justifyRight" title="Căn phải"><span data-icon="alignRight" data-icon-size="xs"></span></button>
+          <button type="button" class="rich-btn" data-cmd="justifyFull" title="Căn đều hai bên"><span data-icon="alignJustify" data-icon-size="xs"></span></button>
+        </div>
+
+        <div class="rich-toolbar-divider"></div>
+
+        <!-- Lists & Structure -->
+        <div class="rich-toolbar-group">
+          <button type="button" class="rich-btn" data-cmd="insertUnorderedList" title="Danh sách đầu dòng"><span data-icon="list" data-icon-size="xs"></span></button>
+          <button type="button" class="rich-btn" data-cmd="insertOrderedList" title="Danh sách số"><span data-icon="listOrdered" data-icon-size="xs"></span></button>
+          <button type="button" class="rich-btn" data-cmd="insertHorizontalRule" title="Chèn đường kẻ phân cách"><span data-icon="minus" data-icon-size="xs"></span></button>
+        </div>
+
+        <div class="rich-toolbar-divider"></div>
+
+        <!-- Links & Clear Formatting -->
+        <div class="rich-toolbar-group">
+          <button type="button" class="rich-btn" data-action="link" title="Chèn liên kết web"><span data-icon="link" data-icon-size="xs"></span></button>
+          <button type="button" class="rich-btn" data-cmd="removeFormat" title="Xóa định dạng"><span data-icon="eraser" data-icon-size="xs"></span></button>
+        </div>
+      </div>
+
+      <div class="rich-editor-content" contenteditable="true" data-placeholder="Nhập nội dung thông báo đầy đủ, định dạng văn bản như Microsoft Word..."></div>
+    </div>
+  `;
+
+  if (window.normalizeIcons) window.normalizeIcons(containerEl);
+
+  const editor = containerEl.querySelector('.rich-editor-content');
+  const toolbar = containerEl.querySelector('.rich-editor-toolbar');
+  const formatSelect = toolbar.querySelector('select[data-cmd="formatBlock"]');
+
+  if (initialHtml) {
+    editor.innerHTML = sanitizeAnnouncementHtml(initialHtml);
+  }
+
+  function exec(cmd, val = null) {
+    editor.focus();
+    document.execCommand(cmd, false, val);
+    updateToolbarState();
+  }
+
+  function updateToolbarState() {
+    toolbar.querySelectorAll('button[data-cmd]').forEach(btn => {
+      const cmd = btn.dataset.cmd;
+      try {
+        if (['bold', 'italic', 'underline', 'strikeThrough', 'justifyLeft', 'justifyCenter', 'justifyRight', 'justifyFull', 'insertUnorderedList', 'insertOrderedList'].includes(cmd)) {
+          btn.classList.toggle('is-active', Boolean(document.queryCommandState(cmd)));
+        }
+      } catch (_) {}
+    });
+  }
+
+  toolbar.addEventListener('click', (e) => {
+    const btn = e.target.closest('.rich-btn');
+    if (!btn) return;
+    e.preventDefault();
+
+    const cmd = btn.dataset.cmd;
+    const action = btn.dataset.action;
+
+    if (cmd) {
+      exec(cmd);
+    } else if (action === 'link') {
+      const url = prompt('Nhập địa chỉ liên kết (URL):', 'https://');
+      if (url && url.trim() && !/^(?:javascript|data|vbscript):/i.test(url.trim())) {
+        exec('createLink', url.trim());
+      }
+    }
+  });
+
+  formatSelect?.addEventListener('change', (e) => {
+    const tag = e.target.value;
+    exec('formatBlock', `<${tag}>`);
+  });
+
+  toolbar.querySelectorAll('input[data-color-cmd]').forEach(input => {
+    input.addEventListener('change', (e) => {
+      exec(input.dataset.colorCmd, e.target.value);
+    });
+  });
+
+  editor.addEventListener('keyup', updateToolbarState);
+  editor.addEventListener('mouseup', updateToolbarState);
+  editor.addEventListener('input', updateToolbarState);
+
+  return {
+    getHtml: () => {
+      const html = editor.innerHTML;
+      const text = editor.innerText.trim();
+      if (!text && !editor.querySelector('img, table, hr')) return '';
+      return sanitizeAnnouncementHtml(html);
+    },
+    getText: () => editor.innerText.trim(),
+    setHtml: (html) => {
+      editor.innerHTML = sanitizeAnnouncementHtml(html);
+      updateToolbarState();
+    },
+    focus: () => editor.focus(),
+  };
+}
+
+/**
+ * File Uploader Component with Drag & Drop and Instant Upload
+ */
+function createFileUploader(containerEl, initialAttachment = null) {
+  let currentAttachment = initialAttachment && initialAttachment.url ? {
+    url: initialAttachment.url,
+    name: initialAttachment.name || 'Tài liệu đính kèm',
+    size: initialAttachment.size || null
+  } : null;
+
+  function render() {
+    if (currentAttachment && currentAttachment.url) {
+      const sizeText = currentAttachment.size ? ` (${Math.round(currentAttachment.size / 1024)} KB)` : '';
+      containerEl.innerHTML = `
+        <div class="ann-file-preview-chip">
+          <div class="ann-file-preview-info">
+            <span data-icon="file" data-icon-size="sm" style="color:var(--primary);flex-shrink:0;"></span>
+            <div>
+              <div class="ann-file-preview-name" title="${esc(currentAttachment.name)}">${esc(currentAttachment.name)}</div>
+              <div class="ann-file-preview-size">${sizeText ? esc(sizeText) : 'Tệp đính kèm'}</div>
+            </div>
+          </div>
+          <div style="display:inline-flex;align-items:center;gap:6px;">
+            <a href="${esc(currentAttachment.url)}" target="_blank" rel="noopener noreferrer" class="btn-secondary btn-xs" title="Xem / Tải về">
+              <span data-icon="paperclip" data-icon-size="xs"></span>
+            </a>
+            <button type="button" class="btn-icon btn-xs" id="ann-remove-file-btn" title="Gỡ bỏ tệp" style="color:#DC2626;">
+              <span data-icon="trash2" data-icon-size="xs"></span>
+            </button>
+          </div>
+        </div>
+      `;
+      if (window.normalizeIcons) window.normalizeIcons(containerEl);
+      containerEl.querySelector('#ann-remove-file-btn')?.addEventListener('click', () => {
+        currentAttachment = null;
+        render();
+      });
+      return;
+    }
+
+    containerEl.innerHTML = `
+      <div class="ann-uploader-card" id="ann-dropzone">
+        <input type="file" id="ann-file-input" style="display:none;" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.zip,.rar,image/*"/>
+        <div class="ann-uploader-content">
+          <span data-icon="upload" data-icon-size="md" style="color:#EA580C;"></span>
+          <div style="font-size:13px;font-weight:600;color:var(--text);">Kéo &amp; thả tệp vào đây hoặc <span style="color:#EA580C;text-decoration:underline;">chọn từ máy tính</span></div>
+          <div style="font-size:11.5px;color:var(--text-3);">Hỗ trợ Word, Excel, PowerPoint, PDF, ảnh hoặc tệp nén (Tối đa 25 MB)</div>
+        </div>
+      </div>
+    `;
+
+    if (window.normalizeIcons) window.normalizeIcons(containerEl);
+
+    const dropzone = containerEl.querySelector('#ann-dropzone');
+    const fileInput = containerEl.querySelector('#ann-file-input');
+
+    dropzone?.addEventListener('click', () => fileInput?.click());
+
+    dropzone?.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropzone.classList.add('is-dragover');
+    });
+
+    ['dragleave', 'dragend'].forEach(ev => {
+      dropzone?.addEventListener(ev, () => dropzone.classList.remove('is-dragover'));
+    });
+
+    dropzone?.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('is-dragover');
+      if (e.dataTransfer?.files?.length) {
+        handleFile(e.dataTransfer.files[0]);
+      }
+    });
+
+    fileInput?.addEventListener('change', () => {
+      if (fileInput.files?.length) {
+        handleFile(fileInput.files[0]);
+      }
+    });
+  }
+
+  async function handleFile(file) {
+    if (!file) return;
+    if (file.size > 25 * 1024 * 1024) {
+      toast('Dung lượng tệp vượt quá 25 MB', 'error');
+      return;
+    }
+
+    containerEl.innerHTML = `
+      <div class="ann-uploader-card" style="cursor:wait;opacity:0.85;">
+        <div class="ann-uploader-content">
+          <span data-icon="refreshCw" data-icon-size="sm" class="spin-animation" style="color:#EA580C;"></span>
+          <div style="font-size:12.5px;font-weight:600;">Đang tải tệp lên "${esc(file.name)}"...</div>
+        </div>
+      </div>
+    `;
+    if (window.normalizeIcons) window.normalizeIcons(containerEl);
+
+    try {
+      const res = await api.uploadAnnouncementAttachment(file);
+      currentAttachment = {
+        url: res.file_url,
+        name: res.filename || file.name,
+        size: res.file_size || file.size,
+      };
+      toast('Tải tệp đính kèm thành công!', 'success');
+      render();
+    } catch (err) {
+      toast(err.message || 'Lỗi khi tải tệp lên', 'error');
+      render();
+    }
+  }
+
+  render();
+
+  return {
+    getAttachment: () => currentAttachment,
+    setAttachment: (att) => {
+      currentAttachment = att;
+      render();
+    },
+    clear: () => {
+      currentAttachment = null;
+      render();
+    }
+  };
+}
+
 export async function renderAnnouncements(el, me, route) {
+  const userCanManage = Boolean(me && (['admin', 'director'].includes(me.role) || isHcnsDepartment(me?.department) || me?.role === 'owner'));
   let state = {
     announcements: [],
-    canManage: false,
-    activeTab: 'all', // all | unread | important | dept
+    canManage: userCanManage,
+    activeTab: 'all', // all | unread | dept
     search: '',
     loading: true,
   };
@@ -40,7 +319,7 @@ export async function renderAnnouncements(el, me, route) {
           <button type="button" class="btn-secondary btn-sm" id="ann-mark-all-read" title="Đánh dấu tất cả thông báo là đã đọc">
             <span data-icon="checkCheck" data-icon-size="sm"></span> <span>Đã đọc tất cả</span>
           </button>
-          <button type="button" class="btn-primary btn-sm hidden" id="ann-create-btn">
+          <button type="button" class="btn-primary btn-sm ${userCanManage ? '' : 'hidden'}" id="ann-create-btn">
             <span data-icon="plus" data-icon-size="sm"></span> <span>Đăng thông báo mới</span>
           </button>
         </div>
@@ -66,12 +345,6 @@ export async function renderAnnouncements(el, me, route) {
           <button type="button" class="notif-tab-pill" data-tab="unread">
             <span>Chưa đọc</span>
             <span class="filter-count-badge" id="ann-count-unread" style="display:none;background:#EA580C;color:#FFF;">0</span>
-          </button>
-          <button type="button" class="notif-tab-pill" data-tab="important">
-            <span style="display:inline-flex;align-items:center;gap:4px;">
-              <span data-icon="circleAlert" data-icon-size="xs"></span>
-              <span>Quan trọng</span>
-            </span>
           </button>
           <button type="button" class="notif-tab-pill" data-tab="dept">
             <span>Phòng ban</span>
@@ -133,11 +406,11 @@ export async function renderAnnouncements(el, me, route) {
     try {
       const res = await api.getAnnouncements();
       state.announcements = res.announcements || [];
-      state.canManage = !!res.can_manage;
+      state.canManage = res.can_manage !== undefined ? Boolean(res.can_manage) : userCanManage;
       state.loading = false;
 
-      if (state.canManage && createBtn) {
-        createBtn.classList.remove('hidden');
+      if (createBtn) {
+        createBtn.classList.toggle('hidden', !state.canManage);
       }
 
       renderList();
@@ -172,8 +445,6 @@ export async function renderAnnouncements(el, me, route) {
 
     if (state.activeTab === 'unread') {
       filtered = filtered.filter(a => !a.is_read);
-    } else if (state.activeTab === 'important') {
-      filtered = filtered.filter(a => a.priority === 'important');
     } else if (state.activeTab === 'dept') {
       filtered = filtered.filter(a => a.target_scope === 'department');
     }
@@ -189,7 +460,6 @@ export async function renderAnnouncements(el, me, route) {
     if (!filtered.length) {
       let emptyMsg = 'Chưa có thông báo nào.';
       if (state.activeTab === 'unread') emptyMsg = 'Tuyệt vời! Bạn đã đọc hết tất cả thông báo.';
-      else if (state.activeTab === 'important') emptyMsg = 'Không có thông báo quan trọng nào.';
       else if (state.search) emptyMsg = `Không tìm thấy thông báo phù hợp với "${esc(state.search)}".`;
 
       listWrap.innerHTML = `
@@ -214,9 +484,8 @@ export async function renderAnnouncements(el, me, route) {
 
   function renderCard(a) {
     const isUnread = !a.is_read;
-    const isImportant = a.priority === 'important';
     const isScopeAll = a.target_scope === 'all';
-    const canEdit = state.canManage || a.created_by === me.id;
+    const canEdit = state.canManage && (['admin', 'director'].includes(me?.role) || a.created_by === me?.id);
 
     const initials = (a.creator_name || 'AD')
       .split(' ')
@@ -229,7 +498,7 @@ export async function renderAnnouncements(el, me, route) {
     const formattedTime = a.created_at ? a.created_at.slice(11, 16) : '';
 
     return `
-      <article class="announcement-card ${isUnread ? 'is-unread' : ''} ${isImportant ? 'is-important' : ''}" data-id="${a.id}">
+      <article class="announcement-card ${isUnread ? 'is-unread' : ''}" data-id="${a.id}">
         <div class="announcement-card-head">
           <div class="announcement-author-info">
             <div class="avatar avatar-md" style="background:#4F46E5;color:#FFF;font-weight:700;">${initials}</div>
@@ -241,7 +510,6 @@ export async function renderAnnouncements(el, me, route) {
 
           <div class="announcement-badges">
             ${isUnread ? `<span class="ann-badge ann-badge-new">MỚI</span>` : ''}
-            ${isImportant ? `<span class="ann-badge ann-badge-important"><span data-icon="circleAlert" data-icon-size="xs"></span> Quan trọng</span>` : `<span class="ann-badge ann-badge-normal">Thông thường</span>`}
             ${isScopeAll ? `<span class="ann-badge ann-badge-scope-all">Toàn công ty</span>` : `<span class="ann-badge ann-badge-scope-dept">Phòng: ${esc(a.target_department || 'Bộ phận')}</span>`}
             ${canEdit ? `
               <div class="ann-manage-actions" style="margin-left:4px;">
@@ -253,10 +521,10 @@ export async function renderAnnouncements(el, me, route) {
         </div>
 
         <h2 class="announcement-card-title">${esc(a.title)}</h2>
-        <div class="announcement-card-content">${esc(a.content)}</div>
+        <div class="announcement-card-content">${sanitizeAnnouncementHtml(a.content)}</div>
 
         ${a.attachment_url ? `
-          <div>
+          <div style="margin-top: 10px;">
             <a href="${esc(a.attachment_url)}" target="_blank" rel="noopener noreferrer" class="announcement-attachment-pill" download="${esc(a.attachment_name || 'tai-lieu')}">
               <span data-icon="paperclip" data-icon-size="sm"></span>
               <span>${esc(a.attachment_name || 'Xem tệp đính kèm')}</span>
@@ -288,7 +556,7 @@ export async function renderAnnouncements(el, me, route) {
 
   function bindCardEvents() {
     listWrap.querySelectorAll('.ann-mark-read-btn').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
+      btn.addEventListener('click', async () => {
         const id = parseInt(btn.dataset.id, 10);
         await markSingleRead(id);
       });
@@ -346,22 +614,12 @@ export async function renderAnnouncements(el, me, route) {
           <input id="form-ann-title" type="text" class="input" placeholder="Nhập tiêu đề thông báo ngắn gọn, rõ ràng" required/>
         </div>
 
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-          <div class="field">
-            <label style="font-size:12.5px;font-weight:700;margin-bottom:4px;display:block;">Mức độ ưu tiên</label>
-            <select id="form-ann-priority" class="input">
-              <option value="normal" selected>Thông thường</option>
-              <option value="important">Quan trọng</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label style="font-size:12.5px;font-weight:700;margin-bottom:4px;display:block;">Phạm vi gửi</label>
-            <select id="form-ann-scope" class="input">
-              <option value="all" selected>Toàn công ty</option>
-              <option value="department">Theo phòng ban</option>
-            </select>
-          </div>
+        <div class="field">
+          <label style="font-size:12.5px;font-weight:700;margin-bottom:4px;display:block;">Phạm vi gửi</label>
+          <select id="form-ann-scope" class="input">
+            <option value="all" selected>Toàn công ty</option>
+            <option value="department">Theo phòng ban</option>
+          </select>
         </div>
 
         <div class="field" id="form-dept-field" style="display:none;">
@@ -376,18 +634,13 @@ export async function renderAnnouncements(el, me, route) {
         </div>
 
         <div class="field">
-          <label style="font-size:12.5px;font-weight:700;margin-bottom:4px;display:block;">Nội dung chi tiết *</label>
-          <textarea id="form-ann-content" class="input" rows="7" placeholder="Nhập nội dung thông báo đầy đủ..." required style="resize:vertical;"></textarea>
+          <label style="font-size:12.5px;font-weight:700;margin-bottom:6px;display:block;">Nội dung chi tiết (Định dạng Word) *</label>
+          <div id="ann-editor-mount"></div>
         </div>
 
         <div class="field">
-          <label style="font-size:12.5px;font-weight:700;margin-bottom:4px;display:block;">Liên kết tệp / Ảnh đính kèm (Tùy chọn)</label>
-          <input id="form-ann-attachment-url" type="url" class="input" placeholder="https://drive.google.com/... hoặc đường dẫn tài liệu"/>
-        </div>
-
-        <div class="field">
-          <label style="font-size:12.5px;font-weight:700;margin-bottom:4px;display:block;">Tên hiển thị của tệp (Tùy chọn)</label>
-          <input id="form-ann-attachment-name" type="text" class="input" placeholder="Ví dụ: Quy_dinh_moi_2026.pdf"/>
+          <label style="font-size:12.5px;font-weight:700;margin-bottom:6px;display:block;">Tệp đính kèm (Tùy chọn)</label>
+          <div id="ann-uploader-mount"></div>
         </div>
       </form>
     `;
@@ -398,6 +651,12 @@ export async function renderAnnouncements(el, me, route) {
     `;
 
     openModal('Đăng thông báo mới', body, footer);
+    document.getElementById('modal')?.classList.add('modal--announcement');
+
+    const editorMount = document.getElementById('ann-editor-mount');
+    const uploaderMount = document.getElementById('ann-uploader-mount');
+    const richEditor = createRichEditor(editorMount, '');
+    const fileUploader = createFileUploader(uploaderMount, null);
 
     const scopeSelect = document.getElementById('form-ann-scope');
     const deptField = document.getElementById('form-dept-field');
@@ -410,20 +669,31 @@ export async function renderAnnouncements(el, me, route) {
     document.getElementById('ann-form')?.addEventListener('submit', async (e) => {
       e.preventDefault();
       const title = document.getElementById('form-ann-title')?.value.trim();
-      const content = document.getElementById('form-ann-content')?.value.trim();
-      const priority = document.getElementById('form-ann-priority')?.value;
+      const content = richEditor.getHtml();
       const targetScope = document.getElementById('form-ann-scope')?.value;
       const targetDepartment = targetScope === 'department' ? document.getElementById('form-ann-dept')?.value : null;
-      const attachmentUrl = document.getElementById('form-ann-attachment-url')?.value.trim() || null;
-      const attachmentName = document.getElementById('form-ann-attachment-name')?.value.trim() || null;
+      const att = fileUploader.getAttachment();
+      const attachmentUrl = att?.url || null;
+      const attachmentName = att?.name || null;
 
-      if (!title || !content) return;
+      if (!title) {
+        toast('Vui lòng nhập tiêu đề thông báo', 'error');
+        return;
+      }
+      if (!content) {
+        toast('Vui lòng nhập nội dung thông báo', 'error');
+        richEditor.focus();
+        return;
+      }
+
       const submitBtn = document.getElementById('ann-modal-submit');
       if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Đang đăng...'; }
 
       try {
         const res = await api.createAnnouncement({
-          title, content, priority,
+          title,
+          content,
+          priority: 'normal',
           target_scope: targetScope,
           target_department: targetDepartment,
           attachment_url: attachmentUrl,
@@ -454,22 +724,12 @@ export async function renderAnnouncements(el, me, route) {
           <input id="form-ann-title" type="text" class="input" value="${esc(item.title)}" required/>
         </div>
 
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-          <div class="field">
-            <label style="font-size:12.5px;font-weight:700;margin-bottom:4px;display:block;">Mức độ ưu tiên</label>
-            <select id="form-ann-priority" class="input">
-              <option value="normal" ${item.priority === 'normal' ? 'selected' : ''}>Thông thường</option>
-              <option value="important" ${item.priority === 'important' ? 'selected' : ''}>Quan trọng</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label style="font-size:12.5px;font-weight:700;margin-bottom:4px;display:block;">Phạm vi gửi</label>
-            <select id="form-ann-scope" class="input">
-              <option value="all" ${!isDept ? 'selected' : ''}>Toàn công ty</option>
-              <option value="department" ${isDept ? 'selected' : ''}>Theo phòng ban</option>
-            </select>
-          </div>
+        <div class="field">
+          <label style="font-size:12.5px;font-weight:700;margin-bottom:4px;display:block;">Phạm vi gửi</label>
+          <select id="form-ann-scope" class="input">
+            <option value="all" ${!isDept ? 'selected' : ''}>Toàn công ty</option>
+            <option value="department" ${isDept ? 'selected' : ''}>Theo phòng ban</option>
+          </select>
         </div>
 
         <div class="field" id="form-dept-field" style="display:${isDept ? 'block' : 'none'};">
@@ -482,18 +742,13 @@ export async function renderAnnouncements(el, me, route) {
         </div>
 
         <div class="field">
-          <label style="font-size:12.5px;font-weight:700;margin-bottom:4px;display:block;">Nội dung chi tiết *</label>
-          <textarea id="form-ann-content" class="input" rows="7" required style="resize:vertical;">${esc(item.content)}</textarea>
+          <label style="font-size:12.5px;font-weight:700;margin-bottom:6px;display:block;">Nội dung chi tiết (Định dạng Word) *</label>
+          <div id="ann-edit-editor-mount"></div>
         </div>
 
         <div class="field">
-          <label style="font-size:12.5px;font-weight:700;margin-bottom:4px;display:block;">Liên kết tệp / Ảnh đính kèm</label>
-          <input id="form-ann-attachment-url" type="url" class="input" value="${esc(item.attachment_url || '')}"/>
-        </div>
-
-        <div class="field">
-          <label style="font-size:12.5px;font-weight:700;margin-bottom:4px;display:block;">Tên hiển thị của tệp</label>
-          <input id="form-ann-attachment-name" type="text" class="input" value="${esc(item.attachment_name || '')}"/>
+          <label style="font-size:12.5px;font-weight:700;margin-bottom:6px;display:block;">Tệp đính kèm (Tùy chọn)</label>
+          <div id="ann-edit-uploader-mount"></div>
         </div>
       </form>
     `;
@@ -504,6 +759,15 @@ export async function renderAnnouncements(el, me, route) {
     `;
 
     openModal('Chỉnh sửa thông báo', body, footer);
+    document.getElementById('modal')?.classList.add('modal--announcement');
+
+    const editorMount = document.getElementById('ann-edit-editor-mount');
+    const uploaderMount = document.getElementById('ann-edit-uploader-mount');
+    const richEditor = createRichEditor(editorMount, item.content || '');
+    const fileUploader = createFileUploader(uploaderMount, item.attachment_url ? {
+      url: item.attachment_url,
+      name: item.attachment_name || 'Tài liệu đính kèm',
+    } : null);
 
     const scopeSelect = document.getElementById('form-ann-scope');
     const deptField = document.getElementById('form-dept-field');
@@ -516,20 +780,31 @@ export async function renderAnnouncements(el, me, route) {
     document.getElementById('ann-edit-form')?.addEventListener('submit', async (e) => {
       e.preventDefault();
       const title = document.getElementById('form-ann-title')?.value.trim();
-      const content = document.getElementById('form-ann-content')?.value.trim();
-      const priority = document.getElementById('form-ann-priority')?.value;
+      const content = richEditor.getHtml();
       const targetScope = document.getElementById('form-ann-scope')?.value;
       const targetDepartment = targetScope === 'department' ? document.getElementById('form-ann-dept')?.value : null;
-      const attachmentUrl = document.getElementById('form-ann-attachment-url')?.value.trim() || null;
-      const attachmentName = document.getElementById('form-ann-attachment-name')?.value.trim() || null;
+      const att = fileUploader.getAttachment();
+      const attachmentUrl = att?.url || null;
+      const attachmentName = att?.name || null;
 
-      if (!title || !content) return;
+      if (!title) {
+        toast('Vui lòng nhập tiêu đề thông báo', 'error');
+        return;
+      }
+      if (!content) {
+        toast('Vui lòng nhập nội dung thông báo', 'error');
+        richEditor.focus();
+        return;
+      }
+
       const submitBtn = document.getElementById('ann-edit-submit');
       if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Đang lưu...'; }
 
       try {
         const res = await api.updateAnnouncement(item.id, {
-          title, content, priority,
+          title,
+          content,
+          priority: 'normal',
           target_scope: targetScope,
           target_department: targetDepartment,
           attachment_url: attachmentUrl,

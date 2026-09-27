@@ -1,4 +1,4 @@
-import { esc, EVAL_GROUPS, EVAL_RATING_SCALE, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtDateTime, noop, safeCb, paginateRows, paginationHTML, bindPagination, sortVietnameseNames, compareVietnameseNames } from '../utils.js?v=20260728-evaluation-policy';
+import { esc, EVAL_GROUPS, EVAL_RATING_SCALE, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtDateTime, fmtDate, noop, safeCb, paginateRows, paginationHTML, bindPagination, sortVietnameseNames, compareVietnameseNames } from '../utils.js?v=20260728-evaluation-policy';
 import { api } from '../api.js';
 import { EventBus } from '../event-bus.js';
 import { icon } from '../icons.js';
@@ -309,7 +309,7 @@ function adminSectionHtml(periods, evaluations, basicUsers, latestPeriod) {
     ${latestPeriod ? `
       <div class="detail-grid">
         <div class="detail-item"><div class="detail-label">Kỳ gần nhất</div><div class="detail-val">Tháng ${latestPeriod.month}/${latestPeriod.year}</div></div>
-        <div class="detail-item"><div class="detail-label">Thời gian</div><div class="detail-val">${esc(latestPeriod.start_date)} → ${esc(latestPeriod.end_date)}</div></div>
+        <div class="detail-item"><div class="detail-label">Thời gian</div><div class="detail-val">${esc(fmtDate(latestPeriod.start_date))} → ${esc(fmtDate(latestPeriod.end_date))}</div></div>
       </div>` : `<div style="font-size:13px;color:var(--text-3);padding:6px 0;">Chưa có kỳ đánh giá nào được mở.</div>`}
     <div id="eval-period-form-wrap" class="hidden" style="margin-top:10px;border-top:1px solid var(--divider);padding-top:10px;">
       <div class="input-row">
@@ -317,8 +317,8 @@ function adminSectionHtml(periods, evaluations, basicUsers, latestPeriod) {
         <div class="field"><label>Năm</label><input type="number" id="ep-year" value="${new Date().getFullYear()}"></div>
       </div>
       <div class="input-row">
-        <div class="field"><label>Ngày bắt đầu</label><input type="date" id="ep-start" readonly></div>
-        <div class="field"><label>Ngày kết thúc</label><input type="date" id="ep-end" readonly></div>
+        <div class="field"><label>Ngày bắt đầu (dd/mm/yyyy)</label><input type="text" id="ep-start" readonly></div>
+        <div class="field"><label>Ngày kết thúc (dd/mm/yyyy)</label><input type="text" id="ep-end" readonly></div>
       </div>
       <div style="font-size:12px;color:var(--text-3);margin-top:-4px;margin-bottom:10px;">Kỳ đánh giá cố định: từ ngày 28 tháng trước đến ngày 03 tháng sau.</div>
       <button class="btn-primary btn-sm" id="ep-save">Lưu kỳ đánh giá</button>
@@ -375,7 +375,7 @@ function assignedSectionHtml(list) {
               <td>${esc(e.user_department || '—')}</td>
               <td>${esc(e.user_position || '—')}</td>
               <td>${e.period_month || '—'}/${e.period_year || ''}</td>
-              <td style="font-size:12px;">${esc(e.period_start || '')} → ${esc(e.period_end || '')}</td>
+              <td style="font-size:12px;">${esc(fmtDate(e.period_start || ''))} → ${esc(fmtDate(e.period_end || ''))}</td>
               <td>${statusBadgeHtml(e.status)}</td>
             </tr>
           `).join('')}
@@ -394,7 +394,7 @@ function ttsSectionHtml(ev) {
     ${ev ? `
       <div class="detail-grid">
         <div class="detail-item"><div class="detail-label">Tháng đánh giá</div><div class="detail-val">${ev.period_month}/${ev.period_year}</div></div>
-        <div class="detail-item"><div class="detail-label">Thời gian</div><div class="detail-val">${esc(ev.period_start || '')} → ${esc(ev.period_end || '')}</div></div>
+        <div class="detail-item"><div class="detail-label">Thời gian</div><div class="detail-val">${esc(fmtDate(ev.period_start || ''))} → ${esc(fmtDate(ev.period_end || ''))}</div></div>
         <div class="detail-item"><div class="detail-label">Còn lại</div><div class="detail-val">${daysLeft != null ? (daysLeft >= 0 ? daysLeft + ' ngày' : 'Đã kết thúc') : '—'}</div></div>
         <div class="detail-item"><div class="detail-label">Mentor</div><div class="detail-val">${esc(ev.mentor_name || '—')}</div></div>
         <div class="detail-item"><div class="detail-label">Trưởng phòng</div><div class="detail-val">${esc(ev.department_head_name || '—')}</div></div>
@@ -423,8 +423,10 @@ function wireWorkflowHandlers(el, me, ctx) {
     const startYear = month === 1 ? year - 1 : year;
     const endMonth = month === 12 ? 1 : month + 1;
     const endYear = month === 12 ? year + 1 : year;
-    document.getElementById('ep-start').value = `${startYear}-${pad(startMonth)}-28`;
-    document.getElementById('ep-end').value = `${endYear}-${pad(endMonth)}-03`;
+    const sEl = document.getElementById('ep-start');
+    const eEl = document.getElementById('ep-end');
+    if (sEl) sEl.value = `28/${pad(startMonth)}/${startYear}`;
+    if (eEl) eEl.value = `03/${pad(endMonth)}/${endYear}`;
   };
   syncEvalPeriodDates();
   document.getElementById('ep-month')?.addEventListener('input', syncEvalPeriodDates);

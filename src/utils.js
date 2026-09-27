@@ -78,18 +78,61 @@ export function fmtMoney(n) {
   return Number(n).toLocaleString('vi-VN') + ' ₫';
 }
 
-export function fmtDate(s) {
-  if (!s) return '—';
+export function fmtDate(s, fallback = '—') {
+  if (!s || s === '—' || s === '-' || s === 'null' || s === 'undefined') return fallback;
+  if (typeof s === 'string') {
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+    const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (dmy) return `${dmy[1].padStart(2, '0')}/${dmy[2].padStart(2, '0')}/${dmy[3]}`;
+  }
   const d = new Date(s);
-  if (isNaN(d)) return s;
-  return d.toLocaleDateString('vi-VN');
+  if (isNaN(d)) return fallback;
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = d.getFullYear();
+  return `${day}/${month}/${year}`;
+}
+
+export function fmtDateInput(s) {
+  return fmtDate(s, '');
+}
+
+export function parseDateInput(s) {
+  if (!s) return null;
+  const str = String(s).trim();
+  if (!str || str === '—' || str === '-' || str === 'null' || str === 'undefined') return null;
+  // If DD/MM/YYYY or D/M/YYYY
+  const m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) {
+    const day = m[1].padStart(2, '0');
+    const month = m[2].padStart(2, '0');
+    const year = m[3];
+    return `${year}-${month}-${day}`;
+  }
+  // If DD-MM-YYYY or D-M-YYYY
+  const mDash = str.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+  if (mDash) {
+    const day = mDash[1].padStart(2, '0');
+    const month = mDash[2].padStart(2, '0');
+    const year = mDash[3];
+    return `${year}-${month}-${day}`;
+  }
+  // If already YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+  return null;
 }
 
 export function fmtDateTime(s) {
   if (!s) return '—';
   const d = new Date(s);
   if (isNaN(d)) return s;
-  return d.toLocaleString('vi-VN');
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = d.getFullYear();
+  const hours = String(d.getHours()).padStart(2, '0');
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  return `${hours}:${minutes} ${day}/${month}/${year}`;
 }
 
 export function avatarColor(name) {
@@ -420,4 +463,115 @@ export function emptyHTML(iconNameOrSvg, text, hint = '') {
     iconHtml = icon('circleHelp', 'xl');
   }
   return `<div class="empty-state"><div class="empty-icon">${iconHtml}</div><div class="empty-text">${esc(text)}</div>${hint ? `<div class="empty-hint">${esc(hint)}</div>` : ''}</div>`;
+}
+
+/**
+ * Robust XSS Sanitizer for Announcement rich HTML content.
+ * Strictly disallows scripts, iframes, on* event handlers, javascript: URIs,
+ * and dangerous style properties while preserving Word-like formatting.
+ */
+export function sanitizeAnnouncementHtml(dirty) {
+  if (!dirty || typeof dirty !== 'string') return '';
+  if (typeof DOMParser === 'undefined') return esc(dirty);
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(dirty, 'text/html');
+
+  const removeCompletely = [
+    'script', 'style', 'iframe', 'object', 'embed', 'form', 'input',
+    'button', 'select', 'textarea', 'svg', 'math', 'base', 'meta',
+    'link', 'head', 'template', 'applet', 'noscript', 'canvas'
+  ];
+  for (const tag of removeCompletely) {
+    doc.querySelectorAll(tag).forEach(el => el.remove());
+  }
+
+  const allowedTags = new Set([
+    'p', 'br', 'b', 'strong', 'i', 'em', 'u', 's', 'strike', 'del',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'ul', 'ol', 'li', 'blockquote', 'pre', 'code',
+    'a', 'span', 'div', 'hr', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td',
+    'sub', 'sup', 'img'
+  ]);
+
+  const allowedStyles = new Set([
+    'color', 'background-color', 'text-align', 'font-weight', 'font-style',
+    'text-decoration', 'font-size', 'margin', 'margin-left', 'margin-right',
+    'padding', 'padding-left', 'padding-right', 'border-left'
+  ]);
+
+  function sanitizeNode(node) {
+    const children = Array.from(node.childNodes);
+    for (const child of children) {
+      if (child.nodeType === 1) {
+        const tagName = child.tagName.toLowerCase();
+        if (!allowedTags.has(tagName)) {
+          while (child.firstChild) node.insertBefore(child.firstChild, child);
+          node.removeChild(child);
+          continue;
+        }
+
+        const attrs = Array.from(child.attributes);
+        for (const attr of attrs) {
+          const name = attr.name.toLowerCase();
+          const val = attr.value;
+
+          if (name.startsWith('on')) {
+            child.removeAttribute(name);
+            continue;
+          }
+
+          if (name === 'href') {
+            const cleanHref = val.trim();
+            if (/^(?:javascript|data|vbscript):/i.test(cleanHref)) {
+              child.removeAttribute('href');
+            } else {
+              child.setAttribute('href', cleanHref);
+              child.setAttribute('target', '_blank');
+              child.setAttribute('rel', 'noopener noreferrer');
+            }
+          } else if (name === 'src' && tagName === 'img') {
+            const cleanSrc = val.trim();
+            if (/^(?:javascript|vbscript):/i.test(cleanSrc)) {
+              child.removeAttribute('src');
+            } else {
+              child.setAttribute('src', cleanSrc);
+            }
+          } else if (name === 'style') {
+            const sanitizedStyles = [];
+            const declarations = val.split(';');
+            for (const dec of declarations) {
+              const colonIdx = dec.indexOf(':');
+              if (colonIdx === -1) continue;
+              const prop = dec.slice(0, colonIdx).trim().toLowerCase();
+              const propVal = dec.slice(colonIdx + 1).trim();
+              if (allowedStyles.has(prop)) {
+                if (!/(?:url|expression|javascript|behavior|include-source)/i.test(propVal)) {
+                  sanitizedStyles.push(`${prop}:${propVal}`);
+                }
+              }
+            }
+            if (sanitizedStyles.length > 0) {
+              child.setAttribute('style', sanitizedStyles.join(';'));
+            } else {
+              child.removeAttribute('style');
+            }
+          } else if (name === 'class') {
+            child.removeAttribute(name);
+          } else if (['title', 'alt', 'width', 'height', 'align', 'colspan', 'rowspan'].includes(name)) {
+            // Keep safe layout attributes
+          } else {
+            child.removeAttribute(name);
+          }
+        }
+
+        sanitizeNode(child);
+      } else if (child.nodeType === 8) {
+        node.removeChild(child);
+      }
+    }
+  }
+
+  sanitizeNode(doc.body);
+  return doc.body.innerHTML;
 }

@@ -121,6 +121,9 @@
         <span class="nav-icon" data-icon="megaphone"></span><span>Thông báo</span>
         <span id="sidebar-announcement-badge" class="nav-badge hidden">0</span>
       </a>
+      <a href="#/chat" class="nav-item" data-nav="chat" id="sidebar-chat-link">
+        <span class="nav-icon" data-icon="messageCircle"></span><span>Chat <span id="sidebar-chat-mention-badge" class="nav-badge hidden">0</span></span>
+      </a>
 
       <!-- HR Section -->
       <div class="nav-section-label">Nhân sự</div>
@@ -136,6 +139,7 @@
       <a href="#/invoices" class="nav-item" data-nav="invoices">
         <span class="nav-icon" data-icon="banknote"></span><span>Phiếu lương</span>
       </a>
+      <!-- Tạm ẩn: Đánh giá hiệu suất & KPI nhân viên
       <a href="#/evaluation" class="nav-item" data-nav="evaluation">
         <span class="nav-icon" data-icon="barChart3"></span><span>Đánh giá hiệu suất</span>
       </a>
@@ -143,6 +147,7 @@
       <a href="#/kpis" class="nav-item" data-nav="kpis">
         <span class="nav-icon" data-icon="target"></span><span>KPI nhân viên</span>
       </a>
+      -->
 
       <a href="#/assets" class="nav-item" data-nav="assets">
         <span class="nav-icon" data-icon="link"></span><span>Bàn giao dự án &amp; tài khoản</span>
@@ -306,12 +311,19 @@
   <div id="task-panel-body" class="task-panel-body"></div>
 </div>
 
+<!-- ═══════════════════ DECISION POPUP MODAL ═══════════════════ -->
+<div id="decision-popup-overlay" class="decision-popup-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="decision-popup-title">
+  <div id="decision-popup-card" class="decision-popup-card">
+    <div id="decision-popup-body"></div>
+  </div>
+</div>
+
 <!-- ═══════════════════ TOAST ═══════════════════ -->
 <div id="toast-container" aria-live="polite"></div>
 
 <link rel="stylesheet" href="/src/vendor/cropperjs/cropper.min.css?v=1.6.2">
 <script src="/src/vendor/cropperjs/cropper.min.js?v=1.6.2"></script>
-  <script type="module" src="/src/app.js?v=20260916-invoice-export-fix-v2"></script>
-<script defer src="/src/pwa-register.js?v=pwa-v25-push"></script>
+  <script type="module" src="/src/app.js?v=20260927-payslip-delete-v32"></script>
+<script defer src="/src/pwa-register.js?v=20260927-pwa-v32"></script>
 </body>
 </html>

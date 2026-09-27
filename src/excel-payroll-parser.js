@@ -35,6 +35,8 @@ export function normalizeHeader(str) {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '') // Bỏ dấu tiếng Việt
     .replace(/đ/g, 'd')
+    .replace(/[&]/g, ' va ') // Chuyển & thành va
+    .replace(/[+]/g, ' va ') // Chuyển + thành va
     .replace(/[^a-z0-9]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -42,9 +44,14 @@ export function normalizeHeader(str) {
 
 export function detectColumnIndices(lines, firstDataIndex, maxCols) {
   // Lọc các dòng tiêu đề đứng trước dòng dữ liệu nhân viên đầu tiên
+  // Bỏ qua các dòng tiêu đề chung báo cáo hoặc metadata
   const headerLines = lines.slice(0, firstDataIndex).filter(l => {
     const t = l.trim();
-    return t && !t.includes('Ngày công định mức') && !t.includes('Ngày trong tháng') && !t.toUpperCase().includes('BAN GIÁM ĐỐC');
+    if (!t) return false;
+    if (t.includes('Ngày công định mức') || t.includes('Ngày trong tháng') || t.toUpperCase().includes('BAN GIÁM ĐỐC')) return false;
+    const upper = t.toUpperCase();
+    if (upper.startsWith('BẢNG LƯƠNG') || upper.startsWith('BẢNG THANH TOÁN') || upper.startsWith('BẢNG TÍNH') || upper.startsWith('CÔNG TY')) return false;
+    return true;
   });
 
   const topGroups = new Array(maxCols).fill('');
@@ -93,7 +100,7 @@ export function detectColumnIndices(lines, firstDataIndex, maxCols) {
   // Nhận diện mức lương & thưởng HTCV
   colMap.positionSalary = findCol(n => n.includes('luong vi tri') || n.includes('chuc danh'));
   colMap.completionBonus = findCol(n => n.includes('thuong hoan thanh') || n.includes('htcv'));
-  colMap.totalIncomeAgreed = findCol(n => n.includes('tong thu nhap bao gom luong va thuong') || n.includes('tong thu nhap bao gom') || (n.includes('tong thu nhap') && !n.includes('phu cap') && !n.includes('truoc thue') && !n.includes('ngay cong') && !n.includes('ngoai gio')));
+  colMap.totalIncomeAgreed = findCol(n => n.includes('tong thu nhap bao gom luong va thuong') || n.includes('tong thu nhap bao gom') || n.includes('tong thoa thuan') || n.includes('muc thoa thuan') || (n.includes('tong thu nhap') && !n.includes('phu cap') && !n.includes('truoc thue') && !n.includes('ngay cong') && !n.includes('ngoai gio')));
   colMap.insuranceBase = findCol(n => n.includes('luong dong bh') || (n.includes('muc luong') && !n.includes('vi tri')));
   if (colMap.insuranceBase === -1 && colMap.positionSalary === -1) {
     colMap.insuranceBase = findCol(n => n.includes('muc luong'));
@@ -101,18 +108,18 @@ export function detectColumnIndices(lines, firstDataIndex, maxCols) {
 
   // Ngày công làm việc
   colMap.probationDays = findCol(n => n.includes('cong thu viec') || n.includes('thu viec'));
-  colMap.officialDays = findCol(n => n.includes('cong chinh thuc') || n.includes('chinh thuc'));
-  colMap.paidLeaveDays = findCol(n => n.includes('nghi phep') || n.includes('huong nguyen luong'));
-  colMap.unpaidLeaveDays = findCol(n => n.includes('nghi kl') || n.includes('khong luong'));
-  colMap.workIncome = findCol(n => n.includes('thu nhap theo ngay cong') || n.includes('ngay cong lam viec thuc te'));
+  colMap.officialDays = findCol(n => n.includes('cong chinh thuc') || n.includes('chinh thuc') || n.includes('cong ct') || n.includes('ngay cong ct') || (n.includes('ngay cong') && !n.includes('thu viec') && !n.includes('dinh muc') && !n.includes('thu nhap') && !n.includes('theo ngay cong')));
+  colMap.paidLeaveDays = findCol(n => n.includes('nghi phep') || n.includes('huong nguyen luong') || n.includes('phep nam'));
+  colMap.unpaidLeaveDays = findCol(n => n.includes('nghi kl') || n.includes('khong luong') || n.includes('nghi bhxh'));
+  colMap.workIncome = findCol(n => n.includes('thu nhap theo ngay cong') || n.includes('ngay cong lam viec thuc te') || ((n.includes('ngay cong') || n.includes('cong lam')) && (n.includes('thu nhap') || n.includes('luong') || n.includes('thuc te'))));
 
   // Làm thêm giờ (OT)
   colMap.otNormalHours = findCol(n => (n.includes('ngoai gio') || n.includes('lam them')) && (n.includes('ngay thuong') || n === 'ngay thuong'));
   if (colMap.otNormalHours === -1) colMap.otNormalHours = findCol(n => n.includes('ngay thuong'));
   colMap.otWeekendHours = findCol(n => n.includes('ngay nghi') || n.includes('hang tuan'));
   colMap.otHolidayHours = findCol(n => n.includes('ngay le') || n.includes('le tet'));
-  colMap.baseHourlyRate = findCol(n => n.includes('theo gio co so') || n.includes('1h lam viec'));
-  colMap.otTotalIncome = findCol(n => n.includes('tong thu nhap ngoai gio') || n.includes('thu nhap tu lam them gio'));
+  colMap.baseHourlyRate = findCol(n => n.includes('theo gio co so') || n.includes('1h lam viec') || n.includes('don gia gio'));
+  colMap.otTotalIncome = findCol(n => n.includes('tong thu nhap ngoai gio') || n.includes('thu nhap tu lam them gio') || n.includes('tien ot') || (n.includes('ngoai gio') && n.includes('thu nhap')));
 
   // Phụ cấp
   colMap.phoneAllowance = findCol(n => n.includes('dien thoai'));
@@ -120,10 +127,10 @@ export function detectColumnIndices(lines, firstDataIndex, maxCols) {
   colMap.parkingAllowance = findCol(n => n.includes('gui xe'));
   colMap.fuelAllowance = findCol(n => n.includes('xang xe') || n.includes('di lai'));
   colMap.businessTripAllowance = findCol(n => n.includes('cong tac'));
-  colMap.totalAllowance = findCol(n => (n.includes('thu nhap khac') || n.includes('phu cap')) && n.includes('tong cong'));
-  colMap.totalIncomeWithAllowance = findCol(n => n.includes('tong thu nhap & phu cap') || n.includes('tong thu nhap bao gom phu cap'));
+  colMap.totalAllowance = findCol(n => ((n.includes('thu nhap khac') || n.includes('phu cap')) && (n.includes('tong cong') || n.includes('tong') || n.includes('cong'))) || n === 'phu cap' || n === 'tong phu cap' || n === 'cong phu cap' || n === 'cac khoan phu cap' || n.includes('phu cap theo qd') || (n.includes('phu cap') && !n.includes('an ca') && !n.includes('dien thoai') && !n.includes('trang phuc') && !n.includes('gui xe') && !n.includes('xang xe') && !n.includes('cong tac') && !n.includes('truoc thue')));
+  colMap.totalIncomeWithAllowance = findCol(n => n.includes('tong thu nhap va phu cap') || n.includes('tong thu nhap phu cap') || n.includes('tong tn va phu cap') || n.includes('tong tn phu cap') || n.includes('tong tn va pc') || n.includes('tong tn pc') || n.includes('tong thu nhap bao gom phu cap'));
   colMap.kpiBonus = findCol(n => n.includes('thuong kpi') || n.includes('kpi'));
-  colMap.totalPreTaxIncome = findCol(n => n.includes('tong thu nhap truoc thue') || n.includes('thu nhap truoc thue'));
+  colMap.totalPreTaxIncome = findCol(n => n.includes('tong thu nhap truoc thue') || n.includes('thu nhap truoc thue') || n.includes('tong truoc thue') || n.includes('tn truoc thue') || (n.includes('truoc thue') && !n.includes('ngoai gio')));
 
   // Các khoản NLĐ đóng
   colMap.insuranceSocial = findCol(n => (n.includes('dong gop cua nld') || n.includes('nld')) && n.includes('xa hoi'));
@@ -133,7 +140,7 @@ export function detectColumnIndices(lines, firstDataIndex, maxCols) {
   colMap.insuranceUnemployment = findCol(n => (n.includes('dong gop cua nld') || n.includes('nld')) && (n.includes('that nghiep') || n.includes('bhtn')));
   if (colMap.insuranceUnemployment === -1) colMap.insuranceUnemployment = findCol(n => (n.includes('that nghiep 1') || n.includes('bhtn 1')) && !n.includes('cong ty'));
   colMap.insuranceTotal = findCol(n => (n.includes('dong gop cua nld') || n.includes('nld')) && n.includes('tong cong'));
-  if (colMap.insuranceTotal === -1) colMap.insuranceTotal = findCol(n => n.includes('dong gop cua nld'));
+  if (colMap.insuranceTotal === -1) colMap.insuranceTotal = findCol(n => n.includes('dong gop cua nld') || n.includes('tong bh nld') || n.includes('tong bhxh nld'));
 
   // Thuế TNCN
   colMap.personalDeduction = findCol(n => n.includes('cho ban than') || (n.includes('thue tncn') && n.includes('ban than')));
@@ -142,14 +149,14 @@ export function detectColumnIndices(lines, firstDataIndex, maxCols) {
   colMap.totalFamilyDeduction = findCol(n => n.includes('giam tru gia canh'));
   colMap.taxableIncome = findCol(n => n.includes('thu nhap tinh thue'));
   colMap.personalTax = findCol(n => (n === 'thue tncn' || n.endsWith('thue tncn')) && !n.includes('tinh thue') && !n.includes('da khau tru'));
-  colMap.netIncomeAfterTax = findCol(n => n.includes('thuc linh sau thue') || n.includes('thu nhap thuc linh'));
+  colMap.netIncomeAfterTax = findCol(n => n.includes('thuc linh sau thue') || n.includes('thu nhap thuc linh') || n.includes('thuc linh') || n.includes('sau thue') || n.includes('luong thuc linh'));
   colMap.taxWithheld = findCol(n => n.includes('da khau tru'));
 
   // Các khoản chi trả / khấu trừ khác
   colMap.mealAllowance = findCol(n => n.includes('tien an ca') || n.includes('an ca'));
   colMap.arrearsRecovery = findCol(n => n.includes('truy thu'));
   colMap.arrearsAddition = findCol(n => n.includes('truy linh'));
-  colMap.transferAmount = findCol(n => n.includes('chuyen vao tai khoan') || n.includes('chuyen vao tk') || n.includes('so tien chuyen'));
+  colMap.transferAmount = findCol(n => n.includes('chuyen vao tai khoan') || n.includes('chuyen vao tk') || n.includes('so tien chuyen') || n.includes('chuyen khoan') || n.includes('thuc chuyen') || n.includes('chuyen tk') || n.includes('tien chuyen') || n.includes('ck nld'));
 
   // Các khoản Công ty đóng
   colMap.compInsuranceSocial = findCol(n => (n.includes('cong ty') || n.includes('cty')) && (n.includes('xa hoi') || n.includes('bhxh')));
@@ -158,7 +165,7 @@ export function detectColumnIndices(lines, firstDataIndex, maxCols) {
   colMap.compInsuranceUnemp = findCol(n => (n.includes('cong ty') || n.includes('cty')) && (n.includes('that nghiep') || n.includes('bhtn')));
   colMap.compInsuranceAccident = findCol(n => n.includes('tnld') || n.includes('bnn') || n.includes('tai nan'));
   colMap.compInsuranceTotal = findCol(n => (n.includes('dong gop cua cong ty') || n.includes('cong ty')) && n.includes('tong cong'));
-  colMap.totalCompanyCost = findCol(n => n.includes('tong quy luong') || n.includes('quy luong thuong cong ty'));
+  colMap.totalCompanyCost = findCol(n => n.includes('tong quy luong') || n.includes('quy luong thuong cong ty') || n.includes('tong chi phi cty'));
 
   colMap.isSigned = findCol(n => n.includes('ky nhan'));
   colMap.notes = findCol(n => n.includes('ghi chu'));
@@ -317,9 +324,12 @@ export function parsePayrollExcelText(text) {
     const businessTripAllowance = getMoney(colMap.businessTripAllowance);
     const totalAllowance = getMoney(colMap.totalAllowance) || (phoneAllowance + attireAllowance + parkingAllowance + fuelAllowance + businessTripAllowance);
 
-    const totalIncomeWithAllowance = getMoney(colMap.totalIncomeWithAllowance);
+    const rawIncomeWithAllowance = getMoney(colMap.totalIncomeWithAllowance);
     const kpiBonus = getMoney(colMap.kpiBonus);
-    const totalPreTaxIncome = getMoney(colMap.totalPreTaxIncome);
+    const rawPreTax = getMoney(colMap.totalPreTaxIncome);
+
+    const totalIncomeWithAllowance = rawIncomeWithAllowance || ((workIncome > 0 || totalAllowance > 0) ? (workIncome + otTotalIncome + totalAllowance) : 0);
+    const totalPreTaxIncome = rawPreTax || (totalIncomeWithAllowance > 0 ? (totalIncomeWithAllowance + kpiBonus) : (totalIncomeAgreed > 0 ? totalIncomeAgreed : 0));
 
     // Các khoản NLĐ đóng
     const insuranceSocial = getMoney(colMap.insuranceSocial);
@@ -335,12 +345,15 @@ export function parsePayrollExcelText(text) {
     const taxableIncome = getMoney(colMap.taxableIncome);
     const personalTax = getMoney(colMap.personalTax);
 
-    const netIncomeAfterTax = getMoney(colMap.netIncomeAfterTax);
+    const rawNet = getMoney(colMap.netIncomeAfterTax);
     const taxWithheld = getMoney(colMap.taxWithheld);
     const mealAllowance = getMoney(colMap.mealAllowance);
     const arrearsRecovery = getMoney(colMap.arrearsRecovery);
     const arrearsAddition = getMoney(colMap.arrearsAddition);
-    const transferAmount = getMoney(colMap.transferAmount);
+    const rawTransfer = getMoney(colMap.transferAmount);
+
+    const netIncomeAfterTax = rawNet || (rawTransfer > 0 ? rawTransfer : (totalPreTaxIncome > 0 ? Math.max(0, totalPreTaxIncome - insuranceTotal - personalTax) : 0));
+    const transferAmount = rawTransfer || (rawNet > 0 ? (rawNet + mealAllowance + arrearsAddition - arrearsRecovery) : 0);
 
     // Các khoản Công ty đóng
     const compInsuranceSocial = getMoney(colMap.compInsuranceSocial);

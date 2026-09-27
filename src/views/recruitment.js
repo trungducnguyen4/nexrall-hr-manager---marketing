@@ -1,6 +1,6 @@
 import { api } from '../api.js';
 import { EventBus } from '../event-bus.js';
-import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, DEPARTMENTS, noop, safeCb, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination, isHcnsDepartment, sortVietnameseNames, compareVietnameseNames } from '../utils.js';
+import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, DEPARTMENTS, noop, safeCb, filterBySearch, filterByDepartment, paginateRows, paginationHTML, bindPagination, isHcnsDepartment, sortVietnameseNames, compareVietnameseNames, fmtDate, fmtDateInput, parseDateInput } from '../utils.js';
 import { icon } from '../icons.js';
 
 const STAGES = [
@@ -133,7 +133,7 @@ export async function renderRecruitment(el, me) {
               </div>
               <div class="list-item-sub">${esc(c.position||'—')} · ${esc(c.department||'—')}</div>
               <div style="font-size:11px;color:var(--text-3);margin-top:2px;">
-                ${icon('calendarDays', 'xs')} ${esc(c.apply_date||'—')} · Nguồn: ${esc(c.source||'—')}
+                ${icon('calendarDays', 'xs')} ${esc(fmtDate(c.apply_date))} · Nguồn: ${esc(c.source||'—')}
               </div>
             </div>
             ${isAdmin ? `
@@ -217,8 +217,8 @@ function openCandidateForm(cand, onRefresh = noop) {
       </div>
     </div>
     <div class="input-row">
-      <div class="field"><label>Ngày ứng tuyển</label>
-        <input type="date" id="cf-date" value="${cand?.apply_date||new Date().toISOString().slice(0,10)}"/>
+      <div class="field"><label>Ngày ứng tuyển (dd/mm/yyyy)</label>
+        <input type="text" id="cf-date" value="${fmtDateInput(cand?.apply_date||new Date().toISOString().slice(0,10))}" placeholder="dd/mm/yyyy" inputmode="numeric"/>
       </div>
       <div class="field"><label>Nguồn</label>
         <select id="cf-source">
@@ -247,7 +247,7 @@ function openCandidateForm(cand, onRefresh = noop) {
       name,
       position:   document.getElementById('cf-position').value.trim(),
       department: document.getElementById('cf-dept').value,
-      apply_date: document.getElementById('cf-date').value,
+      apply_date: parseDateInput(document.getElementById('cf-date').value),
       source:     document.getElementById('cf-source').value,
       stage:      document.getElementById('cf-stage').value,
       notes:      document.getElementById('cf-notes').value.trim(),

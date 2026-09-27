@@ -1,6 +1,6 @@
 import { api } from '../api.js';
 import { EventBus } from '../event-bus.js';
-import { esc, toast, openModal, closeModal, loadingHTML, roleLabel, setAvatar } from '../utils.js';
+import { esc, toast, openModal, closeModal, loadingHTML, roleLabel, setAvatar, fmtDate, parseDateInput } from '../utils.js';
 import { isSoundEnabled, toggleSound, playChatSound, playMentionSound, playTaskSound } from '../sound.js';
 import { isPushSupported, getPushPermission, getExistingPushSubscription, subscribePushNotification, unsubscribePushNotification, testPushNotification } from '../push.js';
 import { icon } from '../icons.js';
@@ -17,9 +17,15 @@ export async function renderSettings(el, me) {
     { id: 'profile', label: 'Thông tin cá nhân', icon: 'user' },
   ];
 
+  const canManageBackup = isAdmin || me.department === 'Phòng HCNS' || me.department === 'HCNS';
+
   if (isAdmin) {
     tabs.push({ id: 'company', label: 'Thông tin công ty', icon: 'building2' });
     tabs.push({ id: 'work-schedule', label: 'Giờ làm & Ngày lễ', icon: 'clock3' });
+  }
+
+  if (canManageBackup) {
+    tabs.push({ id: 'backup', label: 'Sao lưu & Dữ liệu', icon: 'database' });
   }
 
   // Ensure active tab exists
@@ -72,6 +78,8 @@ export async function renderSettings(el, me) {
         return renderCompanyTab();
       case 'work-schedule':
         return renderWorkScheduleTab();
+      case 'backup':
+        return renderBackupTab();
       default:
         return renderNotificationsTab();
     }
@@ -405,6 +413,97 @@ export async function renderSettings(el, me) {
     `;
   }
 
+  function renderBackupTab() {
+    return `
+      <!-- Automated Cloud Backup Card -->
+      <div class="settings-card">
+        <div class="settings-card-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;">
+          <div>
+            <div class="settings-card-title" style="display:flex;align-items:center;gap:8px;">
+              ${icon('database', 'md')}
+              <span>Sao lưu đám mây tự động (Cloudflare R2)</span>
+              <span class="badge badge-success" style="font-size:11px;padding:2px 8px;">Đang bảo vệ</span>
+            </div>
+            <div class="settings-card-subtitle" style="margin-top:4px;">
+              Hệ thống tự động sao lưu toàn bộ cơ sở dữ liệu D1 định kỳ vào ngày 1 hàng tháng và lưu trữ vĩnh viễn trên Cloudflare R2 độc lập với máy chủ web.
+            </div>
+          </div>
+          <div>
+            <button type="button" id="btn-create-backup-now" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;white-space:nowrap;padding:8px 14px;">
+              ${icon('refreshCw', 'sm')}
+              <span>Tạo bản sao lưu ngay</span>
+            </button>
+          </div>
+        </div>
+
+        <div style="margin-top:20px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+            <h4 style="font-size:14px;font-weight:600;color:var(--text-1);margin:0;">Danh sách các bản sao lưu trên Cloud</h4>
+            <span style="font-size:12px;color:var(--text-3);">Lưu trữ vĩnh viễn (Indefinite retention)</span>
+          </div>
+          <div id="cloud-backups-container">
+            ${loadingHTML('Đang tải danh sách bản sao lưu...')}
+          </div>
+        </div>
+      </div>
+
+      <!-- Disaster Recovery & Local SQL Backup Guide Card -->
+      <div class="settings-card" style="margin-top:20px;">
+        <div class="settings-card-header">
+          <div>
+            <div class="settings-card-title" style="display:flex;align-items:center;gap:8px;">
+              ${icon('shield', 'md')}
+              <span>Sao lưu 1-Click về máy tính cá nhân & Khôi phục thảm họa</span>
+            </div>
+            <div class="settings-card-subtitle" style="margin-top:4px;">
+              Xuất toàn bộ cấu trúc bảng và dữ liệu SQL nguyên bản về ổ cứng máy tính cá nhân để lưu trữ ngoại tuyến hoặc khôi phục ngay lập tức khi ứng dụng gặp sự cố.
+            </div>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));gap:16px;margin-top:16px;">
+          <div style="background:var(--bg-2);border:1px solid var(--border);border-radius:10px;padding:16px;">
+            <div style="display:flex;align-items:center;gap:8px;font-weight:600;color:var(--text-1);margin-bottom:8px;">
+              ${icon('download', 'sm')}
+              <span>Lệnh sao lưu 1-Click (Local SQL)</span>
+            </div>
+            <p style="font-size:12px;color:var(--text-2);margin-bottom:10px;line-height:1.5;">
+              Mở terminal tại thư mục dự án và chạy lệnh sau để tự động kết xuất toàn bộ cơ sở dữ liệu D1 thành file <code>.sql</code> chuẩn SQLite vào thư mục <code>backups/</code>:
+            </p>
+            <div style="background:#0f172a;color:#38bdf8;padding:10px 12px;border-radius:6px;font-family:monospace;font-size:13px;display:flex;justify-content:space-between;align-items:center;">
+              <code>npm run backup</code>
+              <button type="button" class="btn-copy-code" data-code="npm run backup" title="Sao chép" style="background:none;border:none;color:#94a3b8;cursor:pointer;padding:2px;">
+                ${icon('copy', 'xs')}
+              </button>
+            </div>
+            <div style="font-size:11px;color:var(--text-3);margin-top:8px;">
+              ✓ Tự động tạo thư mục theo mốc thời gian kèm tệp <code>manifest.json</code>.
+            </div>
+          </div>
+
+          <div style="background:var(--bg-2);border:1px solid var(--border);border-radius:10px;padding:16px;">
+            <div style="display:flex;align-items:center;gap:8px;font-weight:600;color:var(--danger);margin-bottom:8px;">
+              ${icon('archiveRestore', 'sm')}
+              <span>Khôi phục thảm họa (Disaster Recovery)</span>
+            </div>
+            <p style="font-size:12px;color:var(--text-2);margin-bottom:10px;line-height:1.5;">
+              Nếu xảy ra sự cố sập app hoặc mất dữ liệu, chạy script khôi phục tự động để nạp lại bản sao lưu gần nhất lên cơ sở dữ liệu Cloudflare:
+            </p>
+            <div style="background:#0f172a;color:#f43f5e;padding:10px 12px;border-radius:6px;font-family:monospace;font-size:13px;display:flex;justify-content:space-between;align-items:center;">
+              <code>powershell -ExecutionPolicy Bypass -File restore.ps1</code>
+              <button type="button" class="btn-copy-code" data-code="powershell -ExecutionPolicy Bypass -File restore.ps1" title="Sao chép" style="background:none;border:none;color:#94a3b8;cursor:pointer;padding:2px;">
+                ${icon('copy', 'xs')}
+              </button>
+            </div>
+            <div style="font-size:11px;color:var(--text-3);margin-top:8px;">
+              ⚠️ Cần gõ 'YES' xác nhận trước khi nạp để bảo vệ dữ liệu hiện hành.
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   function bindFrameEvents() {
     // Tab switching
     el.querySelectorAll('.settings-tab-btn').forEach(btn => {
@@ -527,6 +626,10 @@ export async function renderSettings(el, me) {
 
     if (_activeSettingsTab === 'work-schedule' && isAdmin) {
       loadWorkScheduleSettings();
+    }
+
+    if (_activeSettingsTab === 'backup' && canManageBackup) {
+      loadBackupSettings();
     }
   }
 
@@ -661,8 +764,8 @@ export async function renderSettings(el, me) {
           <div style="font-weight:600;font-size:13.5px;color:var(--text-1);margin-bottom:10px;">+ Thêm ngày lễ mới</div>
           <div class="settings-grid-2col">
             <div class="field" style="margin-bottom:0;">
-              <label>Ngày lễ (YYYY-MM-DD)</label>
-              <input type="date" id="holiday-date"/>
+              <label>Ngày lễ (dd/mm/yyyy)</label>
+              <input type="text" id="holiday-date" placeholder="dd/mm/yyyy" inputmode="numeric"/>
             </div>
             <div class="field" style="margin-bottom:0;">
               <label>Tên dịp lễ / Tết</label>
@@ -687,7 +790,7 @@ export async function renderSettings(el, me) {
             <tbody>
               ${holidays.length ? holidays.map(h => `
                 <tr>
-                  <td style="font-weight:600;font-variant-numeric:tabular-nums;">${esc(h.holiday_date)}</td>
+                  <td style="font-weight:600;font-variant-numeric:tabular-nums;">${esc(fmtDate(h.holiday_date))}</td>
                   <td>${esc(h.name)}</td>
                   <td>
                     <span class="badge ${Number(h.is_active) ? 'badge-success' : 'badge-muted'}">
@@ -710,7 +813,7 @@ export async function renderSettings(el, me) {
       `;
 
       document.getElementById('holiday-add')?.addEventListener('click', async () => {
-        const holiday_date = document.getElementById('holiday-date').value;
+        const holiday_date = parseDateInput(document.getElementById('holiday-date').value);
         const name = document.getElementById('holiday-name').value.trim();
         if (!holiday_date || !name) { toast('Vui lòng nhập ngày và tên ngày lễ', 'error'); return; }
         try {
@@ -721,8 +824,10 @@ export async function renderSettings(el, me) {
       });
 
       el.querySelectorAll('.holiday-edit').forEach(btn => btn.addEventListener('click', async () => {
-        const holiday_date = prompt('Ngày (YYYY-MM-DD):', btn.dataset.date);
-        if (holiday_date === null) return;
+        const holiday_date_raw = prompt('Ngày (dd/mm/yyyy):', fmtDate(btn.dataset.date));
+        if (holiday_date_raw === null) return;
+        const holiday_date = parseDateInput(holiday_date_raw);
+        if (!holiday_date) return;
         const name = prompt('Tên ngày lễ/Tết:', btn.dataset.name);
         if (name === null) return;
         try {
@@ -743,6 +848,163 @@ export async function renderSettings(el, me) {
     } catch (e) {
       el.innerHTML = `<div style="color:var(--danger);font-size:13px;">${esc(e.message)}</div>`;
     }
+  }
+
+  async function loadBackupSettings() {
+    const container = document.getElementById('cloud-backups-container');
+    const btnCreate = document.getElementById('btn-create-backup-now');
+
+    // Bind copy buttons
+    el.querySelectorAll('.btn-copy-code').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const code = btn.dataset.code;
+        if (code) {
+          if (navigator.clipboard?.writeText) {
+            navigator.clipboard.writeText(code).then(() => {
+              toast('Đã sao chép lệnh vào bộ nhớ tạm!', 'success');
+            }).catch(() => {
+              prompt('Sao chép lệnh:', code);
+            });
+          } else {
+            prompt('Sao chép lệnh:', code);
+          }
+        }
+      });
+    });
+
+    if (btnCreate) {
+      btnCreate.addEventListener('click', async () => {
+        if (!confirm('Bạn có muốn tạo ngay một bản sao lưu toàn bộ hệ thống lên Cloud R2?')) return;
+        btnCreate.disabled = true;
+        const originalHTML = btnCreate.innerHTML;
+        btnCreate.innerHTML = `${icon('refreshCw', 'sm')} <span>Đang sao lưu...</span>`;
+        try {
+          const res = await api.createBackup();
+          toast(`Đã tạo bản sao lưu thành công! (${res.backup?.totalRows || 0} dòng dữ liệu)`, 'success');
+          await fetchAndRenderBackups();
+        } catch (err) {
+          toast(err.message, 'error');
+        } finally {
+          btnCreate.disabled = false;
+          btnCreate.innerHTML = originalHTML;
+        }
+      });
+    }
+
+    async function fetchAndRenderBackups() {
+      if (!container) return;
+      try {
+        const { backups = [] } = await api.getBackups();
+        if (!backups.length) {
+          container.innerHTML = `
+            <div style="text-align:center;padding:32px 16px;color:var(--text-3);background:var(--bg-2);border-radius:8px;border:1px dashed var(--border);">
+              <div style="margin-bottom:8px;">${icon('archive', 'lg')}</div>
+              <div style="font-weight:500;">Chưa có bản sao lưu đám mây nào</div>
+              <div style="font-size:12px;margin-top:4px;">Bạn có thể bấm nút "Tạo bản sao lưu ngay" phía trên để tạo bản lưu đầu tiên.</div>
+            </div>
+          `;
+          return;
+        }
+
+        const formatSize = (bytes) => {
+          if (!bytes) return '—';
+          if (bytes < 1024) return bytes + ' B';
+          if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+          return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+        };
+
+        const formatTime = (iso) => {
+          if (!iso) return '—';
+          try {
+            const d = new Date(iso);
+            return d.toLocaleString('vi-VN', { hour12: false });
+          } catch (_) { return iso; }
+        };
+
+        container.innerHTML = `
+          <div style="overflow-x:auto;">
+            <table class="data-table" style="width:100%;font-size:13px;">
+              <thead>
+                <tr>
+                  <th style="text-align:left;">Tên tệp sao lưu</th>
+                  <th style="text-align:left;">Thời điểm tạo</th>
+                  <th style="text-align:left;">Dung lượng</th>
+                  <th style="text-align:left;">Nguồn / Người tạo</th>
+                  <th style="text-align:right;">Thao tác</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${backups.map(b => {
+                  const isManual = b.customMetadata?.isManual === 'true';
+                  const source = b.customMetadata?.triggeredBy || (isManual ? 'Thủ công' : 'Định kỳ');
+                  const rowCount = b.customMetadata?.totalRows ? `${Number(b.customMetadata.totalRows).toLocaleString('vi-VN')} dòng` : '';
+                  return `
+                    <tr>
+                      <td>
+                        <div style="font-weight:600;font-family:monospace;color:var(--text-1);">${esc(b.filename)}</div>
+                        ${rowCount ? `<div style="font-size:11px;color:var(--text-3);">${esc(rowCount)}</div>` : ''}
+                      </td>
+                      <td style="color:var(--text-2);white-space:nowrap;">${esc(formatTime(b.uploaded))}</td>
+                      <td style="color:var(--text-2);font-weight:500;">${esc(formatSize(b.size))}</td>
+                      <td>
+                        <span class="badge ${isManual ? 'badge-primary' : 'badge-secondary'}" style="font-size:11px;">
+                          ${esc(source)}
+                        </span>
+                      </td>
+                      <td style="text-align:right;white-space:nowrap;">
+                        <button type="button" class="btn-secondary btn-download-backup" data-key="${esc(b.key)}" data-filename="${esc(b.filename)}" style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;font-size:12px;">
+                          ${icon('download', 'xs')}
+                          <span>Tải về JSON</span>
+                        </button>
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+
+        container.querySelectorAll('.btn-download-backup').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            const key = btn.dataset.key;
+            const filename = btn.dataset.filename;
+            const originalText = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = `${icon('refreshCw', 'xs')} <span>Đang tải...</span>`;
+            try {
+              const token = api.getToken();
+              const res = await fetch(`/api/admin/backups/download?key=${encodeURIComponent(key)}&token=${encodeURIComponent(token || '')}`, {
+                headers: token ? { 'X-Auth-Token': token } : {}
+              });
+              if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.error || 'Lỗi khi tải bản sao lưu');
+              }
+              const blob = await res.blob();
+              const downloadUrl = window.URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = downloadUrl;
+              a.download = filename || 'backup.json';
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+              window.URL.revokeObjectURL(downloadUrl);
+              toast('Đã tải tệp sao lưu thành công', 'success');
+            } catch (e) {
+              toast(e.message, 'error');
+            } finally {
+              btn.disabled = false;
+              btn.innerHTML = originalText;
+            }
+          });
+        });
+      } catch (e) {
+        container.innerHTML = `<div style="color:var(--danger);font-size:13px;padding:16px;">${esc(e.message)}</div>`;
+      }
+    }
+
+    await fetchAndRenderBackups();
   }
 
   el._cleanup = () => {};

@@ -1,6 +1,6 @@
 import { api } from '../api.js';
 import { EventBus } from '../event-bus.js';
-import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtMoney, noop, safeCb, isHcnsDepartment } from '../utils.js?v=20260811-hr-access-v1';
+import { esc, toast, openModal, closeModal, loadingHTML, emptyHTML, fmtMoney, fmtDate, fmtDateInput, parseDateInput, noop, safeCb, isHcnsDepartment } from '../utils.js?v=20260811-hr-access-v1';
 import { icon } from '../icons.js';
 
 const CAMPAIGN_TYPES = [
@@ -149,7 +149,7 @@ export async function renderCampaigns(el, me) {
                 <div class="campaign-meta">
                   <span style="font-size:11px;background:${ct.color}15;color:${ct.color};padding:3px 8px;border-radius:5px;font-weight:600;">${ct.label}</span>
                   ${c.owner_name ? `<span style="font-size:12px;color:var(--text-2);display:inline-flex;align-items:center;gap:4px;">${icon('user', 'xs')} ${esc(c.owner_name)}</span>` : ''}
-                  ${c.start_date ? `<span style="font-size:11px;color:var(--text-3);display:inline-flex;align-items:center;gap:4px;">${icon('calendarDays', 'xs')} ${esc(c.start_date)} → ${esc(c.end_date||'—')}</span>` : ''}
+                  ${c.start_date ? `<span style="font-size:11px;color:var(--text-3);display:inline-flex;align-items:center;gap:4px;">${icon('calendarDays', 'xs')} ${esc(fmtDate(c.start_date))} → ${esc(c.end_date ? fmtDate(c.end_date) : '—')}</span>` : ''}
                 </div>
                 ${c.description ? `<div style="font-size:12px;color:var(--text-3);margin-bottom:8px;">${esc(c.description)}</div>` : ''}
                 ${budget > 0 ? `
@@ -234,11 +234,11 @@ function openCampaignForm(c, onRefresh = noop) {
       </div>
     </div>
     <div class="input-row">
-      <div class="field"><label>Ngày bắt đầu</label>
-        <input type="date" id="campf-start" value="${c?.start_date||''}"/>
+      <div class="field"><label>Ngày bắt đầu (dd/mm/yyyy)</label>
+        <input type="text" id="campf-start" value="${fmtDateInput(c?.start_date)}" placeholder="dd/mm/yyyy" inputmode="numeric"/>
       </div>
-      <div class="field"><label>Ngày kết thúc</label>
-        <input type="date" id="campf-end" value="${c?.end_date||''}"/>
+      <div class="field"><label>Ngày kết thúc (dd/mm/yyyy)</label>
+        <input type="text" id="campf-end" value="${fmtDateInput(c?.end_date)}" placeholder="dd/mm/yyyy" inputmode="numeric"/>
       </div>
     </div>
     <div class="input-row">
@@ -279,8 +279,8 @@ function openCampaignForm(c, onRefresh = noop) {
       name,
       type:             document.getElementById('campf-type').value,
       status:           document.getElementById('campf-status').value,
-      start_date:       document.getElementById('campf-start').value,
-      end_date:         document.getElementById('campf-end').value,
+      start_date:       parseDateInput(document.getElementById('campf-start').value),
+      end_date:         parseDateInput(document.getElementById('campf-end').value),
       budget:           parseFloat(document.getElementById('campf-budget').value)||0,
       spent:            parseFloat(document.getElementById('campf-spent').value)||0,
       goal_reach:       parseInt(document.getElementById('campf-reach').value)||0,

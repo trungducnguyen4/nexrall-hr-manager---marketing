@@ -336,6 +336,39 @@ console.log('\n--- 4. Edit & Delete Announcement ---');
   ok('Admin successfully deletes announcement');
 }
 
+console.log('\n--- 5. Rich HTML & Anti-XSS Protection ---');
+{
+  const shared = {};
+  const adminEnv = createMockEnv(makeSession({ id: 4, role: 'admin', department: 'Ban Giám Đốc' }), shared);
+  
+  // Post announcement with XSS attack vector and rich text
+  const dirtyContent = '<h1>Thông báo quý 3</h1><p onclick="stealCookies()">Nội dung chính</p><script>alert("XSS Attack!")</script><a href="javascript:alert(1)">Click me</a>';
+  const postRes = await callApi('POST', '/api/announcements', {
+    title: 'Thông báo có định dạng HTML và script',
+    content: dirtyContent,
+    target_scope: 'all'
+  }, adminEnv);
+
+  assert.strictEqual(postRes.status, 200);
+  const savedContent = postRes.body.announcement.content;
+  assert.strictEqual(savedContent.includes('<script>'), false, 'Scripts must be stripped out');
+  assert.strictEqual(savedContent.includes('alert("XSS Attack!")'), false, 'Script contents must be stripped');
+  assert.strictEqual(savedContent.includes('onclick'), false, 'Event handlers must be stripped');
+  assert.strictEqual(savedContent.includes('javascript:'), false, 'javascript: URIs must be stripped');
+  assert.strictEqual(savedContent.includes('<h1>Thông báo quý 3</h1>'), true, 'Safe Word-like HTML tags must be preserved');
+  ok('Server sanitizes XSS vectors while preserving safe Word rich-text HTML');
+
+  // Employee cannot upload attachment (403)
+  const empEnv = createMockEnv(makeSession({ id: 1, role: 'employee', department: 'Marketing' }), shared);
+  const uploadEmpReq = new Request(SERVER_URL + '/api/announcements/upload', {
+    method: 'POST',
+    headers: { 'X-Auth-Token': TOKEN },
+  });
+  const uploadEmpRes = await handle(uploadEmpReq, empEnv.env);
+  assert.strictEqual(uploadEmpRes.status, 403);
+  ok('Employee cannot upload announcement attachments (403)');
+}
+
 console.log(`\n========================================`);
 console.log(`ALL ${passed} ANNOUNCEMENT TESTS PASSED!`);
 console.log(`========================================\n`);
