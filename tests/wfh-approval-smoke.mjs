@@ -1,14 +1,18 @@
 // ════════════════════════════════════════════════════════════════════════════
 //  WFH Approval Workflow Verification Tests (node, mock D1)
 // ════════════════════════════════════════════════════════════════════════════
-import { pathToFileURL } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
+import path from 'path';
 import assert from 'assert';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const TOKEN = 'b'.repeat(64);
 const SERVER_URL = 'https://x.local';
 const TODAY = '2026-08-16';
 
-const mod = await import(pathToFileURL('D:/NetVietTv/nexrall-hr-manager---marketing/server.js').href);
+const serverPath = path.resolve(__dirname, '../server.js');
+const mod = await import(pathToFileURL(serverPath).href);
 const { handle } = mod;
 
 let passed = 0;

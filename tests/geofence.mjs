@@ -12,14 +12,18 @@
 //      manager only their department
 //    · legacy rows without GPS are excluded from the map
 // ════════════════════════════════════════════════
-import { pathToFileURL } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
+import path from 'path';
 import assert from 'assert';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const TOKEN = 'a'.repeat(64);
 const SERVER_URL = 'https://x.local';
 const TODAY = '2026-08-16';
 
-const mod = await import(pathToFileURL('D:/NetVietTv/nexrall-hr-manager---marketing/server.js').href);
+const serverPath = path.resolve(__dirname, '../server.js');
+const mod = await import(pathToFileURL(serverPath).href);
 const { geoDistanceMeters, geofenceDecision, handle } = mod;
 
 let passed = 0;
