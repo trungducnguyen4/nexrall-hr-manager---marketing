@@ -7,6 +7,7 @@
     "ios:sync": "cap sync ios",
     "ios:open": "cap open ios",
     "build": "node scripts/sync-public.mjs",
+    "attack": "node scripts/attack/run-all.mjs",
     "test": "node --check server.js worker.js src/api.js src/views/settings.js src/icons.js && npm run test:geofence && npm run test:attendance-period",
     "test:employee-profile": "node tests/employee-profile-smoke.mjs",
     "test:attendance-period": "node tests/attendance-period.mjs",

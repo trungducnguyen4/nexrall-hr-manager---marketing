@@ -1,0 +1,30 @@
+name: Pre-launch Attack Squad Audit
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  attack-squad:
+    name: 🛡️ Pre-launch Attack Squad
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci || npm install
+
+      - name: 🚀 Run Multi-Agent Pre-Launch Attack Squad
+        run: npm run attack
