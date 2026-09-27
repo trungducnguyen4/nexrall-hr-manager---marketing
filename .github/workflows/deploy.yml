@@ -103,8 +103,9 @@ jobs:
           echo "- **Triggers Active**: Daily auto-checkout (\`5 17 * * *\`) & Monthly backup (\`0 18 1 * *\`)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 3. 👁️ Visual (Inspect what the user will see)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Build output**: Synchronized frontend assets into \`.local-public/\`." >> $GITHUB_STEP_SUMMARY
-          echo "- **Production URL**: [https://nexrall-hr-manager-marketing.netviettv-hr-manager.workers.dev](https://nexrall-hr-manager-marketing.netviettv-hr-manager.workers.dev)" >> $GITHUB_STEP_SUMMARY
+          echo "- **UI Changes Requirement**: 📸 Mandatory Screenshots for single UI components." >> $GITHUB_STEP_SUMMARY
+          echo "- **User Flow Requirement**: 🎥 Mandatory Screen Recording Video / GIF for multi-step interactions." >> $GITHUB_STEP_SUMMARY
+          echo "- **Production Live URL**: [https://nexrall-hr-manager-marketing.netviettv-hr-manager.workers.dev](https://nexrall-hr-manager-marketing.netviettv-hr-manager.workers.dev)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 4. 🎯 Confidence (State what was verified — and what was not)" >> $GITHUB_STEP_SUMMARY
           echo "| Status | Item | Notes |" >> $GITHUB_STEP_SUMMARY

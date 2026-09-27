@@ -21,8 +21,13 @@ After completing any change, the agent must output a structured verification rep
 - Verify database state/persistence (query D1/SQLite to confirm data was actually written).
 
 ### 3. Visual (Inspect What the User Will See)
-- **UI Changes**: Inspect and describe the rendered view, responsiveness, states (empty, loading, normal, active, error). Include screenshots whenever UI elements are created or modified.
-- **Backend/API Changes**: Inspect what will be presented to the user through the client interface (toast notifications, modal alerts, table updates, badges).
+- **Chỉnh sửa Giao diện / Component (UI Changes)**:
+  - **BẮT BUỘC chụp ảnh màn hình (Screenshot)** đính kèm vào báo cáo.
+  - Kiểm tra và thể hiện rõ các trạng thái: Normal, Empty state, Loading, Active, Mobile responsive.
+- **Luồng người dùng / Quy trình nhiều bước (User Flows / Multi-step Journey)**:
+  - **BẮT BUỘC quay video màn hình (Screen Recording Video / GIF)** hoặc carousel tuần tự các bước thể hiện trọn vẹn hành trình người dùng (thao tác click, mở modal, submit, chuyển trang, thông báo thành công).
+- **Chỉnh sửa Backend / API thuần (Backend only)**:
+  - Mô tả hoặc minh họa chính xác thành phần giao diện bị tác động (Toast thông báo, Modal cảnh báo, cột dữ liệu cập nhật trên bảng).
 
 ### 4. Confidence (State What Was Verified — and What Was Not)
 - **Confidence Level**: High / Medium / Low with explicit justification.
@@ -34,5 +39,5 @@ After completing any change, the agent must output a structured verification rep
 ## Delivery Channels
 This report must be provided:
 1. In the agent's final chat response to the user.
-2. In the `walkthrough.md` artifact.
+2. In the `walkthrough.md` artifact (embedding screenshots or video links).
 3. In any GitHub Pull Request description (following `.github/PULL_REQUEST_TEMPLATE.md`).
