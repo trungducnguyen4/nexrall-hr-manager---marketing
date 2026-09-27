@@ -36,8 +36,9 @@ After completing any change, the agent must output a structured verification rep
 
 ---
 
-## Delivery Channels
-This report must be provided:
-1. In the agent's final chat response to the user.
-2. In the `walkthrough.md` artifact (embedding screenshots or video links).
-3. In any GitHub Pull Request description (following `.github/PULL_REQUEST_TEMPLATE.md`).
+## Delivery Channels & Workflow
+Quy trình này phải được thực thi khép kín:
+1. Xuất báo cáo 4 Trụ Cột trong tin nhắn phản hồi cuối cùng cho người dùng.
+2. Cập nhật artifact `walkthrough.md` (đính kèm Screenshots/Video).
+3. **TỰ ĐỘNG COMMIT & PUSH**: Sau khi toàn bộ các bước kiểm tra (Tests, Runtime, Visual, Confidence) đạt tiêu chuẩn, AI BẮT BUỘC phải thực hiện commit với conventional message và push trực tiếp lên repository (`origin main`), không được để dở dang trên local tree trừ khi người dùng yêu cầu giữ lại.
+4. Điền nội dung báo cáo vào GitHub Pull Request description nếu tạo PR (theo mẫu `.github/PULL_REQUEST_TEMPLATE.md`).
