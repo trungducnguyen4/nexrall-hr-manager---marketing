@@ -1,5 +1,6 @@
 import { WifiController } from './server/controllers/wifi.controller.js';
 import { DepartmentsController } from './server/controllers/departments.controller.js';
+import { NotificationsController } from './server/controllers/notifications.controller.js';
 
 // ===================== HR MANAGER — NEXRALL MARKETING =====================
 // Auth strategy:
@@ -5926,194 +5927,48 @@ export async function handle(request, env) {
 
   // ── Web Push Notification Endpoints (PWA / Lock Screen) ────────────
   if (path === '/api/notifications/push-vapid-public-key' && request.method === 'GET') {
-    return json({ public_key: VAPID_KEYS.publicKey });
+    return NotificationsController.getPushVapidPublicKey({ env, request, isAdmin, me }, VAPID_KEYS.publicKey);
   }
 
   if (path === '/api/notifications/push-subscribe' && request.method === 'POST') {
-    try {
-      await ensurePushSchema(env);
-      const b = await request.json().catch(() => ({}));
-      const endpoint = String(b.endpoint || '').trim();
-      const p256dh = String(b.p256dh || '').trim();
-      const auth = String(b.auth || '').trim();
-      const user_agent = String(b.user_agent || '').slice(0, 500);
-
-      if (!endpoint || !p256dh || !auth) {
-        return json({ error: 'Thông tin Push Subscription không hợp lệ (thiếu endpoint hoặc keys)' }, 400);
-      }
-
-      // Upsert subscription
-      try {
-        await env.DB.prepare(
-          `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent, updated_at)
-           VALUES (?, ?, ?, ?, ?, datetime('now','localtime'))
-           ON CONFLICT(endpoint) DO UPDATE SET
-             user_id=excluded.user_id,
-             p256dh=excluded.p256dh,
-             auth=excluded.auth,
-             user_agent=excluded.user_agent,
-             updated_at=datetime('now','localtime')`
-        ).bind(me.id, endpoint, p256dh, auth, user_agent).run();
-      } catch (upsertErr) {
-        // Fallback for DB engines
-        await env.DB.prepare('DELETE FROM push_subscriptions WHERE endpoint=?').bind(endpoint).run();
-        await env.DB.prepare(
-          `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent, updated_at)
-           VALUES (?, ?, ?, ?, ?, datetime('now','localtime'))`
-        ).bind(me.id, endpoint, p256dh, auth, user_agent).run();
-      }
-
-      return json({ ok: true });
-    } catch (err) {
-      console.error('Push subscribe error:', err);
-      return json({ error: 'Không thể lưu thông tin thông báo: ' + (err?.message || err) }, 500);
-    }
+    return NotificationsController.pushSubscribe({ env, request, isAdmin, me }, ensurePushSchema);
   }
 
   if (path === '/api/notifications/push-unsubscribe' && request.method === 'POST') {
-    try {
-      await ensurePushSchema(env);
-      const b = await request.json().catch(() => ({}));
-      const endpoint = String(b.endpoint || '').trim();
-      if (endpoint) {
-        await env.DB.prepare('DELETE FROM push_subscriptions WHERE endpoint=? AND user_id=?').bind(endpoint, me.id).run();
-      } else {
-        await env.DB.prepare('DELETE FROM push_subscriptions WHERE user_id=?').bind(me.id).run();
-      }
-      return json({ ok: true });
-    } catch (err) {
-      return json({ error: 'Lỗi hủy đăng ký push: ' + (err?.message || err) }, 500);
-    }
+    return NotificationsController.pushUnsubscribe({ env, request, isAdmin, me }, ensurePushSchema);
   }
 
   if (path === '/api/notifications/test-push' && request.method === 'POST') {
-    try {
-      await ensurePushSchema(env);
-      const pushRes = await sendWebPushNotification(env, [me.id], {
-        title: '🔔 NetViet HR - PWA',
-        body: `Xin chào ${me.full_name || 'bạn'}! Thông báo đẩy lên màn hình khóa đã hoạt động thành công 🚀`,
-        icon: me.avatar_url || '/icon-192.png',
-        badge: '/icon-192.png',
-        url: '/#/notifications',
-        tag: 'test-push-notification',
-      });
-      if (pushRes && pushRes.total === 0) {
-        return json({
-          error: 'Chưa có thiết bị nào kích hoạt thông báo cho tài khoản này. Vui lòng mở ứng dụng TRÊN ĐIỆN THOẠI, vào Cài đặt ➔ Thông báo và bấm "Kích hoạt thông báo" (chọn Cho phép khi máy hỏi).'
-        }, 400);
-      }
-      return json({ ok: true, message: `Đã gửi thông báo thử nghiệm đến ${pushRes?.sent || 1} thiết bị của bạn` });
-    } catch (err) {
-      return json({ error: 'Lỗi gửi test push: ' + (err?.message || err) }, 500);
-    }
+    return NotificationsController.testPush({ env, request, isAdmin, me }, sendWebPushNotification, ensurePushSchema);
   }
 
   if (path === '/api/notifications/task-mentions/unread-count' && request.method === 'GET') {
-    const totalRow = await env.DB.prepare('SELECT COUNT(*) AS cnt FROM task_mention_notifications WHERE user_id=? AND is_read=0').bind(me.id).first();
-    const { results: projectRows = [] } = await env.DB.prepare(
-      `SELECT t.team_project_id AS project_id, COUNT(*) AS cnt
-       FROM task_mention_notifications tmn
-       JOIN tasks t ON t.id = tmn.task_id
-       WHERE tmn.user_id = ? AND tmn.is_read = 0
-       GROUP BY t.team_project_id`
-    ).bind(me.id).all();
-    const by_project = {};
-    for (const r of projectRows) {
-      if (r.project_id) by_project[String(r.project_id)] = Number(r.cnt || 0);
-    }
-    return json({
-      count: Number(totalRow?.cnt || 0),
-      by_project,
-    });
+    return NotificationsController.getTaskMentionsUnreadCount({ env, request, isAdmin, me });
   }
 
   if (path === '/api/notifications/task-mentions' && request.method === 'GET') {
-    const { results = [] } = await env.DB.prepare(
-      `SELECT tmn.*, t.team_project_id AS project_id, t.title AS task_title
-       FROM task_mention_notifications tmn
-       LEFT JOIN tasks t ON t.id = tmn.task_id
-       WHERE tmn.user_id=? ORDER BY tmn.created_at DESC LIMIT 100`
-    ).bind(me.id).all();
-    return json({ notifications: results });
+    return NotificationsController.getTaskMentions({ env, request, isAdmin, me });
   }
 
   const mentionReadMatch = path.match(/^\/api\/notifications\/task-mentions\/(\d+)\/read$/);
   if (mentionReadMatch && request.method === 'PATCH') {
-    const notifId = parseInt(mentionReadMatch[1]);
-    await env.DB.prepare('UPDATE task_mention_notifications SET is_read=1 WHERE id=? AND user_id=?')
-      .bind(notifId, me.id).run();
-    await broadcastAppEvent(env, 'notifications', 'notification:read', {
-      id: notifId,
-      user_id: me.id,
-    }, { actorId: me.id, targetUserIds: [me.id] });
-    return json({ ok: true });
+    return NotificationsController.markTaskMentionRead({ env, request, isAdmin, me }, parseInt(mentionReadMatch[1]), broadcastAppEvent);
   }
 
   if (path === '/api/notifications' && request.method === 'GET') {
-    const now = Date.now();
-    if (now - _lastAutoCheckoutRun > 6 * 3600 * 1000) {
-      _lastAutoCheckoutRun = now;
-      runAutoCheckout(env).catch(() => {});
-    }
-    const windowDays = Math.min(90, Math.max(1, parseInt(url.searchParams.get('window') || '30', 10)));
-    const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
-    const pageSize = Math.min(100, Math.max(10, parseInt(url.searchParams.get('page_size') || '25', 10)));
-    const hasHrScope = isAdmin || isHcns(me);
-    const notifications = [
-      ...(hasHrScope ? await buildEmployeeAlerts(env, windowDays) : []),
-      ...await buildAttendanceNotifications(env, me, {
-        windowDays,
-        isAdmin,
-        isHcnsScope: isAttendanceHcns,
-      }),
-    ];
-    const moduleFilter = String(url.searchParams.get('module') || '').trim();
-    const typeFilter = String(url.searchParams.get('type') || '').trim();
-    const severityFilter = String(url.searchParams.get('severity') || '').trim();
-    const search = String(url.searchParams.get('search') || '').trim().toLocaleLowerCase('vi');
-    const filtered = notifications.filter(notification => {
-      if (moduleFilter && notification.module !== moduleFilter) return false;
-      if (typeFilter && notification.type !== typeFilter) return false;
-      if (severityFilter && notification.severity !== severityFilter) return false;
-      if (search) {
-        const haystack = [
-          notification.title, notification.message, notification.employee_name,
-          notification.employee_code, notification.department, notification.module_label,
-        ].join(' ').toLocaleLowerCase('vi');
-        if (!haystack.includes(search)) return false;
+    const triggerAutoCheckout = (e) => {
+      const now = Date.now();
+      if (now - _lastAutoCheckoutRun > 6 * 3600 * 1000) {
+        _lastAutoCheckoutRun = now;
+        runAutoCheckout(e).catch(() => {});
       }
-      return true;
-    });
-    const severityRank = { danger: 0, warning: 1, info: 2 };
-    filtered.sort((a, b) =>
-      (severityRank[a.severity] ?? 9) - (severityRank[b.severity] ?? 9)
-      || String(b.occurred_on || b.due_date || '').localeCompare(String(a.occurred_on || a.due_date || ''))
-      || String(a.employee_name || '').localeCompare(String(b.employee_name || ''), 'vi')
-    );
-    const total = filtered.length;
-    const paginated = filtered.slice((page - 1) * pageSize, page * pageSize);
-    const values = key => [...new Set(notifications.map(item => item[key]).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), 'vi'));
-    return json({
-      notifications: paginated,
-      total,
-      active_total: notifications.length,
-      pagination: { page, page_size: pageSize, total, pages: Math.max(1, Math.ceil(total / pageSize)) },
-      summary: {
-        danger: notifications.filter(item => item.severity === 'danger').length,
-        warning: notifications.filter(item => item.severity === 'warning').length,
-        info: notifications.filter(item => item.severity === 'info').length,
-        employee_profile: notifications.filter(item => item.module === 'employee_profile').length,
-        attendance: notifications.filter(item => item.module === 'attendance').length,
-      },
-      filter_options: {
-        modules: values('module').map(value => ({
-          value,
-          label: notifications.find(item => item.module === value)?.module_label || value,
-        })),
-        types: values('type'),
-        severities: values('severity'),
-      },
-      window_days: windowDays,
+    };
+    return NotificationsController.list({ env, request, isAdmin, me }, {
+      triggerAutoCheckout,
+      buildEmployeeAlerts,
+      buildAttendanceNotifications,
+      isAttendanceHcns,
+      isHcns
     });
   }
 
