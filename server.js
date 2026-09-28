@@ -1,3 +1,6 @@
+import { WifiController } from './server/controllers/wifi.controller.js';
+import { DepartmentsController } from './server/controllers/departments.controller.js';
+
 // ===================== HR MANAGER — NEXRALL MARKETING =====================
 // Auth strategy:
 //   1) POST /api/auth/login  → returns {token} stored in sessions table
@@ -8937,42 +8940,19 @@ const attendanceRateTo =
 
   // ── WIFI WHITELIST ───────────────────────────────────────────────
   if (path === '/api/wifi-whitelist' && request.method === 'GET') {
-    const { results } = await env.DB.prepare('SELECT * FROM wifi_whitelist ORDER BY id').all();
-    return json({ whitelist: results });
+    return WifiController.list({ env, request, isAdmin, me });
   }
   if (path === '/api/wifi-whitelist' && request.method === 'POST') {
-    if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
-    const b = await request.json();
-    const ipInfo = await currentIpInfo(env, request);
-    const requestedIp = String(b.ip_range || ipInfo.ip).trim();
-    const rules = String(requestedIp || '').split(',').map(s => s.trim()).filter(Boolean);
-    if (!rules.length) return json({ error: 'Nhập ít nhất một Public IP hoặc dải mạng công khai.' }, 400);
-    if (rules.some(isPrivateNetworkRule)) return json({ error: 'Không sử dụng IP nội bộ, router hoặc dải private cho mạng văn phòng.' }, 400);
-    const hasCurrentIp = rules.some(rule => ipMatchesRule(ipInfo.ip, rule));
-    const warning = hasCurrentIp ? null : `IP backend đang nhận là ${ipInfo.ip} — không nằm trong dải vừa lưu. Nếu IP này không phải IP văn phòng, việc chấm công có thể bị gián đoạn.`;
-    const r = await env.DB.prepare(
-      'INSERT INTO wifi_whitelist (wifi_name,ip_range,description,is_active) VALUES (?,?,?,1)'
-    ).bind(b.wifi_name||'',requestedIp || ipInfo.ip,b.description||'').run();
-    return json({ ok: true, id: r.meta.last_row_id, warning });
+    return WifiController.create({ env, request, isAdmin, me }, currentIpInfo, ipMatchesRule);
   }
   const wifiMatch = path.match(/^\/api\/wifi-whitelist\/(\d+)$/);
   if (wifiMatch) {
     const wid = parseInt(wifiMatch[1]);
     if (request.method === 'PUT') {
-      if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
-      const b = await request.json();
-      const requestedIp = String(b.ip_range || '').trim();
-      if (!requestedIp || requestedIp.split(',').some(isPrivateNetworkRule)) {
-        return json({ error: 'Nhập Public IP/dải mạng hợp lệ; không sử dụng IP nội bộ, router hoặc dải private.' }, 400);
-      }
-      await env.DB.prepare('UPDATE wifi_whitelist SET wifi_name=?,ip_range=?,description=?,is_active=? WHERE id=?')
-        .bind(b.wifi_name||'',b.ip_range||'',b.description||'',b.is_active??1,wid).run();
-      return json({ ok: true });
+      return WifiController.update({ env, request, isAdmin, me }, wid);
     }
     if (request.method === 'DELETE') {
-      if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
-      await env.DB.prepare('DELETE FROM wifi_whitelist WHERE id=?').bind(wid).run();
-      return json({ ok: true });
+      return WifiController.remove({ env, request, isAdmin, me }, wid);
     }
   }
 
@@ -10363,65 +10343,19 @@ const attendanceRateTo =
 
   // ── DEPARTMENTS ──────────────────────────────────────────────────
   if (path === '/api/departments' && request.method === 'GET') {
-    // App-wide departments (shared), no per-user filter
-    const { results } = await env.DB.prepare(`
-      SELECT d.*, u.full_name AS manager_name, u.employee_code AS manager_employee_code,
-             u.department AS manager_department, u.position AS manager_position,
-             (SELECT count(*) FROM users u2 WHERE lower(trim(u2.department)) = lower(trim(d.name)) AND u2.is_active=1) as employee_count
-        FROM departments d
-        LEFT JOIN users u ON u.id = d.manager_id
-       ORDER BY d.name
-    `).all();
-    return json({ departments: results });
+    return DepartmentsController.list({ env, request, isAdmin, me });
   }
   if (path === '/api/departments' && request.method === 'POST') {
-    if (!(isAdmin || isHcns(me))) return json({ error: 'Chỉ Admin hoặc nhân viên Phòng HCNS mới có quyền thêm phòng ban' }, 403);
-    const b = await request.json().catch(() => ({}));
-    const name = normalizeDeptName(b.name);
-    if (!name) return json({ error: 'Thiếu tên phòng ban' }, 400);
-    const dup = await findDepartmentDuplicate(env, name);
-    if (dup) return json({ error: 'Phòng ban này đã tồn tại' }, 400);
-    const managerId = intOrNull(b.manager_id);
-    const manager = managerId ? await env.DB.prepare('SELECT full_name FROM users WHERE id=?').bind(managerId).first() : null;
-    if (managerId && !manager) return json({ error: 'Không tìm thấy trưởng phòng' }, 400);
-    const managerName = manager?.full_name || String(b.manager || '').trim();
-    try {
-      const r = await env.DB.prepare('INSERT INTO departments (user_id,name,manager,manager_id,description) VALUES (?,?,?,?,?)')
-        .bind(env.USER_ID || null, name, managerName, managerId, String(b.description || '').trim()).run();
-      return json({ ok: true, id: r.meta.last_row_id });
-    } catch (e) {
-      if (String(e.message || '').toLowerCase().includes('unique')) return json({ error: 'Phòng ban này đã tồn tại' }, 400);
-      throw e;
-    }
+    return DepartmentsController.create({ env, request, isAdmin, me }, normalizeDeptName, findDepartmentDuplicate, intOrNull, isHcns);
   }
   const deptMatch = path.match(/^\/api\/departments\/(\d+)$/);
   if (deptMatch) {
     const id = parseInt(deptMatch[1]);
     if (request.method === 'PUT') {
-      if (!(isAdmin || isHcns(me))) return json({ error: 'Chỉ Admin hoặc nhân viên Phòng HCNS mới có quyền sửa phòng ban' }, 403);
-      const b = await request.json().catch(() => ({}));
-      const name = normalizeDeptName(b.name);
-      if (!name) return json({ error: 'Thiếu tên phòng ban' }, 400);
-      const dup = await findDepartmentDuplicate(env, name, id);
-      if (dup) return json({ error: 'Phòng ban này đã tồn tại' }, 400);
-      const managerId = intOrNull(b.manager_id);
-      const manager = managerId ? await env.DB.prepare('SELECT full_name FROM users WHERE id=?').bind(managerId).first() : null;
-      if (managerId && !manager) return json({ error: 'Không tìm thấy trưởng phòng' }, 400);
-      const managerName = manager?.full_name || String(b.manager || '').trim();
-      await env.DB.prepare('UPDATE departments SET name=?,manager=?,manager_id=?,description=? WHERE id=?')
-        .bind(name, managerName, managerId, String(b.description || '').trim(), id).run();
-      return json({ ok: true });
+      return DepartmentsController.update({ env, request, isAdmin, me }, id, normalizeDeptName, findDepartmentDuplicate, intOrNull, isHcns);
     }
     if (request.method === 'DELETE') {
-      if (!(isAdmin || isHcns(me))) return json({ error: 'Chỉ Admin hoặc nhân viên Phòng HCNS mới có quyền xóa phòng ban' }, 403);
-      const dept = await env.DB.prepare('SELECT name FROM departments WHERE id=?').bind(id).first();
-      if (!dept) return json({ error: 'Không tìm thấy phòng ban' }, 404);
-      const inUse = await env.DB.prepare('SELECT count(*) as total FROM users WHERE lower(trim(department))=lower(trim(?)) AND is_active=1').bind(dept.name).first();
-      if (inUse && inUse.total > 0) {
-        return json({ error: `Không thể xóa phòng ban "${dept.name}" vì đang có ${inUse.total} nhân sự trực thuộc. Vui lòng chuyển nhân sự sang phòng ban khác trước!` }, 400);
-      }
-      await env.DB.prepare('DELETE FROM departments WHERE id=?').bind(id).run();
-      return json({ ok: true });
+      return DepartmentsController.remove({ env, request, isAdmin, me }, id, isHcns);
     }
   }
 
