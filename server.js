@@ -2,6 +2,46 @@ import { WifiController } from './server/controllers/wifi.controller.js';
 import { DepartmentsController } from './server/controllers/departments.controller.js';
 import { NotificationsController } from './server/controllers/notifications.controller.js';
 import { AuthController } from './server/controllers/auth.controller.js';
+import { UsersController } from './server/controllers/users.controller.js';
+import { AttendanceController } from './server/controllers/attendance.controller.js';
+import { LeaveController } from './server/controllers/leave.controller.js';
+import {
+  LEAVE_DOCUMENT_TYPES,
+  LEAVE_DOCUMENT_MAX_BYTES,
+  leavePolicyFor,
+  leavePaidLabel,
+  leaveDaysForSession,
+  leaveBalanceType,
+  getLeaveBalance,
+  canManageLeaveRequest,
+  canAdvanceLeaveApproval,
+  ensureLeavePolicySchema,
+  seedLeaveTypes,
+} from './server/services/leave.service.js';
+import {
+  ATT_STANDARD_SHIFTS,
+  ATT_EARLY_CHECKOUT_TOLERANCE_MINUTES,
+  geoDistanceMeters,
+  geofenceDecision,
+  attToMinutes,
+  isIsoDate,
+  attIsoDate,
+  attCountBusinessDays,
+  attCountBusinessDaysBetween,
+  isAttendanceWorkingDay,
+  attBusinessDaysBetweenAsync,
+  attShiftBounds,
+  attTimeIsValid,
+  attEarlyCheckoutMinutes,
+  attManualTimingMetrics,
+  ensureAttendanceLocationSchema,
+  isGpsConstraintEnabled,
+  verifyAttendanceGeofence,
+  runAutoCheckout,
+  buildMonthlyWorkSummary,
+} from './server/services/attendance.service.js';
+
+export { geoDistanceMeters, geofenceDecision, runAutoCheckout };
 import { hashPassword, validatePasswordPolicy, genToken, extractHrToken, resolveSession, getPlatformUser } from './server/services/auth.service.js';
 
 // ===================== HR MANAGER — NEXRALL MARKETING =====================
@@ -24,8 +64,6 @@ let _migrated = false;
 const SCHEMA_VERSION = '2026-09-19-two-step-approvals-v1';
 const SEED_VERSION = '2026-08-13-add-phong-it-v1';
 
-const LEAVE_DOCUMENT_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
-const LEAVE_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
 
 function getVietnameseSortKey(name) {
   const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
@@ -43,39 +81,6 @@ function sortVietnameseNames(list, key = 'full_name') {
   if (!Array.isArray(list)) return [];
   const getValue = typeof key === 'function' ? key : (item => (item && typeof item === 'object' ? item[key] : item));
   return [...list].sort((a, b) => compareVietnameseNames(getValue(a), getValue(b)));
-}
-
-async function ensureLeavePolicySchema(env) {
-  await env.DB.exec(`CREATE TABLE IF NOT EXISTS leave_balances (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, leave_type_code TEXT NOT NULL,
-    balance_year INTEGER NOT NULL, available_days REAL NOT NULL DEFAULT 0,
-    updated_by INTEGER, updated_by_name TEXT, updated_at TEXT DEFAULT (datetime('now','localtime')),
-    UNIQUE(user_id, leave_type_code, balance_year)
-  )`);
-  await env.DB.exec(`CREATE TABLE IF NOT EXISTS leave_balance_ledger (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, leave_type_code TEXT NOT NULL,
-    balance_year INTEGER NOT NULL, leave_request_id INTEGER, delta_days REAL NOT NULL,
-    entry_type TEXT NOT NULL, note TEXT, created_by INTEGER, created_by_name TEXT,
-    created_at TEXT DEFAULT (datetime('now','localtime'))
-  )`);
-  await env.DB.exec(`CREATE TABLE IF NOT EXISTS leave_request_documents (
-    id TEXT PRIMARY KEY, leave_request_id INTEGER, owner_id INTEGER NOT NULL,
-    original_filename TEXT NOT NULL, content_type TEXT NOT NULL, byte_size INTEGER NOT NULL,
-    storage_key TEXT NOT NULL UNIQUE, required_label TEXT, uploaded_at TEXT DEFAULT (datetime('now','localtime'))
-  )`);
-  for (const [column, type] of Object.entries({
-    short_description: 'TEXT', policy_description: 'TEXT', notice_hours: 'INTEGER',
-    required_documents: 'TEXT', requires_handover: 'INTEGER DEFAULT 0', approval_flow: 'TEXT',
-  })) { try { await env.DB.exec(`ALTER TABLE leave_types ADD COLUMN ${column} ${type}`); } catch (_) {} }
-  for (const [column, type] of Object.entries({
-    leave_session: "TEXT DEFAULT 'full'", total_days: 'REAL', handover_user_id: 'INTEGER',
-    handover_user_name: 'TEXT', approval_flow: 'TEXT', balance_reserved_days: 'REAL DEFAULT 0',
-    approved_by: 'INTEGER', approved_by_name: 'TEXT', approved_at: 'TEXT',
-    rejected_by: 'INTEGER', rejected_by_name: 'TEXT', rejected_at: 'TEXT',
-    rejection_note: 'TEXT',
-  })) { try { await env.DB.exec(`ALTER TABLE leave_requests ADD COLUMN ${column} ${type}`); } catch (_) {} }
-  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_leave_balances_user_year ON leave_balances(user_id,balance_year,leave_type_code)'); } catch (_) {}
-  try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_leave_documents_request ON leave_request_documents(leave_request_id,owner_id)'); } catch (_) {}
 }
 
 async function ensureTwoStepApprovalSchema(env) {
@@ -3253,28 +3258,6 @@ async function decryptCred(env, b64) {
   }
 }
 
-// ── ATTENDANCE HELPERS ──────────────────────────────────────────────
-// Standard shift windows for office/WFH. Business trips use the employee's
-// own registered expected start/end instead (flexible).
-const ATT_STANDARD_SHIFTS = {
-  morning:   { start: '08:30', lateAfter: '08:45', end: '12:00' },
-  afternoon: { start: '13:30', lateAfter: '13:45', end: '17:00' },
-  full:      { start: '08:30', lateAfter: '08:45', end: '17:00' },
-};
-// Checking out shortly before the scheduled end is still a completed shift.
-// Keep this separate from the lateness grace period: it only affects checkout.
-const ATT_EARLY_CHECKOUT_TOLERANCE_MINUTES = 10;
-
-function attToMinutes(t) {
-  if (!t) return null;
-  const [h, m] = String(t).split(':').map(Number);
-  if (Number.isNaN(h) || Number.isNaN(m)) return null;
-  return h * 60 + m;
-}
-
-function isIsoDate(value) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
-}
 
 function normalizeOvertimeItems(items, periodMonth, { allowFuture = false } = {}) {
   if (!/^\d{4}-\d{2}$/.test(String(periodMonth || ''))) return { error: 'Tháng làm thêm không hợp lệ' };
@@ -3348,142 +3331,6 @@ async function d1WriteWithRetry(operation, attempts = 3) {
     }
   }
   throw lastError;
-}
-
-// Number of Mon–Fri business days in a given month (used as "Ngày công chuẩn").
-function attCountBusinessDays(year, month) {
-  const daysInMonth = new Date(year, month, 0).getDate();
-  let count = 0;
-  for (let d = 1; d <= daysInMonth; d++) {
-    const dow = new Date(year, month - 1, d).getDay();
-    if (dow !== 0 && dow !== 6) count++;
-  }
-  return count;
-}
-
-function attIsoDate(year, month, day) {
-  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-}
-
-function attCountBusinessDaysBetween(startDate, endDate) {
-  const start = new Date(`${startDate}T00:00:00`);
-  const end = new Date(`${endDate}T00:00:00`);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return 0;
-  let count = 0;
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const dow = d.getDay();
-    if (dow !== 0 && dow !== 6) count++;
-  }
-  return count;
-}
-
-// Shared: is a date a working day for attendance purposes ("ngày công")?
-// Single source of truth used by batch add, bảng công, and tỉ lệ chuyên cần so
-// the notion of "ngày nghỉ" stays consistent everywhere. Currently treats
-// weekends + company_holidays (lễ, nghỉ công ty, nghỉ bù) as rest days.
-// Extend here for make-up days, weekend-work schedules, and branch/department
-// calendars — callers don't need to change.
-async function isAttendanceWorkingDay(env, dateStr, employee = null) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr || ''))) return false;
-  const d = new Date(`${dateStr}T00:00:00`);
-  if (Number.isNaN(d.getTime())) return false;
-  // Company holiday (lễ, công ty nghỉ, nghỉ bù) — rest day.
-  const holiday = await env.DB.prepare('SELECT id FROM company_holidays WHERE holiday_date=? AND is_active=1').bind(dateStr).first();
-  if (holiday) return false;
-  // Weekend (Thứ 7, Chủ nhật) — rest day unless a future schedule overrides.
-  const dow = d.getDay();
-  if (dow === 0 || dow === 6) return false;
-  return true;
-}
-
-// Holiday-aware count of working days in [startDate, endDate] inclusive.
-async function attBusinessDaysBetweenAsync(env, startDate, endDate) {
-  const start = new Date(`${startDate}T00:00:00`);
-  const end = new Date(`${endDate}T00:00:00`);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return 0;
-  let count = 0;
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const iso = attIsoDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
-    if (await isAttendanceWorkingDay(env, iso)) count++;
-  }
-  return count;
-}
-
-async function buildMonthlyWorkSummary(env, userId, month, year) {
-  const mm = String(month).padStart(2, '0');
-  const { results = [] } = await env.DB.prepare(
-    "SELECT * FROM attendance WHERE user_id=? AND strftime('%m',date)=? AND strftime('%Y',date)=?"
-  ).bind(userId, mm, String(year)).all();
-
-  let fullDays = 0;
-  let halfDays = 0;
-  let incompleteDays = 0;
-  let lateMinutes = 0;
-  let earlyLeaveMinutes = 0;
-  let absentDays = 0;
-  let lateDays = 0;
-
-  for (const r of results) {
-    if (r.status === 'cancelled' || r.status === 'rejected') continue;
-    if (r.status === 'absent') {
-      absentDays++;
-      continue;
-    }
-    const hasIn = !!r.checkin_time;
-    const hasOut = !!r.checkout_time;
-    if (!hasIn || !hasOut) {
-      incompleteDays++;
-      continue;
-    }
-    if (r.shift === 'morning' || r.shift === 'afternoon') halfDays++;
-    else fullDays++;
-    const late = Number(r.late_minutes || 0);
-    const early = Number(r.early_minutes || 0);
-    lateMinutes += late;
-    earlyLeaveMinutes += early;
-    if (late > 0) lateDays++;
-  }
-
-  let paidLeaveDays = 0;
-  const monthStart = attIsoDate(year, month, 1);
-  const monthEnd = attIsoDate(year, month, new Date(year, month, 0).getDate());
-  try {
-    const { results: leaves = [] } = await env.DB.prepare(
-      `SELECT lr.start_date, lr.end_date
-         FROM leave_requests lr
-         LEFT JOIN leave_types lt ON lr.type=lt.code
-        WHERE (CAST(lr.user_id AS TEXT)=CAST(? AS TEXT) OR lr.employee_id=?)
-          AND lr.status='approved'
-          AND COALESCE(lt.paid_policy,'paid')='paid'
-          AND date(lr.start_date) <= date(?)
-          AND date(lr.end_date) >= date(?)`
-    ).bind(userId, userId, monthEnd, monthStart).all();
-    for (const lr of leaves) {
-      const start = String(lr.start_date || '') > monthStart ? String(lr.start_date || '') : monthStart;
-      const end = String(lr.end_date || '') < monthEnd ? String(lr.end_date || '') : monthEnd;
-      paidLeaveDays += attCountBusinessDaysBetween(start, end);
-    }
-  } catch (_) {
-    paidLeaveDays = 0;
-  }
-
-  const standardWorkDays = attCountBusinessDays(year, month);
-  const actualWorkDays = fullDays + halfDays * 0.5;
-  const overtime = await buildMonthlyOvertimeSummary(env, userId, month, year);
-  return {
-    standardWorkDays,
-    actualWorkDays,
-    fullDays,
-    halfDays,
-    incompleteDays,
-    absentDays,
-    lateDays,
-    paidLeaveDays,
-    lateMinutes,
-    earlyLeaveMinutes,
-    approvedOvertimeMinutes: overtime.approvedOvertimeMinutes,
-    approvedOvertimeHours: overtime.approvedOvertimeHours,
-  };
 }
 
 const KPI_GROUP1_CODES = ['HS01', 'HS02', 'HS03', 'HS04', 'HS05', 'HS06'];
@@ -3651,85 +3498,6 @@ async function refreshInvoiceOvertime(env, userId, month, year, actor = null) {
     await env.DB.prepare('UPDATE payroll SET approved_overtime_minutes=?,overtime_pay=?,net_salary=? WHERE id=?').bind(ot.approvedOvertimeMinutes, ot.overtimePay, pNet, payroll.id).run();
   }
   return ot;
-}
-
-function attShiftBounds(workType, shift, expectedStart, expectedEnd) {
-  const std = ATT_STANDARD_SHIFTS[shift] || ATT_STANDARD_SHIFTS.full;
-  if (workType === 'business') {
-    const start = expectedStart || std.start;
-    const end = expectedEnd || std.end;
-    return { start, lateAfter: start, end }; // business trip: late = after own expected start
-  }
-  return std;
-}
-
-function attTimeIsValid(value) {
-  const minutes = attToMinutes(value);
-  return minutes !== null && minutes >= 0 && minutes < 24 * 60 && /^\d{2}:\d{2}$/.test(String(value || ''));
-}
-
-function attEarlyCheckoutMinutes(bounds, checkoutTime) {
-  const end = attToMinutes(bounds.end);
-  const checkout = attToMinutes(checkoutTime);
-  if (end === null || checkout === null) return 0;
-  return Math.max(0, end - checkout - ATT_EARLY_CHECKOUT_TOLERANCE_MINUTES);
-}
-
-function attManualTimingMetrics(record, checkinTime, checkoutTime) {
-  const bounds = attShiftBounds(record.work_type || 'office', record.shift || 'full', record.expected_start, record.expected_end);
-  const checkinMinutes = attToMinutes(checkinTime);
-  const checkoutMinutes = attToMinutes(checkoutTime);
-  const lateMinutes = checkinMinutes === null ? 0 : Math.max(0, checkinMinutes - attToMinutes(bounds.lateAfter));
-  const earlyMinutes = checkoutMinutes === null ? 0 : attEarlyCheckoutMinutes(bounds, checkoutTime);
-  let workedMinutes = checkinMinutes === null || checkoutMinutes === null ? 0 : Math.max(0, checkoutMinutes - checkinMinutes);
-  if (checkinMinutes !== null && checkoutMinutes !== null && (record.work_type || 'office') !== 'business' && (record.shift || 'full') === 'full') {
-    const lunchStart = 12 * 60, lunchEnd = 13 * 60 + 30;
-    workedMinutes -= Math.max(0, Math.min(checkoutMinutes, lunchEnd) - Math.max(checkinMinutes, lunchStart));
-  }
-  return { bounds, lateMinutes, earlyMinutes, workHours: Math.max(0, workedMinutes) / 60 };
-}
-
-// ── NIGHTLY AUTO-CHECKOUT ─────────────────────────────────────────
-// Any day in the past that has a check-in but no check-out is closed
-// automatically at the end of the shift, tagged "Quên checkout"
-// (auto_checkout=1) so HR can see it was a forgotten check-out, not a
-// missing day. Work hours are computed up to the shift end (17:00 for a
-// full day) as if the employee worked the full registered shift.
-let _lastAutoCheckoutRun = 0;
-export async function runAutoCheckout(env) {
-  const today = vnTodayStr();
-  const rows = await env.DB.prepare(
-    `SELECT * FROM attendance
-      WHERE checkin_time IS NOT NULL
-        AND checkout_time IS NULL
-        AND date < ?
-        AND status NOT IN ('absent','cancelled','rejected','leave')`
-  ).bind(today).all().then(r => r.results || []);
-
-  let closed = 0;
-  for (const record of rows) {
-    const shift = record.shift || 'full';
-    const workType = record.work_type || 'office';
-    const bounds = attShiftBounds(workType, shift, record.expected_start, record.expected_end);
-    const endMin = attToMinutes(bounds.end) ?? (shift === 'morning' ? 12 * 60 : 17 * 60);
-    const ciMin = attToMinutes(record.checkin_time) ?? attToMinutes(bounds.start);
-    let workMinutes = Math.max(0, endMin - ciMin);
-    if (workType !== 'business' && shift === 'full') {
-      // Exclude the 12:00–13:30 lunch break from total worked time
-      const lunchStart = 12 * 60, lunchEnd = 13 * 60 + 30;
-      const overlap = Math.max(0, Math.min(endMin, lunchEnd) - Math.max(ciMin, lunchStart));
-      workMinutes -= overlap;
-    }
-    const workHours = Math.max(0, workMinutes) / 60;
-    const note = [record.note, 'Tự động checkout'].filter(Boolean).join(' - ').trim();
-    await env.DB.prepare(
-      `UPDATE attendance
-          SET checkout_time=?, checkout_ip='auto', work_hours=?, auto_checkout=1, status='ontime', early_minutes=0, note=?
-        WHERE id=?`
-    ).bind(bounds.end, Number(workHours.toFixed(2)), note, record.id).run();
-    closed++;
-  }
-  return { closed, today };
 }
 
 // ── AUTOMATED MONTHLY BACKUP TO CLOUDFLARE R2 ─────────────────────
@@ -3917,117 +3685,6 @@ async function currentIpInfo(env, request) {
     } : null,
     warning: 'Chua xac dinh duong truyen su dung IP tinh hay IP dong. Neu IP thay doi, viec cham cong tai van phong co the bi gian doan.',
   };
-}
-
-// Haversine distance in meters. Exported for unit tests.
-export function geoDistanceMeters(lat1, lng1, lat2, lng2) {
-  const r = 6371000, toRad = value => Number(value) * Math.PI / 180;
-  const dLat = toRad(lat2 - lat1), dLng = toRad(lng2 - lng1);
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-  return r * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-// Boundary rule: distance <= radius counts as inside (inclusive).
-export function geofenceDecision(distanceMeters, radiusMeters) {
-  const distance = Number(distanceMeters);
-  const radius = Number(radiusMeters);
-  if (!Number.isFinite(distance) || !Number.isFinite(radius) || radius <= 0) return { inside: false, outside_meters: null };
-  const inside = distance <= radius;
-  return { inside, outside_meters: Math.max(0, distance - radius) };
-}
-async function ensureAttendanceLocationSchema(env) {
-  // Some already-deployed D1 databases have passed the one-time bootstrap
-  // marker. Keep this idempotent guard close to the feature routes so the
-  // additive geofence schema is guaranteed before it is queried.
-  // Use a prepared statement rather than DB.exec here. Some legacy D1 bindings
-  // reject schema changes through exec even though they accept a normal D1
-  // statement. CURRENT_TIMESTAMP is portable across D1/SQLite (the UI formats
-  // dates in Vietnam time), while the old localtime expression could prevent
-  // this brand-new table from being created on those bindings.
-  try {
-    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS attendance_locations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, code TEXT, address TEXT,
-      latitude REAL NOT NULL, longitude REAL NOT NULL, radius_meters INTEGER NOT NULL DEFAULT 100,
-      max_accuracy_meters INTEGER NOT NULL DEFAULT 100, is_active INTEGER DEFAULT 1,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )`).run();
-  } catch (error) {
-    console.error('Unable to create attendance_locations schema', error);
-    return false;
-  }
-  // The unique index is best-effort: a legacy D1 that already holds duplicate
-  // non-null codes would otherwise make this guard throw and turn the whole
-  // attendance-locations endpoint into a 500. The table itself is still usable
-  // without the index, so never let index creation fail the request.
-  try { await env.DB.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_attendance_locations_code ON attendance_locations(code) WHERE code IS NOT NULL'); } catch (_) {}
-  // Official offices & studios supplied by administrator.
-  // Seed ONLY once on fresh install; never resurrect locations deleted by users.
-  try {
-    const seedMarker = await env.DB.prepare("SELECT setting_value FROM settings WHERE setting_key='attendance_locations_seeded'").first();
-    if (!seedMarker) {
-      const countRow = await env.DB.prepare('SELECT COUNT(*) as cnt FROM attendance_locations').first();
-      if (!countRow || countRow.cnt === 0) {
-        await env.DB.prepare(`INSERT INTO attendance_locations
-          (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active)
-          SELECT ?,?,?,?,?,?,?,1
-           WHERE NOT EXISTS (SELECT 1 FROM attendance_locations WHERE code=? OR name=?)`)
-          .bind('Văn phòng HCM (Toà nhà UNIASIA)', 'NETVIET-HCM', 'Toà nhà UNIASIA, A8 Trường Sơn, Phường Tân Sơn Hòa, Quận Tân Bình, TP. Hồ Chí Minh', 10.804915, 106.664816, 150, 120, 'NETVIET-HCM', 'Văn phòng HCM (Toà nhà UNIASIA)')
-          .run();
-        await env.DB.prepare(`INSERT INTO attendance_locations
-          (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active)
-          SELECT ?,?,?,?,?,?,?,1
-           WHERE NOT EXISTS (SELECT 1 FROM attendance_locations WHERE code=? OR name=?)`)
-          .bind('Văn phòng Hà Nội', 'NETVIET-HN', 'Hà Nội', 21.018472, 105.793595, 100, 100, 'NETVIET-HN', 'Văn phòng Hà Nội')
-          .run();
-        await env.DB.prepare(`INSERT INTO attendance_locations
-          (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active)
-          SELECT ?,?,?,?,?,?,?,1
-           WHERE NOT EXISTS (SELECT 1 FROM attendance_locations WHERE code=? OR name=?)`)
-          .bind('Phim Trường NetVietTv', 'NETVIET-Q9', '76 D12, Khu đô thị mới Đông Tăng Long, Long Phước, Hồ Chí Minh 70000', 10.814200, 106.819500, 200, 150, 'NETVIET-Q9', 'Phim Trường NetVietTv')
-          .run();
-      }
-      await env.DB.prepare("INSERT OR REPLACE INTO settings (setting_key,setting_value) VALUES ('attendance_locations_seeded','1')").run();
-    }
-  } catch (error) {
-    console.error('Unable to seed attendance locations', error);
-  }
-  for (const column of ['checkin_location_id INTEGER','checkout_location_id INTEGER','checkin_distance_meters REAL','checkout_distance_meters REAL','checkin_accuracy_meters REAL','checkout_accuracy_meters REAL','checkin_verification_method TEXT','checkout_verification_method TEXT','checkin_lat REAL','checkin_lng REAL','checkout_lat REAL','checkout_lng REAL','checkin_geofence_status TEXT','checkout_geofence_status TEXT','checkin_requires_review INTEGER DEFAULT 0','checkin_review_status TEXT DEFAULT \'none\'','checkin_reviewed_by INTEGER','checkin_review_note TEXT','checkin_reviewed_at TEXT','checkout_requires_review INTEGER DEFAULT 0','checkout_review_status TEXT DEFAULT \'none\'','checkout_reviewed_by INTEGER','checkout_review_note TEXT','checkout_reviewed_at TEXT']) {
-    try { await env.DB.exec(`ALTER TABLE attendance ADD COLUMN ${column}`); } catch (_) {}
-  }
-  return true;
-}
-
-async function isGpsConstraintEnabled(env) {
-  // Fail closed: a temporary settings read problem must not silently weaken
-  // office attendance verification. Administrators can explicitly set "0".
-  try {
-    const row = await env.DB.prepare("SELECT setting_value FROM settings WHERE setting_key='attendance_gps_constraint'").first();
-    return String(row?.setting_value ?? '1') !== '0';
-  } catch (_) {
-    return true;
-  }
-}
-
-async function verifyAttendanceGeofence(env, payload = {}) {
-  if (!(await ensureAttendanceLocationSchema(env))) {
-    return { status: 'unavailable', reason: 'Chưa thể khởi tạo dữ liệu địa điểm chấm công' };
-  }
-  // The server ALWAYS recomputes distance/geofence from raw coordinates.
-  // Any inside_geofence / distance sent by the client is intentionally ignored.
-  const latitude = Number(payload.latitude), longitude = Number(payload.longitude);
-  const rawAccuracy = payload.accuracy === undefined || payload.accuracy === null || payload.accuracy === '' ? null : Number(payload.accuracy);
-  const accuracy = rawAccuracy === null ? 0 : rawAccuracy;
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return { status: 'unavailable', reason: 'Chưa nhận được vị trí GPS hợp lệ' };
-  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return { status: 'invalid', reason: 'Tọa độ GPS ngoài phạm vi hợp lệ' };
-  if (!Number.isFinite(accuracy) || accuracy < 0) return { status: 'invalid', reason: 'Độ chính xác GPS không hợp lệ' };
-  const { results: locations = [] } = await env.DB.prepare('SELECT * FROM attendance_locations WHERE is_active=1').all();
-  if (!locations.length) return { status: 'not_configured', reason: 'Chưa cấu hình địa điểm GPS' };
-  const ranked = locations.map(location => ({ ...location, distance_meters: geoDistanceMeters(latitude, longitude, location.latitude, location.longitude) })).sort((a,b) => a.distance_meters - b.distance_meters);
-  const location = ranked[0];
-  const radius = Number(location.radius_meters || 100), maxAccuracy = Number(location.max_accuracy_meters || 100);
-  const decision = geofenceDecision(location.distance_meters, radius);
-  const base = { location, accuracy_meters: accuracy, distance_meters: location.distance_meters, inside_geofence: decision.inside, outside_meters: decision.outside_meters };
-  if (decision.inside) return { status: 'verified', ...base };
-  return { status: 'outside', ...base, reason: 'Bạn ở ngoài khu vực chấm công' };
 }
 
 function taskLabelColor(status, priority, provided) {
@@ -4635,104 +4292,6 @@ async function canUseTaskGroup(env, groupId, projectId, me) {
     .bind(groupId, projectId || 0).first();
   if (!group) return false;
   return canUseTaskProject(env, group.project_id, me);
-}
-
-async function seedLeaveTypes(env) {
-  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS leave_types (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    code TEXT UNIQUE NOT NULL,
-    name TEXT NOT NULL,
-    paid_policy TEXT DEFAULT 'paid',
-    deducts_annual_leave INTEGER DEFAULT 0,
-    requires_evidence INTEGER DEFAULT 0,
-    requires_bod_approval INTEGER DEFAULT 0,
-    max_days INTEGER,
-    is_active INTEGER DEFAULT 1,
-    created_at TEXT DEFAULT (datetime('now','localtime')),
-    updated_at TEXT DEFAULT (datetime('now','localtime'))
-  )`).run();
-  const rows = [
-    ['annual', 'Phép năm', 'paid', 1, 0, 0, null, 1],
-    ['sick', 'Nghỉ ốm', 'paid', 0, 1, 0, null, 1],
-    ['personal', 'Nghỉ việc riêng', 'unpaid', 0, 0, 0, null, 1],
-    ['maternity', 'Nghỉ thai sản', 'paid', 0, 1, 1, null, 1],
-    ['unpaid', 'Nghi khong huong luong', 'unpaid', 0, 0, 1, null, 1],
-    ['personal_paid', 'Nghi viec rieng huong luong', 'paid', 0, 0, 0, null, 1],
-    ['compensatory', 'Nghi bu', 'paid', 0, 0, 0, null, 1],
-    ['other', 'Khác', 'configurable', 0, 0, 0, null, 1],
-  ];
-  await env.DB.batch(rows.map(r => env.DB.prepare(
-    'INSERT OR IGNORE INTO leave_types (code,name,paid_policy,deducts_annual_leave,requires_evidence,requires_bod_approval,max_days,is_active) VALUES (?,?,?,?,?,?,?,?)'
-  ).bind(...r)));
-}
-
-function leavePolicyFor(type) {
-  const flow = String(type?.approval_flow || '').trim();
-  if (flow) return flow;
-  return type?.requires_bod_approval ? 'manager_hr_bgd' : 'manager_hr';
-}
-
-function leavePaidLabel(policy) {
-  return policy === 'unpaid' ? 'Không hưởng lương' : policy === 'configurable' ? 'Theo chế độ' : 'Có hưởng lương';
-}
-
-function leaveDaysForSession(startDate, endDate, session) {
-  const businessDays = attCountBusinessDaysBetween(startDate, endDate);
-  if (!businessDays) return 0;
-  return session === 'morning' || session === 'afternoon' ? 0.5 : businessDays;
-}
-
-function leaveBalanceType(type) {
-  return type?.deducts_annual_leave ? 'annual' : type?.code === 'compensatory' ? 'compensatory' : null;
-}
-
-async function getLeaveBalance(env, userId, leaveTypeCode, year) {
-  const row = await env.DB.prepare(
-    'SELECT available_days FROM leave_balances WHERE user_id=? AND leave_type_code=? AND balance_year=?'
-  ).bind(userId, leaveTypeCode, year).first();
-  if (row !== null && row !== undefined && row.available_days !== null) {
-    return Number(row.available_days);
-  }
-  if (leaveTypeCode === 'annual') {
-    const user = await env.DB.prepare('SELECT employee_type, lifecycle_status, contract_type FROM users WHERE id=?').bind(userId).first();
-    const isOfficial = user && user.employee_type !== 'TTS' && user.lifecycle_status !== 'Thử việc' && user.contract_type !== 'Thử việc' && user.contract_type !== 'Thỏa thuận TTS';
-    return isOfficial ? 12 : 0;
-  }
-  return 0;
-}
-
-function canManageLeaveRequest(me, request) {
-  if (isHrOrBod(me)) return true;
-  return me?.role === 'manager' && !!request?.department && me.department === request.department;
-}
-
-function canAdvanceLeaveApproval(me, request) {
-  if (!me || !request) return false;
-  if (['approved', 'rejected'].includes(request.status)) return false;
-
-  // Không cho phép tự duyệt đơn của chính mình (trừ khi là admin)
-  if (Number(request.employee_id) === Number(me.id) || String(request.user_id) === String(me.id) || String(request.user_id) === String(me.employee_code || '')) {
-    if (me?.role !== 'admin') return false;
-  }
-
-  // Anh Hậu (Phó Tổng Giám Đốc) hoặc Quản trị viên (admin) có toàn quyền duyệt ở bất kỳ bước nào
-  if (isDirectorHau(me)) return true;
-
-  const currentLevel = Number(request.approval_level || 1);
-  const status = String(request.status || '');
-  // Bước 2: Trạng thái 'pending_director' hoặc approval_level === 2 -> Chỉ anh Hậu (hoặc Admin) duyệt chốt
-  if (status === 'pending_director' || currentLevel === 2) {
-    return isDirectorHau(me);
-  }
-
-  // Bước 1: Trạng thái 'pending' hoặc approval_level === 1 -> HCNS hoặc Quản lý phòng ban duyệt sơ bộ
-  if (status === 'pending' || currentLevel === 1) {
-    if (isStep1Approver(me)) return true;
-    const isDeptMgr = me?.role === 'manager' && !!request?.department && normalizeDeptName(me?.department) === normalizeDeptName(request?.department);
-    return isDeptMgr;
-  }
-
-  return false;
 }
 
 async function seedDepartments(env) {
@@ -5479,177 +5038,25 @@ export async function handle(request, env) {
 
   // ── EMPLOYEE PROFILE DIRECTORY ───────────────────────────────────
   if (path === '/api/users/directory' && request.method === 'GET') {
-    if (!isManager) return json({ error: 'Không có quyền' }, 403);
-    await ensureWorkLocationStandardization(env).catch(() => {});
-    const hasHrScope = isAdmin || isHcns(me);
-    const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
-    const pageSize = Math.min(100, Math.max(1, parseInt(url.searchParams.get('page_size') || '20', 10)));
-    const { where, binds } = buildEmployeeDirectoryFilter(url, me, hasHrScope);
-    const { results: allUsers = [] } = await env.DB.prepare(
-      `SELECT u.id,u.employee_code,u.employee_type,u.full_name,u.email,u.department,u.position,
-              u.avatar_color,u.avatar_initials,u.avatar_url,u.is_active,u.lifecycle_status,
-              u.work_location,u.contract_type,u.contract_end_date,u.probation_end_date,u.national_id_issue_date,u.national_id_expiry_date
-       FROM users u${where}`
-    ).bind(...binds).all();
-    const sortedUsers = sortVietnameseNames(allUsers, 'full_name');
-    const total = sortedUsers.length;
-    const users = sortedUsers.slice((page - 1) * pageSize, page * pageSize);
-    const scopeWhere = hasHrScope ? '' : ' WHERE department=?';
-    const scopeBinds = hasHrScope ? [] : [me.department || ''];
-    const [departments, positions, workLocations, statuses] = await Promise.all([
-      env.DB.prepare(`SELECT DISTINCT department AS value FROM users${scopeWhere} ORDER BY department`).bind(...scopeBinds).all(),
-      env.DB.prepare(`SELECT DISTINCT position AS value FROM users${scopeWhere} ORDER BY position`).bind(...scopeBinds).all(),
-      env.DB.prepare(`SELECT DISTINCT work_location AS value FROM users${scopeWhere} ORDER BY work_location`).bind(...scopeBinds).all(),
-      env.DB.prepare(`SELECT DISTINCT lifecycle_status AS value FROM users${scopeWhere} ORDER BY lifecycle_status`).bind(...scopeBinds).all(),
-    ]);
-    const values = result => (result.results || []).map(row => row.value).filter(Boolean);
-    return json({
-      users,
-      pagination: { page, page_size: pageSize, total, pages: Math.max(1, Math.ceil(total / pageSize)) },
-      filter_options: {
-        departments: values(departments),
-        positions: values(positions),
-        work_locations: Array.from(new Set([...VALID_WORK_LOCATIONS, ...values(workLocations)])).filter(Boolean),
-        statuses: values(statuses),
-      },
+    return UsersController.directory({ env, request, isAdmin, me }, {
+      sortVietnameseNames,
+      ensureWorkLocationStandardization,
+      isManager,
+      isHcns
     });
   }
 
   if (path === '/api/users/export.xls' && request.method === 'GET') {
-    const hasHrScope = isAdmin || isHcns(me);
-    if (!hasHrScope) return json({ error: 'Chỉ HCNS hoặc Admin được xuất dữ liệu' }, 403);
-    const { where, binds } = buildEmployeeDirectoryFilter(url, me, true);
-    const { results: rows = [] } = await env.DB.prepare(
-      `SELECT u.employee_code,u.full_name,u.employee_type,u.email,u.phone,u.department,u.position,
-              u.lifecycle_status,u.contract_type,u.hire_date,u.contract_end_date,u.salary,u.allowance,
-              u.insurance_salary,u.dependent_count,u.bank_account,u.bank_name,u.social_insurance_number
-       FROM users u${where}`
-    ).bind(...binds).all();
-    const sortedRows = sortVietnameseNames(rows, 'full_name');
-    const columns = [
-      ['Mã nhân viên','employee_code'],['Họ và tên','full_name'],['Loại nhân sự','employee_type'],
-      ['Email','email'],['Số điện thoại','phone'],['Phòng ban','department'],['Vị trí','position'],
-      ['Trạng thái','lifecycle_status'],['Loại hợp đồng','contract_type'],['Ngày vào làm','hire_date'],
-      ['Hết hạn hợp đồng','contract_end_date'],['Lương cơ bản','salary'],['Phụ cấp','allowance'],
-      ['Lương đóng BHXH','insurance_salary'],['Người phụ thuộc','dependent_count'],
-      ['Số tài khoản','bank_account'],['Ngân hàng','bank_name'],['Số BHXH','social_insurance_number'],
-    ];
-    const cell = value => `<Cell><Data ss:Type="${typeof value === 'number' ? 'Number' : 'String'}">${xmlEscape(value ?? '')}</Data></Cell>`;
-    const workbook = `<?xml version="1.0" encoding="UTF-8"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
- <Styles><Style ss:ID="Header"><Font ss:Bold="1"/><Interior ss:Color="#FDE9E4" ss:Pattern="Solid"/></Style></Styles>
- <Worksheet ss:Name="Nhân viên"><Table>
-  <Row>${columns.map(([label]) => `<Cell ss:StyleID="Header"><Data ss:Type="String">${xmlEscape(label)}</Data></Cell>`).join('')}</Row>
-  ${rows.map(row => `<Row>${columns.map(([, key]) => cell(row[key])).join('')}</Row>`).join('')}
- </Table></Worksheet>
-</Workbook>`;
-    const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    return new Response(workbook, {
-      headers: {
-        'Content-Type': 'application/vnd.ms-excel; charset=utf-8',
-        'Content-Disposition': `attachment; filename="danh-sach-nhan-vien-${date}.xls"`,
-        'Cache-Control': 'private, no-store, max-age=0',
-        'X-Content-Type-Options': 'nosniff',
-      },
+    return UsersController.exportXls({ env, request, isAdmin, me }, {
+      sortVietnameseNames,
+      isHcns
     });
   }
 
   if (path === '/api/users/alerts' && request.method === 'GET') {
-    const hasHrScope = isAdmin || isHcns(me);
-    if (!hasHrScope) return json({ error: 'Chỉ HCNS hoặc Admin được xem cảnh báo' }, 403);
-    const windowDays = Math.min(90, Math.max(1, parseInt(url.searchParams.get('window') || '30', 10)));
-    const { results: employees = [] } = await env.DB.prepare(
-      `SELECT id,employee_code,employee_type,full_name,department,probation_end_date,contract_end_date,national_id_expiry_date
-       FROM users WHERE is_active=1 AND coalesce(lifecycle_status,'')<>'Đã nghỉ' ORDER BY full_name`
-    ).all();
-    const { results: documents = [] } = await env.DB.prepare(
-      `SELECT user_id,category,expires_on FROM employee_documents WHERE deleted_at IS NULL`
-    ).all();
-    const documentsByUser = new Map();
-    for (const document of documents) {
-      if (!documentsByUser.has(Number(document.user_id))) documentsByUser.set(Number(document.user_id), []);
-      documentsByUser.get(Number(document.user_id)).push(document);
-    }
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-    const daysUntil = date => {
-      if (!date) return null;
-      const parsed = new Date(`${date}T00:00:00Z`);
-      return Number.isFinite(parsed.getTime()) ? Math.ceil((parsed.getTime() - today.getTime()) / 86400000) : null;
-    };
-    const alerts = [];
-    const dateFields = [
-      ['probation_end_date','probation_due','Sắp hết thử việc'],
-      ['contract_end_date','contract_due','Sắp hết hạn hợp đồng'],
-      ['national_id_expiry_date','national_id_due','CCCD sắp hết hạn'],
-    ];
-    for (const employee of employees) {
-      for (const [field, type, label] of dateFields) {
-        const remaining = daysUntil(employee[field]);
-        if (remaining === null || remaining > windowDays) continue;
-        alerts.push({
-          id: `${type}-${employee.id}`,
-          type,
-          severity: remaining < 0 ? 'danger' : remaining <= 7 ? 'warning' : 'info',
-          employee_id: employee.id,
-          employee_code: employee.employee_code,
-          employee_name: employee.full_name,
-          department: employee.department,
-          due_date: employee[field],
-          days_until: remaining,
-          message: remaining < 0 ? `${label} đã quá hạn ${Math.abs(remaining)} ngày` : `${label} còn ${remaining} ngày`,
-        });
-      }
-      const employeeDocuments = documentsByUser.get(Number(employee.id)) || [];
-      const categories = new Set(employeeDocuments.map(document => document.category));
-      const required = employee.employee_type === 'TTS'
-        ? [['cv','CV ứng viên'],['national_id','CCCD'],['internship_agreement','Thỏa thuận TTS']]
-        : [['cv','CV ứng viên'],['national_id','CCCD'],['labor_contract','Hợp đồng lao động']];
-      const missing = required.filter(([category]) => {
-        if (employee.employee_type === 'TTS' && category === 'internship_agreement' && categories.has('labor_contract')) return false;
-        return !categories.has(category);
-      }).map(([, label]) => label);
-      if (missing.length) {
-        alerts.push({
-          id: `missing-documents-${employee.id}`,
-          type: 'missing_documents',
-          severity: 'warning',
-          employee_id: employee.id,
-          employee_code: employee.employee_code,
-          employee_name: employee.full_name,
-          department: employee.department,
-          missing,
-          message: `Thiếu hồ sơ: ${missing.join(', ')}`,
-        });
-      }
-      for (const document of employeeDocuments) {
-        const remaining = daysUntil(document.expires_on);
-        if (remaining === null || remaining > windowDays) continue;
-        alerts.push({
-          id: `document-due-${employee.id}-${document.category}`,
-          type: 'document_due',
-          severity: remaining < 0 ? 'danger' : remaining <= 7 ? 'warning' : 'info',
-          employee_id: employee.id,
-          employee_code: employee.employee_code,
-          employee_name: employee.full_name,
-          department: employee.department,
-          due_date: document.expires_on,
-          days_until: remaining,
-          message: `${EMPLOYEE_DOCUMENT_CATEGORIES[document.category] || 'Tài liệu'} ${remaining < 0 ? `đã quá hạn ${Math.abs(remaining)} ngày` : `còn ${remaining} ngày`}`,
-        });
-      }
-    }
-    alerts.sort((a, b) => (a.days_until ?? 9999) - (b.days_until ?? 9999) || a.employee_name.localeCompare(b.employee_name, 'vi'));
-    return json({
-      alerts,
-      total: alerts.length,
-      summary: alerts.reduce((summary, alert) => {
-        summary[alert.type] = (summary[alert.type] || 0) + 1;
-        return summary;
-      }, {}),
-      window_days: windowDays,
+    return UsersController.alerts({ env, request, isAdmin, me }, {
+      isHcns,
+      buildEmployeeAlerts
     });
   }
 
@@ -5973,524 +5380,91 @@ export async function handle(request, env) {
   const employeeProfileMatch = path.match(/^\/api\/users\/(\d+)\/profile$/);
   if (employeeProfileMatch) {
     const userId = parseInt(employeeProfileMatch[1], 10);
-    const target = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(userId).first();
-    if (!target) return json({ error: 'Không tìm thấy nhân viên' }, 404);
-    const hasHrScope = isAdmin || isHcns(me);
-    const permissions = employeeProfilePermissions(target, me, hasHrScope, isManager);
-    if (!permissions.can_view) return json({ error: 'Không có quyền xem hồ sơ' }, 403);
-
     if (request.method === 'GET') {
-      const profile = { ...target };
-      delete profile.password_hash;
-      const isSelf = Number(me.id) === userId;
-      if (!hasHrScope && !isSelf) {
-        for (const field of [...EMPLOYEE_PROFILE_FIELDS.contract, ...EMPLOYEE_PROFILE_FIELDS.compensation]) delete profile[field];
-        for (const field of ['birth_date','gender','national_id','national_id_issue_date','national_id_expiry_date','home_address','school_name','emergency_contact_name','emergency_contact_phone']) {
-          delete profile[field];
-        }
-        delete profile.tax_code;
-        delete profile.social_insurance_number;
-        delete profile.national_id_document_url;
-        delete profile.degree_document_url;
-        delete profile.contract_document_url;
-        delete profile.personnel_decision_url;
-      }
-      let completion = null;
-      if (permissions.can_view_documents) {
-        const requiredFields = [
-          'full_name','email','phone','birth_date','national_id','national_id_issue_date','home_address','position','department',
-          'direct_manager_id','work_location','contract_type',
-        ];
-        const requiredDocuments = target.employee_type === 'TTS'
-          ? ['cv','national_id','internship_agreement']
-          : ['cv','national_id','labor_contract'];
-        const { results: documentRows = [] } = await env.DB.prepare(
-          'SELECT DISTINCT category FROM employee_documents WHERE user_id=? AND deleted_at IS NULL'
-        ).bind(userId).all();
-        const categories = new Set(documentRows.map(row => row.category));
-        const completedFields = requiredFields.filter(field => String(target[field] ?? '').trim()).length;
-        const completedDocuments = requiredDocuments.filter(category => {
-          if (target.employee_type === 'TTS' && category === 'internship_agreement' && categories.has('labor_contract')) return true;
-          return categories.has(category);
-        }).length;
-        completion = {
-          percent: Math.round(((completedFields + completedDocuments) / (requiredFields.length + requiredDocuments.length)) * 100),
-          completed_fields: completedFields,
-          required_fields: requiredFields.length,
-          completed_documents: completedDocuments,
-          required_documents: requiredDocuments.length,
-        };
-      }
-      return json({
-        user: profile,
-        permissions,
-        completion,
-        metadata: {
-          document_categories: EMPLOYEE_DOCUMENT_CATEGORIES,
-          contract_types: target.contract_type && !EMPLOYEE_CONTRACT_TYPES.includes(target.contract_type)
-            ? [...EMPLOYEE_CONTRACT_TYPES, target.contract_type]
-            : EMPLOYEE_CONTRACT_TYPES,
-          lifecycle_statuses: LIFECYCLE_STATUSES,
-        },
+      return UsersController.getProfile({ env, request, isAdmin, me }, userId, { isManager, isHcns });
+    }
+    if (request.method === 'PATCH') {
+      return UsersController.updateProfile({ env, request, isAdmin, me }, userId, {
+        isManager,
+        isHcns,
+        broadcastAppEvent,
+        normalizeDeptName,
+        employeeTypeCode,
+        normalizeWorkLocation
       });
     }
-
-    if (request.method !== 'PATCH') return json({ error: 'Phương thức không được hỗ trợ' }, 405);
-    if (!permissions.can_edit_basic) return json({ error: 'Không có quyền sửa hồ sơ' }, 403);
-    const input = await request.json().catch(() => ({}));
-    const changes = {};
-    for (const [field, rawValue] of Object.entries(input)) {
-      if (!EMPLOYEE_PROFILE_ALLOWED_FIELDS.has(field)) continue;
-      const group = EMPLOYEE_PROFILE_FIELD_GROUP[field];
-      if (group === 'personal' && !permissions.can_edit_personal) return json({ error: 'Không có quyền sửa thông tin cá nhân' }, 403);
-      if (group === 'employment' && !permissions.can_edit_employment) return json({ error: 'Không có quyền sửa thông tin công việc' }, 403);
-      if ((EMPLOYEE_PROFILE_PROTECTED_FIELDS.has(field) || field === 'employee_type') && !hasHrScope) {
-        return json({ error: 'Chỉ HCNS hoặc Admin được sửa hợp đồng, lương, ngân hàng và BHXH' }, 403);
-      }
-      changes[field] = normalizeEmployeeProfileValue(field, rawValue);
-      if (typeof changes[field] === 'number' && !Number.isFinite(changes[field])) return json({ error: `Giá trị ${field} không hợp lệ` }, 400);
-    }
-    if (!Object.keys(changes).length) return json({ ok: true, unchanged: true });
-    if (changes.contract_type !== undefined) {
-      const ctLower = String(changes.contract_type || '').toLowerCase();
-      changes.employee_type = (ctLower.includes('thực tập') || ctLower.includes('tts')) ? 'TTS' : 'NV';
-    }
-    if (changes.contract_signed_date !== undefined) {
-      changes.hire_date = changes.contract_signed_date || changes.contract_start_date || null;
-    } else if (changes.contract_start_date !== undefined && !target.hire_date) {
-      changes.hire_date = changes.contract_start_date;
-    }
-    const merged = { ...target, ...changes };
-    if (merged.employee_type !== 'TTS' && merged.school_name) {
-      changes.school_name = '';
-      merged.school_name = '';
-    }
-    const actualChanges = Object.entries(changes).filter(([field, value]) => String(target[field] ?? '') !== String(value ?? ''));
-    if (!actualChanges.length) return json({ ok: true, unchanged: true });
-    const validationError = validateEmployeeProfile(merged, actualChanges.map(([field]) => field));
-    if (validationError) return json({ error: validationError }, 400);
-    if (changes.email && changes.email !== target.email) {
-      const duplicate = await env.DB.prepare('SELECT id FROM users WHERE lower(email)=lower(?) AND id<>? LIMIT 1').bind(changes.email, userId).first();
-      if (duplicate) return json({ error: 'Email đã tồn tại' }, 409);
-    }
-    if (merged.direct_manager_id) {
-      const manager = await env.DB.prepare('SELECT id FROM users WHERE id=? AND is_active=1').bind(merged.direct_manager_id).first();
-      if (!manager) return json({ error: 'Quản lý trực tiếp không tồn tại hoặc đã khóa' }, 400);
-    }
-    const changeSetId = crypto.randomUUID();
-    const assignments = actualChanges.map(([field]) => `${field}=?`).join(',');
-    const statements = [
-      env.DB.prepare(`UPDATE users SET ${assignments},updated_at=datetime('now','localtime'),updated_by=? WHERE id=?`)
-        .bind(...actualChanges.map(([, value]) => value), me.id, userId),
-      ...actualChanges.map(([field, value]) => employeeAuditStatement(env, {
-        userId,
-        changeSetId,
-        action: 'update',
-        group: EMPLOYEE_PROFILE_FIELD_GROUP[field] || 'profile',
-        field,
-        oldValue: target[field],
-        newValue: value,
-        actor: me,
-      })),
-    ];
-    await env.DB.batch(statements);
-    await broadcastAppEvent(env, 'users', 'user:profile_updated', {
-      id: userId,
-      changed_fields: actualChanges.map(([field]) => field),
-    }, { actorId: me.id });
-    return json({ ok: true, change_set_id: changeSetId, changed_fields: actualChanges.map(([field]) => field) });
+    return json({ error: 'Phương thức không được hỗ trợ' }, 405);
   }
 
   const userDeleteEligibilityMatch = path.match(/^\/api\/users\/(\d+)\/delete-eligibility$/);
   if (userDeleteEligibilityMatch && request.method === 'GET') {
-    if (!(isAdmin || isHcns(me))) return json({ error: 'Chỉ HCNS hoặc Admin mới có quyền kiểm tra' }, 403);
     const userId = parseInt(userDeleteEligibilityMatch[1], 10);
-    const result = await checkUserDeletionEligibility(env, userId);
-    return json(result);
+    return UsersController.checkDeleteEligibility({ env, request, isAdmin, me }, userId, { isHcns });
   }
 
   const userDeleteMatch = path.match(/^\/api\/users\/(\d+)$/);
   if (userDeleteMatch && request.method === 'DELETE') {
-    if (!(isAdmin || isHcns(me))) return json({ error: 'Chỉ HCNS hoặc Admin mới có quyền xóa tài khoản nhân viên' }, 403);
     const userId = parseInt(userDeleteMatch[1], 10);
-    if (Number(me.id) === userId) return json({ error: 'Không thể tự xóa tài khoản của chính mình' }, 400);
-    const target = await env.DB.prepare('SELECT id, full_name, employee_code FROM users WHERE id=?').bind(userId).first();
-    if (!target) return json({ error: 'Không tìm thấy tài khoản nhân viên' }, 404);
-
-    const eligibility = await checkUserDeletionEligibility(env, userId);
-    if (!eligibility.eligible) {
-      return json({
-        error: `Không thể xóa tài khoản của ${target.full_name}: ${eligibility.reason || 'Nhân viên chưa xác nhận phiếu lương tháng làm việc cuối cùng trên ứng dụng.'}`,
-        eligibility
-      }, 400);
-    }
-
-    try {
-      // Clean up child tables first to avoid FOREIGN KEY constraint failure
-      const cleanupQueries = [
-        env.DB.prepare('DELETE FROM employee_profile_audit WHERE user_id=? OR changed_by=?').bind(userId, userId),
-        env.DB.prepare('DELETE FROM employee_documents WHERE user_id=?').bind(userId),
-        env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(userId),
-        env.DB.prepare('DELETE FROM attendance WHERE user_id=?').bind(userId),
-        env.DB.prepare('DELETE FROM task_mention_notifications WHERE user_id=?').bind(userId),
-        env.DB.prepare('DELETE FROM task_followers WHERE user_id=?').bind(userId),
-        env.DB.prepare('DELETE FROM tasks WHERE assignee_id=?').bind(userId),
-        env.DB.prepare('DELETE FROM leave_balance_ledger WHERE employee_id=?').bind(userId),
-        env.DB.prepare('DELETE FROM leave_requests WHERE user_id=? OR employee_id=?').bind(userId, userId),
-        env.DB.prepare('DELETE FROM leave_balances WHERE user_id=? OR employee_id=?').bind(userId, userId),
-        env.DB.prepare('DELETE FROM conversation_members WHERE user_id=?').bind(userId),
-        env.DB.prepare('DELETE FROM push_subscriptions WHERE user_id=?').bind(userId),
-        env.DB.prepare('DELETE FROM overtime_forms WHERE user_id=?').bind(userId),
-        env.DB.prepare('DELETE FROM overtime_requests WHERE user_id=?').bind(userId),
-      ];
-
-      for (const q of cleanupQueries) {
-        try { await q.run(); } catch (_) {}
-      }
-
-      // Finally delete from users table
-      await env.DB.prepare('DELETE FROM users WHERE id=?').bind(userId).run();
-
-      await broadcastAppEvent(env, 'users', 'user:deleted', {
-        id: userId,
-        employee_code: target.employee_code,
-        full_name: target.full_name,
-      }, { actorId: me.id });
-      return json({ ok: true, message: `Đã xóa tài khoản nhân viên ${target.full_name}` });
-    } catch (err) {
-      return json({ error: err?.message || 'Không thể xóa tài khoản nhân viên' }, 500);
-    }
+    return UsersController.deleteUser({ env, request, isAdmin, me }, userId, { isHcns, broadcastAppEvent });
   }
 
   const employeeAuditMatch = path.match(/^\/api\/users\/(\d+)\/audit$/);
   if (employeeAuditMatch && request.method === 'GET') {
-    const hasHrScope = isAdmin || isHcns(me);
-    if (!hasHrScope) return json({ error: 'Chỉ HCNS hoặc Admin được xem nhật ký' }, 403);
     const userId = parseInt(employeeAuditMatch[1], 10);
-    const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
-    const pageSize = Math.min(100, Math.max(10, parseInt(url.searchParams.get('page_size') || '30', 10)));
-    const total = await env.DB.prepare('SELECT COUNT(*) AS total FROM employee_profile_audit WHERE user_id=?').bind(userId).first();
-    const { results: audit = [] } = await env.DB.prepare(
-      `SELECT * FROM employee_profile_audit WHERE user_id=? ORDER BY changed_at DESC,id DESC LIMIT ? OFFSET ?`
-    ).bind(userId, pageSize, (page - 1) * pageSize).all();
-    return json({ audit, pagination: { page, page_size: pageSize, total: Number(total?.total || 0) } });
+    return UsersController.audit({ env, request, isAdmin, me }, userId, { isHcns });
   }
 
   const employeeTimelineMatch = path.match(/^\/api\/users\/(\d+)\/timeline$/);
   if (employeeTimelineMatch && request.method === 'GET') {
     const userId = parseInt(employeeTimelineMatch[1], 10);
-    const target = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(userId).first();
-    if (!target) return json({ error: 'Không tìm thấy nhân viên' }, 404);
-    const hasHrScope = isAdmin || isHcns(me);
-    if (!employeeCanAccess(target, me, hasHrScope, isManager)) return json({ error: 'Không có quyền xem hồ sơ' }, 403);
-    const events = [];
-    const datedFields = [
-      ['hire_date','onboarding','Ngày vào làm'],
-      ['probation_end_date','probation','Kết thúc thử việc'],
-      ['official_date','official','Chuyển chính thức'],
-      ['termination_date','termination','Nghỉ việc'],
-    ];
-    for (const [field, type, title] of datedFields) {
-      if (target[field]) events.push({ id: `${field}-${userId}`, type, title, event_date: target[field], source: 'profile' });
-    }
-    let lifecycle = [];
-    try {
-      const r = await env.DB.prepare(
-        `SELECT id,from_status,to_status,changed_by_name,reason,
-                created_at AS event_date
-         FROM lifecycle_history WHERE user_id=? ORDER BY id`
-      ).bind(userId).all();
-      lifecycle = r.results || [];
-    } catch (_) {}
-
-    for (const row of lifecycle) events.push({
-      id: `lifecycle-${row.id}`,
-      type: 'lifecycle',
-      title: `Chuyển trạng thái sang ${row.to_status}`,
-      description: row.reason || '',
-      actor_name: row.changed_by_name || '',
-      event_date: row.event_date,
-      source: 'lifecycle',
-    });
-
-    const auditFields = [...EMPLOYEE_TIMELINE_FIELDS].filter(field => hasHrScope || !['salary','allowance'].includes(field));
-    if (auditFields.length) {
-      let auditEvents = [];
-      try {
-        const placeholders = auditFields.map(() => '?').join(',');
-        const r = await env.DB.prepare(
-          `SELECT id,field_name,old_value,new_value,changed_by_name,changed_at
-           FROM employee_profile_audit WHERE user_id=? AND field_name IN (${placeholders}) ORDER BY changed_at`
-        ).bind(userId, ...auditFields).all();
-        auditEvents = r.results || [];
-      } catch (_) {}
-
-      for (const row of auditEvents) events.push({
-        id: `audit-${row.id}`,
-        type: row.field_name === 'department' ? 'transfer' : row.field_name === 'salary' ? 'salary' : 'profile_change',
-        title: row.field_name === 'department' ? 'Điều chuyển phòng ban'
-          : row.field_name === 'salary' ? 'Điều chỉnh lương'
-          : `Cập nhật ${row.field_name}`,
-        description: `${row.old_value || 'Chưa có'} → ${row.new_value || 'Chưa có'}`,
-        actor_name: row.changed_by_name || '',
-        event_date: row.changed_at,
-        source: 'audit',
-      });
-    }
-
-    let documentEvents = [];
-    try {
-      const r = await env.DB.prepare(
-        `SELECT id,category,title,uploaded_by_name,uploaded_at,deleted_at,deleted_by_name
-         FROM employee_documents WHERE user_id=? ORDER BY uploaded_at`
-      ).bind(userId).all();
-      documentEvents = r.results || [];
-    } catch (_) {}
-
-    for (const document of documentEvents) {
-      events.push({
-        id: `document-upload-${document.id}`,
-        type: 'document',
-        title: `Thêm ${EMPLOYEE_DOCUMENT_CATEGORIES[document.category] || document.title || 'tài liệu'}`,
-        actor_name: document.uploaded_by_name || '',
-        event_date: document.uploaded_at,
-        source: 'document',
-      });
-      if (document.deleted_at) events.push({
-        id: `document-delete-${document.id}`,
-        type: 'document_deleted',
-        title: `Xóa ${EMPLOYEE_DOCUMENT_CATEGORIES[document.category] || document.title || 'tài liệu'}`,
-        actor_name: document.deleted_by_name || '',
-        event_date: document.deleted_at,
-        source: 'document',
-      });
-    }
-    events.sort((a, b) => String(b.event_date || '').localeCompare(String(a.event_date || '')));
-    return json({ timeline: events });
+    return UsersController.timeline({ env, request, isAdmin, me }, userId, { isManager, isHcns });
   }
 
   const employeeDocumentsMatch = path.match(/^\/api\/users\/(\d+)\/documents$/);
   if (employeeDocumentsMatch) {
     const userId = parseInt(employeeDocumentsMatch[1], 10);
-    const target = await env.DB.prepare('SELECT id,department FROM users WHERE id=?').bind(userId).first();
-    if (!target) return json({ error: 'Không tìm thấy nhân viên' }, 404);
-    const hasHrScope = isAdmin || isHcns(me);
-    const canView = hasHrScope || Number(me.id) === userId;
     if (request.method === 'GET') {
-      if (!canView) return json({ error: 'Không có quyền xem tài liệu' }, 403);
-      const { results: documents = [] } = await env.DB.prepare(
-        `SELECT id,user_id,category,title,original_filename,content_type,byte_size,expires_on,
-                uploaded_by,uploaded_by_name,uploaded_at
-         FROM employee_documents WHERE user_id=? AND deleted_at IS NULL ORDER BY uploaded_at DESC`
-      ).bind(userId).all();
-      return json({
-        documents: documents.map(document => ({
-          ...document,
-          category_label: EMPLOYEE_DOCUMENT_CATEGORIES[document.category] || document.category,
-          preview_url: `/api/users/${userId}/documents/${document.id}?disposition=inline`,
-          download_url: `/api/users/${userId}/documents/${document.id}?disposition=attachment`,
-        })),
-        categories: EMPLOYEE_DOCUMENT_CATEGORIES,
-        can_manage: hasHrScope,
-      });
+      return UsersController.getDocuments({ env, request, isAdmin, me }, userId, { isHcns });
     }
-    if (request.method !== 'POST') return json({ error: 'Phương thức không được hỗ trợ' }, 405);
-    if (!hasHrScope) return json({ error: 'Chỉ HCNS hoặc Admin được thêm tài liệu' }, 403);
-    if (!env.HR_DOCUMENTS) return json({ error: 'Lưu trữ hồ sơ chưa được cấu hình' }, 503);
-    const retryAfter = rateLimit(request, 'employee-document-upload', 30, 10 * 60 * 1000);
-    if (retryAfter) return json({ error: 'Thử lại sau ít phút', code: 'RATE_LIMITED' }, 429, { 'Retry-After': String(retryAfter) });
-    const form = await request.formData().catch(() => null);
-    const file = form?.get('file');
-    const category = String(form?.get('category') || '');
-    const title = String(form?.get('title') || '').trim().slice(0, 160);
-    const expiresOn = String(form?.get('expires_on') || '').trim() || null;
-    if (!Object.prototype.hasOwnProperty.call(EMPLOYEE_DOCUMENT_CATEGORIES, category)) return json({ error: 'Danh mục tài liệu không hợp lệ' }, 400);
-    if (!file || typeof file.stream !== 'function') return json({ error: 'Vui lòng chọn tệp để tải lên' }, 400);
-    const contentType = String(file.type || '').toLowerCase();
-    if (!EMPLOYEE_DOCUMENT_TYPES.includes(contentType)) return json({ error: 'Chỉ nhận PDF, JPG, PNG hoặc WebP' }, 400);
-    if (!Number.isFinite(file.size) || file.size < 1 || file.size > EMPLOYEE_DOCUMENT_MAX_BYTES) return json({ error: 'Tệp vượt giới hạn 10 MB' }, 400);
-    if (expiresOn && !/^\d{4}-\d{2}-\d{2}$/.test(expiresOn)) return json({ error: 'Ngày hết hạn không hợp lệ' }, 400);
-    const fileBuffer = await file.arrayBuffer();
-    if (!employeeDocumentContentMatches(contentType, fileBuffer)) return json({ error: 'Nội dung tệp không khớp với định dạng đã khai báo' }, 400);
-    const documentId = crypto.randomUUID();
-    const storageKey = employeeDocumentKey(userId, documentId);
-    await env.HR_DOCUMENTS.put(storageKey, fileBuffer, {
-      httpMetadata: { contentType, cacheControl: 'private, no-store' },
-      customMetadata: { uploaded_by: String(me.id), uploaded_at: new Date().toISOString(), category },
-    });
-    try {
-      await env.DB.batch([
-        env.DB.prepare(
-          `INSERT INTO employee_documents
-             (id,user_id,category,title,original_filename,content_type,byte_size,storage_key,expires_on,uploaded_by,uploaded_by_name)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)`
-        ).bind(documentId, userId, category, title, safeDownloadName(file.name), contentType, file.size, storageKey, expiresOn, me.id, me.full_name || ''),
-        employeeAuditStatement(env, {
-          userId,
-          changeSetId: crypto.randomUUID(),
-          action: 'document_upload',
-          group: 'documents',
-          field: category,
-          oldValue: null,
-          newValue: file.name,
-          actor: me,
-        }),
-      ]);
-    } catch (error) {
-      await env.HR_DOCUMENTS.delete(storageKey).catch(() => {});
-      throw error;
+    if (request.method === 'POST') {
+      return UsersController.uploadDocument({ env, request, isAdmin, me }, userId, { isHcns, rateLimit });
     }
-    return json({ ok: true, id: documentId });
+    return json({ error: 'Phương thức không được hỗ trợ' }, 405);
   }
 
   const employeeDocumentMatch = path.match(/^\/api\/users\/(\d+)\/documents\/([0-9a-fA-F-]{36})$/);
   if (employeeDocumentMatch) {
     const userId = parseInt(employeeDocumentMatch[1], 10);
     const documentId = employeeDocumentMatch[2];
-    const document = await env.DB.prepare(
-      `SELECT d.*,u.department FROM employee_documents d JOIN users u ON u.id=d.user_id
-       WHERE d.id=? AND d.user_id=?`
-    ).bind(documentId, userId).first();
-    if (!document || document.deleted_at) return json({ error: 'Tài liệu không tồn tại' }, 404);
-    const hasHrScope = isAdmin || isHcns(me);
-    const canView = hasHrScope || Number(me.id) === userId;
-    if (!canView) return json({ error: 'Không có quyền xem tài liệu' }, 403);
-    if (!env.HR_DOCUMENTS) return json({ error: 'Lưu trữ hồ sơ chưa được cấu hình' }, 503);
     if (request.method === 'GET') {
-      const object = await env.HR_DOCUMENTS.get(document.storage_key);
-      if (!object) return json({ error: 'Tệp không tồn tại trên kho lưu trữ' }, 404);
-      const disposition = url.searchParams.get('disposition') === 'attachment' ? 'attachment' : 'inline';
-      const filename = safeDownloadName(document.original_filename);
-      return new Response(object.body, {
-        headers: {
-          'Content-Type': (
-            document.content_type && document.content_type !== 'application/octet-stream'
-              ? document.content_type
-              : object.httpMetadata?.contentType
-          ) || 'application/octet-stream',
-          'Content-Disposition': `${disposition}; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
-          'Cache-Control': 'private, no-store, max-age=0',
-          'X-Content-Type-Options': 'nosniff',
-          'Referrer-Policy': 'no-referrer',
-        },
-      });
+      return UsersController.getDocumentFile({ env, request, isAdmin, me }, userId, documentId, { isHcns });
     }
-    if (request.method !== 'DELETE') return json({ error: 'Phương thức không được hỗ trợ' }, 405);
-    if (!hasHrScope) return json({ error: 'Chỉ HCNS hoặc Admin được xóa tài liệu' }, 403);
-    await env.HR_DOCUMENTS.delete(document.storage_key);
-    const changeSetId = crypto.randomUUID();
-    await env.DB.batch([
-      env.DB.prepare(
-        `UPDATE employee_documents
-         SET deleted_at=datetime('now','localtime'),deleted_by=?,deleted_by_name=?
-         WHERE id=? AND deleted_at IS NULL`
-      ).bind(me.id, me.full_name || '', documentId),
-      employeeAuditStatement(env, {
-        userId,
-        changeSetId,
-        action: 'document_delete',
-        group: 'documents',
-        field: document.category,
-        oldValue: document.original_filename,
-        newValue: null,
-        actor: me,
-      }),
-    ]);
-    return json({ ok: true });
+    if (request.method === 'DELETE') {
+      return UsersController.deleteDocument({ env, request, isAdmin, me }, userId, documentId, { isHcns });
+    }
+    return json({ error: 'Phương thức không được hỗ trợ' }, 405);
   }
 
   // ── USERS (legacy-compatible account APIs) ───────────────────────
   if (path === '/api/users' && request.method === 'GET') {
-    if (!isManager) return json({ error: 'Không có quyền' }, 403);
-    const hasHrScope = isAdmin || isHcns(me);
-    const baseFields = hasHrScope
-      ? 'id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at,birth_date,gender,national_id,national_id_issue_date,national_id_expiry_date,home_address,school_name,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,hire_date,contract_start_date,contract_end_date,contract_signed_date,probation_end_date,official_date,termination_date,allowance,insurance_salary,dependent_count,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url,updated_at,updated_by'
-      : 'id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,is_active,lifecycle_status,created_at,direct_manager_id,work_location,avatar_url';
-    const stmt = env.DB.prepare(`SELECT ${baseFields} FROM users${hasHrScope ? '' : ' WHERE department=?'} ORDER BY id`);
-    const { results } = hasHrScope ? await stmt.all() : await stmt.bind(me.department).all();
-    return json({ users: sortVietnameseNames(results || [], 'full_name') });
+    return UsersController.listUsers({ env, request, isAdmin, me }, { isManager, isHcns, sortVietnameseNames });
   }
 
   if (path === '/api/users' && request.method === 'POST') {
-    if (!(isAdmin || isHcns(me))) return json({ error: 'Không có quyền' }, 403);
-    const b = await request.json();
-    const fullName = String(b.full_name || '').trim();
-    if (!fullName) {
-      return json({ error: 'Vui lòng nhập họ và tên nhân viên' }, 400);
-    }
-    let code = String(b.employee_code || '').trim().toUpperCase();
-    const ctLower = String(b.contract_type || '').toLowerCase();
-    const isTts = code.startsWith('TTS') || b.employee_type === 'TTS' || ctLower.includes('thực tập') || ctLower.includes('tts');
-    const empType = isTts ? 'TTS' : employeeTypeCode(b.employee_type || 'NV');
-    const dept = normalizeDeptName(b.department || (isTts ? 'Thực Tập Sinh' : 'Phòng Marketing'));
-
-    // If client supplied code, check if it's already taken
-    if (code) {
-      const existing = await env.DB.prepare('SELECT id FROM users WHERE UPPER(employee_code)=?').bind(code).first();
-      if (existing) return json({ error: `Mã nhân viên "${code}" đã tồn tại` }, 400);
-    } else {
-      code = await nextEmployeeCode(env, empType, dept);
-    }
-
-    const email = String(b.email || '').trim() || `${code.toLowerCase().replace(/[^a-z0-9]/g, '')}@pending.local`;
-    const pw = b.password || 'Pass@123';
-    const hash = await hashPassword(pw);
-    const ini = b.avatar_initials || nameInitials(fullName);
-    const today = vnTodayStr();
-    const position = b.position || (isTts ? 'TTS' : 'Nhân viên');
-    const contractType = b.contract_type || (isTts ? 'Thỏa thuận TTS' : 'Thử việc');
-    const hireDate = b.hire_date || today;
-    const directManagerId = b.direct_manager_id ? parseInt(b.direct_manager_id) : (me.id || null);
-
-    try {
-      const r = await env.DB.prepare(
-        'INSERT INTO users (employee_code,employee_type,full_name,email,password_hash,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,birth_date,gender,national_id,home_address,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,contract_start_date,contract_end_date,contract_signed_date,official_date,termination_date,allowance,insurance_salary,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url,lifecycle_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
-      ).bind(
-        code, empType, fullName, email, hash, b.role || 'employee', dept, position,
-        b.avatar_color || avatarColor(fullName), ini, b.phone || '', b.salary || 0,
-        b.bank_account || '', b.bank_name || '', b.birth_date || null, b.gender || '',
-        b.national_id || '', b.home_address || '', b.emergency_contact_name || '',
-        b.emergency_contact_phone || '', directManagerId, normalizeWorkLocation(b.work_location, dept),
-        contractType, b.contract_start_date || null, b.contract_end_date || null,
-        b.contract_signed_date || null, b.official_date || null, b.termination_date || null,
-        b.allowance || 0, b.insurance_salary || 0, b.bank_account_holder || '',
-        b.tax_code || '', b.social_insurance_number || '', b.insurance_hospital || '',
-        b.avatar_url || '', b.national_id_document_url || '', b.degree_document_url || '',
-        b.contract_document_url || '', b.personnel_decision_url || '',
-        b.lifecycle_status || (isTts ? 'Thực tập' : 'Chính thức')
-      ).run();
-      const newUserId = r.meta.last_row_id;
-      try {
-        const companyChannelId = await ensureCompanyChannel(env);
-        if (companyChannelId) {
-          await env.DB.prepare('INSERT OR IGNORE INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?)')
-            .bind(companyChannelId, newUserId, b.role === 'manager' ? 'admin' : (['admin', 'director'].includes(b.role) ? 'owner' : 'member')).run();
-        }
-      } catch (_) {}
-      try {
-        await ensureEmployeePersonalProject(env, { id: newUserId, full_name: fullName, employee_code: code }, me.id);
-      } catch (_) {}
-      await broadcastAppEvent(env, 'users', 'user:created', {
-        id: newUserId,
-        employee_code: code,
-        employee_type: empType,
-        full_name: fullName,
-        email,
-        department: dept,
-        position,
-        role: b.role || 'employee',
-        lifecycle_status: b.lifecycle_status || (isTts ? 'Thực tập' : 'Chính thức'),
-      }, { actorId: me.id });
-      return json({ ok: true, id: newUserId, employee_code: code });
-    } catch (e) {
-      if (e.message && e.message.includes('UNIQUE') && e.message.includes('email')) {
-        return json({ error: 'Email đã tồn tại' }, 400);
-      }
-      if (e.message && e.message.includes('UNIQUE') && e.message.includes('employee_code')) {
-        return json({ error: 'Mã nhân viên đã tồn tại' }, 400);
-      }
-      return json({ error: e.message || 'Lỗi tạo nhân viên' }, 500);
-    }
+    return UsersController.createUser({ env, request, isAdmin, me }, {
+      isHcns,
+      employeeTypeCode,
+      normalizeDeptName,
+      nextEmployeeCode,
+      hashPassword,
+      nameInitials,
+      vnTodayStr,
+      avatarColor,
+      normalizeWorkLocation,
+      ensureCompanyChannel,
+      ensureEmployeePersonalProject,
+      broadcastAppEvent
+    });
   }
 
   // ── HISTORICAL ATTENDANCE IMPORT ─────────────────────────────────
@@ -6604,279 +5578,49 @@ export async function handle(request, env) {
   if (userDocumentMatch) {
     const uid = parseInt(userDocumentMatch[1], 10);
     const kind = userDocumentMatch[2];
-    const config = USER_DOCUMENTS[kind];
-    const hasHrScope = isAdmin || isHcns(me);
-    const target = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(uid).first();
-    if (!target) return json({ error: 'Không tìm thấy nhân viên' }, 404);
-    if (!env.HR_DOCUMENTS) return json({ error: 'Lưu trữ hồ sơ chưa được cấu hình' }, 503);
-
     if (request.method === 'GET') {
-      // Avatar: visible to any authenticated active user (display purpose).
-      // Other documents (national_id, degree, contract, decision): HR/Admin only.
-      const canReadAvatar = kind === 'avatar';
-      const canReadSensitive = hasHrScope || me.id === uid;
-      if (kind === 'avatar' ? !canReadAvatar : !canReadSensitive && me.id !== uid) {
-        return json({ error: 'Không có quyền xem hồ sơ này' }, 403);
-      }
-      const object = await env.HR_DOCUMENTS.get(userDocumentKey(uid, kind));
-      if (!object) return json({ error: 'Tệp không tồn tại' }, 404);
-      const disposition = kind === 'avatar' ? 'inline' : 'attachment';
-      return new Response(object.body, {
-        headers: {
-          'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream',
-          'Content-Disposition': `${disposition}; filename="${kind}"`,
-          'Cache-Control': 'private, no-store, max-age=0',
-          'X-Content-Type-Options': 'nosniff',
-          'X-Frame-Options': 'DENY',
-          'Referrer-Policy': 'no-referrer',
-        },
-      });
+      return UsersController.getLegacyDocument({ env, request, isAdmin, me }, uid, kind, { isHcns });
     }
-
-    // Avatar is the sole profile document employees may update themselves.
-    // All other document categories remain restricted to HCNS/Admin.
-    const canUpload = hasHrScope || (kind === 'avatar' && me.id === uid);
-    if (!canUpload) return json({ error: 'Chỉ HCNS hoặc quản trị viên được tải hồ sơ lên' }, 403);
+    if (request.method === 'POST') {
+      return UsersController.uploadLegacyDocument({ env, request, isAdmin, me }, uid, kind, { isHcns, rateLimit });
+    }
     if (request.method === 'DELETE') {
-      if (!hasHrScope) return json({ error: 'Chỉ HCNS hoặc quản trị viên được xóa avatar' }, 403);
-      await env.HR_DOCUMENTS.delete(userDocumentKey(uid, kind));
-      const changeSetId = crypto.randomUUID();
-      const statements = [
-        env.DB.prepare(`UPDATE users SET ${config.column}='',updated_at=datetime('now','localtime'),updated_by=? WHERE id=?`).bind(me.id, uid),
-        employeeAuditStatement(env, {
-          userId: uid,
-          changeSetId,
-          action: 'legacy_document_delete',
-          group: 'documents',
-          field: kind,
-          oldValue: config.label,
-          newValue: null,
-          actor: me,
-        }),
-      ];
-      if (kind !== 'avatar') {
-        statements.push(
-          env.DB.prepare(
-            `UPDATE employee_documents
-             SET deleted_at=datetime('now','localtime'),deleted_by=?,deleted_by_name=?
-             WHERE storage_key=? AND deleted_at IS NULL`
-          ).bind(me.id, me.full_name || '', userDocumentKey(uid, kind))
-        );
-      }
-      await env.DB.batch(statements);
-      return json({ ok: true });
+      return UsersController.deleteLegacyDocument({ env, request, isAdmin, me }, uid, kind, { isHcns });
     }
-    if (request.method !== 'POST') return json({ error: 'Phương thức không được hỗ trợ' }, 405);
-
-    const retryAfter = rateLimit(request, 'employee-document-upload', 20, 10 * 60 * 1000);
-    if (retryAfter) return json({ error: 'Thử lại sau ít phút', code: 'RATE_LIMITED' }, 429, { 'Retry-After': String(retryAfter) });
-    const form = await request.formData().catch(() => null);
-    const file = form?.get('file');
-    if (!file || typeof file.stream !== 'function') return json({ error: 'Vui lòng chọn tệp để tải lên' }, 400);
-    const contentType = String(file.type || '').toLowerCase();
-    if (!config.types.includes(contentType)) return json({ error: `${config.label} chỉ nhận PDF, JPG, PNG hoặc WebP` }, 400);
-    if (!Number.isFinite(file.size) || file.size < 1 || file.size > config.maxBytes) {
-      return json({ error: `${config.label} vượt giới hạn ${config.maxBytes / 1024 / 1024} MB` }, 400);
-    }
-    const fileBuffer = await file.arrayBuffer();
-    if (!employeeDocumentContentMatches(contentType, fileBuffer)) return json({ error: 'Nội dung tệp không khớp với định dạng đã khai báo' }, 400);
-    await env.HR_DOCUMENTS.put(userDocumentKey(uid, kind), fileBuffer, {
-      httpMetadata: { contentType, cacheControl: 'private, no-store' },
-      customMetadata: { uploaded_by: String(me.id), uploaded_at: new Date().toISOString() },
-    });
-    const url = userDocumentRoute(uid, kind);
-    const changeSetId = crypto.randomUUID();
-    const statements = [
-      env.DB.prepare(`UPDATE users SET ${config.column}=?,updated_at=datetime('now','localtime'),updated_by=? WHERE id=?`).bind(url, me.id, uid),
-      employeeAuditStatement(env, {
-        userId: uid,
-        changeSetId,
-        action: 'legacy_document_upload',
-        group: 'documents',
-        field: kind,
-        oldValue: target[config.column] || null,
-        newValue: String(file.name || config.label),
-        actor: me,
-      }),
-    ];
-    if (kind !== 'avatar') {
-      statements.push(
-        env.DB.prepare(
-          `INSERT INTO employee_documents
-             (id,user_id,category,title,original_filename,content_type,byte_size,storage_key,uploaded_by,uploaded_by_name)
-           VALUES (?,?,?,?,?,?,?,?,?,?)
-           ON CONFLICT(storage_key) DO UPDATE SET
-             category=excluded.category,title=excluded.title,original_filename=excluded.original_filename,
-             content_type=excluded.content_type,byte_size=excluded.byte_size,uploaded_by=excluded.uploaded_by,
-             uploaded_by_name=excluded.uploaded_by_name,uploaded_at=datetime('now','localtime'),
-             deleted_at=NULL,deleted_by=NULL,deleted_by_name=NULL`
-        ).bind(
-          crypto.randomUUID(), uid, LEGACY_DOCUMENT_CATEGORIES[kind], config.label,
-          String(file.name || kind), contentType, file.size, userDocumentKey(uid, kind), me.id, me.full_name || ''
-        )
-      );
-    }
-    await env.DB.batch(statements);
-    return json({ ok: true, url, label: config.label });
+    return json({ error: 'Phương thức không được hỗ trợ' }, 405);
   }
 
   const userMatch = path.match(/^\/api\/users\/(\d+)$/);
   if (userMatch) {
     const uid = parseInt(userMatch[1]);
     if (request.method === 'GET') {
-      const target = await env.DB.prepare('SELECT id,department FROM users WHERE id=?').bind(uid).first();
-      if (!target) return json({ error: 'Không tìm thấy' }, 404);
-      if (!isManager && me.id !== uid) return json({ error: 'Không có quyền' }, 403);
-      if (isManager && !isAdmin && !isHcns(me) && me.id !== uid && target.department !== me.department) return json({ error: 'Không có quyền' }, 403);
-      const row = await env.DB.prepare(
-        'SELECT id,employee_code,employee_type,full_name,email,role,department,position,avatar_color,avatar_initials,phone,salary,bank_account,bank_name,is_active,lifecycle_status,created_at,birth_date,gender,national_id,national_id_issue_date,national_id_expiry_date,home_address,school_name,emergency_contact_name,emergency_contact_phone,direct_manager_id,work_location,contract_type,hire_date,contract_start_date,contract_end_date,contract_signed_date,probation_end_date,official_date,termination_date,allowance,insurance_salary,dependent_count,bank_account_holder,tax_code,social_insurance_number,insurance_hospital,avatar_url,national_id_document_url,degree_document_url,contract_document_url,personnel_decision_url,updated_at,updated_by FROM users WHERE id=?'
-      ).bind(uid).first();
-      if (!row) return json({ error: 'Không tìm thấy' }, 404);
-      return json({ user: row });
+      return UsersController.getUser({ env, request, isAdmin, me }, uid, { isManager, isHcns });
     }
     if (request.method === 'PUT') {
-      const target = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(uid).first();
-      if (!target) return json({ error: 'Không tìm thấy' }, 404);
-      const input = await request.json().catch(() => ({}));
-      const hasHrScope = isAdmin || isHcns(me);
-      const managesDepartment = isManager && !hasHrScope && target.department === me.department;
-      if (!hasHrScope && me.id !== uid && !managesDepartment) return json({ error: 'Không có quyền' }, 403);
-      const protectedFields = ['role','employee_type','salary','bank_account','bank_name','is_active','lifecycle_status','allowance','insurance_salary','dependent_count','bank_account_holder','tax_code','social_insurance_number','insurance_hospital','contract_type','hire_date','contract_start_date','contract_end_date','contract_signed_date','probation_end_date','official_date','termination_date','reset_password','password_hash'];
-      if (!hasHrScope && protectedFields.some(k => Object.prototype.hasOwnProperty.call(input, k))) return json({ error: 'Không được thay đổi trường bảo mật hoặc lương' }, 403);
-      // The UI sends partial profile payloads in a few flows; merge only after
-      // authorization so absent fields can never zero out personnel data.
-      const b = { ...target, ...input };
-      const legacyTrackedFields = [
-        'full_name','email','department','position','phone','birth_date','gender','national_id','national_id_issue_date','national_id_expiry_date','home_address',
-        'emergency_contact_name','emergency_contact_phone','direct_manager_id','work_location','contract_type',
-        'contract_start_date','contract_end_date','contract_signed_date','official_date','termination_date','salary',
-        'allowance','insurance_salary','bank_account','bank_name','bank_account_holder','tax_code',
-        'social_insurance_number','insurance_hospital',
-      ];
-      const legacyChanges = legacyTrackedFields
-        .filter(field => Object.prototype.hasOwnProperty.call(input, field))
-        .filter(field => String(target[field] ?? '') !== String(b[field] ?? ''))
-        .map(field => [field, b[field]]);
-      const validationError = validateEmployeeProfile(b, legacyChanges.map(([field]) => field));
-      if (validationError) return json({ error: validationError }, 400);
-      if (legacyChanges.some(([field]) => field === 'email')) {
-        const duplicate = await env.DB.prepare('SELECT id FROM users WHERE lower(email)=lower(?) AND id<>? LIMIT 1').bind(b.email, uid).first();
-        if (duplicate) return json({ error: 'Email đã tồn tại' }, 409);
-      }
-      if (legacyChanges.some(([field]) => field === 'direct_manager_id') && b.direct_manager_id) {
-        const manager = await env.DB.prepare('SELECT id FROM users WHERE id=? AND is_active=1').bind(b.direct_manager_id).first();
-        if (!manager) return json({ error: 'Quản lý trực tiếp không tồn tại hoặc đã khóa' }, 400);
-      }
-      const ini = b.avatar_initials || nameInitials(b.full_name || '');
-      let extraSql = '';
-      let extraBinds = [];
-      const passwordWasReset = b.reset_password === true && isAdmin;
-      if (passwordWasReset) {
-        const newHash = await hashPassword('Pass@123');
-        extraSql = ', password_hash=?, must_change_password=1';
-        extraBinds = [newHash];
-      }
-      const binds = [b.full_name,b.email,b.role||'employee',normalizeDeptName(b.department||''),b.position||'',b.avatar_color||'#4F46E5',ini,b.phone||'',b.salary||0,b.bank_account||'',b.bank_name||'',b.is_active??1,b.birth_date||null,b.gender||'',b.national_id||'',b.national_id_issue_date||null,b.national_id_expiry_date||null,b.home_address||'',b.emergency_contact_name||'',b.emergency_contact_phone||'',b.direct_manager_id||null,b.work_location||'',b.contract_type||'',b.contract_start_date||null,b.contract_end_date||null,b.contract_signed_date||null,b.official_date||null,b.termination_date||null,b.allowance||0,b.insurance_salary||0,b.bank_account_holder||'',b.tax_code||'',b.social_insurance_number||'',b.insurance_hospital||'',b.avatar_url||'',b.national_id_document_url||'',b.degree_document_url||'',b.contract_document_url||'',b.personnel_decision_url||'',...extraBinds,me.id,uid];
-      const changeSetId = crypto.randomUUID();
-      await env.DB.batch([
-        env.DB.prepare(
-          `UPDATE users SET full_name=?,email=?,role=?,department=?,position=?,avatar_color=?,avatar_initials=?,phone=?,salary=?,bank_account=?,bank_name=?,is_active=?,birth_date=?,gender=?,national_id=?,national_id_issue_date=?,national_id_expiry_date=?,home_address=?,emergency_contact_name=?,emergency_contact_phone=?,direct_manager_id=?,work_location=?,contract_type=?,contract_start_date=?,contract_end_date=?,contract_signed_date=?,official_date=?,termination_date=?,allowance=?,insurance_salary=?,bank_account_holder=?,tax_code=?,social_insurance_number=?,insurance_hospital=?,avatar_url=?,national_id_document_url=?,degree_document_url=?,contract_document_url=?,personnel_decision_url=?${extraSql},updated_at=datetime('now','localtime'),updated_by=? WHERE id=?`
-        ).bind(...binds),
-        ...legacyChanges.map(([field, value]) => employeeAuditStatement(env, {
-          userId: uid,
-          changeSetId,
-          action: 'legacy_update',
-          group: EMPLOYEE_PROFILE_FIELD_GROUP[field] || 'profile',
-          field,
-          oldValue: target[field],
-          newValue: value,
-          actor: me,
-        })),
-        ...(passwordWasReset ? [
-          env.DB.prepare('UPDATE sessions SET revoked=1 WHERE user_id=? AND revoked=0').bind(uid),
-          employeeAuditStatement(env, {
-            userId: uid,
-            changeSetId,
-            action: 'password_reset',
-            group: 'security',
-            field: 'password_hash',
-            oldValue: null,
-            newValue: 'Administrator reset password',
-            actor: me,
-          }),
-        ] : []),
-      ]);
-      await broadcastAppEvent(env, 'users', 'user:updated', {
-        id: uid,
-        full_name: b.full_name,
-        department: b.department,
-        position: b.position,
-        role: b.role,
-        is_active: b.is_active,
-      }, { actorId: me.id });
-      return json({ ok: true, change_set_id: changeSetId });
+      return UsersController.updateUser({ env, request, isAdmin, me }, uid, {
+        isManager,
+        isHcns,
+        normalizeDeptName,
+        hashPassword,
+        nameInitials,
+        broadcastAppEvent
+      });
     }
     if (request.method === 'DELETE') {
-      if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
-      if (uid === me.id) return json({ error: 'Không thể xóa tài khoản đang dùng' }, 400);
-      return json({ error: 'Không hỗ trợ xóa nhân viên. Hãy chuyển trạng thái sang Đã nghỉ hoặc khóa tài khoản.', code: 'HARD_DELETE_DISABLED' }, 409);
+      return UsersController.deleteUserAccount({ env, request, isAdmin, me }, uid);
     }
   }
 
   // ── USERS: basic list (safe fields only, for pickers e.g. Mentor select) ──
   if (path === '/api/users/basic' && request.method === 'GET') {
-    const { results } = await env.DB.prepare(
-      'SELECT id, full_name, department, position, lifecycle_status, is_active FROM users WHERE is_active=1 ORDER BY full_name'
-    ).all();
-    return json({ users: sortVietnameseNames(results || [], 'full_name') });
+    return UsersController.basic({ env, request, isAdmin, me }, { sortVietnameseNames });
   }
 
   // ── LIFECYCLE STATUS (Vòng đời nhân sự) — only HCNS / Ban Giám Đốc may edit ──
   const lifecycleMatch = path.match(/^\/api\/users\/(\d+)\/lifecycle$/);
   if (lifecycleMatch && request.method === 'PUT') {
-    if (!isHrOrBod(me)) return json({ error: 'Không có quyền' }, 403);
-    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS lifecycle_history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      from_status TEXT,
-      to_status TEXT NOT NULL,
-      changed_by INTEGER,
-      changed_by_name TEXT,
-      reason TEXT,
-      changed_at TEXT DEFAULT (datetime('now','localtime'))
-    )`).run();
     const luid = parseInt(lifecycleMatch[1]);
-    const b = await request.json().catch(() => ({}));
-    const newStatus = String(b.status || '');
-    const reason = String(b.reason || '').trim();
-    if (!LIFECYCLE_STATUSES.includes(newStatus)) return json({ error: 'Trạng thái không hợp lệ' }, 400);
-    if (!reason) return json({ error: 'Vui lòng nhập lý do' }, 400);
-    const target = await env.DB.prepare('SELECT id, lifecycle_status FROM users WHERE id=?').bind(luid).first();
-    if (!target) return json({ error: 'Không tìm thấy nhân viên' }, 404);
-    const fromStatus = target.lifecycle_status || 'Chính thức';
-    const changeSetId = crypto.randomUUID();
-    await env.DB.batch([
-      env.DB.prepare('UPDATE users SET lifecycle_status=? WHERE id=?').bind(newStatus, luid),
-      env.DB.prepare('INSERT INTO lifecycle_history (user_id,from_status,to_status,changed_by,changed_by_name,reason) VALUES (?,?,?,?,?,?)')
-        .bind(luid, fromStatus, newStatus, me.id, me.full_name, reason),
-      employeeAuditStatement(env, {
-        userId: luid,
-        changeSetId,
-        action: 'lifecycle',
-        group: 'employment',
-        field: 'lifecycle_status',
-        oldValue: fromStatus,
-        newValue: newStatus,
-        actor: me,
-      }),
-    ]);
-    await broadcastAppEvent(env, 'users', 'user:lifecycle_changed', {
-      id: luid,
-      from_status: fromStatus,
-      to_status: newStatus,
-      reason,
-    }, { actorId: me.id });
-    return json({ ok: true });
+    return UsersController.updateLifecycle({ env, request, isAdmin, me }, luid, { isHrOrBod, broadcastAppEvent });
   }
 
   // ── ASSET HANDOVER (Bàn giao tài sản — Nhân viên chính thức & TTS) ──
@@ -7047,747 +5791,63 @@ export async function handle(request, env) {
 
   // ── ATTENDANCE ───────────────────────────────────────────────────
   if (path === '/api/attendance' && request.method === 'GET') {
-    await runAutoCheckout(env).catch(() => {});
-    const userId = url.searchParams.get('userId');
-    const month = url.searchParams.get('month');
-    const year = url.searchParams.get('year');
-    const date = url.searchParams.get('date');
-    let q = `SELECT a.*, u.full_name, u.employee_code, u.department,
-      (SELECT status FROM overtime_requests o WHERE o.attendance_id=a.id) AS overtime_status,
-      (SELECT approved_minutes FROM overtime_requests o WHERE o.attendance_id=a.id) AS approved_overtime_minutes,
-      (SELECT review_note FROM overtime_requests o WHERE o.attendance_id=a.id) AS overtime_review_note
-      FROM attendance a JOIN users u ON a.user_id=u.id WHERE 1=1`;
-    const binds = [];
-    if (!isAttendanceAdmin) { q += ' AND a.user_id=?'; binds.push(me.id); }
-    else if (me.role === 'manager' && !isAdmin && !isAttendanceHcns) { q += ' AND u.department=?'; binds.push(me.department); }
-    else if (userId) { q += ' AND a.user_id=?'; binds.push(parseInt(userId)); }
-    if (date) { q += ' AND a.date=?'; binds.push(date); }
-    else if (month && year) {
-      q += " AND strftime('%m',a.date)=? AND strftime('%Y',a.date)=?";
-      binds.push(String(month).padStart(2,'0'), String(year));
-    } else if (month) {
-      q += ' AND a.date LIKE ?'; binds.push('%-' + String(month).padStart(2,'0') + '-%');
-    }
-    q += ' ORDER BY a.date DESC';
-    const stmt = env.DB.prepare(q);
-    const { results } = await (binds.length ? stmt.bind(...binds) : stmt).all();
-    return json({ attendance: results });
+    return AttendanceController.list({ env, request, isAdmin, me }, { isAttendanceAdmin, isAdmin, isAttendanceHcns });
   }
 
-  // One row per active employee for the selected attendance period. The users
-  // table is deliberately the source so employees without attendance records
-  // remain visible to Admin/HCNS and department managers.
   if (path === '/api/attendance/employees' && request.method === 'GET') {
-    if (!isAttendanceAdmin) return json({ error: 'Không có quyền' }, 403);
-    const date = String(url.searchParams.get('date') || '');
-    const month = parseInt(url.searchParams.get('month'));
-    const year = parseInt(url.searchParams.get('year'));
-    let from = String(url.searchParams.get('from') || '');
-    let to = String(url.searchParams.get('to') || '');
-    if (date) {
-      from = date;
-      to = date;
-    } else if (!from || !to) {
-      const now = new Date();
-      const resolvedYear = year || now.getFullYear();
-      const resolvedMonth = month || (now.getMonth() + 1);
-      if (resolvedMonth < 1 || resolvedMonth > 12) return json({ error: 'Tháng không hợp lệ' }, 400);
-      from = attIsoDate(resolvedYear, resolvedMonth, 1);
-      to = attIsoDate(resolvedYear, resolvedMonth, new Date(resolvedYear, resolvedMonth, 0).getDate());
-    }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return json({ error: 'Khoảng ngày không hợp lệ' }, 400);
-    let q = `SELECT u.id AS user_id,u.full_name,u.employee_code,u.department,u.position,u.work_location,
-      COUNT(a.id) AS record_count,
-      COALESCE(SUM(CASE WHEN a.checkin_time IS NOT NULL AND a.checkout_time IS NOT NULL AND a.status NOT IN ('absent','cancelled','rejected') AND (a.work_type != 'wfh' OR COALESCE(a.wfh_status,'') != 'rejected') THEN CASE WHEN a.shift IN ('morning','afternoon') THEN 0.5 ELSE 1 END ELSE 0 END),0) AS actual_work_days,
-      COALESCE(SUM(CASE WHEN a.checkin_time IS NOT NULL AND a.checkout_time IS NOT NULL AND a.status NOT IN ('absent','cancelled','rejected') AND (a.work_type != 'wfh' OR COALESCE(a.wfh_status,'') != 'rejected') THEN a.work_hours ELSE 0 END),0) AS total_work_hours,
-      COALESCE(SUM(CASE WHEN COALESCE(a.late_minutes,0)>0 THEN 1 ELSE 0 END),0) AS late_days,
-      COALESCE(SUM(CASE WHEN COALESCE(a.late_minutes,0)>0 THEN a.late_minutes ELSE 0 END),0) AS late_minutes,
-      COALESCE(SUM(CASE WHEN a.status NOT IN ('absent','leave','cancelled','rejected') AND a.checkin_time IS NULL THEN 1 ELSE 0 END),0) AS missing_checkin_days,
-      COALESCE(SUM(CASE WHEN a.status NOT IN ('absent','leave','cancelled','rejected') AND a.checkin_time IS NOT NULL AND a.checkout_time IS NULL THEN 1 ELSE 0 END),0) AS missing_checkout_days
-      FROM users u LEFT JOIN attendance a ON a.user_id=u.id AND a.date BETWEEN ? AND ?
-      WHERE (u.is_active=1 OR a.id IS NOT NULL)`;
-    const binds = [from, to];
-    if (me.role === 'manager' && !isAdmin && !isAttendanceHcns) { q += ' AND u.department=?'; binds.push(me.department); }
-    q += ' GROUP BY u.id ORDER BY u.full_name COLLATE NOCASE';
-    const { results = [] } = await env.DB.prepare(q).bind(...binds).all();
-    const today = vnTodayStr();
-
-const attendanceRateTo =
-  from.slice(0, 7) === today.slice(0, 7)
-    ? (today < to ? today : to)
-    : to;
-
-    const standardWorkDays = await attBusinessDaysBetweenAsync(env, from, to);
-    const expectedWorkDaysToDate = await attBusinessDaysBetweenAsync(env, from, attendanceRateTo);
-    const employees = results.map(row => {
-      const missingDays = Number(row.missing_checkin_days || 0) + Number(row.missing_checkout_days || 0);
-      const actualWorkDays = Number(row.actual_work_days || 0);
-      return {
-        ...row,
-
-        // Vẫn giữ tổng số ngày công chuẩn của tháng cho cột "Ngày công"
-        standard_work_days: standardWorkDays,
-
-        // Số ngày lẽ ra phải làm tính tới hiện tại
-        expected_work_days_to_date: expectedWorkDaysToDate,
-
-        // Chuyên cần chỉ tính tới hiện tại
-        attendance_rate: expectedWorkDaysToDate
-          ? Number(((actualWorkDays / expectedWorkDaysToDate) * 100).toFixed(1))
-          : 0,
-
-        period_status:
-          !Number(row.record_count)
-            ? 'no_data'
-            : missingDays
-              ? 'incomplete'
-              : Number(row.late_days)
-                ? 'late'
-                : 'complete',
-      };
-    });
-    return json({ period: { from, to }, employees: sortVietnameseNames(employees, 'full_name') });
+    return AttendanceController.listEmployees({ env, request, isAdmin, me }, { isAttendanceAdmin, isAdmin, isAttendanceHcns, sortVietnameseNames, vnTodayStr });
   }
 
-  // Personal monthly compliance is intentionally scoped to the authenticated
-  // employee. Missing check-in/out is counted only after the workday has
-  // ended (00:00 HCM next day), matching the payroll proposal policy.
   if (path === '/api/attendance/my-compliance' && request.method === 'GET') {
-    const requestedMonth = String(url.searchParams.get('month') || '').trim();
-    const month = /^\d{4}-\d{2}$/.test(requestedMonth) ? requestedMonth : vnTodayStr().slice(0, 7);
-    const todayHcm = vnTodayStr();
-    const { results = [] } = await env.DB.prepare(
-      `SELECT
-        COALESCE(SUM(CASE WHEN COALESCE(late_minutes,0) > 0 THEN 1 ELSE 0 END),0) AS late_count,
-        COALESCE(SUM(CASE
-          WHEN date < ?
-           AND status NOT IN ('absent','leave','cancelled','rejected')
-           AND (checkin_time IS NULL OR checkout_time IS NULL)
-          THEN 1 ELSE 0 END),0) AS missing_checkinout_count
-       FROM attendance
-       WHERE user_id=? AND date LIKE ?`
-    ).bind(todayHcm, me.id, `${month}-%`).all();
-    const row = results[0] || {};
-    const lateCount = Number(row.late_count || 0);
-    const missingCount = Number(row.missing_checkinout_count || 0);
-    const policyActive = month >= PENALTY_POLICY_EFFECTIVE_MONTH;
-    return json({
-      month,
-      policy_active: policyActive,
-      late_count: lateCount,
-      missing_checkinout_count: missingCount,
-      late_free_remaining: policyActive ? Math.max(0, 2 - lateCount) : null,
-      late_penalty_count: policyActive ? Math.max(0, lateCount - 2) : 0,
-      late_penalty_amount: policyActive ? Math.max(0, lateCount - 2) * 20000 : 0,
-      missing_penalty_amount: policyActive ? missingCount * 50000 : 0,
-      policy: {
-        effective_month: PENALTY_POLICY_EFFECTIVE_MONTH,
-        late_free_times: 2,
-        late_penalty_from: 3,
-        late_penalty_amount: 20000,
-        missing_checkinout_penalty_amount: 50000,
-      },
-    });
+    return AttendanceController.myCompliance({ env, request, isAdmin, me }, { vnTodayStr, penaltyPolicyEffectiveMonth: PENALTY_POLICY_EFFECTIVE_MONTH });
   }
 
   if (path === '/api/attendance/today' && request.method === 'GET') {
-    const today = vnTodayStr();
-    let rows;
-    if (isManager) {
-      const scope = (!isAdmin && !isAttendanceHcns) ? ' AND u.department=?' : '';
-      const stmt = env.DB.prepare(
-        `SELECT a.*, CASE WHEN a.registered=1 AND a.checkin_time IS NULL AND a.status='present' THEN 'registered' ELSE a.status END AS status, u.full_name, u.employee_code, u.department FROM attendance a JOIN users u ON a.user_id=u.id WHERE a.date=?${scope} ORDER BY a.checkin_time`
-      );
-      const r = scope ? await stmt.bind(today, me.department).all() : await stmt.bind(today).all();
-      rows = r.results;
-    } else {
-      const r = await env.DB.prepare(
-        "SELECT a.*, CASE WHEN a.registered=1 AND a.checkin_time IS NULL AND a.status='present' THEN 'registered' ELSE a.status END AS status, u.full_name, u.employee_code, u.department FROM attendance a JOIN users u ON a.user_id=u.id WHERE a.user_id=? AND a.date=?"
-      ).bind(me.id, today).all();
-      rows = r.results;
-    }
-    return json({ attendance: rows, today });
+    return AttendanceController.today({ env, request, isAdmin, me }, { isManager, isAdmin, isAttendanceHcns, vnTodayStr });
   }
 
-  // Register today's work arrangement (work type + shift) before check-in is allowed.
   if (path === '/api/attendance/register' && request.method === 'POST') {
-    const b = await request.json().catch(() => ({}));
-    const workType = ['office', 'wfh', 'business'].includes(b.work_type) ? b.work_type : 'office';
-    const shift = ['morning', 'afternoon', 'full'].includes(b.shift) ? b.shift : 'full';
-    if (workType === 'business' && (!b.expected_start || !b.expected_end)) {
-      return json({ error: 'Vui lòng nhập giờ bắt đầu và kết thúc dự kiến cho chuyến công tác' }, 400);
-    }
-    const today = vnTodayStr();
-    const wfhReason = String(b.wfh_reason || '').trim();
-    if (workType === 'wfh' && !wfhReason) {
-      return json({ error: 'Vui lòng nhập lý do làm việc tại nhà (WFH)' }, 400);
-    }
-    if (workType === 'wfh' && wfhReason.length > 1000) {
-      return json({ error: 'Lý do WFH không được vượt quá 1000 ký tự' }, 400);
-    }
-    const wfhProofUrl = workType === 'wfh' ? (String(b.wfh_proof_url || '').trim() || null) : null;
-    const wfhProofFilename = workType === 'wfh' ? (String(b.wfh_proof_filename || '').trim() || null) : null;
-    const wfhProofDocId = workType === 'wfh' ? (String(b.wfh_proof_document_id || '').trim() || null) : null;
-    const existing = await env.DB.prepare('SELECT * FROM attendance WHERE user_id=? AND date=?')
-      .bind(me.id, today).first();
-    if (existing && existing.checkin_time) {
-      return json({ error: 'Đã check-in hôm nay, không thể thay đổi đăng ký' }, 400);
-    }
-    const expectedStart = workType === 'business' ? b.expected_start : null;
-    const expectedEnd = workType === 'business' ? b.expected_end : null;
-    const note = b.note || '';
-    let recordId = existing ? existing.id : null;
-    if (existing) {
-      await env.DB.prepare(
-        "UPDATE attendance SET work_type=?,shift=?,expected_start=?,expected_end=?,registered=1,status=CASE WHEN checkin_time IS NULL THEN 'registered' ELSE status END,note=?,wfh_status=CASE WHEN ?='wfh' THEN COALESCE(wfh_status, 'pending') ELSE NULL END,wfh_reason=CASE WHEN ?='wfh' THEN ? ELSE NULL END,wfh_proof_url=CASE WHEN ?='wfh' THEN COALESCE(?, wfh_proof_url) ELSE NULL END,wfh_proof_filename=CASE WHEN ?='wfh' THEN COALESCE(?, wfh_proof_filename) ELSE NULL END,wfh_proof_document_id=CASE WHEN ?='wfh' THEN COALESCE(?, wfh_proof_document_id) ELSE NULL END WHERE id=?"
-      ).bind(workType, shift, expectedStart, expectedEnd, note, workType, workType, wfhReason || null, workType, wfhProofUrl, workType, wfhProofFilename, workType, wfhProofDocId, existing.id).run();
-    } else {
-      const insRes = await env.DB.prepare(
-        "INSERT INTO attendance (user_id,date,work_type,shift,expected_start,expected_end,registered,status,note,wfh_status,wfh_reason,wfh_proof_url,wfh_proof_filename,wfh_proof_document_id) VALUES (?,?,?,?,?,?,1,'registered',?,CASE WHEN ?='wfh' THEN 'pending' ELSE NULL END,?,?,?,?)"
-      ).bind(me.id, today, workType, shift, expectedStart, expectedEnd, note, workType, wfhReason || null, wfhProofUrl, wfhProofFilename, wfhProofDocId).run();
-      recordId = insRes?.meta?.last_row_id || null;
-    }
-    await broadcastAppEvent(env, 'attendance', 'attendance:registered', {
-      user_id: me.id,
-      user_name: me.full_name,
-      employee_code: me.employee_code,
-      department: me.department,
-      date: today,
-      work_type: workType,
-      shift,
-      status: 'registered',
-      wfh_status: workType === 'wfh' ? 'pending' : null,
-      wfh_reason: workType === 'wfh' ? wfhReason : null,
-    }, { actorId: me.id });
-    if (workType === 'wfh') {
-      await broadcastAppEvent(env, 'attendance', 'attendance:wfh_requested', {
-        id: recordId,
-        user_id: me.id,
-        user_name: me.full_name,
-        employee_code: me.employee_code,
-        department: me.department,
-        date: today,
-        shift,
-        wfh_reason: wfhReason,
-        wfh_proof_url: wfhProofUrl,
-        wfh_proof_filename: wfhProofFilename,
-        wfh_status: 'pending',
-      }, { actorId: me.id });
-    }
-    return json({ ok: true });
+    return AttendanceController.register({ env, request, isAdmin, me }, { vnTodayStr, broadcastAppEvent });
   }
 
   if (path === '/api/attendance/checkin' && request.method === 'POST') {
-    const b = await request.json().catch(() => ({}));
-    const today = vnTodayStr();
-    let existing = await env.DB.prepare('SELECT * FROM attendance WHERE user_id=? AND date=?')
-      .bind(me.id, today).first();
-    // Idempotent: if already checked in today, return ok (don't block re-runs/tests)
-    if (existing && existing.checkin_time) return json({ ok: true, status: existing.status, time: existing.checkin_time, late_minutes: existing.late_minutes || 0, already: true });
-    if (!existing) {
-      // Not registered yet — default to office/full day (UI normally blocks this by requiring registration first)
-      await env.DB.prepare(
-        'INSERT INTO attendance (user_id,date,work_type,shift,registered,note) VALUES (?,?,?,?,1,?)'
-      ).bind(me.id, today, 'office', 'full', b.note || '').run();
-      existing = await env.DB.prepare('SELECT * FROM attendance WHERE user_id=? AND date=?').bind(me.id, today).first();
-    }
-    const workType = existing.work_type || 'office';
-    // Reject malformed coordinates up-front. The backend always recomputes
-    // distance and geofence itself — client flags are never trusted.
-    if (b.latitude !== undefined || b.longitude !== undefined || b.accuracy !== undefined) {
-      const lat = Number(b.latitude), lng = Number(b.longitude);
-      const acc = (b.accuracy === undefined || b.accuracy === null || b.accuracy === '') ? null : Number(b.accuracy);
-      if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) return json({ error: 'Tọa độ GPS không hợp lệ' }, 400);
-      if (acc !== null && (!Number.isFinite(acc) || acc < 0)) return json({ error: 'Độ chính xác GPS không hợp lệ' }, 400);
-    }
-    const ipInfo = await currentIpInfo(env, request);
-    const geo = await verifyAttendanceGeofence(env, b);
-    const gpsConstraintEnabled = await isGpsConstraintEnabled(env);
-    if (geo.status === 'invalid') return json({ error: geo.reason || 'Tọa độ GPS không hợp lệ' }, 400);
-    // Soft geofence policy: OUTSIDE / RETRY are NOT rejected — the record is kept
-    // and flagged for Admin review. Only a fully missing GPS still blocks when the
-    // constraint is on; a not-configured office falls back to Public IP.
-    if (gpsConstraintEnabled && workType === 'office') {
-      if (geo.status === 'unavailable') return json({ error: geo.reason || 'Chưa nhận được vị trí GPS hợp lệ', geofence: geo }, 403);
-      if (geo.status === 'not_configured' && !ipInfo.matched) return json({ error: `IP hien tai (${ipInfo.ip}) khong nam trong whitelist van phong`, ip: ipInfo.ip, matched: false, warning: ipInfo.warning }, 403);
-    }
-    const timeStr = vnTimeStr();
-    const bounds = attShiftBounds(workType, existing.shift || 'full', existing.expected_start, existing.expected_end);
-    const lateMinutes = Math.max(0, attToMinutes(timeStr) - attToMinutes(bounds.lateAfter));
-    const status = lateMinutes > 0 ? 'late' : 'present';
-    // Store raw coordinates for audit. Geofence is now a control/audit signal, not a hard block.
-    const geoLat = Number.isFinite(Number(b.latitude)) ? Number(b.latitude) : null;
-    const geoLng = Number.isFinite(Number(b.longitude)) ? Number(b.longitude) : null;
-    const isOffice = workType === 'office';
-    const geofenceStatus = isOffice ? (geo.status === 'verified' ? 'inside' : 'outside') : null;
-    const requiresReview = isOffice && geo.status === 'outside';
-    const reviewStatus = requiresReview ? 'pending' : 'none';
-    await env.DB.prepare('UPDATE attendance SET checkin_time=?,checkin_ip=?,status=?,late_minutes=?,checkin_location_id=?,checkin_distance_meters=?,checkin_accuracy_meters=?,checkin_verification_method=?,checkin_lat=?,checkin_lng=?,checkin_geofence_status=?,checkin_requires_review=?,checkin_review_status=?,note=? WHERE id=?')
-      .bind(timeStr, ipInfo.ip, status, lateMinutes, geo.location?.id||null, geo.location?.distance_meters||null, geo.accuracy_meters||null, geo.status === 'verified' ? 'geofence' : (geo.location?.id ? 'geofence' : (ipInfo.matched ? 'ip' : null)), geoLat, geoLng, geofenceStatus, requiresReview ? 1 : 0, reviewStatus, b.note || existing.note || '', existing.id).run();
-    await broadcastAppEvent(env, 'attendance', 'attendance:checkin', {
-      id: existing.id,
-      user_id: me.id,
-      user_name: me.full_name,
-      employee_code: me.employee_code,
-      department: me.department,
-      date: today,
-      checkin_time: timeStr,
-      status,
-      late_minutes: lateMinutes,
-      geofence_status: geofenceStatus,
-      requires_review: requiresReview,
-    }, { actorId: me.id });
-    return json({ ok: true, status, time: timeStr, late_minutes: lateMinutes, geofence: geo, gps_constraint_enabled: gpsConstraintEnabled, distance_meters: geo.location?.distance_meters ?? null, inside_geofence: geo.inside_geofence ?? null, geofence_status: geofenceStatus, requires_location_review: requiresReview, location_review_status: reviewStatus });
+    return AttendanceController.checkin({ env, request, isAdmin, me }, { vnTodayStr, vnTimeStr, currentIpInfo, broadcastAppEvent });
   }
 
   if (path === '/api/attendance/checkout' && request.method === 'POST') {
-    const b = await request.json().catch(() => ({}));
-    const today = vnTodayStr();
-    let record = await env.DB.prepare('SELECT * FROM attendance WHERE user_id=? AND date=?')
-      .bind(me.id, today).first();
-    if (!record || !record.checkin_time) {
-      // Auto check-in first (for test pipeline convenience), then checkout
-      const ipInfo = await currentIpInfo(env, request);
-      const gpsConstraintEnabled = await isGpsConstraintEnabled(env);
-      if (gpsConstraintEnabled && (!record || (record.work_type || 'office') === 'office')) {
-        if (!ipInfo.matched) return json({ error: `IP hien tai (${ipInfo.ip}) khong nam trong whitelist van phong`, ip: ipInfo.ip, matched: false, warning: ipInfo.warning }, 403);
-      }
-      const ciTime = vnTimeStr();
-      if (!record) {
-        await env.DB.prepare(
-          'INSERT INTO attendance (user_id,date,work_type,shift,registered,checkin_time,checkin_ip,status) VALUES (?,?,?,?,1,?,?,?)'
-        ).bind(me.id, today, 'office', 'full', ciTime, ipInfo.ip, 'present').run();
-      } else {
-        await env.DB.prepare('UPDATE attendance SET checkin_time=?,checkin_ip=?,status=? WHERE id=?')
-          .bind(ciTime, ipInfo.ip, 'present', record.id).run();
-      }
-      record = await env.DB.prepare('SELECT * FROM attendance WHERE user_id=? AND date=?').bind(me.id, today).first();
-    }
-    // Idempotent: if already checked out today, return ok (don't block re-runs/tests)
-    if (record.checkout_time) return json({ ok: true, time: record.checkout_time, work_hours: record.work_hours, early_minutes: record.early_minutes || 0, already: true });
-    const ipInfo = await currentIpInfo(env, request);
-    const workType = record.work_type || 'office';
-    // Reject malformed coordinates up-front (server recomputes geofence).
-    if (b.latitude !== undefined || b.longitude !== undefined || b.accuracy !== undefined) {
-      const lat = Number(b.latitude), lng = Number(b.longitude);
-      const acc = (b.accuracy === undefined || b.accuracy === null || b.accuracy === '') ? null : Number(b.accuracy);
-      if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) return json({ error: 'Tọa độ GPS không hợp lệ' }, 400);
-      if (acc !== null && (!Number.isFinite(acc) || acc < 0)) return json({ error: 'Độ chính xác GPS không hợp lệ' }, 400);
-    }
-    const geo = await verifyAttendanceGeofence(env, b);
-    const gpsConstraintEnabled = await isGpsConstraintEnabled(env);
-    if (geo.status === 'invalid') return json({ error: geo.reason || 'Tọa độ GPS không hợp lệ' }, 400);
-    // Soft geofence policy: allow checkout outside radius too, flag for review.
-    if (gpsConstraintEnabled && workType === 'office') {
-      if (geo.status === 'unavailable') return json({ error: geo.reason || 'Chưa nhận được vị trí GPS hợp lệ', geofence: geo }, 403);
-      if (geo.status === 'not_configured' && !ipInfo.matched) return json({ error: `IP hien tai (${ipInfo.ip}) khong nam trong whitelist van phong`, ip: ipInfo.ip, matched: false, warning: ipInfo.warning }, 403);
-    }
-    const timeStr = vnTimeStr();
-    const shift = record.shift || 'full';
-    const bounds = attShiftBounds(workType, shift, record.expected_start, record.expected_end);
-    const ciMin = attToMinutes(record.checkin_time) ?? attToMinutes(bounds.start);
-    const coMin = attToMinutes(timeStr);
-    const earlyMinutes = attEarlyCheckoutMinutes(bounds, timeStr);
-    let workMinutes = Math.max(0, coMin - ciMin);
-    if (workType !== 'business' && shift === 'full') {
-      // Exclude the 12:00–13:30 lunch break from total worked time
-      const lunchStart = 12 * 60, lunchEnd = 13 * 60 + 30;
-      const overlap = Math.max(0, Math.min(coMin, lunchEnd) - Math.max(ciMin, lunchStart));
-      workMinutes -= overlap;
-    }
-    const workHours = Math.max(0, workMinutes) / 60;
-    const geoLat = Number.isFinite(Number(b.latitude)) ? Number(b.latitude) : null;
-    const geoLng = Number.isFinite(Number(b.longitude)) ? Number(b.longitude) : null;
-    const isOffice = workType === 'office';
-    const geofenceStatus = isOffice ? (geo.status === 'verified' ? 'inside' : 'outside') : null;
-    const requiresReview = isOffice && geo.status === 'outside';
-    const reviewStatus = requiresReview ? 'pending' : 'none';
-    await env.DB.prepare('UPDATE attendance SET checkout_time=?,checkout_ip=?,work_hours=?,early_minutes=?,checkout_location_id=?,checkout_distance_meters=?,checkout_accuracy_meters=?,checkout_verification_method=?,checkout_lat=?,checkout_lng=?,checkout_geofence_status=?,checkout_requires_review=?,checkout_review_status=? WHERE id=?')
-      .bind(timeStr, ipInfo.ip, workHours, earlyMinutes, geo.location?.id||null, geo.location?.distance_meters||null, geo.accuracy_meters||null, geo.status === 'verified' ? 'geofence' : (geo.location?.id ? 'geofence' : (ipInfo.matched ? 'ip' : null)), geoLat, geoLng, geofenceStatus, requiresReview ? 1 : 0, reviewStatus, record.id).run();
-    await broadcastAppEvent(env, 'attendance', 'attendance:checkout', {
-      id: record.id,
-      user_id: me.id,
-      user_name: me.full_name,
-      employee_code: me.employee_code,
-      department: me.department,
-      date: today,
-      checkout_time: timeStr,
-      work_hours: workHours,
-      early_minutes: earlyMinutes,
-      status: record.status,
-    }, { actorId: me.id });
-    return json({ ok: true, attendance_id: record.id, time: timeStr, work_hours: workHours, early_minutes: earlyMinutes, geofence: geo, gps_constraint_enabled: gpsConstraintEnabled, distance_meters: geo.location?.distance_meters ?? null, inside_geofence: geo.inside_geofence ?? null, geofence_status: geofenceStatus, requires_location_review: requiresReview, location_review_status: reviewStatus });
+    return AttendanceController.checkout({ env, request, isAdmin, me }, { vnTodayStr, vnTimeStr, currentIpInfo, broadcastAppEvent });
   }
 
-  // ── CHECK-IN POINTS MAP ─────────────────────────────────────────
-  // Server-recorded GPS points at check-in time for a given date (default today).
-  // This is NOT live tracking: only the most recent check-in coordinates stored
-  // with the attendance record are exposed, and only within the viewer's scope.
   if (path === '/api/attendance/checkin-points' && request.method === 'GET') {
-    await ensureAttendanceLocationSchema(env);
-    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(url.searchParams.get('date') || '')) ? String(url.searchParams.get('date')) : vnTodayStr();
-    const officeIdParam = parseInt(url.searchParams.get('office_id'), 10);
-    // Office resolution priority:
-    //   1) office_id query param
-    //   2) office recorded on the viewer's own check-in for this date
-    //   3) nearest active office to the viewer's recorded check-in GPS
-    //   4) office with the most check-ins on this date
-    //   5) first active office
-    let office = null;
-    if (Number.isInteger(officeIdParam)) {
-      office = await env.DB.prepare('SELECT * FROM attendance_locations WHERE id=? AND is_active=1').bind(officeIdParam).first();
-    }
-    if (!office) {
-      const mine = await env.DB.prepare('SELECT checkin_location_id, checkin_lat, checkin_lng FROM attendance WHERE user_id=? AND date=?').bind(me.id, date).first();
-      if (mine?.checkin_location_id) office = await env.DB.prepare('SELECT * FROM attendance_locations WHERE id=?').bind(mine.checkin_location_id).first();
-      if (!office && Number.isFinite(Number(mine?.checkin_lat)) && Number.isFinite(Number(mine?.checkin_lng))) {
-        const { results: nearestCandidates = [] } = await env.DB.prepare('SELECT * FROM attendance_locations WHERE is_active=1').all();
-        office = nearestCandidates.map(location => ({ ...location, distance_meters: geoDistanceMeters(Number(mine.checkin_lat), Number(mine.checkin_lng), location.latitude, location.longitude) })).sort((a, b) => a.distance_meters - b.distance_meters)[0] || null;
-      }
-    }
-    if (!office) {
-      const topOffice = await env.DB.prepare('SELECT checkin_location_id AS id, COUNT(*) AS cnt FROM attendance WHERE date=? AND checkin_location_id IS NOT NULL GROUP BY checkin_location_id ORDER BY cnt DESC LIMIT 1').bind(date).first();
-      if (topOffice?.id) office = await env.DB.prepare('SELECT * FROM attendance_locations WHERE id=?').bind(topOffice.id).first();
-    }
-    if (!office) {
-      const { results: fallbackOffices = [] } = await env.DB.prepare('SELECT * FROM attendance_locations WHERE is_active=1 ORDER BY id LIMIT 1').all();
-      office = fallbackOffices[0] || null;
-    }
-    const viewerScope = isAdmin || isAttendanceHcns ? 'company' : (me.role === 'manager' ? 'department' : 'self');
-    if (!office) return json({ date, office: null, viewer: { can_view_all_markers: viewerScope === 'company', scope: viewerScope }, markers: [], reason: 'Chưa cấu hình địa điểm chấm công' });
-    let q = `SELECT a.user_id, a.checkin_time, a.checkin_lat, a.checkin_lng, a.checkin_accuracy_meters, a.checkin_location_id, a.checkin_distance_meters, a.checkin_requires_review, a.checkin_review_status, u.full_name, u.employee_code, u.department
-      FROM attendance a JOIN users u ON u.id=a.user_id
-      WHERE a.date=? AND a.checkin_lat IS NOT NULL AND a.checkin_lng IS NOT NULL`;
-    const binds = [date];
-    if (viewerScope === 'self') { q += ' AND a.user_id=?'; binds.push(me.id); }
-    else if (viewerScope === 'department') { q += ' AND u.department=?'; binds.push(me.department); }
-    q += ' ORDER BY a.checkin_time ASC, a.id ASC';
-    const { results: gpsRows = [] } = await env.DB.prepare(q).bind(...binds).all();
-    const radius = Number(office.radius_meters || 100);
-    const markers = gpsRows.map(row => {
-      const lat = Number(row.checkin_lat), lng = Number(row.checkin_lng);
-      const decision = geofenceDecision(geoDistanceMeters(lat, lng, office.latitude, office.longitude), radius);
-      return {
-        employee_id: row.user_id,
-        employee_name: row.full_name,
-        employee_code: row.employee_code || null,
-        department: row.department || null,
-        checkin_time: row.checkin_time || null,
-        latitude: lat,
-        longitude: lng,
-        checkin_accuracy_meters: row.checkin_accuracy_meters ?? null,
-        office_location_id: row.checkin_location_id ?? null,
-        distance_m: Math.round(geoDistanceMeters(lat, lng, office.latitude, office.longitude)),
-        inside_geofence: decision.inside,
-        requires_location_review: !!row.checkin_requires_review,
-        location_review_status: row.checkin_review_status || 'none',
-        is_current_user: Number(row.user_id) === Number(me.id),
-      };
-    });
-    // Keep the viewer's own marker first so the map centers on relevant context.
-    markers.sort((a, b) => (b.is_current_user ? 1 : 0) - (a.is_current_user ? 1 : 0));
-    return json({
-      date,
-      office: { id: office.id, name: office.name, code: office.code, address: office.address, latitude: office.latitude, longitude: office.longitude, radius_meters: Number(office.radius_meters || 100), max_accuracy_meters: Number(office.max_accuracy_meters || 100) },
-      viewer: { can_view_all_markers: viewerScope === 'company', scope: viewerScope },
-      markers,
-    });
+    return AttendanceController.checkinPoints({ env, request, isAdmin, me }, { isAdmin, isAttendanceHcns, vnTodayStr });
   }
 
-  // ── ATTENDANCE LOCATION REVIEW ─────────────────────────────────
-  // Admin/HCNS (or a department-scoped manager) approves/rejects a check-in
-  // that fell outside the office geofence. This is an audit signal only — it
-  // never edits/deletes the attendance record.
   const attendanceReviewMatch = path.match(/^\/api\/attendance\/(\d+)\/location-review$/);
   if (attendanceReviewMatch && request.method === 'POST') {
-    const aid = Number(attendanceReviewMatch[1]);
-    if (!isAttendanceAdmin) return json({ error: 'Không có quyền' }, 403);
-    const b = await request.json().catch(() => ({}));
-    const decision = ['approved', 'rejected'].includes(b.status) ? b.status : null;
-    if (!decision) return json({ error: 'Trạng thái duyệt không hợp lệ' }, 400);
-    if (!Number.isInteger(aid) || aid <= 0) return json({ error: 'ID bản ghi không hợp lệ' }, 400);
-    const row = await env.DB.prepare('SELECT a.*, u.department FROM attendance a JOIN users u ON u.id=a.user_id WHERE a.id=?').bind(aid).first();
-    if (!row) return json({ error: 'Không tìm thấy bản ghi chấm công' }, 404);
-    if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && row.department !== me.department) return json({ error: 'Không có quyền xem nhân sự ngoài phòng ban' }, 403);
-    if (!Number(row.checkin_requires_review)) return json({ error: 'Bản ghi này không cần xem xét vị trí' }, 400);
-    const note = String(b.note || '').trim() || null;
-    await env.DB.prepare("UPDATE attendance SET checkin_review_status=?, checkin_reviewed_by=?, checkin_review_note=?, checkin_reviewed_at=datetime('now','localtime') WHERE id=?")
-      .bind(decision, me.id, note, aid).run();
-    await broadcastAppEvent(env, 'attendance', 'attendance:location_reviewed', {
-      id: aid,
-      user_id: row.user_id,
-      status: decision,
-      reviewed_by: me.id,
-      reviewed_by_name: me.full_name || '',
-      note,
-    }, { actorId: me.id });
-    return json({ ok: true, attendance_id: aid, status: decision });
+    return AttendanceController.locationReview({ env, request, isAdmin, me }, Number(attendanceReviewMatch[1]), { isAttendanceAdmin, isAdmin, isAttendanceHcns, broadcastAppEvent });
   }
 
-  // ── WFH MANAGEMENT ──────────────────────────────────────────────
   if (path === '/api/attendance/wfh-proof-upload' && request.method === 'POST') {
-    const form = await request.formData().catch(() => null);
-    const file = form?.get('file');
-    if (!file || typeof file.stream !== 'function') return json({ error: 'Vui lòng chọn tệp đính kèm' }, 400);
-    const contentType = String(file.type || '').toLowerCase();
-    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
-    if (!allowed.includes(contentType) || !Number.isFinite(file.size) || file.size < 1 || file.size > 10 * 1024 * 1024) {
-      return json({ error: 'Chỉ nhận ảnh (JPG, PNG, WebP, GIF) hoặc PDF, tối đa 10 MB' }, 400);
-    }
-    const bytes = await file.arrayBuffer();
-    const documentId = crypto.randomUUID();
-    const filename = safeDownloadName(file.name);
-    const fileUrl = `/api/attendance/wfh-proof/${documentId}`;
-    if (env.HR_DOCUMENTS) {
-      const storageKey = `wfh-proofs/${me.id}/${documentId}`;
-      await env.HR_DOCUMENTS.put(storageKey, bytes, {
-        httpMetadata: { contentType, cacheControl: 'private, no-store' },
-        customMetadata: { owner_id: String(me.id) }
-      });
-      await env.DB.prepare('INSERT INTO wfh_proof_files (id, user_id, filename, content_type, byte_size, data_base64) VALUES (?, ?, ?, ?, ?, ?)')
-        .bind(documentId, me.id, filename, contentType, file.size, null).run();
-    } else {
-      const b64 = Buffer.from(bytes).toString('base64');
-      await env.DB.prepare('INSERT INTO wfh_proof_files (id, user_id, filename, content_type, byte_size, data_base64) VALUES (?, ?, ?, ?, ?, ?)')
-        .bind(documentId, me.id, filename, contentType, file.size, b64).run();
-    }
-    return json({ ok: true, document_id: documentId, filename, file_url: fileUrl });
+    return AttendanceController.uploadWfhProof({ env, request, isAdmin, me }, { safeDownloadName });
   }
 
   const wfhProofServeMatch = path.match(/^\/api\/attendance\/wfh-proof\/([0-9a-fA-F-]{36})$/);
   if (wfhProofServeMatch && request.method === 'GET') {
-    const documentId = wfhProofServeMatch[1];
-    const row = await env.DB.prepare('SELECT * FROM wfh_proof_files WHERE id=?').bind(documentId).first();
-    if (!row) return json({ error: 'Tệp không tồn tại' }, 404);
-    const canAccess = Number(row.user_id) === Number(me.id) || isAttendanceAdmin;
-    if (!canAccess) return json({ error: 'Không có quyền xem tệp' }, 403);
-    const disposition = url.searchParams.get('disposition') === 'attachment' ? 'attachment' : 'inline';
-    const filename = safeDownloadName(row.filename || 'proof');
-    if (env.HR_DOCUMENTS) {
-      const storageKey = `wfh-proofs/${row.user_id}/${documentId}`;
-      const object = await env.HR_DOCUMENTS.get(storageKey);
-      if (object) {
-        return new Response(object.body, {
-          headers: {
-            'Content-Type': row.content_type || 'application/octet-stream',
-            'Content-Disposition': `${disposition}; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
-            'Cache-Control': 'private, max-age=3600',
-            'X-Content-Type-Options': 'nosniff',
-          }
-        });
-      }
-    }
-    if (row.data_base64) {
-      const buffer = Buffer.from(row.data_base64, 'base64');
-      return new Response(buffer, {
-        headers: {
-          'Content-Type': row.content_type || 'application/octet-stream',
-          'Content-Disposition': `${disposition}; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
-          'Cache-Control': 'private, max-age=3600',
-          'X-Content-Type-Options': 'nosniff',
-        }
-      });
-    }
-    return json({ error: 'Nội dung tệp không khả dụng' }, 404);
+    return AttendanceController.serveWfhProof({ env, request, isAdmin, me }, wfhProofServeMatch[1], { isAttendanceAdmin, safeDownloadName });
   }
 
   const wfhProofUpdateMatch = path.match(/^\/api\/attendance\/(\d+)\/wfh-proof$/);
   if (wfhProofUpdateMatch && request.method === 'POST') {
-    const attendanceId = parseInt(wfhProofUpdateMatch[1]);
-    const record = await env.DB.prepare('SELECT a.*, u.department, u.full_name, u.employee_code FROM attendance a JOIN users u ON u.id=a.user_id WHERE a.id=?').bind(attendanceId).first();
-    if (!record) return json({ error: 'Không tìm thấy bản ghi chấm công' }, 404);
-    if (Number(record.user_id) !== Number(me.id)) return json({ error: 'Chỉ được bổ sung minh chứng của chính bạn' }, 403);
-    const b = await request.json().catch(() => ({}));
-    const reason = String(b.wfh_reason || record.wfh_reason || '').trim();
-    if (!reason) return json({ error: 'Vui lòng nhập lý do WFH' }, 400);
-    const proofUrl = b.wfh_proof_url !== undefined ? b.wfh_proof_url : record.wfh_proof_url;
-    const proofFilename = b.wfh_proof_filename !== undefined ? b.wfh_proof_filename : record.wfh_proof_filename;
-    const proofDocId = b.wfh_proof_document_id !== undefined ? b.wfh_proof_document_id : record.wfh_proof_document_id;
-    const newStatus = (record.wfh_status === 'rejected' || !record.wfh_status) ? 'pending' : record.wfh_status;
-    await env.DB.prepare(
-      "UPDATE attendance SET wfh_reason=?, wfh_proof_url=?, wfh_proof_filename=?, wfh_proof_document_id=?, wfh_status=?, wfh_review_note=CASE WHEN ?='pending' THEN NULL ELSE wfh_review_note END WHERE id=?"
-    ).bind(reason, proofUrl || null, proofFilename || null, proofDocId || null, newStatus, newStatus, attendanceId).run();
-    await broadcastAppEvent(env, 'attendance', 'attendance:wfh_requested', {
-      id: attendanceId,
-      user_id: me.id,
-      user_name: me.full_name,
-      employee_code: me.employee_code,
-      department: record.department,
-      date: record.date,
-      wfh_status: newStatus,
-      wfh_reason: reason,
-      wfh_proof_url: proofUrl,
-      wfh_proof_filename: proofFilename,
-    }, { actorId: me.id });
-    return json({ ok: true, wfh_status: newStatus });
+    return AttendanceController.updateWfhProof({ env, request, isAdmin, me }, parseInt(wfhProofUpdateMatch[1]), { broadcastAppEvent });
   }
 
   if (path === '/api/attendance/wfh-requests' && request.method === 'GET') {
-    const month = String(url.searchParams.get('month') || '');
-    const status = String(url.searchParams.get('status') || '');
-    const date = String(url.searchParams.get('date') || '');
-    let q = `SELECT a.*, u.full_name, u.employee_code, u.department, u.avatar_url, u.avatar_color, u.avatar_initials
-             FROM attendance a
-             JOIN users u ON u.id = a.user_id
-             WHERE a.work_type = 'wfh' AND a.wfh_status IS NOT NULL`;
-    const binds = [];
-    if (!isAttendanceAdmin && !isDirectorHau(me)) {
-      q += ' AND a.user_id = ?';
-      binds.push(me.id);
-    } else if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && !isDirectorHau(me)) {
-      q += ' AND u.department = ?';
-      binds.push(me.department);
-    }
-    if (/^\d{4}-\d{2}$/.test(month)) {
-      q += " AND strftime('%Y-%m', a.date) = ?";
-      binds.push(month);
-    }
-    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      q += " AND a.date = ?";
-      binds.push(date);
-    }
-    if (['pending', 'pending_director', 'approved', 'rejected'].includes(status)) {
-      q += ' AND a.wfh_status = ?';
-      binds.push(status);
-    }
-    q += " ORDER BY CASE a.wfh_status WHEN 'pending' THEN 0 WHEN 'pending_director' THEN 1 WHEN 'rejected' THEN 2 ELSE 3 END, a.date DESC, a.id DESC";
-    const { results = [] } = await (binds.length ? env.DB.prepare(q).bind(...binds) : env.DB.prepare(q)).all();
-    return json({ wfh_requests: results });
+    return AttendanceController.listWfhRequests({ env, request, isAdmin, me }, { isAttendanceAdmin, isAdmin, isAttendanceHcns, isDirectorHau });
   }
 
   const wfhDecisionMatch = path.match(/^\/api\/attendance\/(\d+)\/wfh-decision$/);
   if (wfhDecisionMatch && request.method === 'POST') {
-    if (!isAttendanceAdmin && !isDirectorHau(me)) return json({ error: 'Không có quyền duyệt yêu cầu WFH' }, 403);
-    const id = parseInt(wfhDecisionMatch[1]);
-    const record = await env.DB.prepare('SELECT a.*, u.full_name, u.employee_code, u.department FROM attendance a JOIN users u ON u.id=a.user_id WHERE a.id=?').bind(id).first();
-    if (!record || record.work_type !== 'wfh') return json({ error: 'Không tìm thấy bản ghi WFH hợp lệ' }, 404);
-    if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && !isDirectorHau(me) && record.department !== me.department) {
-      return json({ error: 'Không có quyền duyệt yêu cầu ngoài phòng ban' }, 403);
-    }
-    const currentStatus = record.wfh_status || 'pending';
-    if (!['pending', 'pending_director'].includes(currentStatus)) {
-      return json({ error: 'Yêu cầu WFH đã được xử lý' }, 400);
-    }
-
-    const isHau = isDirectorHau(me);
-    if (currentStatus === 'pending_director' && !isHau) {
-      return json({ error: 'Chỉ anh Hậu (Phó Tổng Giám Đốc) hoặc Quản trị viên mới có quyền phê duyệt bước cuối cùng.' }, 403);
-    }
-
-    const b = await request.json().catch(() => ({}));
-    const action = b.action === 'reject' ? 'reject' : 'approve';
-    const note = String(b.review_note || '').trim();
-    if (action === 'reject' && !note) {
-      return json({ error: 'Vui lòng nhập lý do từ chối WFH' }, 400);
-    }
-
-    if (action === 'reject') {
-      const nextStatus = 'rejected';
-      await env.DB.prepare(
-        "UPDATE attendance SET wfh_status=?, wfh_reviewer_id=?, wfh_reviewer_name=?, wfh_review_note=?, wfh_reviewed_at=datetime('now','localtime') WHERE id=?"
-      ).bind(nextStatus, me.id, me.full_name || '', note || null, id).run();
-
-      await createEmployeePopup(env, {
-        userId: record.user_id,
-        requestType: 'wfh',
-        requestId: id,
-        decision: 'rejected',
-        title: 'Đơn làm việc tại nhà (WFH) bị từ chối',
-        message: `Yêu cầu WFH ngày ${record.date} của bạn đã bị từ chối bởi ${me.full_name || 'Quản lý'}.${note ? ` Lý do: ${note}` : ''}`,
-        details: {
-          request_type: 'wfh',
-          request_id: id,
-          date: record.date,
-          shift: record.shift,
-          reviewer_name: me.full_name,
-          reason: note,
-        },
-        actorId: me.id,
-        actorName: me.full_name || '',
-      });
-
-      await broadcastAppEvent(env, 'attendance', 'attendance:wfh_rejected', {
-        id,
-        user_id: record.user_id,
-        wfh_status: nextStatus,
-        wfh_reviewer_id: me.id,
-        wfh_reviewer_name: me.full_name || '',
-        wfh_review_note: note || null,
-        final: true,
-      }, { actorId: me.id });
-
-      return json({ ok: true, wfh_status: nextStatus, final: true });
-    }
-
-    // action === 'approve'
-    const isFinalApproval = currentStatus === 'pending_director' || isHau;
-    if (isFinalApproval) {
-      const nextStatus = 'approved';
-      await env.DB.prepare(
-        "UPDATE attendance SET wfh_status=?, wfh_reviewer_id=?, wfh_reviewer_name=?, wfh_review_note=?, wfh_reviewed_at=datetime('now','localtime') WHERE id=?"
-      ).bind(nextStatus, me.id, me.full_name || '', note || null, id).run();
-
-      await createEmployeePopup(env, {
-        userId: record.user_id,
-        requestType: 'wfh',
-        requestId: id,
-        decision: 'approved',
-        title: 'Đơn làm việc tại nhà (WFH) đã được duyệt!',
-        message: `Yêu cầu WFH ngày ${record.date} của bạn đã được ${isHau ? 'anh Hậu (Phó Tổng Giám Đốc)' : (me.full_name || 'Ban Giám Đốc')} phê duyệt chính thức.${note ? ` Ghi chú: ${note}` : ''}`,
-        details: {
-          request_type: 'wfh',
-          request_id: id,
-          date: record.date,
-          shift: record.shift,
-          reviewer_name: isHau ? 'Anh Hậu (Phó Tổng Giám Đốc)' : me.full_name,
-          note,
-        },
-        actorId: me.id,
-        actorName: me.full_name || '',
-      });
-
-      await broadcastAppEvent(env, 'attendance', 'attendance:wfh_approved', {
-        id,
-        user_id: record.user_id,
-        date: record.date,
-        wfh_status: nextStatus,
-        reviewer_id: me.id,
-        reviewer_name: me.full_name || '',
-        review_note: note || null,
-        final: true,
-      }, { actorId: me.id });
-
-      return json({ ok: true, wfh_status: nextStatus, final: true });
-    } else {
-      // Step 1 approval by HCNS -> pending_director
-      const nextStatus = 'pending_director';
-      await env.DB.prepare(
-        "UPDATE attendance SET wfh_status=?, wfh_step1_reviewer_id=?, wfh_step1_reviewer_name=?, wfh_step1_reviewed_at=datetime('now','localtime'), wfh_step1_note=? WHERE id=?"
-      ).bind(nextStatus, me.id, me.full_name || '', note || null, id).run();
-
-      try {
-        await env.DB.prepare(
-          "INSERT INTO notifications (user_id, title, content, type, link) VALUES (?, ?, ?, 'attendance', '/attendance')"
-        ).bind(
-          record.user_id,
-          'Tiến độ yêu cầu WFH (Bước 1 đã duyệt)',
-          `HCNS (${me.full_name}) đã duyệt bước 1 yêu cầu WFH ngày ${record.date} của bạn. Đang chờ anh Hậu phê duyệt chốt.`
-        ).run();
-      } catch (_) {}
-
-      await broadcastAppEvent(env, 'attendance', 'attendance:wfh_forwarded', {
-        id,
-        user_id: record.user_id,
-        date: record.date,
-        wfh_status: nextStatus,
-        step1_reviewer_id: me.id,
-        step1_reviewer_name: me.full_name || '',
-        step1_note: note || null,
-        final: false,
-      }, { actorId: me.id });
-
-      return json({ ok: true, wfh_status: nextStatus, final: false });
-    }
+    return AttendanceController.decideWfh({ env, request, isAdmin, me }, parseInt(wfhDecisionMatch[1]), { isAttendanceAdmin, isAdmin, isAttendanceHcns, isDirectorHau, createEmployeePopup, broadcastAppEvent });
   }
 
   // ── OVERTIME ────────────────────────────────────────────────────
@@ -8200,325 +6260,56 @@ const attendanceRateTo =
   }
 
   if (path === '/api/company-holidays' && request.method === 'GET') {
-    const { results = [] } = await env.DB.prepare('SELECT * FROM company_holidays ORDER BY holiday_date DESC').all();
-    return json({ holidays: results });
+    return LeaveController.listHolidays({ env, request, isAdmin, me });
   }
   if (path === '/api/company-holidays' && request.method === 'POST') {
-    if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
-    const b = await request.json().catch(() => ({}));
-    const date = String(b.holiday_date || ''), name = String(b.name || '').trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !name) return json({ error: 'Ngày lễ và tên ngày lễ là bắt buộc' }, 400);
-    const r = await env.DB.prepare('INSERT INTO company_holidays (holiday_date,name,is_active) VALUES (?,?,?)').bind(date, name, b.is_active === false ? 0 : 1).run();
-    return json({ ok: true, id: r.meta.last_row_id });
+    return LeaveController.createHoliday({ env, request, isAdmin, me });
   }
   const holidayMatch = path.match(/^\/api\/company-holidays\/(\d+)$/);
-  if (holidayMatch && ['PUT','DELETE'].includes(request.method)) {
-    if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
-    const id = parseInt(holidayMatch[1]);
-    if (request.method === 'DELETE') { await env.DB.prepare('DELETE FROM company_holidays WHERE id=?').bind(id).run(); return json({ ok: true }); }
-    const b = await request.json().catch(() => ({}));
-    await env.DB.prepare('UPDATE company_holidays SET holiday_date=?,name=?,is_active=?,updated_at=datetime(\'now\',\'localtime\') WHERE id=?').bind(String(b.holiday_date || ''), String(b.name || '').trim(), b.is_active === false ? 0 : 1, id).run();
-    return json({ ok: true });
+  if (holidayMatch && request.method === 'PUT') {
+    return LeaveController.updateHoliday({ env, request, isAdmin, me }, parseInt(holidayMatch[1]));
+  }
+  if (holidayMatch && request.method === 'DELETE') {
+    return LeaveController.deleteHoliday({ env, request, isAdmin, me }, parseInt(holidayMatch[1]));
   }
 
   const attMatch = path.match(/^\/api\/attendance\/(\d+)$/);
   if (attMatch && request.method === 'PUT') {
-    if (!isManager) return json({ error: 'Không có quyền' }, 403);
-    const aid = parseInt(attMatch[1]);
-    const record = await env.DB.prepare('SELECT a.*,u.department FROM attendance a JOIN users u ON u.id=a.user_id WHERE a.id=?').bind(aid).first();
-    if (!record) return json({ error: 'Không tìm thấy chấm công' }, 404);
-    if (!isAdmin && !isAttendanceHcns && record.department !== me.department) return json({ error: 'Không có quyền sửa chấm công ngoài phòng ban' }, 403);
-    const b = await request.json().catch(() => ({}));
-    const allowedStatus = ['present','late','absent','leave','cancelled','rejected'];
-    const requestedStatus = allowedStatus.includes(b.status) ? b.status : 'present';
-    if (['absent','leave','cancelled','rejected'].includes(requestedStatus)) {
-      await env.DB.prepare(
-        'UPDATE attendance SET checkin_time=NULL,checkout_time=NULL,status=?,work_hours=0,late_minutes=0,early_minutes=0,auto_checkout=0,note=? WHERE id=?'
-      ).bind(requestedStatus, String(b.note || '').slice(0, 2000), aid).run();
-      await broadcastAppEvent(env, 'attendance', 'attendance:updated', {
-        id: aid,
-        user_id: record.user_id,
-        date: record.date,
-        status: requestedStatus,
-        checkin_time: null,
-        checkout_time: null,
-        work_hours: 0,
-      }, { actorId: me.id });
-      return json({ ok: true, status: requestedStatus, late_minutes: 0, early_minutes: 0, work_hours: 0 });
-    }
-
-    const checkinTime = String(b.checkin_time || '').trim();
-    const checkoutTime = String(b.checkout_time || '').trim();
-    const workType = ['office','wfh','business'].includes(String(b.work_type || '')) ? String(b.work_type) : (record.work_type || 'office');
-    const shift = ['morning','afternoon','full'].includes(String(b.shift || '')) ? String(b.shift) : (record.shift || 'full');
-    if (!checkinTime && !checkoutTime) {
-      return json({ error: 'Cần nhập ít nhất giờ check-in hoặc check-out' }, 400);
-    }
-    if ((checkinTime && !attTimeIsValid(checkinTime)) || (checkoutTime && !attTimeIsValid(checkoutTime))) {
-      return json({ error: 'Giờ check-in hoặc check-out không hợp lệ' }, 400);
-    }
-    if (checkinTime && checkoutTime && attToMinutes(checkoutTime) <= attToMinutes(checkinTime)) {
-      return json({ error: 'Giờ check-out phải sau giờ check-in' }, 400);
-    }
-    const metrics = attManualTimingMetrics({ ...record, work_type: workType, shift }, checkinTime, checkoutTime);
-    // The status is derived from the actual times, never trusted as a cosmetic
-    // manual flag. Marking a record "Đúng giờ" therefore also requires a valid
-    // arrival before the allowed cutoff and checkout within the 10-minute grace.
-    if (requestedStatus === 'present' && (metrics.lateMinutes > 0 || metrics.earlyMinutes > 0)) {
-      const allowedCheckout = Math.max(0, attToMinutes(metrics.bounds.end) - ATT_EARLY_CHECKOUT_TOLERANCE_MINUTES);
-      const allowedLabel = `${String(Math.floor(allowedCheckout / 60)).padStart(2, '0')}:${String(allowedCheckout % 60).padStart(2, '0')}`;
-      return json({ error: `Muốn chỉnh Đúng giờ, check-in phải không muộn hơn ${metrics.bounds.lateAfter} và check-out không sớm hơn ${allowedLabel} của ca.` }, 400);
-    }
-    const status = requestedStatus === 'late' ? 'late' : (metrics.lateMinutes > 0 ? 'late' : 'present');
-    await env.DB.prepare(
-      'UPDATE attendance SET checkin_time=?,checkout_time=?,work_type=?,shift=?,status=?,work_hours=?,late_minutes=?,early_minutes=?,auto_checkout=0,note=? WHERE id=?'
-    ).bind(checkinTime || null, checkoutTime || null, workType, shift, status, metrics.workHours, metrics.lateMinutes, metrics.earlyMinutes, String(b.note || '').slice(0, 2000), aid).run();
-    await broadcastAppEvent(env, 'attendance', 'attendance:updated', {
-      id: aid,
-      user_id: record.user_id,
-      date: record.date,
-      status,
-      checkin_time: checkinTime || null,
-      checkout_time: checkoutTime || null,
-      work_hours: metrics.workHours,
-      late_minutes: metrics.lateMinutes,
-      early_minutes: metrics.earlyMinutes,
-    }, { actorId: me.id });
-    return json({ ok: true, status, late_minutes: metrics.lateMinutes, early_minutes: metrics.earlyMinutes, work_hours: metrics.workHours });
+    return AttendanceController.updateRecord({ env, request, isAdmin, me }, parseInt(attMatch[1]), { isManager, isAdmin, isAttendanceHcns, broadcastAppEvent });
   }
 
-  // Delete an attendance row (with a guard on the same permissions as edit).
   if (attMatch && request.method === 'DELETE') {
-    if (!isManager) return json({ error: 'Không có quyền' }, 403);
-    const aid = parseInt(attMatch[1]);
-    const record = await env.DB.prepare('SELECT a.*, u.department FROM attendance a JOIN users u ON u.id=a.user_id WHERE a.id=?').bind(aid).first();
-    if (!record) return json({ error: 'Không tìm thấy chấm công' }, 404);
-    if (!isAdmin && !isAttendanceHcns && record.department !== me.department) return json({ error: 'Không có quyền xóa chấm công ngoài phòng ban' }, 403);
-    await env.DB.batch([
-      env.DB.prepare('DELETE FROM overtime_requests WHERE attendance_id=?').bind(aid),
-      env.DB.prepare('DELETE FROM attendance WHERE id=?').bind(aid),
-    ]);
-    await broadcastAppEvent(env, 'attendance', 'attendance:deleted', {
-      id: aid,
-      user_id: record.user_id,
-      date: record.date,
-    }, { actorId: me.id });
-    return json({ ok: true, deleted_id: aid });
+    return AttendanceController.deleteRecord({ env, request, isAdmin, me }, parseInt(attMatch[1]), { isManager, isAdmin, isAttendanceHcns, broadcastAppEvent });
   }
 
-  // Aggregated monthly attendance summary — used to auto-fill "Ngày công" when
-  // creating/reviewing a payroll invoice (Phiếu lương ← Chấm công).
   if (path === '/api/attendance/summary' && request.method === 'GET') {
-    const month = parseInt(url.searchParams.get('month'));
-    const year = parseInt(url.searchParams.get('year'));
-    if (!month || !year) return json({ error: 'Thiếu tháng/năm' }, 400);
-    let targetUserId = me.id;
-    const qUserId = url.searchParams.get('userId');
-    if (qUserId) {
-      if (!isManager && parseInt(qUserId) !== me.id) return json({ error: 'Không có quyền' }, 403);
-      targetUserId = parseInt(qUserId);
-      if (targetUserId !== me.id && !isAdmin && !isAttendanceHcns) {
-        const target = await env.DB.prepare('SELECT department FROM users WHERE id=?').bind(targetUserId).first();
-        if (!target || target.department !== me.department) return json({ error: 'Không có quyền xem nhân sự ngoài phòng ban' }, 403);
-      }
-    }
-    const summary = await buildMonthlyWorkSummary(env, targetUserId, month, year);
-    return json(summary);
+    return AttendanceController.summary({ env, request, isAdmin, me }, { isManager, isAdmin, isAttendanceHcns });
   }
 
-  // Employee attendance detail for the selected period. Summary is calculated
-  // from the full period query, never from the paginated attendance list.
   const attendanceEmployeeMatch = path.match(/^\/api\/attendance\/employees\/(\d+)\/summary$/);
   if (attendanceEmployeeMatch && request.method === 'GET') {
-    const employeeId = parseInt(attendanceEmployeeMatch[1]);
-    const employee = await env.DB.prepare('SELECT id,full_name,employee_code,department,position,is_active FROM users WHERE id=?').bind(employeeId).first();
-    if (!employee) return json({ error: 'Không tìm thấy nhân viên' }, 404);
-    if (employeeId !== me.id) {
-      if (!isAttendanceAdmin) return json({ error: 'Không có quyền' }, 403);
-      if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && employee.department !== me.department) return json({ error: 'Không có quyền xem nhân sự ngoài phòng ban' }, 403);
-    }
-    const month = parseInt(url.searchParams.get('month'));
-    const year = parseInt(url.searchParams.get('year'));
-    let from = String(url.searchParams.get('from') || '');
-    let to = String(url.searchParams.get('to') || '');
-    if (!from || !to) {
-      const now = new Date();
-      const resolvedYear = year || now.getFullYear();
-      const resolvedMonth = month || (now.getMonth() + 1);
-      if (resolvedMonth < 1 || resolvedMonth > 12) return json({ error: 'Tháng không hợp lệ' }, 400);
-      from = attIsoDate(resolvedYear, resolvedMonth, 1);
-      to = attIsoDate(resolvedYear, resolvedMonth, new Date(resolvedYear, resolvedMonth, 0).getDate());
-    }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return json({ error: 'Khoảng ngày không hợp lệ' }, 400);
-    const { results: records = [] } = await env.DB.prepare(
-      'SELECT a.*, loc.name AS checkin_office_name, COALESCE(loc.radius_meters,0) AS checkin_office_radius FROM attendance a LEFT JOIN attendance_locations loc ON loc.id=a.checkin_location_id WHERE a.user_id=? AND a.date BETWEEN ? AND ? ORDER BY a.date ASC'
-    ).bind(employeeId, from, to).all();
-    let paidLeaveDays = 0;
-    try {
-      const { results: leaves = [] } = await env.DB.prepare(`SELECT lr.start_date,lr.end_date FROM leave_requests lr LEFT JOIN leave_types lt ON lr.type=lt.code WHERE (CAST(lr.user_id AS TEXT)=CAST(? AS TEXT) OR lr.employee_id=?) AND lr.status='approved' AND COALESCE(lt.paid_policy,'paid')='paid' AND date(lr.start_date)<=date(?) AND date(lr.end_date)>=date(?)`).bind(employeeId, employeeId, to, from).all();
-      for (const leave of leaves) paidLeaveDays += attCountBusinessDaysBetween(String(leave.start_date) > from ? String(leave.start_date) : from, String(leave.end_date) < to ? String(leave.end_date) : to);
-    } catch (_) {}
-    const activeRecords = records.filter(r => !['cancelled', 'rejected'].includes(r.status));
-    const complete = activeRecords.filter(r => r.checkin_time && r.checkout_time && r.status !== 'absent' && (r.work_type !== 'wfh' || r.wfh_status !== 'rejected'));
-    const fullDays = complete.filter(r => r.shift !== 'morning' && r.shift !== 'afternoon').length;
-    const halfDays = complete.length - fullDays;
-    const missingCheckinDays = activeRecords.filter(r => !r.checkin_time && r.status !== 'absent' && r.status !== 'leave').length;
-    const missingCheckoutDays = activeRecords.filter(r => r.checkin_time && !r.checkout_time).length;
-    const lateDays = activeRecords.filter(r => Number(r.late_minutes || 0) > 0).length;
-    const earlyDays = activeRecords.filter(r => Number(r.early_minutes || 0) > 0).length;
-    const totalWorkHours = complete.reduce((sum, r) => sum + Number(r.work_hours || 0), 0);
-    const standardWorkDays = await attBusinessDaysBetweenAsync(env, from, to);
-    // Chuyên cần tính tới hiện tại (giống danh sách nhân viên): nếu kỳ đang xem
-    // là tháng hiện tại thì chỉ chia cho số ngày công kỳ vọng tới hôm nay.
-    const today = vnTodayStr();
-    const attendanceRateTo = from.slice(0, 7) === today.slice(0, 7) ? (today < to ? today : to) : to;
-    const expectedWorkDaysToDate = await attBusinessDaysBetweenAsync(env, from, attendanceRateTo);
-    const actualWorkDays = fullDays + halfDays * .5;
-    const overtime = await buildMonthlyOvertimeSummary(env, employeeId, Number(from.slice(5, 7)), Number(from.slice(0, 4)));
-    return json({ employee, period: { from, to }, summary: {
-      standardWorkDays, expectedWorkDaysToDate, actualWorkDays, fullDays, halfDays,
-      officeDays: complete.filter(r => (r.work_type || 'office') === 'office').length,
-      wfhDays: complete.filter(r => r.work_type === 'wfh').length,
-      businessDays: complete.filter(r => r.work_type === 'business').length,
-      paidLeaveDays, absentDays: activeRecords.filter(r => r.status === 'absent').length,
-      missingCheckinDays, missingCheckoutDays, lateDays,
-      lateMinutes: activeRecords.reduce((sum, r) => sum + Number(r.late_minutes || 0), 0), earlyDays,
-      earlyMinutes: activeRecords.reduce((sum, r) => sum + Number(r.early_minutes || 0), 0), totalWorkHours,
-      approvedOvertimeMinutes: overtime.approvedOvertimeMinutes, approvedOvertimeHours: overtime.approvedOvertimeHours,
-      attendanceRate: expectedWorkDaysToDate ? Number(((actualWorkDays / expectedWorkDaysToDate) * 100).toFixed(1)) : 0,
-    }, records });
+    return AttendanceController.employeeSummary({ env, request, isAdmin, me }, parseInt(attendanceEmployeeMatch[1]), { isAttendanceAdmin, isAdmin, isAttendanceHcns, vnTodayStr, buildMonthlyOvertimeSummary });
   }
 
-  // Batch add attendance over a date range (admin/HCNS). The backend resolves
-  // "ngày nghỉ" via the shared isAttendanceWorkingDay helper (weekends + company
-  // holidays) and never overwrites existing rows, so history is preserved.
-  // Use ?dry_run=1 to preview (counts created/skipped/exists without writing).
   if (path === '/api/attendance/batch' && request.method === 'POST') {
-    if (!isAttendanceAdmin) return json({ error: 'Không có quyền' }, 403);
-    const b = await request.json().catch(() => ({}));
-    const employeeId = parseInt(b.user_id);
-    const fromDate = String(b.from_date || '');
-    const toDate = String(b.to_date || '');
-    const checkinTime = String(b.checkin_time || '').trim();
-    const checkoutTime = String(b.checkout_time || '').trim();
-    const status = ['present', 'late', 'absent', 'leave'].includes(b.status) ? b.status : 'present';
-    const skipNonWorkingDays = b.skip_non_working_days !== false;
-    const workType = ['office', 'wfh', 'business'].includes(b.work_type) ? b.work_type : 'office';
-    const shift = ['morning', 'afternoon', 'full'].includes(b.shift) ? b.shift : 'full';
-    const note = String(b.note || '').slice(0, 2000);
-    const dryRun = String(url.searchParams.get('dry_run') || '') === '1';
-
-    if (!employeeId || !/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(toDate) || fromDate > toDate)
-      return json({ error: 'Vui lòng chọn nhân viên và khoảng ngày hợp lệ' }, 400);
-    if (checkinTime && !attTimeIsValid(checkinTime)) return json({ error: 'Giờ check-in không hợp lệ' }, 400);
-    if (checkoutTime && !attTimeIsValid(checkoutTime)) return json({ error: 'Giờ check-out không hợp lệ' }, 400);
-
-    const employee = await env.DB.prepare('SELECT id,full_name,employee_code,department,is_active FROM users WHERE id=?').bind(employeeId).first();
-    if (!employee || !Number(employee.is_active)) return json({ error: 'Không tìm thấy nhân viên' }, 404);
-    if (me.role === 'manager' && !isAdmin && !isAttendanceHcns && employee.department !== me.department)
-      return json({ error: 'Không có quyền thêm chấm công cho nhân sự ngoài phòng ban' }, 403);
-
-    // Absent/leave rows carry no clock times; present/late may use them.
-    let ci = checkinTime || null;
-    let co = checkoutTime || null;
-    if (status === 'absent' || status === 'leave') { ci = null; co = null; }
-    const timing = attManualTimingMetrics({ work_type: workType, shift, expected_start: null, expected_end: null }, ci, co);
-    const workHours = timing.workHours > 0 ? Number(timing.workHours.toFixed(2)) : null;
-
-    // Existing attendance in range — never overwrite.
-    const { results: existingRows = [] } = await env.DB.prepare('SELECT id,date FROM attendance WHERE user_id=? AND date BETWEEN ? AND ?').bind(employeeId, fromDate, toDate).all();
-    const existingDates = new Set(existingRows.map(r => r.date));
-
-    const createdDates = [];
-    const skippedDates = [];
-    const existsDates = [];
-    for (let d = new Date(`${fromDate}T00:00:00`); d <= new Date(`${toDate}T00:00:00`); d.setDate(d.getDate() + 1)) {
-      const iso = attIsoDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
-      if (existingDates.has(iso)) { existsDates.push(iso); continue; }
-      if (skipNonWorkingDays && !(await isAttendanceWorkingDay(env, iso, employee))) { skippedDates.push(iso); continue; }
-      createdDates.push(iso);
-    }
-
-    const summary = {
-      dry_run: dryRun,
-      created: createdDates.length,
-      created_dates: createdDates,
-      skipped: skippedDates.length,
-      skipped_dates: skippedDates,
-      exists: existsDates.length,
-      exists_dates: existsDates,
-      employee: { id: employee.id, full_name: employee.full_name, employee_code: employee.employee_code },
-    };
-    if (dryRun) return json({ ok: true, ...summary });
-
-    for (const iso of createdDates) {
-      await d1WriteWithRetry(() => env.DB.prepare(
-        'INSERT INTO attendance (user_id,date,checkin_time,checkout_time,status,work_hours,note,work_type,shift,registered,late_minutes,early_minutes) VALUES (?,?,?,?,?,?,?,?,?,1,?,?)'
-      ).bind(employeeId, iso, ci, co, status, workHours, note || null, workType, shift, timing.lateMinutes, timing.earlyMinutes).run());
-    }
-    await broadcastAppEvent(env, 'attendance', 'attendance:batch_imported', {
-      user_id: employeeId,
-      created_dates: createdDates,
-      count: createdDates.length,
-    }, { actorId: me.id });
-    return json({ ok: true, ...summary });
+    return AttendanceController.batchAdd({ env, request, isAdmin, me }, { isAttendanceAdmin, isAdmin, isAttendanceHcns, d1WriteWithRetry, broadcastAppEvent });
   }
 
-  // ── ATTENDANCE LOCATIONS / GPS GEOFENCE ──────────────────────────
   if (path === '/api/attendance-locations' && request.method === 'GET') {
-    const schemaReady = await ensureAttendanceLocationSchema(env);
-    if (!schemaReady) return json({ locations: [], schema_ready: false, warning: 'Không thể khởi tạo dữ liệu địa điểm chấm công. Vui lòng thử lại sau.' }, 503);
-    const { results = [] } = await env.DB.prepare('SELECT * FROM attendance_locations ORDER BY is_active DESC,name COLLATE NOCASE').all();
-    return json({ locations: results });
+    return AttendanceController.listLocations({ env, request, isAdmin, me });
   }
   if (path === '/api/attendance-locations/verify' && request.method === 'POST') {
-    const result = await verifyAttendanceGeofence(env, await request.json().catch(() => ({})));
-    return json(result);
+    return AttendanceController.verifyLocation({ env, request, isAdmin, me });
   }
   if (path === '/api/attendance-locations' && request.method === 'POST') {
-    if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
-    if (!(await ensureAttendanceLocationSchema(env))) return json({ error: 'Không thể khởi tạo dữ liệu địa điểm chấm công. Vui lòng thử lại sau.' }, 503);
-    const b = await request.json().catch(() => ({}));
-    const parseCoord = val => {
-      if (typeof val === 'number') return Number.isFinite(val) ? val : null;
-      const s = String(val || '').trim().replace(',', '.');
-      const n = parseFloat(s);
-      return Number.isFinite(n) ? n : null;
-    };
-    const lat = parseCoord(b.latitude);
-    const lng = parseCoord(b.longitude);
-    const radius = Math.max(10, parseCoord(b.radius_meters) || 100);
-    const maxAccuracy = Math.max(5, parseCoord(b.max_accuracy_meters) || 100);
-    if (!String(b.name || '').trim() || lat === null || lng === null) return json({ error: 'Tên và tọa độ là bắt buộc' }, 400);
-    const r = await env.DB.prepare('INSERT INTO attendance_locations (name,code,address,latitude,longitude,radius_meters,max_accuracy_meters,is_active) VALUES (?,?,?,?,?,?,?,?)').bind(String(b.name).trim(),String(b.code||'').trim()||null,String(b.address||'').trim(),lat,lng,radius,maxAccuracy,b.is_active===false?0:1).run();
-    await broadcastAppEvent(env, 'location_config', 'attendance_location:created', { id: r.meta.last_row_id }, { actorId: me.id });
-    return json({ ok:true,id:r.meta.last_row_id });
+    return AttendanceController.createLocation({ env, request, isAdmin, me }, { broadcastAppEvent });
   }
   const attendanceLocationMatch = path.match(/^\/api\/attendance-locations\/(\d+)$/);
-  if (attendanceLocationMatch && ['PUT','DELETE'].includes(request.method)) {
-    if (!isAdmin) return json({ error: 'Không có quyền' }, 403);
-    if (!(await ensureAttendanceLocationSchema(env))) return json({ error: 'Không thể khởi tạo dữ liệu địa điểm chấm công. Vui lòng thử lại sau.' }, 503);
-    const id = Number(attendanceLocationMatch[1]);
-    if (request.method === 'DELETE') {
-      await env.DB.prepare('DELETE FROM attendance_locations WHERE id=?').bind(id).run();
-      await broadcastAppEvent(env, 'location_config', 'attendance_location:deleted', { id }, { actorId: me.id });
-      return json({ok:true});
-    }
-    const b = await request.json().catch(() => ({}));
-    const parseCoord = val => {
-      if (typeof val === 'number') return Number.isFinite(val) ? val : null;
-      const s = String(val || '').trim().replace(',', '.');
-      const n = parseFloat(s);
-      return Number.isFinite(n) ? n : null;
-    };
-    const lat = parseCoord(b.latitude);
-    const lng = parseCoord(b.longitude);
-    const radius = Math.max(10, parseCoord(b.radius_meters) || 100);
-    const maxAccuracy = Math.max(5, parseCoord(b.max_accuracy_meters) || 100);
-    if (!String(b.name||'').trim() || lat === null || lng === null) return json({ error:'Tên và tọa độ là bắt buộc' },400);
-    await env.DB.prepare('UPDATE attendance_locations SET name=?,code=?,address=?,latitude=?,longitude=?,radius_meters=?,max_accuracy_meters=?,is_active=?,updated_at=datetime(\'now\',\'localtime\') WHERE id=?').bind(String(b.name).trim(),String(b.code||'').trim()||null,String(b.address||'').trim(),lat,lng,radius,maxAccuracy,b.is_active===false?0:1,id).run();
-    await broadcastAppEvent(env, 'location_config', 'attendance_location:updated', { id }, { actorId: me.id });
-    return json({ok:true});
+  if (attendanceLocationMatch && request.method === 'PUT') {
+    return AttendanceController.updateLocation({ env, request, isAdmin, me }, Number(attendanceLocationMatch[1]), { broadcastAppEvent });
+  }
+  if (attendanceLocationMatch && request.method === 'DELETE') {
+    return AttendanceController.deleteLocation({ env, request, isAdmin, me }, Number(attendanceLocationMatch[1]), { broadcastAppEvent });
   }
 
   // ── WIFI WHITELIST ───────────────────────────────────────────────
@@ -9971,442 +7762,50 @@ const attendanceRateTo =
 
   // ── LEAVE REQUESTS ────────────────────────────────────────────────
   if (path === '/api/leave-types' && request.method === 'GET') {
-    const includeInactive = url.searchParams.get('includeInactive') === '1';
-    const q = includeInactive ? 'SELECT * FROM leave_types ORDER BY is_active DESC, name' : 'SELECT * FROM leave_types WHERE is_active=1 ORDER BY name';
-    const { results } = await env.DB.prepare(q).all();
-    return json({ leaveTypes: results });
+    return LeaveController.listTypes({ env, request, isAdmin, me });
   }
   if (path === '/api/leave-types' && request.method === 'POST') {
-    if (!isHcns(me)) return json({ error: 'Khong co quyen' }, 403);
-    const b = await request.json().catch(() => ({}));
-    const code = String(b.code || '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
-    const name = String(b.name || '').trim();
-    if (!code || !name) return json({ error: 'Thieu ma hoac ten loai nghi' }, 400);
-    const r = await env.DB.prepare(
-      'INSERT INTO leave_types (code,name,paid_policy,deducts_annual_leave,requires_evidence,requires_bod_approval,max_days,is_active,short_description,policy_description,notice_hours,required_documents,requires_handover,approval_flow) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
-    ).bind(code, name, b.paid_policy || 'paid', b.deducts_annual_leave ? 1 : 0, b.requires_evidence ? 1 : 0, b.requires_bod_approval ? 1 : 0, b.max_days || null, b.is_active ?? 1, String(b.short_description || '').trim(), String(b.policy_description || '').trim(), b.notice_hours === '' || b.notice_hours == null ? null : Number(b.notice_hours), String(b.required_documents || '').trim(), b.requires_handover ? 1 : 0, String(b.approval_flow || '').trim()).run();
-    return json({ ok: true, id: r.meta.last_row_id });
+    return LeaveController.createType({ env, request, isAdmin, me }, { isHcns });
   }
   const leaveTypeMatch = path.match(/^\/api\/leave-types\/(\d+)$/);
-  if (leaveTypeMatch) {
-    if (!isHcns(me)) return json({ error: 'Khong co quyen' }, 403);
-    const id = parseInt(leaveTypeMatch[1]);
-    if (request.method === 'PUT') {
-      const b = await request.json().catch(() => ({}));
-      const code = String(b.code || '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
-      const name = String(b.name || '').trim();
-      if (!code || !name) return json({ error: 'Thieu ma hoac ten loai nghi' }, 400);
-      await env.DB.prepare(
-        "UPDATE leave_types SET code=?,name=?,paid_policy=?,deducts_annual_leave=?,requires_evidence=?,requires_bod_approval=?,max_days=?,is_active=?,short_description=?,policy_description=?,notice_hours=?,required_documents=?,requires_handover=?,approval_flow=?,updated_at=datetime('now','localtime') WHERE id=?"
-      ).bind(code, name, b.paid_policy || 'paid', b.deducts_annual_leave ? 1 : 0, b.requires_evidence ? 1 : 0, b.requires_bod_approval ? 1 : 0, b.max_days || null, b.is_active ?? 1, String(b.short_description || '').trim(), String(b.policy_description || '').trim(), b.notice_hours === '' || b.notice_hours == null ? null : Number(b.notice_hours), String(b.required_documents || '').trim(), b.requires_handover ? 1 : 0, String(b.approval_flow || '').trim(), id).run();
-      return json({ ok: true });
-    }
-    if (request.method === 'DELETE') {
-      await env.DB.prepare("UPDATE leave_types SET is_active=0,updated_at=datetime('now','localtime') WHERE id=?").bind(id).run();
-      return json({ ok: true });
-    }
+  if (leaveTypeMatch && request.method === 'PUT') {
+    return LeaveController.updateType({ env, request, isAdmin, me }, parseInt(leaveTypeMatch[1]), { isHcns });
+  }
+  if (leaveTypeMatch && request.method === 'DELETE') {
+    return LeaveController.deleteType({ env, request, isAdmin, me }, parseInt(leaveTypeMatch[1]), { isHcns });
   }
 
   if (path === '/api/leave/balances' && request.method === 'GET') {
-    const requestedUserId = Number(url.searchParams.get('user_id') || me.id);
-    if (requestedUserId !== Number(me.id) && !isHcns(me)) return json({ error: 'Không có quyền xem số dư' }, 403);
-    const year = Number(url.searchParams.get('year') || new Date().getFullYear());
-    const targetUser = await env.DB.prepare('SELECT employee_type, lifecycle_status, contract_type FROM users WHERE id=?').bind(requestedUserId).first();
-    const isOfficial = targetUser && targetUser.employee_type !== 'TTS' && targetUser.lifecycle_status !== 'Thử việc' && targetUser.lifecycle_status !== 'Thực tập' && targetUser.contract_type !== 'Thử việc' && targetUser.contract_type !== 'Thỏa thuận TTS';
-    const defaultAnnualDays = isOfficial ? 12 : 0;
-
-    let { results = [] } = await env.DB.prepare(
-      'SELECT leave_type_code,available_days,balance_year,updated_at FROM leave_balances WHERE user_id=? AND balance_year=?'
-    ).bind(requestedUserId, year).all();
-
-    if (!results.find(x => x.leave_type_code === 'annual')) {
-      results.push({
-        leave_type_code: 'annual',
-        available_days: defaultAnnualDays,
-        balance_year: year,
-      });
-    }
-    return json({ balances: results, year, is_official: isOfficial, default_annual_days: defaultAnnualDays });
+    return LeaveController.getBalances({ env, request, isAdmin, me }, { isHcns });
   }
   if (path === '/api/leave/balances' && request.method === 'POST') {
-    if (!isHcns(me)) return json({ error: 'Chỉ HCNS được điều chỉnh số dư' }, 403);
-    const b = await request.json().catch(() => ({}));
-    const userId = Number(b.user_id), typeCode = String(b.leave_type_code || '');
-    const year = Number(b.balance_year || new Date().getFullYear()), delta = Number(b.delta_days);
-    const note = String(b.note || '').trim();
-    if (!Number.isInteger(userId) || !['annual', 'compensatory'].includes(typeCode) || !Number.isFinite(delta) || !delta || !note) return json({ error: 'Dữ liệu điều chỉnh số dư không hợp lệ hoặc thiếu ghi chú' }, 400);
-    await env.DB.batch([
-      env.DB.prepare(`INSERT INTO leave_balances (user_id,leave_type_code,balance_year,available_days,updated_by,updated_by_name)
-        VALUES (?,?,?,?,?,?) ON CONFLICT(user_id,leave_type_code,balance_year) DO UPDATE SET available_days=leave_balances.available_days+excluded.available_days,updated_by=excluded.updated_by,updated_by_name=excluded.updated_by_name,updated_at=datetime('now','localtime')`)
-        .bind(userId, typeCode, year, delta, me.id, me.full_name || ''),
-      env.DB.prepare('INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?)')
-        .bind(userId, typeCode, year, delta, 'hr_adjustment', note, me.id, me.full_name || ''),
-    ]);
-    await broadcastAppEvent(env, 'leave', 'leave_balance:updated', {
-      user_id: userId,
-      leave_type_code: typeCode,
-      balance_year: year,
-      delta_days: delta,
-      note,
-    }, { actorId: me.id });
-    return json({ ok: true });
+    return LeaveController.adjustBalance({ env, request, isAdmin, me }, { isHcns, broadcastAppEvent });
   }
 
   if (path === '/api/leave/uploads' && request.method === 'POST') {
-    if (!env.HR_DOCUMENTS) return json({ error: 'Lưu trữ tài liệu chưa được cấu hình' }, 503);
-    const form = await request.formData().catch(() => null);
-    const file = form?.get('file');
-    if (!file || typeof file.stream !== 'function') return json({ error: 'Vui lòng chọn tệp đính kèm' }, 400);
-    const contentType = String(file.type || '').toLowerCase();
-    if (!LEAVE_DOCUMENT_TYPES.includes(contentType) || !Number.isFinite(file.size) || file.size < 1 || file.size > LEAVE_DOCUMENT_MAX_BYTES) return json({ error: 'Chỉ nhận PDF, JPG, PNG hoặc WebP, tối đa 10 MB' }, 400);
-    const bytes = await file.arrayBuffer();
-    if (!employeeDocumentContentMatches(contentType, bytes)) return json({ error: 'Nội dung tệp không khớp định dạng' }, 400);
-    const documentId = crypto.randomUUID(), storageKey = `leave-requests/${me.id}/${documentId}`;
-    await env.HR_DOCUMENTS.put(storageKey, bytes, { httpMetadata: { contentType, cacheControl: 'private, no-store' }, customMetadata: { owner_id: String(me.id) } });
-    await env.DB.prepare('INSERT INTO leave_request_documents (id,owner_id,original_filename,content_type,byte_size,storage_key,required_label) VALUES (?,?,?,?,?,?,?)')
-      .bind(documentId, me.id, safeDownloadName(file.name), contentType, file.size, storageKey, String(form?.get('label') || '').slice(0, 120)).run();
-    return json({ ok: true, id: documentId, filename: safeDownloadName(file.name) });
+    return LeaveController.uploadDocument({ env, request, isAdmin, me }, { safeDownloadName, employeeDocumentContentMatches });
   }
 
   if (path === '/api/leave' && request.method === 'GET') {
-    const statusFilter = url.searchParams.get('status') || '';
-    const scope        = url.searchParams.get('scope') || ''; // 'mine' | 'team'
-    const selfOnly     = url.searchParams.get('self') === '1' || scope === 'mine';
-    const canReview    = me.role === 'admin' || isHrOrBod(me) || me.role === 'manager';
-    let query, params;
-    const leaveSelectFields = `lr.*, u.full_name as employee_name, u.employee_code, u.department, lt.name AS type_name, lt.paid_policy, lt.deducts_annual_leave, lt.requires_evidence, lt.requires_bod_approval, lt.max_days, lt.short_description AS type_short_description, lt.policy_description AS type_policy_description, lt.notice_hours AS type_notice_hours, lt.required_documents AS type_required_documents, lt.requires_handover AS type_requires_handover,
-      COALESCE(lr.approved_by_name, (SELECT actor_name FROM leave_approval_history WHERE leave_request_id=lr.id AND action='approved' ORDER BY id DESC LIMIT 1)) AS approved_by_name,
-      COALESCE(lr.approved_at, (SELECT created_at FROM leave_approval_history WHERE leave_request_id=lr.id AND action='approved' ORDER BY id DESC LIMIT 1)) AS approved_at,
-      COALESCE(lr.rejected_by_name, (SELECT actor_name FROM leave_approval_history WHERE leave_request_id=lr.id AND action='rejected' ORDER BY id DESC LIMIT 1)) AS rejected_by_name,
-      COALESCE(lr.rejected_at, (SELECT created_at FROM leave_approval_history WHERE leave_request_id=lr.id AND action='rejected' ORDER BY id DESC LIMIT 1)) AS rejected_at,
-      COALESCE(lr.rejection_note, (SELECT note FROM leave_approval_history WHERE leave_request_id=lr.id AND action='rejected' ORDER BY id DESC LIMIT 1)) AS rejection_note,
-      COALESCE(lr.submitted_at, (SELECT created_at FROM leave_approval_history WHERE leave_request_id=lr.id AND action='submitted' ORDER BY id ASC LIMIT 1)) AS submitted_at`;
-
-    if (!canReview || selfOnly) {
-      query  = `SELECT ${leaveSelectFields} FROM leave_requests lr
-                LEFT JOIN users u ON lr.user_id=u.employee_code OR CAST(lr.user_id AS TEXT)=CAST(u.id AS TEXT) OR lr.employee_id=u.id
-                LEFT JOIN leave_types lt ON lr.type=lt.code
-                WHERE (CAST(lr.user_id AS TEXT)=CAST(? AS TEXT) OR CAST(lr.employee_id AS TEXT)=CAST(? AS TEXT) OR lr.user_id=?)`;
-      params = [String(me.id), String(me.id), String(me.employee_code || '')];
-    } else {
-      query  = `SELECT ${leaveSelectFields} FROM leave_requests lr
-                LEFT JOIN users u ON CAST(lr.user_id AS TEXT)=CAST(u.id AS TEXT) OR lr.user_id=u.employee_code OR lr.employee_id=u.id
-                LEFT JOIN leave_types lt ON lr.type=lt.code
-                WHERE 1=1`;
-      params = [];
-      if (!isHrOrBod(me)) {
-        query += ' AND u.department=?';
-        params.push(me.department);
-      }
-    }
-    if (statusFilter) { query += ' AND lr.status=?'; params.push(statusFilter); }
-    query += " ORDER BY CASE WHEN lr.status = 'pending' THEN 0 WHEN lr.status = 'pending_director' THEN 1 ELSE 2 END ASC, COALESCE(lr.submitted_at, lr.id) DESC, lr.id DESC";
-    try {
-      await env.DB.prepare("UPDATE leave_requests SET current_approver='Quản lý / HR' WHERE status='pending' AND current_approver IN ('Quản lý trực tiếp', 'Ban Giám đốc')").run();
-    } catch (_) {}
-    const { results } = await env.DB.prepare(query).bind(...params).all();
-    const leave = await Promise.all(results.map(async row => {
-      const docs = await env.DB.prepare('SELECT id,original_filename,content_type,byte_size,required_label FROM leave_request_documents WHERE leave_request_id=?').bind(row.id).all();
-      const approverHint = row.current_approver === 'HAUNV' ? 'Anh Hậu (Phó Tổng Giám Đốc)' : (row.current_approver === 'Quản lý trực tiếp' || row.current_approver === 'Ban Giám đốc') ? 'Quản lý / HR' : (row.current_approver || (row.status === 'pending_director' ? 'Anh Hậu (Phó Tổng Giám Đốc)' : 'Quản lý / HR'));
-      return {
-        ...row,
-        current_approver: approverHint,
-        type_name: row.type_name || row.type,
-        paid_label: leavePaidLabel(row.paid_policy),
-        can_action: ['pending', 'pending_director'].includes(row.status) && canAdvanceLeaveApproval(me, row),
-        document_count: Number(docs.results?.length || 0),
-        documents: docs.results || [],
-      };
-    }));
-    return json({ leave });
+    return LeaveController.listRequests({ env, request, isAdmin, me }, { isHrOrBod, isDirectorHau, isStep1Approver, normalizeDeptName });
   }
   if (path === '/api/leave' && request.method === 'POST') {
-    try {
-    const b = await request.json();
-    if (!b.start_date || !b.end_date || !b.type) return json({ error: 'Chọn loại nghỉ và ngày bắt đầu/kết thúc' }, 400);
-    if (String(b.start_date) > String(b.end_date)) return json({ error: 'Ngày bắt đầu phải trước hoặc bằng ngày kết thúc' }, 400);
-    const typeCode = String(b.type).trim();
-    const leaveType = await env.DB.prepare('SELECT * FROM leave_types WHERE code=? AND is_active=1').bind(typeCode).first();
-    if (!leaveType) return json({ error: 'Loai nghi phep khong hop le hoac da tat' }, 400);
-    const session = ['full', 'morning', 'afternoon'].includes(b.leave_session) ? b.leave_session : 'full';
-    if (session !== 'full' && b.start_date !== b.end_date) return json({ error: 'Nghỉ nửa ngày chỉ áp dụng cho một ngày' }, 400);
-    const leaveDays = leaveDaysForSession(b.start_date, b.end_date, session);
-    if (!leaveDays) return json({ error: 'Khoảng thời gian nghỉ không có ngày làm việc' }, 400);
-    const reason = String(b.reason || '').trim();
-    if (!reason) return json({ error: 'Vui lòng nhập lý do nghỉ' }, 400);
-    const documentIds = [...new Set(Array.isArray(b.document_ids) ? b.document_ids.map(String).filter(Boolean) : [])];
-    if (leaveType.requires_evidence && !documentIds.length) return json({ error: 'Loại nghỉ này yêu cầu tài liệu đính kèm' }, 400);
-    const needsHandover = !!leaveType.requires_handover || leaveDays >= 2;
-    const handoverUserId = b.handover_user_id ? Number(b.handover_user_id) : null;
-    if (needsHandover && !handoverUserId) return json({ error: 'Đơn nghỉ từ 2 ngày hoặc theo chính sách phải chọn người bàn giao' }, 400);
-    if (handoverUserId === Number(me.id)) return json({ error: 'Người bàn giao không thể là chính bạn' }, 400);
-    const handoverUser = handoverUserId ? await env.DB.prepare('SELECT id,full_name FROM users WHERE id=? AND is_active=1').bind(handoverUserId).first() : null;
-    if (handoverUserId && !handoverUser) return json({ error: 'Người bàn giao không hợp lệ' }, 400);
-    if (documentIds.length) {
-      const placeholders = documentIds.map(() => '?').join(',');
-      const { results: documents = [] } = await env.DB.prepare(`SELECT id FROM leave_request_documents WHERE owner_id=? AND leave_request_id IS NULL AND id IN (${placeholders})`).bind(me.id, ...documentIds).all();
-      if (documents.length !== documentIds.length) return json({ error: 'Tài liệu đính kèm không hợp lệ' }, 400);
-    }
-    const balanceType = leaveBalanceType(leaveType), balanceYear = Number(String(b.start_date).slice(0, 4));
-    if (balanceType === 'annual') {
-      const isOfficial = me.employee_type !== 'TTS' && me.lifecycle_status !== 'Thử việc' && me.lifecycle_status !== 'Thực tập' && me.contract_type !== 'Thử việc' && me.contract_type !== 'Thỏa thuận TTS';
-      if (!isOfficial) {
-        return json({ error: 'Chế độ phép năm chỉ áp dụng cho nhân viên chính thức. Thực tập sinh và nhân viên thử việc chưa có phép năm, vui lòng chọn loại nghỉ khác (ví dụ: Nghỉ không lương).' }, 400);
-      }
-    }
-    if (balanceType && await getLeaveBalance(env, me.id, balanceType, balanceYear) < leaveDays) return json({ error: `Không đủ số dư ${balanceType === 'annual' ? 'phép năm' : 'nghỉ bù'}` }, 400);
-    const isHcnsApplicant = normalizeDeptName(me.department) === 'Phòng HCNS';
-    const flow = leavePolicyFor(leaveType);
-    const currentApprover = isHcnsApplicant ? 'Trưởng phòng HCNS' : 'Quản lý / HR';
-    const r = await env.DB.prepare(
-      'INSERT INTO leave_requests (user_id,employee_id,type,start_date,end_date,reason,status,current_approver,approval_level,submitted_at,leave_session,total_days,handover_user_id,handover_user_name,approval_flow,balance_reserved_days) VALUES (?,?,?,?,?,?,?,?,?,datetime(\'now\',\'localtime\'),?,?,?,?,?,?)'
-    ).bind(String(me.id), me.id, typeCode, b.start_date, b.end_date, reason, 'pending', currentApprover, 1, session, leaveDays, handoverUser?.id || null, handoverUser?.full_name || null, flow, balanceType ? leaveDays : 0).run();
-    const leaveRequestId = r.meta.last_row_id;
-    if (balanceType) await env.DB.batch([
-      env.DB.prepare("UPDATE leave_balances SET available_days=available_days-?,updated_at=datetime('now','localtime') WHERE user_id=? AND leave_type_code=? AND balance_year=?").bind(leaveDays, me.id, balanceType, balanceYear),
-      env.DB.prepare('INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,leave_request_id,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?,?)').bind(me.id, balanceType, balanceYear, leaveRequestId, -leaveDays, 'pending_reservation', 'Giữ chỗ đơn nghỉ', me.id, me.full_name || ''),
-    ]);
-    if (documentIds.length) await env.DB.prepare(`UPDATE leave_request_documents SET leave_request_id=? WHERE id IN (${documentIds.map(() => '?').join(',')})`).bind(leaveRequestId, ...documentIds).run();
-    await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(leaveRequestId, 0, me.id, me.full_name, 'submitted', 'Gửi đơn xin nghỉ phép').run();
-    await broadcastAppEvent(env, 'leave', 'leave:created', {
-      id: leaveRequestId,
-      user_id: me.id,
-      employee_id: me.id,
-      employee_name: me.full_name,
-      employee_code: me.employee_code,
-      department: me.department,
-      type: typeCode,
-      start_date: b.start_date,
-      end_date: b.end_date,
-      leave_session: session,
-      total_days: leaveDays,
-      status: 'pending',
-      current_approver: currentApprover,
-      approval_flow: flow,
-    }, { actorId: me.id });
-    return json({ ok: true, id: leaveRequestId });
-    } catch (e) {
-      console.error('Leave create failed', e);
-      return json({ error: e.message || 'Không thể tạo yêu cầu nghỉ phép, vui lòng thử lại sau' }, 500);
-    }
+    return LeaveController.createRequest({ env, request, isAdmin, me }, { normalizeDeptName, broadcastAppEvent });
   }
   const leaveDocumentsListMatch = path.match(/^\/api\/leave\/(\d+)\/documents$/);
   if (leaveDocumentsListMatch && request.method === 'GET') {
-    const leaveId = Number(leaveDocumentsListMatch[1]);
-    const leaveRow = await env.DB.prepare(`SELECT lr.*, u.department FROM leave_requests lr LEFT JOIN users u ON (u.id=lr.employee_id OR u.employee_code=lr.user_id) WHERE lr.id=?`).bind(leaveId).first();
-    if (!leaveRow) return json({ error: 'Đơn nghỉ không tồn tại' }, 404);
-    const isOwner = Number(leaveRow.employee_id) === Number(me.id) || String(leaveRow.user_id) === String(me.id) || String(leaveRow.user_id) === String(me.employee_code || '');
-    if (!isOwner && !canManageLeaveRequest(me, leaveRow)) return json({ error: 'Không có quyền xem tài liệu' }, 403);
-    const { results: documents = [] } = await env.DB.prepare('SELECT id,original_filename,content_type,byte_size,required_label,created_at FROM leave_request_documents WHERE leave_request_id=?').bind(leaveId).all();
-    return json({ documents });
+    return LeaveController.listDocuments({ env, request, isAdmin, me }, Number(leaveDocumentsListMatch[1]), { isHrOrBod });
   }
   const leaveDocumentMatch = path.match(/^\/api\/leave\/(\d+)\/documents\/([0-9a-fA-F-]{36})$/);
   if (leaveDocumentMatch && request.method === 'GET') {
-    const leaveId = Number(leaveDocumentMatch[1]), documentId = leaveDocumentMatch[2];
-    const document = await env.DB.prepare(`SELECT d.*,lr.employee_id,lr.user_id,u.department FROM leave_request_documents d
-      JOIN leave_requests lr ON lr.id=d.leave_request_id LEFT JOIN users u ON (u.id=lr.employee_id OR u.employee_code=lr.user_id) WHERE d.id=? AND d.leave_request_id=?`).bind(documentId, leaveId).first();
-    if (!document) return json({ error: 'Tài liệu không tồn tại' }, 404);
-    const isOwner = Number(document.employee_id) === Number(me.id) || String(document.user_id) === String(me.id) || String(document.user_id) === String(me.employee_code || '');
-    if (!isOwner && !canManageLeaveRequest(me, document)) return json({ error: 'Không có quyền xem tài liệu' }, 403);
-    if (!env.HR_DOCUMENTS) return json({ error: 'Lưu trữ tài liệu chưa được cấu hình' }, 503);
-    const object = await env.HR_DOCUMENTS.get(document.storage_key);
-    if (!object) return json({ error: 'Tệp không tồn tại trên kho lưu trữ' }, 404);
-    const disposition = url.searchParams.get('disposition') === 'attachment' ? 'attachment' : 'inline';
-    const filename = safeDownloadName(document.original_filename);
-    return new Response(object.body, { headers: { 'Content-Type': document.content_type || object.httpMetadata?.contentType || 'application/octet-stream', 'Content-Disposition': `${disposition}; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' } });
+    return LeaveController.getDocumentFile({ env, request, isAdmin, me }, Number(leaveDocumentMatch[1]), leaveDocumentMatch[2], { isHrOrBod, safeDownloadName });
   }
   const leaveMatch = path.match(/^\/api\/leave\/(\d+)$/);
-  if (leaveMatch) {
-    const id = parseInt(leaveMatch[1]);
-    if (request.method === 'PUT') {
-      const b = await request.json();
-      const leaveReq = await env.DB.prepare('SELECT lr.*,u.department FROM leave_requests lr LEFT JOIN users u ON u.id=lr.employee_id WHERE lr.id=?').bind(id).first();
-      if (!leaveReq) return json({ error: 'Không tìm thấy đơn nghỉ' }, 404);
-      if (b.status === 'rejected') {
-        if (!canAdvanceLeaveApproval(me, leaveReq)) return json({ error: 'Chưa đến bước phê duyệt của bạn' }, 403);
-        const currentLevel = Number(leaveReq.approval_level || 1);
-        const noteText = String(b.note || '').trim();
-
-        await env.DB.prepare(`
-          UPDATE leave_requests SET
-            status='rejected',
-            current_approver=NULL,
-            rejected_by=?,
-            rejected_by_name=?,
-            rejected_at=datetime('now','localtime'),
-            rejection_note=?
-          WHERE id=?
-        `).bind(me.id, me.full_name, noteText || null, id).run();
-
-        if (leaveReq.balance_reserved_days > 0) {
-          const type = leaveReq.type === 'annual' ? 'annual' : 'compensatory', year = Number(String(leaveReq.start_date).slice(0,4));
-          await env.DB.batch([
-            env.DB.prepare("UPDATE leave_balances SET available_days=available_days+?,updated_at=datetime('now','localtime') WHERE user_id=? AND leave_type_code=? AND balance_year=?").bind(leaveReq.balance_reserved_days, leaveReq.employee_id, type, year),
-            env.DB.prepare('INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,leave_request_id,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?,?)').bind(leaveReq.employee_id, type, year, id, leaveReq.balance_reserved_days, 'reservation_release', String(b.note || 'Từ chối đơn'), me.id, me.full_name || ''),
-          ]);
-        }
-        await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(id, currentLevel, me.id, me.full_name, 'rejected', noteText).run();
-
-        await createEmployeePopup(env, {
-          userId: leaveReq.employee_id,
-          requestType: 'leave',
-          requestId: id,
-          decision: 'rejected',
-          title: 'Đơn xin nghỉ phép bị từ chối',
-          message: `Đơn nghỉ phép từ ${leaveReq.start_date} đến ${leaveReq.end_date} của bạn đã bị từ chối bởi ${me.full_name || 'Quản lý'}.${noteText ? ` Lý do: ${noteText}` : ''}`,
-          details: {
-            request_type: 'leave',
-            request_id: id,
-            start_date: leaveReq.start_date,
-            end_date: leaveReq.end_date,
-            leave_session: leaveReq.leave_session,
-            total_days: leaveReq.total_days,
-            reviewer_name: me.full_name,
-            reason: noteText,
-          },
-          actorId: me.id,
-          actorName: me.full_name || '',
-        });
-
-        await broadcastAppEvent(env, 'leave', 'leave:rejected', {
-          id,
-          user_id: leaveReq.employee_id,
-          status: 'rejected',
-          note: noteText,
-          rejected_by_name: me.full_name,
-        }, { actorId: me.id });
-        return json({ ok: true, status: 'rejected', final: true });
-      }
-      if (b.status === 'approved') {
-        if (!canAdvanceLeaveApproval(me, leaveReq)) return json({ error: 'Chưa đến bước phê duyệt của bạn' }, 403);
-        const currentLevel = Number(leaveReq.approval_level || 1);
-        const isHau = isDirectorHau(me);
-        const isFinalApproved = leaveReq.status === 'pending_director' || currentLevel === 2 || isHau;
-        const noteText = String(b.note || '').trim();
-
-        if (isFinalApproved) {
-          const nextLevel = 99;
-          const nextApprover = null;
-
-          await env.DB.prepare(`
-            UPDATE leave_requests SET
-              status='approved',
-              approval_level=?,
-              current_approver=?,
-              approved_by=?,
-              approved_by_name=?,
-              approved_at=datetime('now','localtime')
-            WHERE id=?
-          `).bind(nextLevel, nextApprover, me.id, me.full_name, id).run();
-
-          await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(id, currentLevel, me.id, me.full_name, 'approved', noteText).run();
-
-          await createEmployeePopup(env, {
-            userId: leaveReq.employee_id,
-            requestType: 'leave',
-            requestId: id,
-            decision: 'approved',
-            title: 'Đơn xin nghỉ phép đã được phê duyệt!',
-            message: `Đơn nghỉ phép từ ${leaveReq.start_date} đến ${leaveReq.end_date} của bạn đã được ${isHau ? 'anh Hậu (Phó Tổng Giám Đốc)' : (me.full_name || 'Ban Giám Đốc')} phê duyệt chính thức.${noteText ? ` Ghi chú: ${noteText}` : ''}`,
-            details: {
-              request_type: 'leave',
-              request_id: id,
-              start_date: leaveReq.start_date,
-              end_date: leaveReq.end_date,
-              leave_session: leaveReq.leave_session,
-              total_days: leaveReq.total_days,
-              reviewer_name: isHau ? 'Anh Hậu (Phó Tổng Giám Đốc)' : me.full_name,
-              note: noteText,
-            },
-            actorId: me.id,
-            actorName: me.full_name || '',
-          });
-
-          await broadcastAppEvent(env, 'leave', 'leave:approved', {
-            id,
-            user_id: leaveReq.employee_id,
-            status: 'approved',
-            approval_level: nextLevel,
-            current_approver: nextApprover,
-            final: true,
-            note: noteText,
-            approved_by_name: me.full_name,
-          }, { actorId: me.id });
-
-          return json({ ok: true, status: 'approved', final: true });
-        } else {
-          // Step 1 approval by HCNS / Manager -> pending_director
-          const nextLevel = 2;
-          const nextApprover = 'HAUNV';
-
-          await env.DB.prepare(`
-            UPDATE leave_requests SET
-              status='pending_director',
-              approval_level=?,
-              current_approver=?,
-              step1_reviewer_id=?,
-              step1_reviewer_name=?,
-              step1_reviewed_at=datetime('now','localtime'),
-              step1_note=?
-            WHERE id=?
-          `).bind(nextLevel, nextApprover, me.id, me.full_name, noteText || null, id).run();
-
-          await env.DB.prepare('INSERT INTO leave_approval_history (leave_request_id,approval_level,actor_id,actor_name,action,note) VALUES (?,?,?,?,?,?)').bind(id, currentLevel, me.id, me.full_name, 'forwarded', noteText).run();
-
-          try {
-            await env.DB.prepare(`
-              INSERT INTO notifications (user_id, title, content, type, link) VALUES (?, ?, ?, 'leave', '/leave')
-            `).bind(
-              leaveReq.employee_id,
-              'Tiến độ đơn nghỉ phép (Bước 1 đã duyệt)',
-              `HCNS (${me.full_name}) đã duyệt bước 1 đơn nghỉ phép từ ${leaveReq.start_date} đến ${leaveReq.end_date}. Đơn đang được chuyển tiếp tới anh Hậu phê duyệt chốt.`
-            ).run();
-          } catch (_) {}
-
-          await broadcastAppEvent(env, 'leave', 'leave:forwarded', {
-            id,
-            user_id: leaveReq.employee_id,
-            status: 'pending_director',
-            approval_level: nextLevel,
-            current_approver: nextApprover,
-            final: false,
-            step1_reviewer_name: me.full_name,
-            note: noteText,
-          }, { actorId: me.id });
-
-          return json({ ok: true, status: 'pending_director', final: false });
-        }
-      }
-      if (Number(leaveReq.employee_id) !== Number(me.id) || leaveReq.status !== 'pending') return json({ error: 'Chỉ được sửa đơn của bạn khi đang chờ duyệt' }, 403);
-      const updates = [], vals = [];
-      if (b.reason !== undefined) { const reason = String(b.reason).trim(); if (!reason) return json({ error: 'Vui lòng nhập lý do nghỉ' }, 400); updates.push('reason=?'); vals.push(reason); }
-      if (!updates.length) return json({ error: 'Không có dữ liệu cập nhật' }, 400);
-      vals.push(id); await env.DB.prepare(`UPDATE leave_requests SET ${updates.join(',')} WHERE id=?`).bind(...vals).run();
-      await broadcastAppEvent(env, 'leave', 'leave:updated', {
-        id,
-        user_id: leaveReq.employee_id,
-        updates: b,
-      }, { actorId: me.id });
-      return json({ ok: true });
-    }
-    if (request.method === 'DELETE') {
-      const leaveReq = await env.DB.prepare('SELECT * FROM leave_requests WHERE id=?').bind(id).first();
-      if (!leaveReq || (Number(leaveReq.employee_id) !== Number(me.id) && !isHcns(me))) return json({ error: 'Không có quyền xóa đơn nghỉ' }, 403);
-      if (leaveReq.status !== 'pending') return json({ error: 'Chỉ được xóa đơn đang chờ duyệt' }, 400);
-      if (leaveReq.balance_reserved_days > 0) {
-        const type = leaveReq.type === 'annual' ? 'annual' : 'compensatory', year = Number(String(leaveReq.start_date).slice(0,4));
-        await env.DB.batch([
-          env.DB.prepare("UPDATE leave_balances SET available_days=available_days+?,updated_at=datetime('now','localtime') WHERE user_id=? AND leave_type_code=? AND balance_year=?").bind(leaveReq.balance_reserved_days, leaveReq.employee_id, type, year),
-          env.DB.prepare('INSERT INTO leave_balance_ledger (user_id,leave_type_code,balance_year,leave_request_id,delta_days,entry_type,note,created_by,created_by_name) VALUES (?,?,?,?,?,?,?,?,?)').bind(leaveReq.employee_id, type, year, id, leaveReq.balance_reserved_days, 'reservation_release', 'Hủy đơn nghỉ', me.id, me.full_name || ''),
-        ]);
-      }
-      await env.DB.prepare('DELETE FROM leave_requests WHERE id=?').bind(id).run();
-      await broadcastAppEvent(env, 'leave', 'leave:deleted', {
-        id,
-        user_id: leaveReq.employee_id,
-      }, { actorId: me.id });
-      return json({ ok: true });
-    }
+  if (leaveMatch && request.method === 'PUT') {
+    return LeaveController.updateRequest({ env, request, isAdmin, me }, parseInt(leaveMatch[1]), { isDirectorHau, isStep1Approver, normalizeDeptName, createEmployeePopup, broadcastAppEvent });
+  }
+  if (leaveMatch && request.method === 'DELETE') {
+    return LeaveController.deleteRequest({ env, request, isAdmin, me }, parseInt(leaveMatch[1]), { isHcns, broadcastAppEvent });
   }
 
   // ── CANDIDATES / RECRUITMENT ──────────────────────────────────────
