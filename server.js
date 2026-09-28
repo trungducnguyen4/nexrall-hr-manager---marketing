@@ -1,6 +1,8 @@
 import { WifiController } from './server/controllers/wifi.controller.js';
 import { DepartmentsController } from './server/controllers/departments.controller.js';
 import { NotificationsController } from './server/controllers/notifications.controller.js';
+import { AuthController } from './server/controllers/auth.controller.js';
+import { hashPassword, validatePasswordPolicy, genToken, extractHrToken, resolveSession, getPlatformUser } from './server/services/auth.service.js';
 
 // ===================== HR MANAGER — NEXRALL MARKETING =====================
 // Auth strategy:
@@ -1886,28 +1888,7 @@ async function normalizeDepartmentData(env) {
   }
 }
 
-// ===================== CRYPTO HELPERS =====================
-async function hashPassword(password) {
-  const enc = new TextEncoder().encode(password);
-  const buf = await crypto.subtle.digest('SHA-256', enc);
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-function validatePasswordPolicy(password) {
-  if (typeof password !== 'string' || password.length < 8 || password.length > 20) return 'Mật khẩu phải có từ 8 đến 20 ký tự';
-  if (!/[A-Z]/.test(password)) return 'Mật khẩu phải có ít nhất 1 chữ in hoa';
-  if (!/[a-z]/.test(password)) return 'Mật khẩu phải có ít nhất 1 chữ thường';
-  if (!/[0-9]/.test(password)) return 'Mật khẩu phải có ít nhất 1 chữ số';
-  if (!/[^A-Za-z0-9\s]/.test(password)) return 'Mật khẩu phải có ít nhất 1 ký tự đặc biệt';
-  if (/\s/.test(password)) return 'Mật khẩu không được chứa khoảng trắng';
-  return null;
-}
-
-function genToken() {
-  const arr = new Uint8Array(32);
-  crypto.getRandomValues(arr);
-  return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
-}
+// (hashPassword, validatePasswordPolicy, genToken are imported from ./server/services/auth.service.js)
 
 function nameInitials(name) {
   return (name || '?').split(' ').filter(Boolean).map(w => w[0]).slice(-2).join('').toUpperCase();
@@ -4809,166 +4790,7 @@ async function seedIfNeeded(env) {
   _seeded = true;
 }
 
-// ===================== AUTH TOKEN EXTRACTION =====================
-// Strategy:
-//   EXPLICIT token locations (checked first — if a valid 64-char hex token is found
-//   in any of these specific places and it matches a live session, use that session):
-//     a) X-Auth-Token header
-//     b) ?token= query param
-//     c) Authorization: Bearer <token>  (the Nexrall test pipeline injects useToken here)
-//     d) Cookie hr_token=<token>
-//   WELL-KNOWN explicit-bad token: if a 64-char hex string is found in the above
-//   locations but it does NOT match any live session → return null with explicitBadToken=true
-//   (the caller returns 401 without falling back to platform identity).
-//   PLATFORM FALLBACK: if no explicit token was found in any of the above locations,
-//   use env.USER_ID (platform identity) to look up the corresponding HR user.
-//   This handles: raw API calls from the Nexrall platform UI, the automated test
-//   pipeline running as the app owner, and embedded usage.
-//   NOTE: we intentionally do NOT scan all headers broadly — that caused false-positive
-//   platform auth headers to be treated as explicit tokens, breaking the fallback.
-
-// Returns { token: string|null, hasAuthHint: boolean }
-// hasAuthHint = true means the request carried an explicit auth attempt (even if malformed/expired)
-// token = the extracted 64-char hex token if found, otherwise null
-function extractHrToken(request, env = {}) {
-  const isHex64 = (s) => /^[0-9a-f]{64}$/i.test((s || '').trim());
-
-  // a) X-Auth-Token header (set by HR frontend)
-  const xat = (request.headers.get('X-Auth-Token') || '').trim();
-  if (xat) return { token: isHex64(xat) ? xat.toLowerCase() : null, hasAuthHint: true };
-
-  // b) Query-string tokens are disabled in production because URLs are copied
-  // into logs, browser history and analytics.  A temporary local-only switch is
-  // retained for development tooling.
-  try {
-    if (env.ALLOW_QUERY_TOKEN === '1') {
-      const sp = new URL(request.url).searchParams;
-      const qt = (sp.get('token') || sp.get('useToken') || '').trim();
-      if (qt) return { token: isHex64(qt) ? qt.toLowerCase() : null, hasAuthHint: true };
-    }
-  } catch (_) {}
-
-  // c) Authorization header — look for an isolated 64-char hex token
-  const auth = (request.headers.get('Authorization') || '').trim();
-  if (auth) {
-    // S1: "Bearer <64hex>" — standard format with optional trailing whitespace
-    const s1 = auth.match(/^Bearer\s+([0-9a-f]{64})\s*$/i);
-    if (s1) return { token: s1[1].toLowerCase(), hasAuthHint: true };
-    // S2: split on non-hex chars and look for exactly 64-char hex segment
-    // (avoids lookbehind for broader runtime compat; rejects substrings of longer hex runs)
-    const parts = auth.split(/[^0-9a-fA-F]+/);
-    for (const part of parts) {
-      if (part.length === 64 && isHex64(part)) {
-        return { token: part.toLowerCase(), hasAuthHint: true };
-      }
-    }
-    // S3: entire value is exactly 64 hex chars
-    if (isHex64(auth)) return { token: auth.toLowerCase(), hasAuthHint: true };
-    // Authorization present but no HR token found (likely platform JWT) → allow platform fallback
-  }
-
-  // d) Cookie hr_token
-  const cookie = request.headers.get('Cookie') || '';
-  const cm = cookie.match(/hr_token=([0-9a-f]{64})/i);
-  if (cm) return { token: cm[1].toLowerCase(), hasAuthHint: true };
-
-  return { token: null, hasAuthHint: false };
-}
-
-async function getSessionFromToken(token, env) {
-  if (!token || !/^[0-9a-f]{64}$/i.test(token)) return null;
-  try {
-    const row = await env.DB.prepare(
-      'SELECT s.*, u.id as uid, u.full_name, u.email, u.role, u.department, u.position,' +
-      ' u.avatar_color, u.avatar_initials, u.avatar_url, u.work_location, u.employee_code, u.salary, u.phone,' +
-      ' u.bank_account, u.bank_name, u.is_active, u.lifecycle_status, u.must_change_password' +
-      ' FROM sessions s JOIN users u ON s.user_id = u.id' +
-      " WHERE s.token=? AND s.revoked=0 AND CAST(s.expires_at AS INTEGER) > CAST(strftime('%s','now') AS INTEGER)"
-    ).bind(token).first();
-    return row;
-  } catch (e) {
-    console.error('getSession error:', e.message);
-    return null;
-  }
-}
-
-// Returns: { session, explicitBadToken }
-// - session != null                              → authenticated HR session
-// - session == null, explicitBadToken == true   → auth was attempted but invalid → caller MUST return 401
-// - session == null, explicitBadToken == false  → no auth attempt at all → caller may use platform fallback
-//
-// Key rule: if ANY auth hint is present (Authorization: Bearer, X-Auth-Token, ?token=)
-// but no valid session is found, explicitBadToken=true so we NEVER fall back to platform identity.
-// This prevents a captured-but-failed token (e.g. "undefined", expired, unknown) from accidentally
-// granting admin access via the platform fallback.
-async function resolveSession(request, env) {
-  const { token, hasAuthHint } = extractHrToken(request, env);
-
-  if (!hasAuthHint) return { session: null, explicitBadToken: false };
-
-  if (token) {
-    const session = await getSessionFromToken(token, env);
-    if (session) return { session, explicitBadToken: false };
-  }
-
-  // Auth was attempted (hasAuthHint=true) but no valid session found → explicit bad token
-  return { session: null, explicitBadToken: true };
-}
-
-// ===================== PLATFORM IDENTITY FALLBACK =====================
-// When there is no valid HR session token, fall back to the platform identity.
-// This handles: the automated test pipeline (env.USER_ID may be 'anon' or the
-// app owner's id), embedded usage, and direct API calls from the builder.
-// Always returns the admin user as a safe fallback so the test pipeline works.
-async function getPlatformUser(env) {
-  const platformUid = env.USER_ID || '';
-  const isOwner = platformUid && platformUid !== 'anon' && platformUid === env.OWNER_ID;
-
-  // 1) Try to find a user with a PLATFORM_ employee_code matching this uid
-  if (platformUid && platformUid !== 'anon') {
-    const byPlatform = await env.DB.prepare(
-      "SELECT * FROM users WHERE employee_code=? AND is_active=1 LIMIT 1"
-    ).bind('PLATFORM_' + platformUid).first();
-    if (byPlatform) {
-      return {
-        uid: byPlatform.id, full_name: byPlatform.full_name, email: byPlatform.email,
-        role: isOwner ? 'admin' : byPlatform.role,
-        department: byPlatform.department, position: byPlatform.position,
-        avatar_color: byPlatform.avatar_color, avatar_initials: byPlatform.avatar_initials, avatar_url: byPlatform.avatar_url,
-        employee_code: byPlatform.employee_code, salary: byPlatform.salary,
-        phone: byPlatform.phone, bank_account: byPlatform.bank_account,
-        bank_name: byPlatform.bank_name, is_active: byPlatform.is_active,
-        lifecycle_status: byPlatform.lifecycle_status,
-      };
-    }
-  }
-
-  // 2) Always fall back to the admin user — this covers the test pipeline running
-  //    as 'anon' or as the app owner (who should have admin access).
-  const adminUser = await env.DB.prepare(
-    "SELECT * FROM users WHERE role='admin' AND is_active=1 LIMIT 1"
-  ).first();
-  if (!adminUser) return null;
-
-  return {
-    uid: adminUser.id,
-    full_name: adminUser.full_name,
-    email: adminUser.email,
-    role: 'admin',
-    department: adminUser.department,
-    position: adminUser.position,
-    avatar_color: adminUser.avatar_color,
-    avatar_initials: adminUser.avatar_initials,
-    avatar_url: adminUser.avatar_url,
-    employee_code: adminUser.employee_code,
-    salary: adminUser.salary,
-    phone: adminUser.phone,
-    bank_account: adminUser.bank_account,
-    bank_name: adminUser.bank_name,
-    is_active: adminUser.is_active,
-    lifecycle_status: adminUser.lifecycle_status,
-  };
-}
+// (extractHrToken, getSessionFromToken, resolveSession, getPlatformUser are imported from ./server/services/auth.service.js)
 
 // ===================== MAIN HANDLER =====================
 export async function handle(request, env) {
@@ -5023,116 +4845,22 @@ export async function handle(request, env) {
 
   // ── AUTH: LOGIN ──────────────────────────────────────────────────
   if (url.pathname === '/api/auth/login' && request.method === 'POST') {
-    const retryAfter = rateLimit(request, 'login', 10, 60 * 1000);
-    if (retryAfter) return json({ error: 'Thử lại sau ít phút', code: 'RATE_LIMITED' }, 429, { 'Retry-After': String(retryAfter) });
-    const b = await request.json().catch(() => ({}));
-    const { login, password } = b;
-    if (!login || !password) return json({ error: 'Vui lòng nhập đầy đủ thông tin' }, 400);
-    const user = await env.DB.prepare(
-      'SELECT * FROM users WHERE (email=? OR employee_code=?) AND is_active=1'
-    ).bind(login, login).first();
-    if (!user) return json({ error: 'Tài khoản không tồn tại hoặc đã bị khóa' }, 401);
-    const hash = await hashPassword(password);
-    if (hash !== user.password_hash) return json({ error: 'Mật khẩu không đúng' }, 401);
-    const token = genToken();
-    const expiresAt = Math.floor(Date.now() / 1000) + 8 * 3600; // Unix epoch, 8h from now
-    await env.DB.prepare('INSERT INTO sessions (user_id,token,expires_at,revoked) VALUES (?,?,?,0)')
-      .bind(user.id, token, expiresAt).run();
-    const userData = {
-      id: user.id, full_name: user.full_name, email: user.email,
-      role: user.role, department: user.department, position: user.position,
-      avatar_color: user.avatar_color, avatar_initials: user.avatar_initials, avatar_url: user.avatar_url,
-      employee_code: user.employee_code, work_location: user.work_location, salary: user.salary, phone: user.phone,
-      bank_account: user.bank_account, bank_name: user.bank_name,
-      lifecycle_status: user.lifecycle_status, must_change_password: !!user.must_change_password,
-    };
-    const loginHeaders = new Headers({
-      'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': 'no-store, max-age=0',
-      'X-Content-Type-Options': 'nosniff',
-      'X-Frame-Options': 'DENY',
-      'Referrer-Policy': 'no-referrer',
-    });
-    loginHeaders.append('Set-Cookie', `hr_token=${token}; Path=/; HttpOnly; Secure; Max-Age=2592000; SameSite=Lax`);
-    loginHeaders.append('Set-Cookie', `hr_token=${token}; Domain=.netviet.live; Path=/; HttpOnly; Secure; Max-Age=2592000; SameSite=Lax`);
-    loginHeaders.append('Set-Cookie', `hr_sso_active=1; Domain=.netviet.live; Path=/; Secure; Max-Age=2592000; SameSite=Lax`);
-    return new Response(JSON.stringify({ token, user: userData }), {
-      headers: loginHeaders,
-    });
+    return AuthController.login({ env, request }, rateLimit);
   }
 
   // ── AUTH: LOGOUT ─────────────────────────────────────────────────
   if (path === '/api/auth/logout' && request.method === 'POST') {
-    // Revoke using all possible token locations — mark revoked AND delete for belt+suspenders
-    const { token } = extractHrToken(request, env);
-    // Also check body for token (some clients send it in body)
-    let bodyToken = null;
-    try { const bd = await request.clone().json(); bodyToken = bd.token || null; } catch (_) {}
-    const revokeToken = token || (bodyToken && /^[0-9a-f]{64}$/i.test(bodyToken) ? bodyToken.toLowerCase() : null);
-    if (revokeToken) {
-      await env.DB.prepare('UPDATE sessions SET revoked=1 WHERE token=?').bind(revokeToken).run();
-      await env.DB.prepare('DELETE FROM sessions WHERE token=?').bind(revokeToken).run();
-    }
-    const logoutHeaders = new Headers({
-      'Content-Type': 'application/json',
-    });
-    logoutHeaders.append('Set-Cookie', 'hr_token=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax');
-    logoutHeaders.append('Set-Cookie', 'hr_token=; Domain=.netviet.live; Path=/; HttpOnly; Max-Age=0; SameSite=Lax');
-    logoutHeaders.append('Set-Cookie', 'hr_sso_active=; Domain=.netviet.live; Path=/; Max-Age=0; SameSite=Lax');
-    return new Response(JSON.stringify({ ok: true }), {
-      headers: logoutHeaders,
-    });
+    return AuthController.logout({ env, request });
   }
 
   // ── AUTH: ME ─────────────────────────────────────────────────────
   if (url.pathname === '/api/auth/me' && request.method === 'GET') {
-    const { session, explicitBadToken } = await resolveSession(request, env);
-    if (!session) return json({ error: 'Chưa đăng nhập', code: 'UNAUTHORIZED' }, 401);
-    const userId = session.uid ?? session.id;
-    const { token: currentToken } = extractHrToken(request, env);
-    const meHeaders = new Headers({
-      'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': 'no-store, max-age=0',
-      'X-Content-Type-Options': 'nosniff',
-      'X-Frame-Options': 'DENY',
-      'Referrer-Policy': 'no-referrer',
-    });
-    if (currentToken && /^[0-9a-f]{64}$/i.test(currentToken)) {
-      meHeaders.append('Set-Cookie', `hr_token=${currentToken}; Domain=.netviet.live; Path=/; HttpOnly; Secure; Max-Age=2592000; SameSite=Lax`);
-      meHeaders.append('Set-Cookie', `hr_sso_active=1; Domain=.netviet.live; Path=/; Secure; Max-Age=2592000; SameSite=Lax`);
-    }
-    return new Response(JSON.stringify({
-      user: {
-        id: userId, full_name: session.full_name, email: session.email,
-        role: session.role, department: session.department, position: session.position,
-        avatar_color: session.avatar_color, avatar_initials: session.avatar_initials, avatar_url: session.avatar_url,
-        employee_code: session.employee_code, work_location: session.work_location, salary: session.salary,
-        phone: session.phone, bank_account: session.bank_account,
-        bank_name: session.bank_name, is_active: session.is_active,
-        lifecycle_status: session.lifecycle_status, must_change_password: !!session.must_change_password,
-      }
-    }), { headers: meHeaders });
+    return AuthController.me({ env, request });
   }
 
   // ── AUTH: CHANGE PASSWORD ────────────────────────────────────────
   if (path === '/api/auth/change-password' && (request.method === 'PUT' || request.method === 'POST')) {
-    const retryAfter = rateLimit(request, 'change-password', 5, 15 * 60 * 1000);
-    if (retryAfter) return json({ error: 'Thử lại sau ít phút', code: 'RATE_LIMITED' }, 429, { 'Retry-After': String(retryAfter) });
-    const { session: cpSession, explicitBadToken: cpBad } = await resolveSession(request, env);
-    let cpUser = cpSession ? { id: cpSession.uid ?? cpSession.id } : null;
-    if (!cpUser) return json({ error: 'Chưa đăng nhập' }, 401);
-    const b = await request.json().catch(() => ({}));
-    const { old_password, new_password } = b;
-    if (!old_password || !new_password) return json({ error: 'Thiếu thông tin' }, 400);
-    const passwordError = validatePasswordPolicy(new_password);
-    if (passwordError) return json({ error: passwordError }, 400);
-    const user = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(cpUser.id).first();
-    if (!user) return json({ error: 'Không tìm thấy tài khoản' }, 404);
-    const oldHash = await hashPassword(old_password);
-    if (oldHash !== user.password_hash) return json({ error: 'Mật khẩu cũ không đúng' }, 400);
-    const newHash = await hashPassword(new_password);
-    await env.DB.prepare('UPDATE users SET password_hash=?,must_change_password=0 WHERE id=?').bind(newHash, cpUser.id).run();
-    return json({ ok: true });
+    return AuthController.changePassword({ env, request }, rateLimit);
   }
 
   // ── Resolve authenticated user for all protected routes ──────────
