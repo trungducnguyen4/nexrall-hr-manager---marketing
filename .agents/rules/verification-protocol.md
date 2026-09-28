@@ -36,9 +36,23 @@ After completing any change, the agent must output a structured verification rep
 
 ---
 
+---
+
+## 🧐 Fresh-Context AI Code Review (Review Độc Lập Ngăn Chặn Confirmation Bias)
+Trước khi commit & push, bắt buộc phải có một bước review bằng **Fresh Context** (ngữ cảnh sạch hoàn toàn độc lập với agent viết code):
+- **Cơ chế**: Spawn một Subagent Reviewer độc lập (hoặc reviewer prompt biệt lập) chỉ nhận 2 đầu vào: **Yêu cầu của người dùng** và **Bản `git diff` thực tế**.
+- **Tiêu chí phản biện khắt khe**:
+  1. **Logic & Regressions**: Có thay đổi nào vô tình làm vỡ các module lân cận không?
+  2. **Security & Secrets**: Có lộ biến môi trường, private keys, API tokens hay tạo lỗ hổng SQLi/XSS không?
+  3. **Code Cleanliness**: Có console.log rác, mock data tạm thời chưa xóa hay code thừa không?
+- **Quy tắc Gate**: Nếu Reviewer phát hiện lỗi (`REQUEST_CHANGES`), agent viết code phải khắc phục trước. Chỉ khi Reviewer xác nhận `APPROVED` thì mới đủ điều kiện bước sang Commit & Push.
+
+---
+
 ## Delivery Channels & Workflow
 Quy trình này phải được thực thi khép kín:
-1. Xuất báo cáo 4 Trụ Cột trong tin nhắn phản hồi cuối cùng cho người dùng.
-2. Cập nhật artifact `walkthrough.md` (đính kèm Screenshots/Video).
-3. **TỰ ĐỘNG COMMIT & PUSH**: Sau khi toàn bộ các bước kiểm tra (Tests, Runtime, Visual, Confidence) đạt tiêu chuẩn, AI BẮT BUỘC phải thực hiện commit với conventional message và push trực tiếp lên repository (`origin main`), không được để dở dang trên local tree trừ khi người dùng yêu cầu giữ lại.
-4. Điền nội dung báo cáo vào GitHub Pull Request description nếu tạo PR (theo mẫu `.github/PULL_REQUEST_TEMPLATE.md`).
+1. Xuất báo cáo 4 Trụ Cột (Tests, Runtime, Visual [ảnh/video], Confidence).
+2. **AI REVIEW IN FRESH CONTEXT**: Chạy kiểm duyệt độc lập trên bản `git diff` để đảm bảo 0 lỗi hồi quy và 0 lỗ hổng bảo mật.
+3. Cập nhật artifact `walkthrough.md` (đính kèm Screenshots/Video & kết luận của Reviewer).
+4. **TỰ ĐỘNG COMMIT & PUSH**: Sau khi đã PASS cả 4 Trụ Cột và được Fresh-Context Reviewer `APPROVED`, AI BẮT BUỘC commit với conventional message và push trực tiếp lên repository (`origin main`).
+5. Điền nội dung báo cáo vào GitHub Pull Request description nếu tạo PR (theo mẫu `.github/PULL_REQUEST_TEMPLATE.md`).
