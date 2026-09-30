@@ -13,9 +13,17 @@ const isHcnsDepartment = (department) => ['hcns', 'phong hcns', 'nhan su', 'phon
 
 function formatAttendanceNote(note) {
   if (!note) return '—';
-  return esc(note)
+  let formatted = esc(note)
     .replace(/\[Quên checkout\]/gi, 'Tự động checkout')
     .replace(/quên checkout/gi, 'Tự động checkout');
+  formatted = formatted.replace(
+    /(Đi muộn \d+p \(Lần \d+ - Phạt: 20\.000đ\))/gi,
+    '<span class="badge" style="font-size:11px;font-weight:600;padding:2px 6px;border-radius:4px;background:#FEE2E2;color:#991B1B;border:1px solid #FCA5A5;">$1</span>'
+  ).replace(
+    /(Đi muộn \d+p \(Lần \d+ - Miễn phạt\))/gi,
+    '<span class="badge" style="font-size:11px;font-weight:600;padding:2px 6px;border-radius:4px;background:#FEF3C7;color:#92400E;border:1px solid #FCD34D;">$1</span>'
+  );
+  return formatted;
 }
 
 export async function renderAttendance(el, me, route = {}) {

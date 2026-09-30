@@ -11,6 +11,48 @@ export const ATT_STANDARD_SHIFTS = {
 
 export const ATT_EARLY_CHECKOUT_TOLERANCE_MINUTES = 10;
 export const PENALTY_POLICY_EFFECTIVE_MONTH = '2026-05';
+export const LATE_PENALTY_NOTE_EFFECTIVE_MONTH = '2026-10';
+
+export async function resolveLatePenaltyNote(env, userId, dateStr, lateMinutes, existingId = null, userCustomNote = '') {
+  const customStr = String(userCustomNote || '').trim();
+  const cleanedCustom = customStr
+    .replace(/Đi muộn \d+p\s*\(Lần \d+\s*-\s*[^)]+\)\s*([|–-]\s*)?/gi, '')
+    .trim();
+
+  if (!dateStr || Number(lateMinutes || 0) <= 0) {
+    return cleanedCustom;
+  }
+  const month = String(dateStr).slice(0, 7);
+  if (month < LATE_PENALTY_NOTE_EFFECTIVE_MONTH) {
+    return customStr;
+  }
+
+  try {
+    let countSql = `SELECT COUNT(*) as count FROM attendance 
+      WHERE user_id = ? 
+        AND date LIKE ? 
+        AND date <= ?
+        AND COALESCE(late_minutes, 0) > 0 
+        AND status NOT IN ('cancelled', 'rejected')`;
+    const binds = [userId, `${month}-%`, dateStr];
+    if (existingId) {
+      countSql += ` AND id != ?`;
+      binds.push(existingId);
+    }
+    const row = await env.DB.prepare(countSql).bind(...binds).first();
+    const priorCount = Number(row?.count || 0);
+    const lateIndex = priorCount + 1;
+
+    const penaltyTag = lateIndex <= 2
+      ? `Đi muộn ${lateMinutes}p (Lần ${lateIndex} - Miễn phạt)`
+      : `Đi muộn ${lateMinutes}p (Lần ${lateIndex} - Phạt: 20.000đ)`;
+
+    return cleanedCustom ? `${penaltyTag} | ${cleanedCustom}` : penaltyTag;
+  } catch (err) {
+    console.error('Error resolving late penalty note:', err);
+    return customStr;
+  }
+}
 
 export function geoDistanceMeters(lat1, lng1, lat2, lng2) {
   const r = 6371000, toRad = value => Number(value) * Math.PI / 180;
@@ -591,8 +633,9 @@ export const AttendanceService = {
     const geofenceStatus = isOffice ? (geo.status === 'verified' ? 'inside' : 'outside') : null;
     const requiresReview = isOffice && geo.status === 'outside';
     const reviewStatus = requiresReview ? 'pending' : 'none';
+    const finalNote = await resolveLatePenaltyNote(env, me.id, todayStr, lateMinutes, existing.id, b.note || existing.note || '');
     await env.DB.prepare('UPDATE attendance SET checkin_time=?,checkin_ip=?,status=?,late_minutes=?,checkin_location_id=?,checkin_distance_meters=?,checkin_accuracy_meters=?,checkin_verification_method=?,checkin_lat=?,checkin_lng=?,checkin_geofence_status=?,checkin_requires_review=?,checkin_review_status=?,note=? WHERE id=?')
-      .bind(timeStr, ipInfo.ip, status, lateMinutes, geo.location?.id||null, geo.location?.distance_meters||null, geo.accuracy_meters||null, geo.status === 'verified' ? 'geofence' : (geo.location?.id ? 'geofence' : (ipInfo.matched ? 'ip' : null)), geoLat, geoLng, geofenceStatus, requiresReview ? 1 : 0, reviewStatus, b.note || existing.note || '', existing.id).run();
+      .bind(timeStr, ipInfo.ip, status, lateMinutes, geo.location?.id||null, geo.location?.distance_meters||null, geo.accuracy_meters||null, geo.status === 'verified' ? 'geofence' : (geo.location?.id ? 'geofence' : (ipInfo.matched ? 'ip' : null)), geoLat, geoLng, geofenceStatus, requiresReview ? 1 : 0, reviewStatus, finalNote, existing.id).run();
     if (typeof broadcastAppEvent === 'function') {
       await broadcastAppEvent(env, 'attendance', 'attendance:checkin', {
         id: existing.id,
@@ -1104,9 +1147,10 @@ export const AttendanceService = {
       return { error: `Muốn chỉnh Đúng giờ, check-in phải không muộn hơn ${metrics.bounds.lateAfter} và check-out không sớm hơn ${allowedLabel} của ca.`, status: 400 };
     }
     const status = requestedStatus === 'late' ? 'late' : (metrics.lateMinutes > 0 ? 'late' : 'present');
+    const finalNote = await resolveLatePenaltyNote(env, record.user_id, record.date, metrics.lateMinutes, aid, b.note !== undefined ? b.note : record.note);
     await env.DB.prepare(
       'UPDATE attendance SET checkin_time=?,checkout_time=?,work_type=?,shift=?,status=?,work_hours=?,late_minutes=?,early_minutes=?,auto_checkout=0,note=? WHERE id=?'
-    ).bind(checkinTime || null, checkoutTime || null, workType, shift, status, metrics.workHours, metrics.lateMinutes, metrics.earlyMinutes, String(b.note || '').slice(0, 2000), aid).run();
+    ).bind(checkinTime || null, checkoutTime || null, workType, shift, status, metrics.workHours, metrics.lateMinutes, metrics.earlyMinutes, String(finalNote || '').slice(0, 2000), aid).run();
     if (typeof broadcastAppEvent === 'function') {
       await broadcastAppEvent(env, 'attendance', 'attendance:updated', {
         id: aid,
@@ -1291,9 +1335,10 @@ export const AttendanceService = {
 
     const writeFn = typeof d1WriteWithRetry === 'function' ? d1WriteWithRetry : op => op();
     for (const iso of createdDates) {
+      const rowNote = await resolveLatePenaltyNote(env, employeeId, iso, timing.lateMinutes, null, note || null);
       await writeFn(() => env.DB.prepare(
         'INSERT INTO attendance (user_id,date,checkin_time,checkout_time,status,work_hours,note,work_type,shift,registered,late_minutes,early_minutes) VALUES (?,?,?,?,?,?,?,?,?,1,?,?)'
-      ).bind(employeeId, iso, ci, co, status, workHours, note || null, workType, shift, timing.lateMinutes, timing.earlyMinutes).run());
+      ).bind(employeeId, iso, ci, co, status, workHours, rowNote || null, workType, shift, timing.lateMinutes, timing.earlyMinutes).run());
     }
     if (typeof broadcastAppEvent === 'function') {
       await broadcastAppEvent(env, 'attendance', 'attendance:batch_imported', {
