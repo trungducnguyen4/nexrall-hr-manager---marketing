@@ -1901,6 +1901,13 @@ function nameInitials(name) {
   return (name || '?').split(' ').filter(Boolean).map(w => w[0]).slice(-2).join('').toUpperCase();
 }
 
+function avatarColor(name) {
+  const colors = ['#4F46E5', '#7C3AED', '#10B981', '#F59E0B', '#EF4444', '#3B82F6', '#EC4899', '#06B6D4'];
+  let h = 0;
+  for (const c of (name || '?')) h = (h * 31 + c.charCodeAt(0)) % colors.length;
+  return colors[h];
+}
+
 // ===================== PERMISSION HELPERS =====================
 // HCNS (Phòng HCNS) and Ban Giám Đốc (both are DEPARTMENTS, not roles) may edit
 // lifecycle status and fully manage asset handovers. Admin always has owner-level access.
