@@ -216,22 +216,20 @@ assert.strictEqual(logRow.user_id, 101);
 ok('runCopilotTurn executes grounded reasoning and logs LLMOps telemetry');
 
 // Test 7: HTTP API Endpoints via handle()
-// 7a. Non-admin (USER_TOKEN) must be blocked with 403
-const nonAdminReq = new Request('https://x.local/api/ai/chat', {
+// 7a. Unauthenticated request must be blocked with 401
+const unauthReq = new Request('https://x.local/api/ai/chat', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json', 'X-Auth-Token': USER_TOKEN },
+  headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ message: 'Quy định nghỉ phép năm có mấy ngày?' })
 });
-const nonAdminRes = await handle(nonAdminReq, env);
-assert.strictEqual(nonAdminRes.status, 403, 'Non-admin must receive 403 Forbidden');
-const nonAdminData = await nonAdminRes.json();
-assert(nonAdminData.error.includes('Admin') || nonAdminData.error.includes('Quản trị viên'));
-ok('Permission Check: Non-admin employee access to /api/ai/* is strictly blocked (HTTP 403)');
+const unauthRes = await handle(unauthReq, env);
+assert.strictEqual(unauthRes.status, 401, 'Unauthenticated request must receive 401');
+ok('Auth Check: Unauthenticated access to /api/ai/* is strictly blocked (HTTP 401)');
 
-// 7b. Admin (ADMIN_TOKEN) can access /api/ai/chat
+// 7b. Authenticated employee (USER_TOKEN) can access /api/ai/chat
 const chatReq = new Request('https://x.local/api/ai/chat', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json', 'X-Auth-Token': ADMIN_TOKEN },
+  headers: { 'Content-Type': 'application/json', 'X-Auth-Token': USER_TOKEN },
   body: JSON.stringify({ message: 'Quy định nghỉ phép năm có mấy ngày?' })
 });
 const chatRes = await handle(chatReq, env);
@@ -239,7 +237,7 @@ assert.strictEqual(chatRes.status, 200);
 const chatData = await chatRes.json();
 assert.strictEqual(chatData.ok, true);
 assert(chatData.content.includes('12 ngày') || chatData.content.includes('phép') || chatData.citations.length > 0);
-ok('HTTP POST /api/ai/chat (Admin) returns 200 with grounded response');
+ok('HTTP POST /api/ai/chat (Employee) returns 200 with grounded response');
 
 // 7c. POST /api/ai/actions/confirm (Admin creates leave request HITL)
 const confirmLeaveReq = new Request('https://x.local/api/ai/actions/confirm', {

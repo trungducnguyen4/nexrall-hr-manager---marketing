@@ -6,8 +6,8 @@ import { runCopilotTurn } from '../services/agent.service.js';
 import { ingestDocument, seedInitialKnowledge } from '../services/rag.service.js';
 
 export async function handleAiRoutes(request, env, me, path, url) {
-  if (!me || me.role !== 'admin') {
-    return err(403, 'Chức năng AI Copilot hiện chỉ dành cho Quản trị viên (Admin)');
+  if (!me || !me.id) {
+    return err(401, 'Vui lòng đăng nhập để sử dụng AI Copilot');
   }
 
   // 1. Chat Completion / Copilot Query

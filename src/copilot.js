@@ -15,7 +15,7 @@ let _lastCitations = [];
  * Initialize the Floating Copilot Widget
  */
 export function initCopilot(me) {
-  if (!me || me.role !== 'admin') {
+  if (!me || !me.id) {
     document.getElementById('ai-copilot-root')?.remove();
     return;
   }
