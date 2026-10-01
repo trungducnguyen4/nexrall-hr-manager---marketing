@@ -5,6 +5,7 @@ import { AuthController } from './server/controllers/auth.controller.js';
 import { UsersController } from './server/controllers/users.controller.js';
 import { AttendanceController } from './server/controllers/attendance.controller.js';
 import { LeaveController } from './server/controllers/leave.controller.js';
+import { handleAiRoutes } from './server/controllers/ai.controller.js';
 import {
   LEAVE_DOCUMENT_TYPES,
   LEAVE_DOCUMENT_MAX_BYTES,
@@ -43,7 +44,25 @@ import {
   buildMonthlyWorkSummary,
 } from './server/services/attendance.service.js';
 
-export { geoDistanceMeters, geofenceDecision, runAutoCheckout, syncTodayLateRecords, getDynamicShiftBounds };
+import { ensureAiSchema, cosineSimilarity, generateDeterministicEmbedding } from './server/services/ai-gateway.service.js';
+import { seedInitialKnowledge, hybridSearch, chunkMarkdownDocument } from './server/services/rag.service.js';
+import { executeTool, runCopilotTurn } from './server/services/agent.service.js';
+
+export {
+  geoDistanceMeters,
+  geofenceDecision,
+  runAutoCheckout,
+  syncTodayLateRecords,
+  getDynamicShiftBounds,
+  ensureAiSchema,
+  seedInitialKnowledge,
+  hybridSearch,
+  chunkMarkdownDocument,
+  cosineSimilarity,
+  generateDeterministicEmbedding,
+  executeTool,
+  runCopilotTurn
+};
 import { hashPassword, validatePasswordPolicy, genToken, extractHrToken, resolveSession, getPlatformUser } from './server/services/auth.service.js';
 
 // ===================== HR MANAGER — NEXRALL MARKETING =====================
@@ -542,6 +561,7 @@ export async function migrate(env) {
   try { await ensureAnnouncementsSchema(env); } catch (error) { console.error('Announcements schema check failed', error); }
   try { await ensureTwoStepApprovalSchema(env); } catch (error) { console.error('Two-step approval schema check failed', error); }
   try { await syncThuytttFollowerToAllProjectsAndTasks(env); } catch (error) { console.error('THUYTTT follower sync check failed', error); }
+  try { await ensureAiSchema(env); await seedInitialKnowledge(env); } catch (error) { console.error('AI schema check failed', error); }
   try {
     const row = await env.DB.prepare("SELECT setting_value FROM settings WHERE setting_key='schema_version'").first();
     if (row?.setting_value === SCHEMA_VERSION) {
@@ -6423,6 +6443,12 @@ export async function handle(request, env) {
     if (request.method === 'DELETE') {
       return WifiController.remove({ env, request, isAdmin, me }, wid);
     }
+  }
+
+  // ── AI COPILOT & RAG KNOWLEDGE ────────────────────────────────────
+  if (path.startsWith('/api/ai/')) {
+    const aiRes = await handleAiRoutes(request, env, me, path, url);
+    if (aiRes) return aiRes;
   }
 
   // ── TASKS ────────────────────────────────────────────────────────

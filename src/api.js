@@ -605,4 +605,12 @@ export const api = {
   getBackups: () => req('GET', '/api/admin/backups'),
   createBackup: () => req('POST', '/api/admin/backups/create'),
   getBackupDownloadUrl: (key) => `/api/admin/backups/download?key=${encodeURIComponent(key)}&token=${encodeURIComponent(getToken() || '')}`,
+
+  // AI Copilot & Deep RAG Platform
+  aiChat: (message, history = [], conversationId = 'default') => req('POST', '/api/ai/chat', { message, history, conversationId }),
+  aiConfirmAction: (actionType, payload) => req('POST', '/api/ai/actions/confirm', { actionType, payload }),
+  aiFeedback: (requestId, rating, comment = '') => req('POST', '/api/ai/feedback', { requestId, rating, comment }),
+  aiGetLogs: (requestId) => req('GET', '/api/ai/logs' + (requestId ? `?request_id=${encodeURIComponent(requestId)}` : '')),
+  aiGetKnowledge: () => req('GET', '/api/ai/knowledge'),
+  aiSeedKnowledge: () => req('POST', '/api/ai/knowledge/seed'),
 };

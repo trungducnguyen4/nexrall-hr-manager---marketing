@@ -9,6 +9,7 @@ import { setAvatar, toast, initials, avatarColor, closeModal, isHcnsDepartment, 
 import { icon } from './icons.js';
 import { playChatSound, playMentionSound, playTaskSound, isSoundEnabled, toggleSound } from './sound.js';
 import { autoSyncPushSubscription } from './push.js';
+import { initCopilot } from './copilot.js';
 
 // ── Lazy view imports ───────────────────────────
 let _viewModules = {};
@@ -687,6 +688,7 @@ function initApp() {
   }
   startChatUnreadWatcher();
   autoSyncPushSubscription().catch(() => {});
+  initCopilot(me);
 
   // Restore sidebar preference on desktop
   if (isDesktop() && localStorage.getItem('sidebar_collapsed') === '1') {
