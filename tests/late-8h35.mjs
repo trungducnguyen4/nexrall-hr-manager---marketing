@@ -23,6 +23,9 @@ async function runTests() {
   
   const m830 = attManualTimingMetrics(record, '08:30', '17:00');
   assert.strictEqual(m830.lateMinutes, 0, '08:30 is on time');
+
+  const m834 = attManualTimingMetrics(record, '08:34', '17:00');
+  assert.strictEqual(m834.lateMinutes, 0, '08:34 is on time');
   
   const m835 = attManualTimingMetrics(record, '08:35', '17:00');
   assert.strictEqual(m835.lateMinutes, 0, '08:35 is on time (threshold)');
@@ -35,10 +38,10 @@ async function runTests() {
   
   const m845 = attManualTimingMetrics(record, '08:45', '17:00');
   assert.strictEqual(m845.lateMinutes, 10, '08:45 is 10 minutes late');
-  console.log('  ✓ 8h35 timing metrics calculated correctly: 8h35 on time, 8h40 is 5m late');
+  console.log('  ✓ 8h35 timing metrics calculated correctly: 8h34 & 8h35 on time, 8h36 is 1m late, 8h40 is 5m late');
 
-  // 3. Dynamic shift bounds from DB
-  const mockEnv = {
+  // 3. Dynamic shift bounds from DB even if late_threshold was set to '0'
+  const mockEnv0 = {
     DB: {
       prepare(sql) {
         return {
@@ -49,7 +52,7 @@ async function runTests() {
                   results: [
                     { setting_key: 'work_start', setting_value: '08:30' },
                     { setting_key: 'work_end', setting_value: '17:00' },
-                    { setting_key: 'late_threshold', setting_value: '5' },
+                    { setting_key: 'late_threshold', setting_value: '0' },
                   ]
                 };
               }
@@ -60,7 +63,7 @@ async function runTests() {
               results: [
                 { setting_key: 'work_start', setting_value: '08:30' },
                 { setting_key: 'work_end', setting_value: '17:00' },
-                { setting_key: 'late_threshold', setting_value: '5' },
+                { setting_key: 'late_threshold', setting_value: '0' },
               ]
             };
           }
@@ -69,12 +72,15 @@ async function runTests() {
     }
   };
 
-  const dynamicBounds = await getDynamicShiftBounds(mockEnv, 'office', 'full', null, null);
-  assert.strictEqual(dynamicBounds.start, '08:30');
-  assert.strictEqual(dynamicBounds.lateAfter, '08:35');
-  console.log('  ✓ Dynamic shift bounds correctly reads work_start (08:30) + late_threshold (5) -> 08:35');
+  const dynamicBounds0 = await getDynamicShiftBounds(mockEnv0, 'office', 'full', null, null);
+  assert.strictEqual(dynamicBounds0.start, '08:30');
+  assert.strictEqual(dynamicBounds0.lateAfter, '08:35', 'Even if DB has late_threshold=0, lateAfter must be at least 08:35');
+  
+  const m834WithDb = attManualTimingMetrics(record, '08:34', '17:00', dynamicBounds0);
+  assert.strictEqual(m834WithDb.lateMinutes, 0, '08:34 with DB bounds is on time (0m late)');
+  console.log('  ✓ Dynamic shift bounds ensures lateAfter is at least 08:35 even if DB has late_threshold 0');
 
-  // 4. Test syncTodayLateRecords: auto fix records created today at 08:40
+  // 4. Test syncTodayLateRecords: auto fix records created today at 08:40 and 08:34
   const rows = [
     {
       id: 501,
@@ -92,13 +98,13 @@ async function runTests() {
       id: 502,
       user_id: 15,
       date: '2026-10-01',
-      checkin_time: '08:30',
+      checkin_time: '08:34',
       checkout_time: null,
       work_type: 'office',
       shift: 'full',
-      status: 'present',
-      late_minutes: 0,
-      note: '',
+      status: 'late', // previously incorrectly marked late
+      late_minutes: 4,
+      note: 'Đi muộn 4p (Lần 1 - Miễn phạt) | Xe hư nhẹ',
     }
   ];
 
@@ -140,7 +146,7 @@ async function runTests() {
               return {
                 results: [
                   { setting_key: 'work_start', setting_value: '08:30' },
-                  { setting_key: 'late_threshold', setting_value: '5' },
+                  { setting_key: 'late_threshold', setting_value: '0' },
                 ]
               };
             }
@@ -153,13 +159,18 @@ async function runTests() {
   };
 
   const syncResult = await syncTodayLateRecords(syncEnv, '2026-10-01');
-  assert.strictEqual(syncResult.updated, 1, 'Should have updated exactly 1 record');
+  assert.strictEqual(syncResult.updated, 2, 'Should have updated both 501 (to late) and 502 (to present)');
   
-  const updatedRow = rows.find(r => r.id === 501);
-  assert.strictEqual(updatedRow.status, 'late');
-  assert.strictEqual(updatedRow.late_minutes, 5);
-  assert.strictEqual(updatedRow.note, 'Đi muộn 5p (Lần 1 - Miễn phạt) | Đi làm bình thường');
-  console.log('  ✓ syncTodayLateRecords successfully updated 08:40 check-in to late (5m) and attached penalty tag note');
+  const updated501 = rows.find(r => r.id === 501);
+  assert.strictEqual(updated501.status, 'late');
+  assert.strictEqual(updated501.late_minutes, 5);
+  assert.strictEqual(updated501.note, 'Đi muộn 5p (Lần 1 - Miễn phạt) | Đi làm bình thường');
+
+  const updated502 = rows.find(r => r.id === 502);
+  assert.strictEqual(updated502.status, 'present', '08:34 must be restored to present');
+  assert.strictEqual(updated502.late_minutes, 0, '08:34 late_minutes must be 0');
+  assert.strictEqual(updated502.note, 'Xe hư nhẹ', '08:34 late note tag must be removed');
+  console.log('  ✓ syncTodayLateRecords correctly restored 08:34 to present (0m late) and updated 08:40 to late (5m)');
 
   console.log('🎉 ALL 8H35 LATE TESTS PASSED SUCCESSFULLY!');
 }

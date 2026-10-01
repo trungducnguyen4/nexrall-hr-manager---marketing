@@ -145,7 +145,7 @@ export async function getDynamicShiftBounds(env, workType, shift, expectedStart,
     for (const r of rows) cfg[r.setting_key] = r.setting_value;
     const workStart = cfg.work_start || std.start;
     const workEnd = cfg.work_end || std.end;
-    const lateThreshold = Number.isFinite(Number(cfg.late_threshold)) ? Number(cfg.late_threshold) : 5;
+    const lateThreshold = (Number(cfg.late_threshold) >= 5) ? Number(cfg.late_threshold) : 5;
 
     if (shift === 'morning') {
       const startMin = attToMinutes(workStart) ?? 510;
@@ -344,7 +344,7 @@ export async function syncTodayLateRecords(env, dateStr = null) {
       const calcLateMinutes = Math.max(0, ciMinutes - lateAfterMinutes);
       const expectedStatus = calcLateMinutes > 0 ? 'late' : (row.status === 'late' ? 'present' : row.status);
 
-      if (calcLateMinutes !== Number(row.late_minutes || 0) || (calcLateMinutes > 0 && row.status === 'present')) {
+      if (calcLateMinutes !== Number(row.late_minutes || 0) || (calcLateMinutes > 0 && row.status === 'present') || (calcLateMinutes === 0 && row.status === 'late')) {
         const finalNote = await resolveLatePenaltyNote(env, row.user_id, today, calcLateMinutes, row.id, row.note || '');
         await env.DB.prepare(
           'UPDATE attendance SET late_minutes = ?, status = ?, note = ? WHERE id = ?'
