@@ -216,10 +216,22 @@ assert.strictEqual(logRow.user_id, 101);
 ok('runCopilotTurn executes grounded reasoning and logs LLMOps telemetry');
 
 // Test 7: HTTP API Endpoints via handle()
-// 7a. POST /api/ai/chat
-const chatReq = new Request('https://x.local/api/ai/chat', {
+// 7a. Non-admin (USER_TOKEN) must be blocked with 403
+const nonAdminReq = new Request('https://x.local/api/ai/chat', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json', 'X-Auth-Token': USER_TOKEN },
+  body: JSON.stringify({ message: 'Quy định nghỉ phép năm có mấy ngày?' })
+});
+const nonAdminRes = await handle(nonAdminReq, env);
+assert.strictEqual(nonAdminRes.status, 403, 'Non-admin must receive 403 Forbidden');
+const nonAdminData = await nonAdminRes.json();
+assert(nonAdminData.error.includes('Admin') || nonAdminData.error.includes('Quản trị viên'));
+ok('Permission Check: Non-admin employee access to /api/ai/* is strictly blocked (HTTP 403)');
+
+// 7b. Admin (ADMIN_TOKEN) can access /api/ai/chat
+const chatReq = new Request('https://x.local/api/ai/chat', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-Auth-Token': ADMIN_TOKEN },
   body: JSON.stringify({ message: 'Quy định nghỉ phép năm có mấy ngày?' })
 });
 const chatRes = await handle(chatReq, env);
@@ -227,12 +239,12 @@ assert.strictEqual(chatRes.status, 200);
 const chatData = await chatRes.json();
 assert.strictEqual(chatData.ok, true);
 assert(chatData.content.includes('12 ngày') || chatData.content.includes('phép') || chatData.citations.length > 0);
-ok('HTTP POST /api/ai/chat returns 200 with grounded response');
+ok('HTTP POST /api/ai/chat (Admin) returns 200 with grounded response');
 
-// 7b. POST /api/ai/actions/confirm (Create leave request HITL)
+// 7c. POST /api/ai/actions/confirm (Admin creates leave request HITL)
 const confirmLeaveReq = new Request('https://x.local/api/ai/actions/confirm', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json', 'X-Auth-Token': USER_TOKEN },
+  headers: { 'Content-Type': 'application/json', 'X-Auth-Token': ADMIN_TOKEN },
   body: JSON.stringify({
     actionType: 'create_leave_request',
     payload: { leaveType: 'annual', startDate: '2026-10-15', endDate: '2026-10-16', reason: 'Nghỉ giải quyết việc gia đình' }
@@ -245,14 +257,14 @@ assert.strictEqual(leaveData.ok, true);
 assert(leaveData.requestId > 0);
 
 const leaveInDb = db.prepare('SELECT * FROM requests WHERE id=?').get(leaveData.requestId);
-assert.strictEqual(leaveInDb.user_id, 101);
+assert.strictEqual(leaveInDb.user_id, 1);
 assert.strictEqual(leaveInDb.reason, 'Nghỉ giải quyết việc gia đình');
-ok('HTTP POST /api/ai/actions/confirm safely creates Leave Request in DB');
+ok('HTTP POST /api/ai/actions/confirm (Admin) safely creates Leave Request in DB');
 
-// 7c. POST /api/ai/actions/confirm (Create task HITL)
+// 7d. POST /api/ai/actions/confirm (Admin creates task HITL)
 const confirmTaskReq = new Request('https://x.local/api/ai/actions/confirm', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json', 'X-Auth-Token': USER_TOKEN },
+  headers: { 'Content-Type': 'application/json', 'X-Auth-Token': ADMIN_TOKEN },
   body: JSON.stringify({
     actionType: 'create_task',
     payload: { title: 'Triển khai tính năng AI Gateway', description: 'Tích hợp đa nhà cung cấp', priority: 'high', dueDate: '2026-10-20' }
@@ -266,12 +278,12 @@ assert.strictEqual(taskData.ok, true);
 const taskInDb = db.prepare('SELECT * FROM tasks WHERE id=?').get(taskData.taskId);
 assert.strictEqual(taskInDb.title, 'Triển khai tính năng AI Gateway');
 assert.strictEqual(taskInDb.priority, 'high');
-ok('HTTP POST /api/ai/actions/confirm safely creates Task in DB');
+ok('HTTP POST /api/ai/actions/confirm (Admin) safely creates Task in DB');
 
-// 7d. POST /api/ai/feedback (Thumbs Up rating)
+// 7e. POST /api/ai/feedback (Admin Thumbs Up rating)
 const feedbackReq = new Request('https://x.local/api/ai/feedback', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json', 'X-Auth-Token': USER_TOKEN },
+  headers: { 'Content-Type': 'application/json', 'X-Auth-Token': ADMIN_TOKEN },
   body: JSON.stringify({ requestId: turnRes.requestId, rating: 1, comment: 'Trả lời rất chuẩn quy định!' })
 });
 const feedbackRes = await handle(feedbackReq, env);
@@ -280,18 +292,18 @@ assert.strictEqual(feedbackRes.status, 200);
 const updatedLog = db.prepare('SELECT user_rating, feedback_comment FROM ai_generation_logs WHERE id=?').get(turnRes.requestId);
 assert.strictEqual(updatedLog.user_rating, 1);
 assert.strictEqual(updatedLog.feedback_comment, 'Trả lời rất chuẩn quy định!');
-ok('HTTP POST /api/ai/feedback stores user rating & feedback');
+ok('HTTP POST /api/ai/feedback (Admin) stores user rating & feedback');
 
-// 7e. GET /api/ai/logs (For RAG Inspector)
+// 7f. GET /api/ai/logs (Admin RAG Inspector)
 const logsReq = new Request(`https://x.local/api/ai/logs?request_id=${turnRes.requestId}`, {
   method: 'GET',
-  headers: { 'X-Auth-Token': USER_TOKEN }
+  headers: { 'X-Auth-Token': ADMIN_TOKEN }
 });
 const logsRes = await handle(logsReq, env);
 assert.strictEqual(logsRes.status, 200);
 const logsData = await logsRes.json();
 assert.strictEqual(logsData.ok, true);
 assert.strictEqual(logsData.log.id, turnRes.requestId);
-ok('HTTP GET /api/ai/logs provides telemetry for In-App RAG Inspector');
+ok('HTTP GET /api/ai/logs (Admin) provides telemetry for In-App RAG Inspector');
 
 console.log(`\nALL ${passed} AI TESTS PASSED!`);
