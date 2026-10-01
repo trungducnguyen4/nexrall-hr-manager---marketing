@@ -38,10 +38,12 @@ import {
   isGpsConstraintEnabled,
   verifyAttendanceGeofence,
   runAutoCheckout,
+  syncTodayLateRecords,
+  getDynamicShiftBounds,
   buildMonthlyWorkSummary,
 } from './server/services/attendance.service.js';
 
-export { geoDistanceMeters, geofenceDecision, runAutoCheckout };
+export { geoDistanceMeters, geofenceDecision, runAutoCheckout, syncTodayLateRecords, getDynamicShiftBounds };
 import { hashPassword, validatePasswordPolicy, genToken, extractHrToken, resolveSession, getPlatformUser } from './server/services/auth.service.js';
 
 // ===================== HR MANAGER — NEXRALL MARKETING =====================
@@ -4338,7 +4340,7 @@ async function seedIfNeeded(env) {
   const defaults = [
     ['company_name','NEXRALL MARKETING'],['company_address','123 Nguyễn Huệ, Q.1, TP.HCM'],
     ['company_phone','028 1234 5678'],['company_email','info@nexrall.com'],
-    ['work_start','08:30'],['work_end','17:00'],['late_threshold','15'],['work_days','1,2,3,4,5,6'],
+    ['work_start','08:30'],['work_end','17:00'],['late_threshold','5'],['work_days','1,2,3,4,5,6'],
     ['attendance_gps_constraint','1'],
   ];
   await env.DB.batch(defaults.map(([k,v]) =>

@@ -4,9 +4,9 @@
  */
 
 export const ATT_STANDARD_SHIFTS = {
-  morning:   { start: '08:30', lateAfter: '08:45', end: '12:00' },
-  afternoon: { start: '13:30', lateAfter: '13:45', end: '17:00' },
-  full:      { start: '08:30', lateAfter: '08:45', end: '17:00' },
+  morning:   { start: '08:30', lateAfter: '08:35', end: '12:00' },
+  afternoon: { start: '13:30', lateAfter: '13:35', end: '17:00' },
+  full:      { start: '08:30', lateAfter: '08:35', end: '17:00' },
 };
 
 export const ATT_EARLY_CHECKOUT_TOLERANCE_MINUTES = 10;
@@ -129,6 +129,45 @@ export async function attBusinessDaysBetweenAsync(env, startDate, endDate) {
   return count;
 }
 
+export async function getDynamicShiftBounds(env, workType, shift, expectedStart, expectedEnd) {
+  const std = ATT_STANDARD_SHIFTS[shift] || ATT_STANDARD_SHIFTS.full;
+  if (workType === 'business') {
+    const start = expectedStart || std.start;
+    const end = expectedEnd || std.end;
+    return { start, lateAfter: start, end };
+  }
+  if (!env?.DB) return std;
+  try {
+    const rows = await env.DB.prepare(
+      "SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('work_start', 'work_end', 'late_threshold')"
+    ).all().then(r => r.results || []);
+    const cfg = {};
+    for (const r of rows) cfg[r.setting_key] = r.setting_value;
+    const workStart = cfg.work_start || std.start;
+    const workEnd = cfg.work_end || std.end;
+    const lateThreshold = Number.isFinite(Number(cfg.late_threshold)) ? Number(cfg.late_threshold) : 5;
+
+    if (shift === 'morning') {
+      const startMin = attToMinutes(workStart) ?? 510;
+      const lateAfterMin = startMin + lateThreshold;
+      const lateAfterStr = `${String(Math.floor(lateAfterMin / 60)).padStart(2, '0')}:${String(lateAfterMin % 60).padStart(2, '0')}`;
+      return { start: workStart, lateAfter: lateAfterStr, end: '12:00' };
+    } else if (shift === 'afternoon') {
+      const startMin = 13 * 60 + 30;
+      const lateAfterMin = startMin + lateThreshold;
+      const lateAfterStr = `${String(Math.floor(lateAfterMin / 60)).padStart(2, '0')}:${String(lateAfterMin % 60).padStart(2, '0')}`;
+      return { start: '13:30', lateAfter: lateAfterStr, end: workEnd };
+    } else {
+      const startMin = attToMinutes(workStart) ?? 510;
+      const lateAfterMin = startMin + lateThreshold;
+      const lateAfterStr = `${String(Math.floor(lateAfterMin / 60)).padStart(2, '0')}:${String(lateAfterMin % 60).padStart(2, '0')}`;
+      return { start: workStart, lateAfter: lateAfterStr, end: workEnd };
+    }
+  } catch (_) {
+    return std;
+  }
+}
+
 export function attShiftBounds(workType, shift, expectedStart, expectedEnd) {
   const std = ATT_STANDARD_SHIFTS[shift] || ATT_STANDARD_SHIFTS.full;
   if (workType === 'business') {
@@ -151,8 +190,8 @@ export function attEarlyCheckoutMinutes(bounds, checkoutTime) {
   return Math.max(0, end - checkout - ATT_EARLY_CHECKOUT_TOLERANCE_MINUTES);
 }
 
-export function attManualTimingMetrics(record, checkinTime, checkoutTime) {
-  const bounds = attShiftBounds(record.work_type || 'office', record.shift || 'full', record.expected_start, record.expected_end);
+export function attManualTimingMetrics(record, checkinTime, checkoutTime, customBounds = null) {
+  const bounds = customBounds || attShiftBounds(record.work_type || 'office', record.shift || 'full', record.expected_start, record.expected_end);
   const checkinMinutes = attToMinutes(checkinTime);
   const checkoutMinutes = attToMinutes(checkoutTime);
   const lateMinutes = checkinMinutes === null ? 0 : Math.max(0, checkinMinutes - attToMinutes(bounds.lateAfter));
@@ -280,6 +319,46 @@ export async function runAutoCheckout(env) {
   return { closed };
 }
 
+export async function syncTodayLateRecords(env, dateStr = null) {
+  if (!env?.DB) return { updated: 0 };
+  const today = dateStr || (new Date(Date.now() + 7 * 3600000)).toISOString().slice(0, 10);
+  if (today < LATE_PENALTY_NOTE_EFFECTIVE_MONTH) return { updated: 0 };
+
+  try {
+    const { results = [] } = await env.DB.prepare(
+      `SELECT * FROM attendance 
+       WHERE date = ? 
+         AND checkin_time IS NOT NULL 
+         AND status NOT IN ('absent', 'cancelled', 'rejected', 'leave')`
+    ).bind(today).all();
+
+    let updated = 0;
+    for (const row of results) {
+      const workType = row.work_type || 'office';
+      const shift = row.shift || 'full';
+      const bounds = await getDynamicShiftBounds(env, workType, shift, row.expected_start, row.expected_end);
+      const ciMinutes = attToMinutes(row.checkin_time);
+      const lateAfterMinutes = attToMinutes(bounds.lateAfter);
+      if (ciMinutes === null || lateAfterMinutes === null) continue;
+
+      const calcLateMinutes = Math.max(0, ciMinutes - lateAfterMinutes);
+      const expectedStatus = calcLateMinutes > 0 ? 'late' : (row.status === 'late' ? 'present' : row.status);
+
+      if (calcLateMinutes !== Number(row.late_minutes || 0) || (calcLateMinutes > 0 && row.status === 'present')) {
+        const finalNote = await resolveLatePenaltyNote(env, row.user_id, today, calcLateMinutes, row.id, row.note || '');
+        await env.DB.prepare(
+          'UPDATE attendance SET late_minutes = ?, status = ?, note = ? WHERE id = ?'
+        ).bind(calcLateMinutes, expectedStatus, finalNote, row.id).run();
+        updated++;
+      }
+    }
+    return { updated };
+  } catch (err) {
+    console.error('syncTodayLateRecords error:', err);
+    return { updated: 0, error: err.message };
+  }
+}
+
 export async function buildMonthlyWorkSummary(env, userId, month, year) {
   const mm = String(month).padStart(2, '0');
   const { results = [] } = await env.DB.prepare(
@@ -383,6 +462,7 @@ export async function buildMonthlyWorkSummary(env, userId, month, year) {
 export const AttendanceService = {
   async list(env, url, me, { isAttendanceAdmin, isAdmin, isAttendanceHcns }) {
     await runAutoCheckout(env).catch(() => {});
+    await syncTodayLateRecords(env).catch(() => {});
     const userId = url.searchParams.get('userId');
     const month = url.searchParams.get('month');
     const year = url.searchParams.get('year');
@@ -624,7 +704,7 @@ export const AttendanceService = {
       }
     }
     const timeStr = typeof vnTimeStr === 'function' ? vnTimeStr() : new Date().toTimeString().slice(0, 5);
-    const bounds = attShiftBounds(workType, existing.shift || 'full', existing.expected_start, existing.expected_end);
+    const bounds = await getDynamicShiftBounds(env, workType, existing.shift || 'full', existing.expected_start, existing.expected_end);
     const lateMinutes = Math.max(0, attToMinutes(timeStr) - attToMinutes(bounds.lateAfter));
     const status = lateMinutes > 0 ? 'late' : 'present';
     const geoLat = Number.isFinite(Number(b.latitude)) ? Number(b.latitude) : null;
@@ -1140,7 +1220,8 @@ export const AttendanceService = {
     if (checkinTime && checkoutTime && attToMinutes(checkoutTime) <= attToMinutes(checkinTime)) {
       return { error: 'Giờ check-out phải sau giờ check-in', status: 400 };
     }
-    const metrics = attManualTimingMetrics({ ...record, work_type: workType, shift }, checkinTime, checkoutTime);
+    const bounds = await getDynamicShiftBounds(env, workType, shift, record.expected_start, record.expected_end);
+    const metrics = attManualTimingMetrics({ ...record, work_type: workType, shift }, checkinTime, checkoutTime, bounds);
     if (requestedStatus === 'present' && (metrics.lateMinutes > 0 || metrics.earlyMinutes > 0)) {
       const allowedCheckout = Math.max(0, attToMinutes(metrics.bounds.end) - ATT_EARLY_CHECKOUT_TOLERANCE_MINUTES);
       const allowedLabel = `${String(Math.floor(allowedCheckout / 60)).padStart(2, '0')}:${String(allowedCheckout % 60).padStart(2, '0')}`;
@@ -1305,7 +1386,8 @@ export const AttendanceService = {
     let ci = checkinTime || null;
     let co = checkoutTime || null;
     if (status === 'absent' || status === 'leave') { ci = null; co = null; }
-    const timing = attManualTimingMetrics({ work_type: workType, shift, expected_start: null, expected_end: null }, ci, co);
+    const batchBounds = await getDynamicShiftBounds(env, workType, shift, null, null);
+    const timing = attManualTimingMetrics({ work_type: workType, shift, expected_start: null, expected_end: null }, ci, co, batchBounds);
     const workHours = timing.workHours > 0 ? Number(timing.workHours.toFixed(2)) : null;
 
     const { results: existingRows = [] } = await env.DB.prepare('SELECT id,date FROM attendance WHERE user_id=? AND date BETWEEN ? AND ?').bind(employeeId, fromDate, toDate).all();

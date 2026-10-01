@@ -1761,7 +1761,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
     const curWorkType = data.workType || 'office';
     const curShift = (!data.shift || data.shift === 'full') ? 'full' : data.shift;
     const curStatus = data.status || 'present';
-    const standard = { morning: { lateAfter: '08:45', end: '12:00' }, afternoon: { lateAfter: '13:45', end: '17:00' }, full: { lateAfter: '08:45', end: '17:00' } }[curShift] || { lateAfter: '08:45', end: '17:00' };
+    const standard = { morning: { lateAfter: '08:35', end: '12:00' }, afternoon: { lateAfter: '13:35', end: '17:00' }, full: { lateAfter: '08:35', end: '17:00' } }[curShift] || { lateAfter: '08:35', end: '17:00' };
     const lateAfter = curWorkType === 'business' ? (data.expectedStart || standard.lateAfter) : standard.lateAfter;
     const shiftEnd = curWorkType === 'business' ? (data.expectedEnd || standard.end) : standard.end;
     const minutes = value => /^\d{2}:\d{2}$/.test(value || '') ? Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5)) : null;
@@ -1833,7 +1833,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
     const activeRule = () => {
       const shift = document.getElementById('edit-shift')?.value || curShift;
       const workType = document.getElementById('edit-worktype')?.value || curWorkType;
-      const currentStandard = { morning: { lateAfter: '08:45', end: '12:00' }, afternoon: { lateAfter: '13:45', end: '17:00' }, full: { lateAfter: '08:45', end: '17:00' } }[shift] || standard;
+      const currentStandard = { morning: { lateAfter: '08:35', end: '12:00' }, afternoon: { lateAfter: '13:35', end: '17:00' }, full: { lateAfter: '08:35', end: '17:00' } }[shift] || standard;
       const currentLateAfter = workType === 'business' ? (data.expectedStart || currentStandard.lateAfter) : currentStandard.lateAfter;
       const currentShiftEnd = workType === 'business' ? (data.expectedEnd || currentStandard.end) : currentStandard.end;
       const currentCheckoutMinutes = Math.max(0, (minutes(currentShiftEnd) || 0) - 10);

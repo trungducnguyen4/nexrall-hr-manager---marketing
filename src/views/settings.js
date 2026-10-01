@@ -700,7 +700,7 @@ export async function renderSettings(el, me) {
 
           <div class="field" style="margin-top:12px;">
             <label>Thời gian miễn trừ đi muộn (Phút)</label>
-            <input type="number" id="ws-late" value="${esc(settings.late_threshold || '15')}" min="0" max="60" style="max-width:240px;"/>
+            <input type="number" id="ws-late" value="${esc(settings.late_threshold || '5')}" min="0" max="60" style="max-width:240px;"/>
             <div style="font-size:12px;color:var(--text-3);margin-top:4px;">Nhân viên check-in muộn trong khoảng này sẽ không bị trừ công.</div>
           </div>
 
