@@ -541,6 +541,7 @@ export async function migrate(env) {
   if (_migrated) return;
   try { await ensureAnnouncementsSchema(env); } catch (error) { console.error('Announcements schema check failed', error); }
   try { await ensureTwoStepApprovalSchema(env); } catch (error) { console.error('Two-step approval schema check failed', error); }
+  try { await syncThuytttFollowerToAllProjectsAndTasks(env); } catch (error) { console.error('THUYTTT follower sync check failed', error); }
   try {
     const row = await env.DB.prepare("SELECT setting_value FROM settings WHERE setting_key='schema_version'").first();
     if (row?.setting_value === SCHEMA_VERSION) {
@@ -3770,7 +3771,87 @@ async function ensureDefaultTaskGroup(env, projectId, userId = null) {
   return await env.DB.prepare('SELECT * FROM task_groups WHERE id=?').bind(r.meta.last_row_id).first();
 }
 
-async function ensureEmployeePersonalProject(env, user, actorId = 1) {
+export async function resolveThuytttUser(env) {
+  try {
+    const user = await env.DB.prepare(
+      `SELECT id, employee_code, full_name, email FROM users 
+       WHERE UPPER(employee_code) IN ('THUYTTT', 'THUYDT') 
+          OR email LIKE 'thuyttt%' 
+          OR email = 'thuydt@netviet.com.vn'
+       ORDER BY 
+         CASE 
+           WHEN UPPER(employee_code) = 'THUYTTT' THEN 0 
+           WHEN email LIKE 'thuyttt%' THEN 1
+           WHEN UPPER(employee_code) = 'THUYDT' THEN 2 
+           ELSE 3 
+         END 
+       LIMIT 1`
+    ).first();
+    if (user && user.id) return user;
+  } catch (err) {
+    console.error('Error resolving THUYTTT user:', err);
+  }
+  return { id: 531, employee_code: 'THUYTTT', full_name: 'Trần Thị Thanh Thúy' };
+}
+
+export async function resolveHaunvUser(env) {
+  try {
+    const user = await env.DB.prepare(
+      `SELECT id, employee_code, full_name, email FROM users 
+       WHERE UPPER(employee_code) = 'HAUNV' 
+          OR email = 'haunguyen.me@gmail.com'
+          OR email LIKE 'haunv%'
+       LIMIT 1`
+    ).first();
+    if (user && user.id) return user;
+  } catch (err) {
+    console.error('Error resolving HAUNV user:', err);
+  }
+  return { id: 528, employee_code: 'HAUNV', full_name: 'Nguyễn Văn Hậu' };
+}
+
+export async function syncThuytttFollowerToAllProjectsAndTasks(env) {
+  try {
+    const supervisors = await env.DB.prepare(
+      "SELECT id, employee_code FROM users WHERE UPPER(employee_code) IN ('HAUNV', 'THUYTTT', 'THUYDT') OR email IN ('haunguyen.me@gmail.com', 'thuydt@netviet.com.vn') OR email LIKE 'thuyttt%' OR email LIKE 'haunv%'"
+    ).all();
+    const supervisorIds = new Set((supervisors?.results || []).map(r => Number(r.id)).filter(Boolean));
+    supervisorIds.add(528);
+    supervisorIds.add(531);
+
+    for (const sId of supervisorIds) {
+      try {
+        // Add as member in all task_projects
+        await env.DB.prepare(`
+          INSERT INTO task_project_members (project_id, user_id, role, added_by)
+          SELECT p.id, ?, 'member', 1
+          FROM task_projects p
+          WHERE NOT EXISTS (
+            SELECT 1 FROM task_project_members m WHERE m.project_id = p.id AND m.user_id = ?
+          )
+        `).bind(sId, sId).run();
+      } catch (_) {}
+
+      try {
+        // Add as follower in all tasks
+        await env.DB.prepare(`
+          INSERT INTO task_followers (task_id, user_id)
+          SELECT t.id, ?
+          FROM tasks t
+          WHERE NOT EXISTS (
+            SELECT 1 FROM task_followers f WHERE f.task_id = t.id AND f.user_id = ?
+          )
+        `).bind(sId, sId).run();
+      } catch (_) {}
+    }
+
+    return { ok: true, syncedIds: Array.from(supervisorIds) };
+  } catch (err) {
+    return { ok: false, error: err?.message };
+  }
+}
+
+export async function ensureEmployeePersonalProject(env, user, actorId = 1) {
   if (!user || !user.id || !user.full_name) return null;
   const name = String(user.full_name).trim();
   if (!name) return null;
@@ -3796,16 +3877,21 @@ async function ensureEmployeePersonalProject(env, user, actorId = 1) {
 
   await ensureDefaultTaskGroup(env, projectId, actorId || 1);
 
-  const haunv = await env.DB.prepare("SELECT id FROM users WHERE UPPER(employee_code)='HAUNV' OR email='haunguyen.me@gmail.com' LIMIT 1").first();
-  const thuydt = await env.DB.prepare("SELECT id FROM users WHERE UPPER(employee_code)='THUYDT' OR email='thuydt@netviet.com.vn' LIMIT 1").first();
-  const haunvId = haunv?.id || 528;
-  const thuydtId = thuydt?.id || 531;
+  const supervisors = await env.DB.prepare(
+    "SELECT id FROM users WHERE UPPER(employee_code) IN ('HAUNV', 'THUYTTT', 'THUYDT') OR email IN ('haunguyen.me@gmail.com', 'thuydt@netviet.com.vn') OR email LIKE 'thuyttt%' OR email LIKE 'haunv%'"
+  ).all();
+  const supervisorIds = new Set((supervisors?.results || []).map(r => Number(r.id)).filter(Boolean));
+  if (!supervisorIds.has(528)) supervisorIds.add(528);
+  if (!supervisorIds.has(531)) supervisorIds.add(531);
 
   const targetMembers = [
-    { id: Number(user.id), role: 'owner' },
-    { id: Number(haunvId), role: 'member' },
-    { id: Number(thuydtId), role: 'member' }
+    { id: Number(user.id), role: 'owner' }
   ];
+  for (const sId of supervisorIds) {
+    if (sId !== Number(user.id)) {
+      targetMembers.push({ id: sId, role: 'member' });
+    }
+  }
 
   for (const m of targetMembers) {
     if (m.id) {
@@ -6586,6 +6672,7 @@ export async function handle(request, env) {
         synced++;
       }
     }
+    await syncThuytttFollowerToAllProjectsAndTasks(env);
     return json({ ok: true, synced, total: activeUsers.length });
   }
 
