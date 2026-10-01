@@ -266,50 +266,53 @@ export async function chatCompletion(env, {
   // 1. Try Google Gemini
   const geminiKey = env?.GEMINI_API_KEY || env?.GOOGLE_API_KEY;
   if (geminiKey) {
-    try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`;
-      const contents = messages.map(m => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content || '' }]
-      }));
+    const candidateModels = ['gemini-flash-latest', 'gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'];
+    for (const candidateModel of candidateModels) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${candidateModel}:generateContent?key=${geminiKey}`;
+        const contents = messages.map(m => ({
+          role: m.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: m.content || '' }]
+        }));
 
-      const body = {
-        contents,
-        generationConfig: { temperature, maxOutputTokens: maxTokens }
-      };
-      if (systemPrompt) {
-        body.systemInstruction = { parts: [{ text: systemPrompt }] };
-      }
-
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        const candidate = data?.candidates?.[0];
-        if (candidate?.content?.parts?.[0]?.text) {
-          selectedProvider = 'gemini';
-          selectedModel = 'gemini-2.0-flash';
-          responseText = candidate.content.parts[0].text;
-          completionTokens = estimateTokens(responseText);
-          const totalLatency = Date.now() - startTime;
-          const cost = calculateCost(selectedProvider, selectedModel, promptTokens, completionTokens);
-          return {
-            provider: selectedProvider,
-            model: selectedModel,
-            content: responseText,
-            toolCalls: null,
-            tokens: { prompt: promptTokens, completion: completionTokens, total: promptTokens + completionTokens },
-            cost,
-            latencyMs: totalLatency
-          };
+        const body = {
+          contents,
+          generationConfig: { temperature, maxOutputTokens: maxTokens }
+        };
+        if (systemPrompt) {
+          body.systemInstruction = { parts: [{ text: systemPrompt }] };
         }
+
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const candidate = data?.candidates?.[0];
+          if (candidate?.content?.parts?.[0]?.text) {
+            selectedProvider = 'gemini';
+            selectedModel = candidateModel;
+            responseText = candidate.content.parts[0].text;
+            completionTokens = estimateTokens(responseText);
+            const totalLatency = Date.now() - startTime;
+            const cost = calculateCost(selectedProvider, selectedModel, promptTokens, completionTokens);
+            return {
+              provider: selectedProvider,
+              model: selectedModel,
+              content: responseText,
+              toolCalls: null,
+              tokens: { prompt: promptTokens, completion: completionTokens, total: promptTokens + completionTokens },
+              cost,
+              latencyMs: totalLatency
+            };
+          }
+        }
+      } catch (err) {
+        console.warn(`Gemini (${candidateModel}) chat completion failed, trying next`, err?.message);
       }
-    } catch (err) {
-      console.warn('Gemini chat completion failed, attempting fallback', err?.message);
     }
   }
 
