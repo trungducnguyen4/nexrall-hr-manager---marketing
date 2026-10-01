@@ -21,6 +21,10 @@ database_id = "1e0eeebd-82fa-4c10-a079-97d35308a58b"
 binding = "HR_DOCUMENTS"
 bucket_name = "netviet-hr-documents"
 
+# Cloudflare Workers AI (Edge Llama 3.3 & BAAI Embeddings)
+[ai]
+binding = "AI"
+
 # Chat: one Durable Object instance per conversation for WebSocket real-time.
 [[durable_objects.bindings]]
 name = "CHAT_ROOM"
