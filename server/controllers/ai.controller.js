@@ -4,6 +4,7 @@
 import { json, err } from '../lib/response.js';
 import { runCopilotTurn } from '../services/agent.service.js';
 import { ingestDocument, seedInitialKnowledge } from '../services/rag.service.js';
+import { ensureAiSchema } from '../services/ai-gateway.service.js';
 
 export async function handleAiRoutes(request, env, me, path, url) {
   if (!me || !me.id) {
@@ -13,6 +14,11 @@ export async function handleAiRoutes(request, env, me, path, url) {
   // 1. Chat Completion / Copilot Query
   if (path === '/api/ai/chat' && request.method === 'POST') {
     try {
+      try {
+        await ensureAiSchema(env);
+        await seedInitialKnowledge(env, me.id);
+      } catch (_) {}
+
       const body = await request.json();
       const message = String(body.message || '').trim();
       if (!message) return err(400, 'Thiếu nội dung tin nhắn');
