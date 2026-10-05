@@ -2,6 +2,9 @@ name = "nexrall-hr-manager-marketing"
 main = "worker.js"
 compatibility_date = "2026-07-22"
 
+[vars]
+GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_HERE"
+
 # Nightly auto-checkout & Monthly Backup
 # 17:05 UTC = 00:05 Asia/Ho_Chi_Minh daily.
 # 18:00 UTC on day 1 = 01:00 Asia/Ho_Chi_Minh on day 2.

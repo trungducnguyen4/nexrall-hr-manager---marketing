@@ -40,7 +40,7 @@ export const EMPLOYEE_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const EMPLOYEE_CONTRACT_TYPES = ['Thử việc', 'HĐCT', 'CTV', 'Thỏa thuận TTS', 'Chính thức', 'Cộng tác viên', 'Thực tập sinh', 'Khác'];
 
 export const EMPLOYEE_PROFILE_FIELDS = {
-  personal: ['full_name','email','phone','birth_date','gender','national_id','national_id_issue_date','national_id_expiry_date','home_address','school_name','emergency_contact_name','emergency_contact_phone'],
+  personal: ['employee_code','full_name','email','phone','birth_date','gender','national_id','national_id_issue_date','national_id_expiry_date','home_address','school_name','emergency_contact_name','emergency_contact_phone'],
   employment: ['employee_type','position','department','direct_manager_id','work_location'],
   contract: ['contract_type','hire_date','contract_start_date','contract_end_date','contract_signed_date','probation_end_date','official_date','termination_date'],
   compensation: ['salary','allowance','insurance_salary','dependent_count','bank_account','bank_name','bank_account_holder','tax_code','social_insurance_number','insurance_hospital'],
@@ -51,6 +51,7 @@ export const EMPLOYEE_PROFILE_FIELD_GROUP = Object.fromEntries(
 );
 export const EMPLOYEE_PROFILE_ALLOWED_FIELDS = new Set(Object.keys(EMPLOYEE_PROFILE_FIELD_GROUP));
 export const EMPLOYEE_PROFILE_PROTECTED_FIELDS = new Set([
+  'employee_code',
   ...EMPLOYEE_PROFILE_FIELDS.contract,
   ...EMPLOYEE_PROFILE_FIELDS.compensation,
 ]);
@@ -119,7 +120,10 @@ export function employeeCanAccess(target, me, hasHrScope, isManager) {
 export function employeeProfilePermissions(target, me, hasHrScope, isManager) {
   const self = Number(target.id) === Number(me.id);
   const sameDepartmentManager = !!isManager && !hasHrScope && target.department === me.department;
+  const isAdmin = !!me && (me.role === 'admin' || me.is_admin === true);
   return {
+    is_admin: isAdmin,
+    can_edit_employee_code: isAdmin,
     can_view: hasHrScope || self || sameDepartmentManager,
     can_edit_basic: hasHrScope || self || sameDepartmentManager,
     can_edit_personal: hasHrScope || self,
@@ -135,6 +139,7 @@ export function employeeProfilePermissions(target, me, hasHrScope, isManager) {
 }
 
 export function normalizeEmployeeProfileValue(field, value, normalizeDeptNameFn, employeeTypeCodeFn, normalizeWorkLocationFn) {
+  if (field === 'employee_code') return String(value || '').trim().toUpperCase();
   if (['salary','allowance','insurance_salary'].includes(field)) {
     const number = Number(value || 0);
     return Number.isFinite(number) && number >= 0 ? number : NaN;
@@ -163,6 +168,13 @@ export function validateEmployeeProfile(profile, changedFields = []) {
   const changed = new Set(changedFields);
   if (!String(profile.full_name || '').trim() || !String(profile.email || '').trim() || !String(profile.department || '').trim()) {
     return 'Họ tên, email và phòng ban là bắt buộc';
+  }
+  if (changed.has('employee_code')) {
+    const code = String(profile.employee_code || '').trim().toUpperCase();
+    if (!code) return 'Mã nhân viên không được để trống';
+    if (!/^[A-Z0-9_\-\.]{2,50}$/.test(code)) {
+      return 'Mã nhân viên không hợp lệ (tối thiểu 2 ký tự, chỉ gồm chữ cái, số, dấu gạch nối hoặc gạch dưới)';
+    }
   }
   const requiredFields = ['full_name','email','phone','birth_date','national_id','national_id_issue_date','home_address','position','department','direct_manager_id','work_location','contract_type'];
   if (requiredFields.some(field => changed.has(field) && !String(profile[field] ?? '').trim())) return 'Không được để trống trường bắt buộc';
@@ -516,12 +528,16 @@ export const UsersService = {
     if (!permissions.can_edit_basic) return { error: 'Không có quyền sửa hồ sơ', status: 403 };
 
     const { normalizeDeptNameFn, employeeTypeCodeFn, normalizeWorkLocationFn } = helpers;
+    const isAdmin = helpers.isAdmin ?? (!!me && (me.role === 'admin' || me.is_admin === true));
     const changes = {};
     for (const [field, rawValue] of Object.entries(input || {})) {
       if (!EMPLOYEE_PROFILE_ALLOWED_FIELDS.has(field)) continue;
       const group = EMPLOYEE_PROFILE_FIELD_GROUP[field];
       if (group === 'personal' && !permissions.can_edit_personal) return { error: 'Không có quyền sửa thông tin cá nhân', status: 403 };
       if (group === 'employment' && !permissions.can_edit_employment) return { error: 'Không có quyền sửa thông tin công việc', status: 403 };
+      if (field === 'employee_code' && !isAdmin) {
+        return { error: 'Chỉ Admin mới có quyền sửa Mã nhân viên', status: 403 };
+      }
       if ((EMPLOYEE_PROFILE_PROTECTED_FIELDS.has(field) || field === 'employee_type') && !hasHrScope) {
         return { error: 'Chỉ HCNS hoặc Admin được sửa hợp đồng, lương, ngân hàng và BHXH', status: 403 };
       }
@@ -547,6 +563,10 @@ export const UsersService = {
     if (!actualChanges.length) return { ok: true, unchanged: true };
     const validationError = validateEmployeeProfile(merged, actualChanges.map(([field]) => field));
     if (validationError) return { error: validationError, status: 400 };
+    if (changes.employee_code && changes.employee_code !== target.employee_code) {
+      const duplicate = await env.DB.prepare('SELECT id FROM users WHERE UPPER(employee_code)=UPPER(?) AND id<>? LIMIT 1').bind(changes.employee_code, userId).first();
+      if (duplicate) return { error: `Mã nhân viên "${changes.employee_code}" đã tồn tại trong hệ thống`, status: 409 };
+    }
     if (changes.email && changes.email !== target.email) {
       const duplicate = await env.DB.prepare('SELECT id FROM users WHERE lower(email)=lower(?) AND id<>? LIMIT 1').bind(changes.email, userId).first();
       if (duplicate) return { error: 'Email đã tồn tại', status: 409 };
@@ -571,10 +591,16 @@ export const UsersService = {
         actor: me,
       })),
     ];
+    if (actualChanges.some(([field]) => field === 'employee_code')) {
+      statements.push(
+        env.DB.prepare('UPDATE payroll SET employee_code=? WHERE employee_id=? OR user_id=?').bind(changes.employee_code, userId, String(userId))
+      );
+    }
     await env.DB.batch(statements);
     if (typeof broadcastAppEventFn === 'function') {
       await broadcastAppEventFn(env, 'users', 'user:profile_updated', {
         id: userId,
+        employee_code: changes.employee_code || target.employee_code,
         changed_fields: actualChanges.map(([field]) => field),
       }, { actorId: me.id });
     }
@@ -1151,6 +1177,22 @@ export const UsersService = {
       extraSql = ', password_hash=?, must_change_password=1';
       extraBinds = [newHash];
     }
+    if (Object.prototype.hasOwnProperty.call(input, 'employee_code')) {
+      if (!isAdmin) return { error: 'Chỉ Admin mới có quyền sửa Mã nhân viên', status: 403 };
+      const newCode = String(input.employee_code || '').trim().toUpperCase();
+      if (!newCode) return { error: 'Mã nhân viên không được để trống', status: 400 };
+      if (!/^[A-Z0-9_\-\.]{2,50}$/.test(newCode)) {
+        return { error: 'Mã nhân viên không hợp lệ (tối thiểu 2 ký tự, chỉ gồm chữ cái, số, dấu gạch nối hoặc gạch dưới)', status: 400 };
+      }
+      if (newCode !== String(target.employee_code || '').toUpperCase()) {
+        const duplicate = await env.DB.prepare('SELECT id FROM users WHERE UPPER(employee_code)=UPPER(?) AND id<>? LIMIT 1').bind(newCode, uid).first();
+        if (duplicate) return { error: `Mã nhân viên "${newCode}" đã tồn tại trong hệ thống`, status: 409 };
+        extraSql += ', employee_code=?';
+        extraBinds.push(newCode);
+        legacyChanges.push(['employee_code', newCode]);
+        b.employee_code = newCode;
+      }
+    }
     const dept = typeof normalizeDeptNameFn === 'function' ? normalizeDeptNameFn(b.department || '') : (b.department || '');
     const binds = [b.full_name,b.email,b.role||'employee',dept,b.position||'',b.avatar_color||'#4F46E5',ini,b.phone||'',b.salary||0,b.bank_account||'',b.bank_name||'',b.is_active??1,b.birth_date||null,b.gender||'',b.national_id||'',b.national_id_issue_date||null,b.national_id_expiry_date||null,b.home_address||'',b.emergency_contact_name||'',b.emergency_contact_phone||'',b.direct_manager_id||null,b.work_location||'',b.contract_type||'',b.contract_start_date||null,b.contract_end_date||null,b.contract_signed_date||null,b.official_date||null,b.termination_date||null,b.allowance||0,b.insurance_salary||0,b.bank_account_holder||'',b.tax_code||'',b.social_insurance_number||'',b.insurance_hospital||'',b.avatar_url||'',b.national_id_document_url||'',b.degree_document_url||'',b.contract_document_url||'',b.personnel_decision_url||'',...extraBinds,me.id,uid];
     const changeSetId = crypto.randomUUID();
@@ -1182,9 +1224,15 @@ export const UsersService = {
         }),
       ] : []),
     ]);
+    if (legacyChanges.some(([field]) => field === 'employee_code')) {
+      try {
+        await env.DB.prepare('UPDATE payroll SET employee_code=? WHERE employee_id=? OR user_id=?').bind(b.employee_code, uid, String(uid)).run();
+      } catch (_) {}
+    }
     if (typeof broadcastAppEventFn === 'function') {
       await broadcastAppEventFn(env, 'users', 'user:updated', {
         id: uid,
+        employee_code: b.employee_code,
         full_name: b.full_name,
         department: b.department,
         position: b.position,

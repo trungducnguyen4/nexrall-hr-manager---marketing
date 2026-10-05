@@ -1,5 +1,5 @@
 /* NetViet HR – Marketing – Service Worker (PWA & Web Push) */
-const CACHE = 'netviet-hr-v32-payslip-confirm-delete';
+const CACHE = 'netviet-hr-v33-copilot-sse-streaming';
 const CORE = ['/', '/index.html', '/favicon.png', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', (event) => {

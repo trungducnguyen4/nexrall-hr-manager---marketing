@@ -5,17 +5,22 @@
   "scripts": {
     "ios:add": "cap add ios",
     "ios:sync": "cap sync ios",
-    "ios:open": "cap open ios",
+    "dev": "node scripts/sync-public.mjs && npx wrangler dev",
     "build": "node scripts/sync-public.mjs",
     "attack": "node scripts/attack/run-all.mjs",
     "test": "node --check server.js worker.js src/api.js src/views/settings.js src/icons.js && npm run test:geofence && npm run test:attendance-period",
     "test:employee-profile": "node tests/employee-profile-smoke.mjs",
     "test:attendance-period": "node tests/attendance-period.mjs",
     "test:geofence": "node tests/geofence.mjs",
+    "test:ai-stream": "node tests/ai-stream-sse.mjs",
+    "test:ai-security": "node tests/ai-p0-security-audit.mjs",
+    "test:ai-agent": "node tests/ai-p1-agent-tools.mjs",
+    "test:ai-actions": "node tests/ai-agent-actions.mjs",
     "deploy": "powershell -ExecutionPolicy Bypass -File sync-to-deploy.ps1",
     "deploy:sync-only": "powershell -ExecutionPolicy Bypass -File sync-to-deploy.ps1 -NoDeploy",
     "backup": "powershell -ExecutionPolicy Bypass -File backup.ps1"
   },
+  "type": "module",
   "dependencies": {
     "@capacitor/app": "^8.0.0",
     "@capacitor/core": "^8.4.2",

@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════
 //  HR Manager — Main App Entry
 // ════════════════════════════════════════════════
-import { api, setToken, loadToken, getToken, clearCache } from './api.js?v=20260817-geofence-soft-v1';
+import { api, setToken, loadToken, getToken, clearCache } from './api.js?v=20261005-copilot-stream-v33';
 import { realtime } from './realtime.js';
 import { EventBus } from './event-bus.js';
 import { initNativeShell, verifyBiometricIfAvailable } from './native.js';
@@ -9,7 +9,7 @@ import { setAvatar, toast, initials, avatarColor, closeModal, isHcnsDepartment, 
 import { icon } from './icons.js';
 import { playChatSound, playMentionSound, playTaskSound, isSoundEnabled, toggleSound } from './sound.js';
 import { autoSyncPushSubscription } from './push.js';
-import { initCopilot } from './copilot.js';
+import { initCopilot, resetCopilot } from './copilot.js?v=20261005-copilot-stream-v33';
 
 // ── Lazy view imports ───────────────────────────
 let _viewModules = {};
@@ -137,6 +137,7 @@ async function boot() {
     realtime.disconnect();
     await setToken(null);
     clearCache();
+    resetCopilot();
     loginUser.value = '';
     loginPw.value = '';
     document.documentElement?.classList?.remove('has-auth-token');
@@ -788,6 +789,7 @@ function initApp() {
     me = null;
     // Clear all caches on logout
     clearCache();
+    resetCopilot();
     _destroyAllViews();
     _appInitialized = false;
     document.documentElement?.classList?.remove('has-auth-token');

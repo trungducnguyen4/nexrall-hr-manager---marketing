@@ -916,6 +916,7 @@ function openProfileEditor(user, section, context, onSaved) {
   let body = '';
     if (section === 'personal') {
     body = `<div class="employee-edit-grid">
+      ${permissions.can_edit_employee_code ? field('ep-employee-code','Mã nhân viên (Chỉ Admin) *','text',user.employee_code,'required style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:700;text-transform:uppercase;" autocomplete="off"') : ''}
       ${field('ep-full-name','Họ và tên *','text',user.full_name,'required')}
       ${field('ep-email','Email *','email',user.email,'required')}
       ${field('ep-phone','Số điện thoại *','tel',user.phone,'required inputmode="tel"')}
@@ -931,6 +932,7 @@ function openProfileEditor(user, section, context, onSaved) {
     </div>`;
   } else if (section === 'employment') {
     body = `<div class="employee-edit-grid">
+      ${permissions.can_edit_employee_code ? field('ep-employee-code','Mã nhân viên (Chỉ Admin) *','text',user.employee_code,'required style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:700;text-transform:uppercase;" autocomplete="off"') : ''}
       ${permissions.can_edit_contract ? `<label class="field"><span>Loại hợp đồng *</span><select id="ep-contract-type" required><option value="">Chọn hợp đồng</option>${(metadata.contract_types || []).map(value => `<option value="${esc(value)}" ${user.contract_type === value ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select></label>` : ''}
       ${field('ep-position','Vị trí *','text',user.position,'required')}
       <label class="field"><span>Phòng ban *</span><select id="ep-department" required><option value="">Chọn phòng ban</option>${departmentNames.map(value => `<option value="${esc(value)}" ${user.department === value ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select></label>
@@ -966,10 +968,21 @@ function openProfileEditor(user, section, context, onSaved) {
   document.getElementById('modal')?.classList.add('modal--employee-editor');
   document.getElementById('ep-cancel')?.addEventListener('click', closeModal);
   const unsavedGuard = bindUnsavedWarning('ep-cancel');
+
+  const codeInput = document.getElementById('ep-employee-code');
+  if (codeInput) {
+    codeInput.addEventListener('input', () => {
+      codeInput.value = codeInput.value.toUpperCase();
+    });
+  }
+
   document.getElementById('ep-save')?.addEventListener('click', async event => {
     const value = id => document.getElementById(id)?.value?.trim() ?? '';
     let data;
+    const newCode = codeInput ? codeInput.value.trim().toUpperCase() : null;
+
     if (section === 'personal') data = {
+      ...(newCode !== null ? { employee_code: newCode } : {}),
       full_name: value('ep-full-name'), email: value('ep-email'), phone: value('ep-phone'),
       birth_date: parseDateInput(value('ep-birth')), gender: value('ep-gender'), national_id: value('ep-national-id'),
       national_id_issue_date: parseDateInput(value('ep-national-issue')),
@@ -982,6 +995,7 @@ function openProfileEditor(user, section, context, onSaved) {
       const ctLower = (contractType || '').toLowerCase();
       const derivedType = (ctLower.includes('thực tập') || ctLower.includes('tts')) ? 'TTS' : 'NV';
       data = {
+        ...(newCode !== null ? { employee_code: newCode } : {}),
         position: value('ep-position'), department: value('ep-department'),
         direct_manager_id: value('ep-manager') || null, work_location: value('ep-location'),
         ...(permissions.can_edit_contract ? {
@@ -1014,6 +1028,7 @@ function openProfileEditor(user, section, context, onSaved) {
     button.disabled = true;
     try {
       await api.updateEmployeeProfile(user.id, data);
+      if (data.employee_code) user.employee_code = data.employee_code;
       unsavedGuard.commit();
       closeModal();
       toast('Đã cập nhật hồ sơ', 'success');

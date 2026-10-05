@@ -127,6 +127,49 @@ db.exec(`
     revoked INTEGER DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS payroll (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT,
+    employee_id INTEGER,
+    month TEXT,
+    base_salary REAL DEFAULT 0,
+    kpi_bonus REAL DEFAULT 0,
+    allowance REAL DEFAULT 0,
+    deduction REAL DEFAULT 0,
+    overtime_pay REAL DEFAULT 0,
+    tax REAL DEFAULT 0,
+    insurance REAL DEFAULT 0,
+    work_days REAL DEFAULT 0,
+    standard_days REAL DEFAULT 0,
+    net_salary REAL DEFAULT 0,
+    transfer_amount REAL DEFAULT 0,
+    transfer_status TEXT,
+    note TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS payroll_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    month TEXT UNIQUE NOT NULL,
+    status TEXT DEFAULT 'draft',
+    total_employees INTEGER DEFAULT 0,
+    complete_employees INTEGER DEFAULT 0,
+    missing_employees INTEGER DEFAULT 0,
+    estimated_total REAL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS invoices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    month INTEGER,
+    year INTEGER,
+    base_salary REAL DEFAULT 0,
+    bonus REAL DEFAULT 0,
+    allowance REAL DEFAULT 0,
+    deduction REAL DEFAULT 0,
+    net_salary REAL DEFAULT 0,
+    status TEXT DEFAULT 'issued'
+  );
 `);
 
 const env = { DB: makeD1(db) };
@@ -154,6 +197,13 @@ db.exec(`
   INSERT INTO tasks (title, assigned_to, assigned_by, status, priority) VALUES
   ('Viết báo cáo kỹ thuật Q3', 101, 1, 'in-progress', 'high'),
   ('Tối ưu hóa cơ sở dữ liệu', 101, 1, 'todo', 'urgent');
+
+  INSERT INTO payroll_batches (month, status) VALUES ('2026-08', 'published'), ('2026-09', 'draft');
+
+  INSERT INTO payroll (employee_id, user_id, month, base_salary, work_days, standard_days, kpi_bonus, allowance, deduction, overtime_pay, insurance, tax, net_salary, transfer_status) VALUES
+  (101, '101', '2026-08', 15000000, 22, 22, 2000000, 1000000, 20000, 500000, 1575000, 350000, 16555000, 'Đã chuyển khoản'),
+  (101, '101', '2026-09', 15000000, 20, 22, 1500000, 1000000, 40000, 0, 1575000, 300000, 15585000, 'Tạm tính'),
+  (102, '102', '2026-08', 18000000, 22, 22, 3000000, 1500000, 0, 0, 1890000, 550000, 20060000, 'Đã chuyển khoản');
 `);
 
 // Test 1: ensureAiSchema and seedInitialKnowledge
@@ -214,6 +264,49 @@ const logRow = db.prepare('SELECT * FROM ai_generation_logs WHERE id=?').get(tur
 assert(logRow, 'Telemetry log must be persisted in ai_generation_logs');
 assert.strictEqual(logRow.user_id, 101);
 ok('runCopilotTurn executes grounded reasoning and logs LLMOps telemetry');
+
+// Test 6b: Tool: get_my_payslip_summary calculates payslip breakdown & distinguishes official vs draft
+const payslipAug = await executeTool(env, 'get_my_payslip_summary', { month: '2026-08' }, me101);
+assert.strictEqual(payslipAug.found, true);
+assert.strictEqual(payslipAug.isOfficial, true);
+assert.strictEqual(payslipAug.financialSummary.netSalaryVnd, 16555000);
+assert.strictEqual(payslipAug.financialSummary.kpiBonusVnd, 2000000);
+
+const payslipSep = await executeTool(env, 'get_my_payslip_summary', { month: '2026-09' }, me101);
+assert.strictEqual(payslipSep.found, true);
+assert.strictEqual(payslipSep.isOfficial, false);
+assert(payslipSep.statusNote.includes('TẠM TÍNH'));
+ok('Tool: get_my_payslip_summary provides complete financial breakdown & handles draft status');
+
+// Test 6c: Enterprise Privacy Guardrail & PII Shield blocks non-admin asking for other employee's salary
+const privacyTurn = await runCopilotTurn(env, {
+  userMessage: 'Lương tháng 8 của bạn Linh marketing là bao nhiêu?',
+  conversationHistory: [],
+  me: me101
+});
+assert(privacyTurn.content.includes('Enterprise Privacy Guardrail'));
+assert.strictEqual(privacyTurn.telemetry.provider, 'privacy-guardrail');
+ok('Enterprise Privacy Guardrails strictly blocks unauthorized access to other employees payroll');
+
+// Test 6d: Tool: audit_payroll_anomalies identifies discrepancies for HR/Admin, blocks regular employee
+const meAdmin = { id: 1, full_name: 'Admin Director', role: 'admin', department: 'Ban Giám Đốc' };
+const auditRes = await executeTool(env, 'audit_payroll_anomalies', { month: '2026-08' }, meAdmin);
+assert.strictEqual(auditRes.month, '2026-08');
+assert(auditRes.totalAudited >= 2);
+
+const empAudit = await executeTool(env, 'audit_payroll_anomalies', { month: '2026-08' }, me101);
+assert.strictEqual(empAudit.error, 'PERMISSION_DENIED');
+ok('Tool: audit_payroll_anomalies conducts AI audit for admins and enforces RBAC');
+
+// Test 6e: Real Copilot Turn for user prompt "bảng lương tháng 8 của tôi"
+const payrollTurn = await runCopilotTurn(env, {
+  userMessage: 'bảng lương tháng 8 của tôi',
+  conversationHistory: [],
+  me: me101
+});
+assert(payrollTurn.content.includes('Bảng Lương Cá Nhân') || payrollTurn.content.includes('16.555.000') || payrollTurn.content.includes('Lương cơ bản'));
+assert(!payrollTurn.content.includes('Bạn cần tôi hỗ trợ thông tin gì hôm nay?'), 'Must NOT fall back to generic greeting');
+ok('Copilot Turn: "bảng lương tháng 8 của tôi" answers with structured personal payslip breakdown');
 
 // Test 7: HTTP API Endpoints via handle()
 // 7a. Unauthenticated request must be blocked with 401
@@ -304,4 +397,30 @@ assert.strictEqual(logsData.ok, true);
 assert.strictEqual(logsData.log.id, turnRes.requestId);
 ok('HTTP GET /api/ai/logs (Admin) provides telemetry for In-App RAG Inspector');
 
+// 7g. General Knowledge & Multi-module dynamic response check
+const outsideReq = new Request('https://x.local/api/ai/chat', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-Auth-Token': USER_TOKEN },
+  body: JSON.stringify({ message: 'tôi có thể hỏi bạn kiến thức bên ngoài được k' })
+});
+const outsideRes = await handle(outsideReq, env);
+assert.strictEqual(outsideRes.status, 200);
+const outsideData = await outsideRes.json();
+assert.match(outsideData.content, /kiến thức|bên ngoài|12 phân hệ|hỗ trợ/i);
+assert.doesNotMatch(outsideData.content, /^Chào bạn! Tôi là Trợ lý AI Nexrall Copilot\. Tôi có thể hỗ trợ bạn:\s*1\.\s*📖/);
+ok('AI Copilot: "tôi có thể hỏi bạn kiến thức bên ngoài được k" answers dynamically without rigid template');
+
+// 7h. Multi-module guide check (Bàn giao dự án & tài khoản)
+const handoverReq = new Request('https://x.local/api/ai/chat', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-Auth-Token': USER_TOKEN },
+  body: JSON.stringify({ message: 'hướng dẫn phân hệ bàn giao dự án và tài khoản' })
+});
+const handoverRes = await handle(handoverReq, env);
+assert.strictEqual(handoverRes.status, 200);
+const handoverData = await handoverRes.json();
+assert.match(handoverData.content, /bàn giao|tài sản|tài khoản|dự án/i);
+ok('AI Copilot: Explains Handover & Offboarding module thoroughly');
+
 console.log(`\nALL ${passed} AI TESTS PASSED!`);
+

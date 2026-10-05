@@ -608,7 +608,74 @@ export const api = {
 
   // AI Copilot & Deep RAG Platform
   aiChat: (message, history = [], conversationId = 'default') => req('POST', '/api/ai/chat', { message, history, conversationId }),
+  aiChatStream: async (message, history = [], conversationId = 'default', onEvent = () => {}, signal = null) => {
+    const token = getToken();
+    const headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'text/event-stream'
+    };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const res = await fetch('/api/ai/chat', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ message, history, conversationId, stream: true }),
+      signal
+    });
+
+    if (!res.ok) {
+      let errText = 'Lỗi kết nối AI';
+      try {
+        const j = await res.json();
+        errText = j.error || errText;
+      } catch (_) {
+        errText = await res.text() || errText;
+      }
+      throw new Error(errText);
+    }
+
+    if (!res.body) {
+      throw new Error('ReadableStream không được trình duyệt hỗ trợ');
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop();
+
+        for (const part of parts) {
+          if (!part.trim()) continue;
+          const lines = part.split('\n');
+          let event = 'message';
+          let dataStr = '';
+          for (const line of lines) {
+            if (line.startsWith('event: ')) {
+              event = line.slice(7).trim();
+            } else if (line.startsWith('data: ')) {
+              dataStr = line.slice(6).trim();
+            }
+          }
+          if (dataStr) {
+            try {
+              const data = JSON.parse(dataStr);
+              onEvent(event, data);
+            } catch (_) {}
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  },
   aiConfirmAction: (actionType, payload) => req('POST', '/api/ai/actions/confirm', { actionType, payload }),
+  aiUndoAction: (actionType, payload) => req('POST', '/api/ai/actions/undo', { actionType, payload }),
   aiFeedback: (requestId, rating, comment = '') => req('POST', '/api/ai/feedback', { requestId, rating, comment }),
   aiGetLogs: (requestId) => req('GET', '/api/ai/logs' + (requestId ? `?request_id=${encodeURIComponent(requestId)}` : '')),
   aiGetKnowledge: () => req('GET', '/api/ai/knowledge'),

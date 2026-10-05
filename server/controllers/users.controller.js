@@ -60,6 +60,7 @@ export const UsersController = {
       normalizeDeptNameFn: normalizeDeptName,
       employeeTypeCodeFn: employeeTypeCode,
       normalizeWorkLocationFn: normalizeWorkLocation,
+      isAdmin: ctx.isAdmin || (ctx.me && (ctx.me.role === 'admin' || ctx.me.is_admin === true)),
     });
     if (res.error) return err(res.status || 400, res.error);
     return json(res);
