@@ -14,17 +14,164 @@ let _lastCitations = [];
 let _currentUserId = null;
 let _currentUser = null;
 let _abortController = null;
+let _briefingLoaded = false;
 
-function getWelcomeHtml(userName) {
+function getUserPersona(me) {
+  const role = String(me?.role || '').toLowerCase();
+  const dept = String(me?.department || '').toLowerCase();
+  const code = String(me?.employee_code || '').toUpperCase();
+  if (role === 'manager_hr' || dept.includes('hcns') || dept.includes('hành chính')) return 'hr';
+  const isDirector = role === 'admin' || role === 'director' || role === 'manager_director' || role === 'manager' || code === 'BGD-01' || code === 'BGD-02' || code === 'NV-ADMIN' || code === 'NV-001' || dept.includes('giám đốc') || dept.includes('ban giám đốc') || Boolean(me?.isDirectorHau);
+
+  if (isDirector) return 'director';
+  return 'employee';
+}
+
+function getPersonaHeaderInfo(persona) {
+  if (persona === 'director') {
+    return {
+      title: 'Director Insights',
+      subtitle: 'NetViet HR • Cố vấn Điều hành Cấp cao',
+      badge: 'Director'
+    };
+  }
+  if (persona === 'hr') {
+    return {
+      title: 'HR Copilot',
+      subtitle: 'NetViet HR • Quản trị & Vận hành Nhân sự',
+      badge: 'HR Copilot'
+    };
+  }
+  return {
+    title: 'HR Assistant Cá nhân',
+    subtitle: 'NetViet HR • Quyền lợi & Thủ tục Cá nhân',
+    badge: 'Cá nhân'
+  };
+}
+
+function getPersonaChipsHtml(persona) {
+  if (persona === 'director') {
+    return `
+      <div class="ai-chips-bar">
+        <button class="ai-chip" data-prompt="Phân tích tăng trưởng quy mô nhân sự và tỷ lệ nghỉ việc turnover">${icon('trendingUp', 'xs')} <span>Tăng trưởng nhân sự</span></button>
+        <button class="ai-chip" data-prompt="So sánh chuyên cần, tỷ lệ đi muộn và hiệu suất giữa các phòng ban">${icon('layoutDashboard', 'xs')} <span>So sánh phòng ban</span></button>
+        <button class="ai-chip" data-prompt="Phân tích xu hướng số giờ OT và chi phí làm thêm 3 tháng gần nhất">${icon('clock3', 'xs')} <span>Xu hướng chi phí OT</span></button>
+        <button class="ai-chip" data-prompt="Báo cáo điều hành tổng quan tình hình nhân sự công ty hôm nay">${icon('shieldCheck', 'xs')} <span>Báo cáo điều hành</span></button>
+        <button class="ai-chip" data-prompt="Tình hình quân số và tỷ lệ có mặt tại văn phòng hôm nay?">${icon('users', 'xs')} <span>Quân số hôm nay</span></button>
+        <button class="ai-chip" data-prompt="Kiểm toán bất thường bảng lương tháng này">${icon('shieldAlert', 'xs')} <span>Kiểm toán lương AI</span></button>
+      </div>
+    `;
+  }
+  if (persona === 'hr') {
+    return `
+      <div class="ai-chips-bar">
+        <button class="ai-chip" data-prompt="Những nhân viên nào tháng này đi trễ trên 3 lần?">${icon('alertTriangle', 'xs')} <span>Đi trễ > 3 lần</span></button>
+        <button class="ai-chip" data-prompt="Hôm nay ai đang nghỉ phép và ai làm việc WFH?">${icon('userCheck', 'xs')} <span>Ai nghỉ hôm nay</span></button>
+        <button class="ai-chip" data-prompt="Danh sách nhân viên có hợp đồng lao động sắp hết hạn trong 30 ngày tới?">${icon('fileText', 'xs')} <span>HĐ hết hạn</span></button>
+        <button class="ai-chip" data-prompt="Tổng hợp số giờ làm thêm OT của các phòng ban tháng này?">${icon('clock3', 'xs')} <span>Tổng giờ OT</span></button>
+        <button class="ai-chip" data-prompt="Báo cáo tổng hợp tình hình nhân sự tháng này?">${icon('clipboardList', 'xs')} <span>Báo cáo tháng</span></button>
+        <button class="ai-chip" data-prompt="Tổng quan các đơn xin nghỉ phép trong công ty?">${icon('calendarDays', 'xs')} <span>Đơn nghỉ phép</span></button>
+        <button class="ai-chip" data-prompt="Kiểm toán bất thường bảng lương tháng này">${icon('shieldAlert', 'xs')} <span>Kiểm toán lương AI</span></button>
+      </div>
+    `;
+  }
+  // Default: Employee
+  return `
+    <div class="ai-chips-bar">
+      <button class="ai-chip" data-prompt="Tôi muốn đăng ký nghỉ phép ngày mai">${icon('calendarDays', 'xs')} <span>Xin nghỉ phép</span></button>
+      <button class="ai-chip" data-prompt="Tạo đơn xin làm việc tại nhà (WFH) ngày mai">${icon('home', 'xs')} <span>Xin WFH</span></button>
+      <button class="ai-chip" data-prompt="Tôi quên check-in hôm nay, hướng dẫn gửi giải trình chỉnh công">${icon('clock3', 'xs')} <span>Quên check-in</span></button>
+      <button class="ai-chip" data-prompt="Bảng lương tháng này của tôi thế nào?">${icon('banknote', 'xs')} <span>Phiếu lương</span></button>
+      <button class="ai-chip" data-prompt="Tôi còn bao nhiêu ngày phép năm?">${icon('calendarCheck', 'xs')} <span>Ngày phép</span></button>
+      <button class="ai-chip" data-prompt="Thống kê chấm công và tiền phạt của tôi tháng này?">${icon('clock', 'xs')} <span>Đi muộn</span></button>
+      <button class="ai-chip" data-prompt="Danh sách task công việc cần làm của tôi?">${icon('clipboardList', 'xs')} <span>Công việc</span></button>
+      <button class="ai-chip" data-prompt="Quy định nghỉ phép năm và quy trình duyệt 2 bước?">${icon('bookOpen', 'xs')} <span>Nội quy</span></button>
+    </div>
+  `;
+}
+
+function getWelcomeHtml(me) {
+  const persona = getUserPersona(me);
+  const info = getPersonaHeaderInfo(persona);
+  let welcomeDesc = 'Hệ thống hỗ trợ tra cứu ngày phép, chấm công, phiếu lương và hỗ trợ tạo đơn nhanh.';
+  if (persona === 'director') {
+    welcomeDesc = 'Hệ thống hỗ trợ phân tích tăng trưởng nhân sự, so sánh phòng ban, xu hướng chi phí OT và điều hành chiến lược.';
+  } else if (persona === 'hr') {
+    welcomeDesc = 'Hệ thống hỗ trợ kiểm soát đi trễ > 3 lần, theo dõi quân số hôm nay, hợp đồng sắp hết hạn và duyệt đơn.';
+  }
+
   return `
     <div class="ai-message assistant">
       <div class="ai-msg-avatar">${icon('bot', 'sm')}</div>
       <div class="ai-msg-body">
-        <p>Xin chào <strong>${esc(userName || 'bạn')}</strong>. Tôi là <strong>Trợ lý ảo HR NetViet</strong>.</p>
-        <p>Hệ thống hỗ trợ tra cứu nội quy, chấm công, phiếu lương, công việc và 12 phân hệ nghiệp vụ NetViet HR.</p>
+        <p>Xin chào <strong>${esc(me?.full_name || 'bạn')}</strong>. Tôi là <strong>${esc(info.title)}</strong>.</p>
+        <p>${welcomeDesc}</p>
       </div>
     </div>
   `;
+}
+
+async function fetchAndRenderBriefingCard() {
+  if (_briefingLoaded) return;
+  const list = document.getElementById('ai-messages-list');
+  if (!list) return;
+
+  try {
+    const res = await api.get('/api/ai/briefing');
+    if (res && res.ok && res.briefing) {
+      _briefingLoaded = true;
+      const b = res.briefing;
+      const metricsHtml = (b.metrics || []).map(m => `
+        <div class="ai-briefing-metric-item">
+          <div class="ai-briefing-metric-icon ${esc(m.color || 'indigo')}">${icon(m.icon || 'activity', 'xs')}</div>
+          <div class="ai-briefing-metric-data">
+            <div class="ai-briefing-metric-label">${esc(m.label)}</div>
+            <div class="ai-briefing-metric-val">${esc(m.value)}</div>
+          </div>
+        </div>
+      `).join('');
+
+      const chipsHtml = (b.quickPrompts || []).map(q => `
+        <button class="ai-briefing-chip" data-prompt="${esc(q.prompt)}">
+          ${icon('sparkles', 'xs')} <span>${esc(q.label)}</span>
+        </button>
+      `).join('');
+
+      const cardDiv = document.createElement('div');
+      cardDiv.id = 'ai-briefing-container';
+      cardDiv.className = 'ai-briefing-card';
+      cardDiv.innerHTML = `
+        <div class="ai-briefing-header">
+          <span class="ai-briefing-badge ${esc(b.persona || 'employee')}">${icon('zap', 'xs')} ${esc(b.badge || 'Morning Briefing')}</span>
+          <span class="ai-briefing-time">${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}</span>
+        </div>
+        <div class="ai-briefing-greeting">${b.greeting}</div>
+        <div class="ai-briefing-metrics-grid">${metricsHtml}</div>
+        ${b.quickTips ? `<div style="font-size: 11px; color: var(--text-3, #64748b); margin-top: 6px;">💡 ${esc(b.quickTips)}</div>` : ''}
+        ${chipsHtml ? `<div class="ai-briefing-quick-chips">${chipsHtml}</div>` : ''}
+      `;
+
+      cardDiv.querySelectorAll('.ai-briefing-chip').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const prompt = btn.dataset.prompt;
+          if (prompt) {
+            sendMessage(prompt);
+          }
+        });
+      });
+
+      const welcomeMsg = list.querySelector('.ai-message.assistant');
+      if (welcomeMsg && welcomeMsg.nextSibling) {
+        list.insertBefore(cardDiv, welcomeMsg.nextSibling);
+      } else if (welcomeMsg) {
+        list.appendChild(cardDiv);
+      } else {
+        list.prepend(cardDiv);
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to load copilot briefing card:', err);
+  }
 }
 
 /**
@@ -40,10 +187,12 @@ export function clearConversation() {
   _lastRequestId = null;
   _lastTelemetry = null;
   _lastCitations = [];
+  _briefingLoaded = false;
 
   const list = document.getElementById('ai-messages-list');
   if (list) {
-    list.innerHTML = getWelcomeHtml(_currentUser?.full_name);
+    list.innerHTML = getWelcomeHtml(_currentUser);
+    fetchAndRenderBriefingCard();
   }
   const input = document.getElementById('ai-input-text');
   if (input) {
@@ -89,13 +238,16 @@ export function initCopilot(me) {
 
   if (document.getElementById('ai-copilot-root')) return;
 
+  const persona = getUserPersona(me);
+  const info = getPersonaHeaderInfo(persona);
+
   const root = document.createElement('div');
   root.id = 'ai-copilot-root';
   root.innerHTML = `
     <!-- Floating Trigger Button -->
-    <button id="ai-copilot-btn" class="ai-floating-trigger" title="Trợ lý ảo HR NetViet (Tra cứu nội quy, RAG & Tự động hóa)">
+    <button id="ai-copilot-btn" class="ai-floating-trigger" title="${esc(info.title)} (Tra cứu nội quy, RAG & Tự động hóa)">
       <span class="ai-trigger-sparkle">${icon('sparkles', 'sm')}</span>
-      <span class="ai-trigger-label">Trợ lý ảo NetViet</span>
+      <span class="ai-trigger-label">${esc(info.title)}</span>
     </button>
 
     <!-- Copilot Chat Window -->
@@ -105,8 +257,8 @@ export function initCopilot(me) {
         <div class="ai-header-title">
           <div class="ai-avatar-badge">${icon('bot', 'md')}</div>
           <div>
-            <div class="ai-title-text">Trợ lý ảo HR NetViet</div>
-            <div class="ai-subtitle-text">NetViet HR • Policy & AI Assistant</div>
+            <div class="ai-title-text">${esc(info.title)}</div>
+            <div class="ai-subtitle-text">${esc(info.subtitle)}</div>
           </div>
         </div>
         <div class="ai-header-actions">
@@ -117,20 +269,11 @@ export function initCopilot(me) {
       </div>
 
       <!-- Quick Suggestion Chips (Styled like sidebar navigation) -->
-      <div class="ai-chips-bar">
-        <button class="ai-chip" data-prompt="Hướng dẫn cho tôi các phân hệ chính trong hệ thống HR này">${icon('layoutDashboard', 'xs')} <span>12 phân hệ</span></button>
-        <button class="ai-chip" data-prompt="Bảng lương tháng này của tôi thế nào?">${icon('banknote', 'xs')} <span>Phiếu lương</span></button>
-        <button class="ai-chip" data-prompt="Thống kê chấm công và tiền phạt của tôi tháng này?">${icon('clock3', 'xs')} <span>Chấm công</span></button>
-        <button class="ai-chip" data-prompt="Quy định nghỉ phép năm và quy trình duyệt 2 bước?">${icon('calendarDays', 'xs')} <span>Nghỉ phép</span></button>
-        <button class="ai-chip" data-prompt="Danh sách task công việc cần làm của tôi?">${icon('clipboardList', 'xs')} <span>Công việc</span></button>
-        <button class="ai-chip" data-prompt="Có thông báo mới nào từ công ty không?">${icon('megaphone', 'xs')} <span>Thông báo</span></button>
-        <button class="ai-chip" data-prompt="Kiểm toán bất thường bảng lương tháng này">${icon('shieldAlert', 'xs')} <span>Kiểm toán lương AI</span></button>
-        <button class="ai-chip" data-prompt="Quy trình bàn giao dự án và tài khoản như thế nào?">${icon('link', 'xs')} <span>Bàn giao dự án</span></button>
-      </div>
+      ${getPersonaChipsHtml(persona)}
 
       <!-- Messages Area -->
       <div id="ai-messages-list" class="ai-messages-scroll">
-        ${getWelcomeHtml(me?.full_name)}
+        ${getWelcomeHtml(me)}
       </div>
 
       <!-- Input Bar -->
@@ -171,6 +314,7 @@ function toggleCopilot(forceState = null) {
     if (_isOpen) {
       win.classList.remove('hidden');
       document.getElementById('ai-input-text')?.focus();
+      fetchAndRenderBriefingCard();
     } else {
       win.classList.add('hidden');
     }
@@ -1251,6 +1395,75 @@ function injectCopilotStyles() {
     .ai-chunk-header { display: flex; justify-content: space-between; font-size: 12px; }
     .ai-similarity-badge { background: #dcfce7; color: var(--success, #047857); font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; }
     .ai-code-block { background: var(--secondary-navy, #0B1F3A); color: #e2e8f0; padding: 10px; border-radius: 8px; font-size: 11px; overflow-x: auto; }
+
+    /* AI Instant Briefing Card Styles */
+    .ai-briefing-card {
+      margin: 8px 12px 14px 12px;
+      padding: 12px 14px;
+      background: linear-gradient(135deg, rgba(238, 77, 45, 0.05) 0%, rgba(11, 31, 58, 0.04) 100%);
+      border: 1px solid rgba(238, 77, 45, 0.2);
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
+    }
+    .ai-briefing-header {
+      display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;
+    }
+    .ai-briefing-badge {
+      font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+      padding: 2px 8px; border-radius: 9999px; display: inline-flex; align-items: center; gap: 4px;
+    }
+    .ai-briefing-badge.employee { background: #fee2e2; color: #b91c1c; }
+    .ai-briefing-badge.hr { background: #dbeafe; color: #1e40af; }
+    .ai-briefing-badge.director { background: #fef3c7; color: #b45309; }
+    .ai-briefing-time {
+      font-size: 11px; color: var(--text-3, #94a3b8); font-variant-numeric: tabular-nums;
+    }
+    .ai-briefing-greeting {
+      font-size: 12px; font-weight: 600; color: var(--text, #1e293b); margin-bottom: 10px; line-height: 1.4;
+    }
+    .ai-briefing-metrics-grid {
+      display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-bottom: 8px;
+    }
+    .ai-briefing-metric-item {
+      background: rgba(255, 255, 255, 0.85);
+      border: 1px solid rgba(0, 0, 0, 0.06);
+      border-radius: 8px; padding: 6px 8px;
+      display: flex; align-items: center; gap: 8px;
+      backdrop-filter: blur(4px);
+    }
+    .ai-briefing-metric-icon {
+      width: 26px; height: 26px; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .ai-briefing-metric-icon.indigo { background: #e0e7ff; color: #4338ca; }
+    .ai-briefing-metric-icon.emerald { background: #d1fae5; color: #047857; }
+    .ai-briefing-metric-icon.amber { background: #fef3c7; color: #b45309; }
+    .ai-briefing-metric-icon.rose { background: #ffe4e6; color: #e11d48; }
+    .ai-briefing-metric-icon.purple { background: #f3e8ff; color: #7e22ce; }
+    .ai-briefing-metric-icon.blue { background: #dbeafe; color: #1d4ed8; }
+    .ai-briefing-metric-data { flex: 1; min-width: 0; }
+    .ai-briefing-metric-label {
+      font-size: 10px; color: var(--text-3, #64748b);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .ai-briefing-metric-val {
+      font-size: 12px; font-weight: 700; color: var(--text, #0f172a); line-height: 1.2;
+    }
+    .ai-briefing-quick-chips {
+      display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px;
+    }
+    .ai-briefing-chip {
+      background: #fff;
+      border: 1px solid rgba(238, 77, 45, 0.25);
+      border-radius: 6px; padding: 3px 8px;
+      font-size: 11px; color: var(--primary, #ee4d2d);
+      font-weight: 500; display: inline-flex; align-items: center; gap: 4px;
+      cursor: pointer; transition: all 0.15s ease;
+    }
+    .ai-briefing-chip:hover {
+      background: rgba(238, 77, 45, 0.08);
+      border-color: var(--primary, #ee4d2d);
+    }
   `;
   document.head.appendChild(style);
 }

@@ -643,6 +643,20 @@ ${toolData.lateDetails && toolData.lateDetails.length > 0 ? `#### Chi tiết cá
       return `### 📋 Danh Sách Công Việc Được Giao (${toolData.count} tasks)
 ${toolData.tasks.map(t => `- **[${t.priority.toUpperCase()}]** ${t.title} - *Trạng thái:* \`${t.status}\` ${t.due_date ? `*(Hạn: ${t.due_date})*` : ''}`).join('\n')}`;
     }
+
+    if (toolData.categories && (toolData.totalCount !== undefined || toolData.requests)) {
+      let out = `### 📋 Tổng Quan Đơn Xin Nghỉ Phép (${toolData.totalCount} đơn)\n\n`;
+      out += `${toolData.summary}\n\n`;
+      for (const [cat, list] of Object.entries(toolData.categories)) {
+        if (list.length > 0) {
+          out += `#### 📌 ${cat} (${list.length} đơn):\n`;
+          list.forEach(item => {
+            out += `- **${item.employee}** (${item.department}): ${item.dates} - *Lý do:* "${item.reason}" [${item.status}]\n`;
+          });
+        }
+      }
+      return out;
+    }
   }
 
   // Fallback multi-module & general knowledge matching

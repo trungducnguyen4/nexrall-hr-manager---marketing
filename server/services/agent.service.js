@@ -287,8 +287,286 @@ export const COPILOT_TOOLS = [
         status: { type: 'string', enum: ['all', 'pending', 'approved', 'rejected'], description: 'Trạng thái đơn' }
       }
     }
+  },
+  {
+    name: 'create_wfh_request_draft',
+    description: 'Soạn thảo đơn xin làm việc tại nhà WFH (tạo thẻ xác nhận Human-in-the-loop để người dùng duyệt trước khi gửi).',
+    parameters: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', description: 'Ngày làm việc tại nhà YYYY-MM-DD' },
+        shift: { type: 'string', enum: ['full', 'morning', 'afternoon'], description: 'Ca làm việc' },
+        reason: { type: 'string', description: 'Lý do xin làm việc tại nhà' }
+      },
+      required: ['date', 'reason']
+    }
+  },
+  {
+    name: 'create_attendance_correction_draft',
+    description: 'Soạn thảo đơn giải trình / yêu cầu chỉnh công quên check-in (tạo thẻ xác nhận Human-in-the-loop để người dùng duyệt trước khi gửi).',
+    parameters: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', description: 'Ngày làm việc cần chỉnh công YYYY-MM-DD' },
+        actualCheckin: { type: 'string', description: 'Giờ check-in thực tế HH:MM' },
+        actualCheckout: { type: 'string', description: 'Giờ check-out thực tế HH:MM' },
+        reason: { type: 'string', description: 'Lý do quên check-in hoặc yêu cầu chỉnh công' }
+      },
+      required: ['date', 'reason']
+    }
+  },
+  {
+    name: 'get_attendance_anomalies',
+    description: 'Quét và phát hiện các nhân viên có bất thường chuyên cần trong tháng: đi trễ > 3 lần hoặc thiếu check-in/out (dành cho Admin/HCNS).',
+    parameters: {
+      type: 'object',
+      properties: {
+        month: { type: 'string', description: 'Tháng cần quét YYYY-MM (mặc định tháng hiện tại)' },
+        minLateCount: { type: 'number', description: 'Ngưỡng số lần đi trễ tối thiểu (mặc định 3)' }
+      }
+    }
+  },
+  {
+    name: 'get_daily_attendance_roster',
+    description: 'Tra cứu tình hình quân số hôm nay: ai có mặt tại văn phòng, ai đang làm việc tại nhà WFH, ai đang nghỉ phép (dành cho Admin/HCNS/Manager).',
+    parameters: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', description: 'Ngày tra cứu YYYY-MM-DD (mặc định hôm nay)' }
+      }
+    }
+  },
+  {
+    name: 'get_contract_expirations',
+    description: 'Thống kê danh sách hợp đồng lao động của nhân viên sắp hết hạn trong 30-60 ngày tới (dành cho Admin/HCNS).',
+    parameters: {
+      type: 'object',
+      properties: {
+        daysThreshold: { type: 'number', description: 'Số ngày tới cần cảnh báo hết hạn (mặc định 30 ngày)' }
+      }
+    }
+  },
+  {
+    name: 'get_company_overtime_summary',
+    description: 'Tổng hợp số giờ làm thêm (OT) và phân bổ theo phòng ban trong tháng (dành cho Admin/HCNS/Manager).',
+    parameters: {
+      type: 'object',
+      properties: {
+        month: { type: 'string', description: 'Tháng tra cứu YYYY-MM' }
+      }
+    }
+  },
+  {
+    name: 'get_monthly_hr_summary',
+    description: 'Báo cáo tổng hợp tình hình nhân sự tháng: quân số biến động, tỷ lệ đi làm đúng giờ, tổng đơn nghỉ phép đã xử lý (dành cho Admin/HCNS/Director).',
+    parameters: {
+      type: 'object',
+      properties: {
+        month: { type: 'string', description: 'Tháng báo cáo YYYY-MM' }
+      }
+    }
+  },
+  {
+    name: 'get_executive_headcount_turnover',
+    description: 'Phân tích biến động nhân sự cấp cao: quy mô (headcount), tỷ lệ nghỉ việc (turnover rate) và phân bổ theo phòng ban (dành cho Director/Admin).',
+    parameters: {
+      type: 'object',
+      properties: {
+        periodMonths: { type: 'number', description: 'Số tháng xem xét (mặc định 6 tháng)' }
+      }
+    }
+  },
+  {
+    name: 'get_department_workforce_comparison',
+    description: 'Bảng so sánh đa chiều giữa các phòng ban: tỷ lệ chuyên cần, tỷ lệ đi muộn, khối lượng OT và tiến độ công việc (dành cho Director/Admin/HR).',
+    parameters: {
+      type: 'object',
+      properties: {
+        month: { type: 'string', description: 'Tháng so sánh YYYY-MM' }
+      }
+    }
+  },
+  {
+    name: 'get_overtime_cost_trends',
+    description: 'Phân tích xu hướng số giờ OT và ước tính chi phí làm thêm giờ 3 tháng gần nhất của công ty (dành cho Director/Admin).',
+    parameters: {
+      type: 'object',
+      properties: {
+        monthsCount: { type: 'number', description: 'Số tháng phân tích (mặc định 3)' }
+      }
+    }
+  },
+  {
+    name: 'get_company_workforce_briefing',
+    description: 'Báo cáo điều hành tổng quan dành cho Ban Giám Đốc: tóm tắt toàn bộ tình hình nhân sự, chuyên cần, đơn từ và chi phí trong tháng (dành cho Director/Admin).',
+    parameters: {
+      type: 'object',
+      properties: {
+        month: { type: 'string', description: 'Tháng báo cáo YYYY-MM' }
+      }
+    }
   }
 ];
+
+/**
+ * Role-aware Persona Resolution for AI HR Assistant
+ * 1. Employee: personal assistant (leave, payslip, self attendance, draft requests)
+ * 2. HR Copilot: operational HR management (anomalies, daily roster, contracts, OT, policies)
+ * 3. Director Insights: executive analytics & strategic insights (headcount, turnover, dept comparison, cost trends)
+ */
+export function resolveUserPersona(me) {
+  const role = String(me?.role || '').toLowerCase();
+  const dept = String(me?.department || '').toLowerCase();
+  const code = String(me?.employee_code || '').toUpperCase();
+  if (role === 'manager_hr' || dept.includes('hcns') || dept.includes('hành chính')) return 'hr';
+  const isDirector = role === 'admin' || role === 'director' || role === 'manager_director' || role === 'manager' || code === 'BGD-01' || code === 'BGD-02' || code === 'NV-ADMIN' || code === 'NV-001' || dept.includes('giám đốc') || dept.includes('ban giám đốc') || Boolean(me?.isDirectorHau);
+
+  if (isDirector) return 'director';
+  return 'employee';
+}
+
+/**
+ * Filter tool schemas dynamically based on user persona and authorization
+ */
+export function getToolsForPersona(persona, me) {
+  const employeeToolNames = new Set([
+    'search_policy_knowledge',
+    'get_my_payslip_summary',
+    'get_my_attendance_summary',
+    'get_leave_balance',
+    'list_my_tasks',
+    'task_update_status',
+    'search_employee_directory',
+    'create_leave_request_draft',
+    'create_wfh_request_draft',
+    'create_attendance_correction_draft',
+    'create_task_draft',
+    'get_announcements_summary',
+    'payroll_request_review',
+    'get_system_module_info',
+    'handover_create',
+    'handover_confirm',
+    'leave_cancel'
+  ]);
+
+  const hrExtraToolNames = new Set([
+    'get_attendance_anomalies',
+    'get_daily_attendance_roster',
+    'get_contract_expirations',
+    'get_company_overtime_summary',
+    'get_monthly_hr_summary',
+    'get_leave_requests_overview',
+    'leave_approve',
+    'leave_reject',
+    'audit_payroll_anomalies',
+    'announcement_post',
+    'task_assign',
+    'task_update_details',
+    'task_delete',
+    'get_department_workforce_comparison'
+  ]);
+
+  const directorExtraToolNames = new Set([
+    'get_executive_headcount_turnover',
+    'get_department_workforce_comparison',
+    'get_overtime_cost_trends',
+    'get_company_workforce_briefing',
+    'get_attendance_anomalies',
+    'get_daily_attendance_roster',
+    'get_company_overtime_summary',
+    'get_monthly_hr_summary',
+    'get_leave_requests_overview',
+    'leave_approve',
+    'leave_reject',
+    'audit_payroll_anomalies',
+    'employee_update_code',
+    'announcement_post',
+    'task_assign',
+    'task_update_details',
+    'task_delete'
+  ]);
+
+  let allowedNames = employeeToolNames;
+  if (persona === 'hr') {
+    allowedNames = new Set([...employeeToolNames, ...hrExtraToolNames]);
+  } else if (persona === 'director') {
+    allowedNames = new Set([...employeeToolNames, ...directorExtraToolNames]);
+  }
+
+  return COPILOT_TOOLS.filter(t => allowedNames.has(t.name));
+}
+
+/**
+ * Build dynamic role-tailored System Prompt according to persona
+ */
+export function buildPersonaSystemPrompt(persona, me, nowFormatted, currentYear, ragResult, toolData, actionCard) {
+  let prompt = '';
+
+  if (persona === 'director') {
+    prompt = `Bạn là Trợ lý AI Cố vấn Điều hành Cấp cao (Director Insights) của hệ thống quản trị nhân sự NetViet HR.
+Người dùng hiện tại: ${me.full_name} (Mã NV: ${me.employee_code || 'BGD'}, Vai trò: Ban Giám Đốc/Admin, Phòng ban: ${me.department || 'Ban Giám Đốc'}).
+THỜI GIAN THỰC TẾ: ${nowFormatted} (Múi giờ Việt Nam UTC+7). Năm hiện tại là ${currentYear}.
+
+VAI TRÒ & PHẠM VI NHIỆM VỤ:
+- Bạn là cố vấn chiến lược điều hành, hỗ trợ Lãnh đạo nắm bắt nhanh bức tranh tổng thể về nguồn nhân lực.
+- Trọng tâm phân tích: Quy mô tăng trưởng (headcount), tỷ lệ nghỉ việc (turnover), so sánh chuyên cần & hiệu suất giữa các phòng ban, xu hướng chi phí & số giờ làm thêm (OT), phát hiện các điểm nghẽn hoặc rủi ro vận hành.
+- Phong cách: Điềm đạm, chiến lược, súc tích, đi thẳng vào số liệu cốt lõi và đưa ra góc nhìn điều hành khách quan.
+
+QUY TẮC PHẢN HỒI CHO BAN GIÁM ĐỐC:
+1. ĐI THẲNG VÀO SỐ LIỆU & XU HƯỚNG: Tóm tắt bức tranh toàn cảnh trong 2 - 4 ý gạch đầu dòng rõ ràng. In đậm (**...**) các chỉ số then chốt (tỷ lệ %, số người, tổng giờ OT).
+2. TUYỆT ĐỐI KHÔNG CHÀO HỎI RƯỜM RÀ: Không dùng "Xin chào...", không đưa câu hỏi mớm lời ở cuối ("Nếu anh/chị cần...").
+3. BẢO MẬT & PAYROLL GUARDRAIL: Phân tích kiểm toán bảng lương chỉ ở chế độ Read-only Analysis; không thực hiện sửa lương tự động.`;
+  } else if (persona === 'hr') {
+    prompt = `Bạn là HR Copilot - Trợ lý AI chuyên trách Quản trị & Vận hành Nhân sự NetViet HR.
+Người dùng hiện tại: ${me.full_name} (Mã NV: ${me.employee_code || 'HCNS'}, Vai trò: Cán bộ HCNS / Quản lý, Phòng ban: ${me.department || 'Phòng HCNS'}).
+THỜI GIAN THỰC TẾ: ${nowFormatted} (Múi giờ Việt Nam UTC+7). Năm hiện tại là ${currentYear}.
+
+VAI TRÒ & PHẠM VI NHIỆM VỤ:
+- Bạn là trợ thủ vận hành đắc lực cho bộ phận HCNS, hỗ trợ giám sát kỷ luật lao động, giải quyết thủ tục và thực thi nội quy.
+- Trọng tâm phân tích: Quét bất thường chấm công (nhân sự đi trễ > 3 lần/tháng, quên checkout), theo dõi quân số hàng ngày (ai có mặt, ai WFH, ai nghỉ phép), cảnh báo hợp đồng lao động sắp hết hạn (30-60 ngày), tổng hợp giờ làm thêm OT, hỗ trợ duyệt đơn nghỉ phép.
+- Trích dẫn quy chế: Khi giải đáp quy định, bắt buộc dẫn chiếu chính xác điều khoản, số ngày quy định dựa trên [RAG CONTEXT].
+
+QUY TẮC PHẢN HỒI CHO HR COPILOT:
+1. CHUẨN MỰC HÀNH CHÍNH & CHÍNH XÁC: Số liệu danh sách nhân sự rõ ràng (Mã NV, Họ tên, Phòng ban, Số lần vi phạm/Hạn hợp đồng).
+2. TUYỆT ĐỐI KHÔNG CHÀO HỎI RƯỜM RÀ: Đi thẳng vào danh sách hoặc bảng tổng hợp. Dừng ngay khi cung cấp xong dữ liệu.
+3. PAYROLL GUARDRAIL: Kiểm toán lương chỉ dùng để phát hiện bất thường và sai lệch; tuyệt đối KHÔNG tự động sửa lương.`;
+  } else {
+    // Default: Employee Personal Assistant
+    prompt = `Bạn là Trợ lý HR Cá nhân (Employee Assistant) của hệ thống quản trị nhân sự NetViet HR.
+Người dùng hiện tại: ${me.full_name} (Mã NV: ${me.employee_code || 'NV'}, Vai trò: ${me.role || 'employee'}, Phòng ban: ${me.department || 'Chung'}).
+THỜI GIAN THỰC TẾ: ${nowFormatted} (Múi giờ Việt Nam UTC+7). Năm hiện tại là ${currentYear}.
+
+VAI TRÒ & PHẠM VI NHIỆM VỤ:
+- Bạn là trợ lý ảo đồng hành cùng nhân viên, giải đáp mọi thắc mắc về quyền lợi cá nhân và hỗ trợ tạo thủ tục hành chính nhanh chóng.
+- Trọng tâm hỗ trợ: Tra cứu số ngày phép năm còn lại, lịch sử chấm công & số lần đi trễ cá nhân tháng này, tra cứu phiếu lương cá nhân, quy chế nghỉ phép, công việc được giao.
+- Hỗ trợ tạo đơn nhanh (Action Cards): Khi nhân viên muốn xin nghỉ phép, xin làm việc tại nhà (WFH), hoặc giải trình quên check-in/chỉnh công, hãy tạo thẻ xác nhận để nhân viên kiểm tra và xác nhận nộp đơn.
+
+QUY TẮC XƯNG HÔ VÀ ĐẠI TỪ NHÂN XƯNG (BẮT BUỘC):
+- Bạn luôn tự xưng là "Tôi" (Trợ lý HR).
+- Bạn luôn gọi người dùng là "Bạn".
+- Xử lý đại từ: Người dùng xưng "tôi", "em", "anh", "mình" -> BẮT BUỘC hiểu là hỏi cho chính người dùng hiện tại (${me.full_name}). Tuyệt đối KHÔNG hiểu nhầm sang người khác.
+
+QUY TẮC PHẢN HỒI CHO NHÂN VIÊN:
+1. THÂN THIỆN, RÕ RÀNG & NGẮN GỌN: Đi thẳng vào kết quả cần tra cứu trong 1 - 3 câu ngắn. In đậm (**...**) các số liệu (ngày phép, giờ công, số tiền).
+2. TUYỆT ĐỐI KHÔNG CHÀO HỎI RƯỜM RÀ & KHÔNG CÂU KẾT THỪA: Dừng lại ngay sau khi trả lời xong.
+3. KHÔNG GIẢ MẠO CHẤM CÔNG: Tuyệt đối không thông báo đã check-in hộ; hướng dẫn nhân viên tự check-in trên thiết bị tại văn phòng.
+4. BẢO MẬT: Chỉ tra cứu dữ liệu của chính người dùng ${me.full_name}, không tiết lộ thông tin lương/chấm công của đồng nghiệp.`;
+  }
+
+  // Common system modules info
+  prompt += `\n\nDANH MỤC 12 PHÂN HỆ HỆ THỐNG:
+1. Dashboard | 2. Thông báo | 3. Chat nội bộ | 4. Chấm công (GPS 08:30-17:00, mốc 08:35, từ 08:36 tính muộn) | 5. Nghỉ phép (12 ngày/năm, duyệt 2 bước) | 6. Tasks | 7. Phiếu lương | 8. Bàn giao | 9. Nhân sự | 10. Bảng lương | 11. Địa điểm | 12. Cài đặt.`;
+
+  if (ragResult && ragResult.contextText) {
+    prompt += `\n\n--- TÀI LIỆU TRI THỨC NỘI QUY TRÍCH XUẤT (RAG CONTEXT) ---\n${ragResult.contextText}\n----------------------------------------------------\n`;
+  }
+
+  if (toolData && !actionCard) {
+    prompt += `\n\n--- DỮ LIỆU THỰC TẾ HỆ THỐNG TRÍCH XUẤT (TOOL DATA) ---\n${JSON.stringify(toolData, null, 2)}\n----------------------------------------------------\n`;
+  }
+
+  return prompt;
+}
 
 /**
  * RBAC Helper for Agent Execution
@@ -432,7 +710,8 @@ export async function resolveTask(env, ref, me) {
  * Prevents prompt injection from accessing unauthorized data or executing privileged actions.
  */
 export function verifyToolAuthorization(toolName, args = {}, me = {}) {
-  const isPrivileged = me.role === 'admin' || (me.department && /HCNS|Hành chính/i.test(me.department));
+  const isDirector = me.role === 'admin' || me.role === 'director' || me.role === 'manager_director' || me.employee_code === 'BGD-01' || me.employee_code === 'BGD-02' || Boolean(me.isDirectorHau) || (me.department && /giám đốc|ban giám đốc/i.test(me.department));
+  const isPrivileged = me.role === 'admin' || isDirector || (me.department && /HCNS|Hành chính/i.test(me.department));
   const isManager = me.role === 'manager';
 
   // 1. Payroll audit & anomaly detection: Strict Admin/HCNS only
@@ -475,6 +754,41 @@ export function verifyToolAuthorization(toolName, args = {}, me = {}) {
         allowed: false,
         error: 'PERMISSION_DENIED',
         message: 'Chỉ Quản trị viên hệ thống mới có quyền sửa đổi Mã nhân viên.'
+      };
+    }
+  }
+
+  // 5. HR Operations tools: Privileged or Manager only
+  const hrOpsTools = ['get_attendance_anomalies', 'get_daily_attendance_roster', 'get_company_overtime_summary', 'get_monthly_hr_summary', 'get_department_workforce_comparison'];
+  if (hrOpsTools.includes(toolName)) {
+    if (!isPrivileged && !isManager) {
+      return {
+        allowed: false,
+        error: 'PERMISSION_DENIED',
+        message: `Quyền truy cập bị từ chối: Công cụ quản trị "${toolName}" chỉ dành riêng cho Cán bộ HCNS, Quản lý hoặc Ban Giám Đốc.`
+      };
+    }
+  }
+
+  // 6. Contract Expirations: Admin or HCNS only
+  if (toolName === 'get_contract_expirations') {
+    if (!isPrivileged) {
+      return {
+        allowed: false,
+        error: 'PERMISSION_DENIED',
+        message: 'Bảo mật hồ sơ nhân sự: Danh sách hợp đồng lao động chỉ dành riêng cho Admin và Phòng HCNS.'
+      };
+    }
+  }
+
+  // 7. Director Executive Analytics tools: Admin or Director only
+  const directorTools = ['get_executive_headcount_turnover', 'get_overtime_cost_trends', 'get_company_workforce_briefing'];
+  if (directorTools.includes(toolName)) {
+    if (!isDirector) {
+      return {
+        allowed: false,
+        error: 'PERMISSION_DENIED',
+        message: `Bảo mật điều hành cấp cao: Báo cáo "${toolName}" chỉ dành riêng cho Ban Giám Đốc.`
       };
     }
   }
@@ -1518,6 +1832,500 @@ export async function executeTool(env, toolName, args = {}, me) {
       };
     }
 
+    case 'create_wfh_request_draft': {
+      const targetDate = parseRelativeDate(args.date, new Date().toISOString().slice(0, 10));
+      const shiftMap = { full: 'Cả ngày', morning: 'Ca sáng (08:30 - 12:00)', afternoon: 'Ca chiều (13:30 - 17:00)' };
+      const shiftLabel = shiftMap[args.shift] || 'Cả ngày';
+      const cleanReason = String(args.reason || 'Làm việc từ xa').trim().slice(0, 500);
+
+      if (args.autoExecute === true) {
+        const existing = await env.DB.prepare('SELECT id FROM attendance WHERE user_id = ? AND date = ?').bind(me.id, targetDate).first();
+        if (existing) {
+          await env.DB.prepare("UPDATE attendance SET work_type = 'wfh', shift = ?, wfh_status = 'pending', wfh_reason = ?, updated_at = datetime('now','localtime') WHERE id = ?").bind(args.shift || 'full', cleanReason, existing.id).run();
+        } else {
+          await env.DB.prepare("INSERT INTO attendance (user_id, date, work_type, shift, registered, status, wfh_status, wfh_reason, created_at) VALUES (?, ?, 'wfh', ?, 1, 'registered', 'pending', ?, datetime('now','localtime'))").bind(me.id, targetDate, args.shift || 'full', cleanReason).run();
+        }
+        await safeBroadcast(env, 'attendance', 'attendance:wfh_requested', { user_id: me.id, date: targetDate }, { actorId: me.id });
+        return {
+          executed: true,
+          actionType: 'create_wfh_request',
+          icon: 'home',
+          title: 'Đã nộp đơn làm việc tại nhà (WFH)',
+          message: `Đơn xin làm việc tại nhà ngày **${targetDate}** (${shiftLabel}) đã được gửi tới quản lý phê duyệt.`,
+          details: [
+            { label: 'Ngày làm việc', value: targetDate },
+            { label: 'Ca làm việc', value: shiftLabel },
+            { label: 'Lý do', value: cleanReason },
+            { label: 'Trạng thái', value: 'Chờ duyệt (Pending)' }
+          ]
+        };
+      }
+
+      return {
+        isActionCard: true,
+        actionType: 'create_wfh_request',
+        icon: 'home',
+        title: 'Xác nhận nộp đơn làm việc tại nhà (WFH)',
+        confirmLabel: 'Xác nhận nộp đơn',
+        cancelLabel: 'Hủy bỏ',
+        fields: [
+          { label: 'Hình thức', value: 'Làm việc tại nhà (WFH)' },
+          { label: 'Ngày làm việc', value: targetDate },
+          { label: 'Ca làm việc', value: shiftLabel },
+          { label: 'Lý do', value: cleanReason }
+        ],
+        payload: {
+          date: targetDate,
+          shift: args.shift || 'full',
+          reason: cleanReason
+        }
+      };
+    }
+
+    case 'create_attendance_correction_draft': {
+      const targetDate = parseRelativeDate(args.date, new Date().toISOString().slice(0, 10));
+      const actualIn = args.actualCheckin || '08:30';
+      const actualOut = args.actualCheckout || '17:00';
+      const cleanReason = String(args.reason || 'Quên check-in / xin chỉnh công').trim().slice(0, 500);
+
+      if (args.autoExecute === true) {
+        const existing = await env.DB.prepare('SELECT id FROM attendance WHERE user_id = ? AND date = ?').bind(me.id, targetDate).first();
+        if (existing) {
+          await env.DB.prepare("UPDATE attendance SET checkin_requires_review = 1, checkin_review_status = 'pending', checkin_review_note = ?, note = ?, updated_at = datetime('now','localtime') WHERE id = ?").bind(cleanReason, `Giải trình AI: ${cleanReason}`, existing.id).run();
+        } else {
+          await env.DB.prepare("INSERT INTO attendance (user_id, date, checkin_time, checkout_time, status, work_hours, checkin_requires_review, checkin_review_status, checkin_review_note, note, created_at) VALUES (?, ?, ?, ?, 'present', 8.5, 1, 'pending', ?, ?, datetime('now','localtime'))").bind(me.id, targetDate, actualIn, actualOut, cleanReason, `Giải trình AI: ${cleanReason}`).run();
+        }
+        await safeBroadcast(env, 'attendance', 'attendance:correction_requested', { user_id: me.id, date: targetDate }, { actorId: me.id });
+        return {
+          executed: true,
+          actionType: 'create_attendance_correction',
+          icon: 'clock3',
+          title: 'Đã gửi yêu cầu chỉnh công / giải trình',
+          message: `Yêu cầu chỉnh công ngày **${targetDate}** đã được gửi tới quản lý và HCNS để xác nhận.`,
+          details: [
+            { label: 'Ngày công', value: targetDate },
+            { label: 'Giờ check-in đề xuất', value: actualIn },
+            { label: 'Giờ check-out đề xuất', value: actualOut },
+            { label: 'Lý do giải trình', value: cleanReason }
+          ]
+        };
+      }
+
+      return {
+        isActionCard: true,
+        actionType: 'create_attendance_correction',
+        icon: 'clock3',
+        title: 'Xác nhận gửi giải trình / chỉnh công',
+        confirmLabel: 'Xác nhận gửi duyệt',
+        cancelLabel: 'Hủy bỏ',
+        fields: [
+          { label: 'Ngày cần chỉnh', value: targetDate },
+          { label: 'Giờ check-in đề xuất', value: actualIn },
+          { label: 'Giờ check-out đề xuất', value: actualOut },
+          { label: 'Lý do giải trình', value: cleanReason }
+        ],
+        payload: {
+          date: targetDate,
+          actualCheckin: actualIn,
+          actualCheckout: actualOut,
+          reason: cleanReason
+        }
+      };
+    }
+
+    case 'get_attendance_anomalies': {
+      const now = new Date();
+      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const month = (args.month && /^\d{4}-\d{2}$/.test(args.month)) ? args.month : currentMonth;
+      const minLate = Number(args.minLateCount) || 3;
+
+      let rows = [];
+      try {
+        const res = await env.DB.prepare(`
+          SELECT a.user_id, u.full_name, u.employee_code, u.department,
+                 COUNT(CASE WHEN a.late_minutes > 0 THEN 1 END) as late_count,
+                 SUM(COALESCE(a.late_minutes, 0)) as total_late_minutes,
+                 COUNT(CASE WHEN a.status = 'absent' THEN 1 END) as absent_count,
+                 COUNT(CASE WHEN a.checkin_time IS NULL AND a.registered = 1 THEN 1 END) as missing_checkin_count
+            FROM attendance a
+            JOIN users u ON u.id = a.user_id
+           WHERE a.date LIKE ? AND u.is_active = 1
+           GROUP BY a.user_id
+          HAVING late_count >= ? OR absent_count > 0
+           ORDER BY late_count DESC, total_late_minutes DESC
+        `).bind(`${month}%`, minLate).all();
+        rows = res.results || [];
+      } catch (err) {
+        console.error('get_attendance_anomalies error:', err);
+      }
+
+      return {
+        month,
+        threshold: minLate,
+        totalAnomaliesFound: rows.length,
+        employeesWithAnomalies: rows.map(r => ({
+          name: r.full_name,
+          employeeCode: r.employee_code || 'NV',
+          department: r.department || 'Chung',
+          lateTimes: r.late_count,
+          totalLateMinutes: r.total_late_minutes,
+          absentDays: r.absent_count,
+          missingCheckins: r.missing_checkin_count
+        })),
+        summary: rows.length === 0
+          ? `Trong tháng ${month}, không có nhân viên nào đi trễ từ ${minLate} lần trở lên hoặc có bất thường nghiêm trọng.`
+          : `Phát hiện ${rows.length} nhân sự có bất thường chuyên cần trong tháng ${month} (đi trễ từ ${minLate} lần trở lên hoặc vắng không phép).`
+      };
+    }
+
+    case 'get_daily_attendance_roster': {
+      const targetDate = parseRelativeDate(args.date, new Date().toISOString().slice(0, 10));
+      let roster = {
+        date: targetDate,
+        totalActiveEmployees: 0,
+        presentInOffice: [],
+        workingFromHome: [],
+        onLeave: [],
+        notCheckedIn: []
+      };
+
+      try {
+        const { results: activeUsers = [] } = await env.DB.prepare('SELECT id, full_name, employee_code, department FROM users WHERE is_active = 1').all();
+        roster.totalActiveEmployees = activeUsers.length;
+
+        const { results: attendances = [] } = await env.DB.prepare('SELECT * FROM attendance WHERE date = ?').bind(targetDate).all();
+        const attMap = new Map(attendances.map(a => [a.user_id, a]));
+
+        const { results: leaves = [] } = await env.DB.prepare("SELECT * FROM leave_requests WHERE status = 'approved' AND start_date <= ? AND end_date >= ?").bind(targetDate, targetDate).all();
+        const leaveUserIds = new Set(leaves.map(l => l.user_id || l.employee_id));
+
+        for (const u of activeUsers) {
+          const att = attMap.get(u.id);
+          const isOnLeave = leaveUserIds.has(u.id) || leaveUserIds.has(u.employee_code);
+
+          if (isOnLeave) {
+            roster.onLeave.push({ name: u.full_name, code: u.employee_code, department: u.department });
+          } else if (att && att.work_type === 'wfh' && (att.wfh_status === 'approved' || att.wfh_status === 'pending')) {
+            roster.workingFromHome.push({ name: u.full_name, code: u.employee_code, department: u.department, status: att.wfh_status });
+          } else if (att && att.checkin_time) {
+            roster.presentInOffice.push({
+              name: u.full_name,
+              code: u.employee_code,
+              department: u.department,
+              checkinTime: att.checkin_time,
+              lateMinutes: att.late_minutes || 0
+            });
+          } else {
+            roster.notCheckedIn.push({ name: u.full_name, code: u.employee_code, department: u.department });
+          }
+        }
+      } catch (err) {
+        console.error('get_daily_attendance_roster error:', err);
+      }
+
+      return {
+        date: targetDate,
+        totalActiveEmployees: roster.totalActiveEmployees,
+        counts: {
+          presentOffice: roster.presentInOffice.length,
+          wfh: roster.workingFromHome.length,
+          onLeave: roster.onLeave.length,
+          notCheckedIn: roster.notCheckedIn.length
+        },
+        presentInOffice: roster.presentInOffice.slice(0, 15),
+        workingFromHome: roster.workingFromHome,
+        onLeave: roster.onLeave,
+        notCheckedInSample: roster.notCheckedIn.slice(0, 10),
+        summary: `Quân số ngày ${targetDate}: Có ${roster.presentInOffice.length} người có mặt tại văn phòng, ${roster.workingFromHome.length} người WFH, ${roster.onLeave.length} người nghỉ phép, ${roster.notCheckedIn.length} người chưa điểm danh.`
+      };
+    }
+
+    case 'get_contract_expirations': {
+      const threshold = Number(args.daysThreshold) || 30;
+      let contracts = [];
+      try {
+        const { results = [] } = await env.DB.prepare(`
+          SELECT id, full_name, employee_code, department, position, contract_type, contract_end_date,
+                 CAST((julianday(contract_end_date) - julianday('now')) AS INTEGER) as days_remaining
+            FROM users
+           WHERE is_active = 1
+             AND contract_end_date IS NOT NULL
+             AND contract_end_date != ''
+             AND contract_end_date >= date('now')
+             AND contract_end_date <= date('now', '+' || ? || ' days')
+           ORDER BY contract_end_date ASC
+        `).bind(threshold).all();
+        contracts = results;
+      } catch (err) {
+        console.error('get_contract_expirations error:', err);
+      }
+
+      return {
+        thresholdDays: threshold,
+        totalExpiringContracts: contracts.length,
+        contracts: contracts.map(c => ({
+          name: c.full_name,
+          employeeCode: c.employee_code || 'NV',
+          department: c.department,
+          contractType: c.contract_type || 'HĐ LĐ',
+          endDate: c.contract_end_date,
+          daysRemaining: c.days_remaining
+        })),
+        summary: contracts.length === 0
+          ? `Trong vòng ${threshold} ngày tới, không có hợp đồng lao động nào sắp hết hạn.`
+          : `Có ${contracts.length} hợp đồng lao động sắp hết hạn trong vòng ${threshold} ngày tới cần HCNS theo dõi và chuẩn bị tái ký.`
+      };
+    }
+
+    case 'get_company_overtime_summary': {
+      const now = new Date();
+      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const month = (args.month && /^\d{4}-\d{2}$/.test(args.month)) ? args.month : currentMonth;
+
+      let otRows = [];
+      try {
+        const { results = [] } = await env.DB.prepare(`
+          SELECT u.department,
+                 COUNT(DISTINCT otr.user_id) as employee_count,
+                 COUNT(otr.id) as total_sessions,
+                 SUM(COALESCE(otr.approved_minutes, otr.requested_minutes, 0)) as total_minutes
+            FROM overtime_requests otr
+            JOIN users u ON u.id = otr.user_id
+           WHERE otr.work_date LIKE ? AND (otr.status = 'approved' OR otr.status = 'pending')
+           GROUP BY u.department
+           ORDER BY total_minutes DESC
+        `).bind(`${month}%`).all();
+        otRows = results;
+      } catch (err) {
+        console.error('get_company_overtime_summary error:', err);
+      }
+
+      const totalMinutes = otRows.reduce((acc, r) => acc + (r.total_minutes || 0), 0);
+      const totalHours = Number((totalMinutes / 60).toFixed(1));
+
+      return {
+        month,
+        totalOvertimeHours: totalHours,
+        departmentBreakdown: otRows.map(r => ({
+          department: r.department || 'Chung',
+          employeeCount: r.employee_count,
+          sessionCount: r.total_sessions,
+          otHours: Number(((r.total_minutes || 0) / 60).toFixed(1))
+        })),
+        summary: `Tổng thời lượng làm thêm giờ (OT) tháng ${month} toàn công ty là **${totalHours} giờ** trên ${otRows.length} phòng ban.`
+      };
+    }
+
+    case 'get_monthly_hr_summary': {
+      const now = new Date();
+      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const month = (args.month && /^\d{4}-\d{2}$/.test(args.month)) ? args.month : currentMonth;
+
+      let totalEmployees = 0;
+      let onTimeRate = 95;
+      let totalLeaves = 0;
+      let totalOTHours = 0;
+
+      try {
+        const activeUsers = await env.DB.prepare('SELECT COUNT(*) as cnt FROM users WHERE is_active = 1').first();
+        totalEmployees = activeUsers?.cnt || 0;
+
+        const attStats = await env.DB.prepare(`
+          SELECT COUNT(*) as total_records,
+                 SUM(CASE WHEN late_minutes = 0 THEN 1 ELSE 0 END) as on_time_records
+            FROM attendance
+           WHERE date LIKE ? AND checkin_time IS NOT NULL
+        `).bind(`${month}%`).first();
+
+        if (attStats && attStats.total_records > 0) {
+          onTimeRate = Number(((attStats.on_time_records / attStats.total_records) * 100).toFixed(1));
+        }
+
+        const leaveStats = await env.DB.prepare("SELECT COUNT(*) as cnt FROM leave_requests WHERE (start_date LIKE ? OR end_date LIKE ?) AND status = 'approved'").bind(`${month}%`, `${month}%`).first();
+        totalLeaves = leaveStats?.cnt || 0;
+
+        const otStats = await env.DB.prepare("SELECT SUM(COALESCE(approved_minutes, requested_minutes, 0)) as min_sum FROM overtime_requests WHERE work_date LIKE ? AND status = 'approved'").bind(`${month}%`).first();
+        totalOTHours = Number(((otStats?.min_sum || 0) / 60).toFixed(1));
+      } catch (err) {
+        console.error('get_monthly_hr_summary error:', err);
+      }
+
+      return {
+        month,
+        headcount: totalEmployees,
+        onTimeRate: `${onTimeRate}%`,
+        approvedLeaveRequests: totalLeaves,
+        totalOvertimeHours: totalOTHours,
+        summary: `Báo cáo nhân sự tháng **${month}**: Quy mô nhân sự **${totalEmployees}** người, tỷ lệ đi làm đúng giờ đạt **${onTimeRate}%**, đã xử lý **${totalLeaves}** đơn nghỉ phép và tổng giờ làm thêm **${totalOTHours} giờ**.`
+      };
+    }
+
+    case 'get_executive_headcount_turnover': {
+      const period = Number(args.periodMonths) || 6;
+      let totalActive = 0;
+      let departments = [];
+      let resignedCount = 0;
+
+      try {
+        const total = await env.DB.prepare('SELECT COUNT(*) as cnt FROM users WHERE is_active = 1').first();
+        totalActive = total?.cnt || 0;
+
+        const deptRes = await env.DB.prepare('SELECT department, COUNT(*) as cnt FROM users WHERE is_active = 1 GROUP BY department ORDER BY cnt DESC').all();
+        departments = deptRes.results || [];
+
+        const resigned = await env.DB.prepare("SELECT COUNT(*) as cnt FROM users WHERE is_active = 0 OR lifecycle_status = 'resigned'").first();
+        resignedCount = resigned?.cnt || 0;
+      } catch (err) {
+        console.error('get_executive_headcount_turnover error:', err);
+      }
+
+      const turnoverRate = totalActive > 0 ? Number(((resignedCount / (totalActive + resignedCount)) * 100).toFixed(1)) : 0;
+
+      return {
+        totalHeadcount: totalActive,
+        turnoverRate: `${turnoverRate}%`,
+        resignedCount,
+        departmentsBreakdown: departments.map(d => ({
+          department: d.department || 'Chung',
+          headcount: d.cnt,
+          percentage: totalActive > 0 ? `${((d.cnt / totalActive) * 100).toFixed(1)}%` : '0%'
+        })),
+        strategicInsight: `Quy mô hiện tại đạt **${totalActive} nhân sự** qua ${departments.length} phòng ban. Tỷ lệ biến động nhân sự (turnover) là **${turnoverRate}%**, nằm trong ngưỡng kiểm soát ổn định.`
+      };
+    }
+
+    case 'get_department_workforce_comparison': {
+      const now = new Date();
+      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const month = (args.month && /^\d{4}-\d{2}$/.test(args.month)) ? args.month : currentMonth;
+
+      let comparison = [];
+      try {
+        const { results = [] } = await env.DB.prepare(`
+          SELECT u.department,
+                 COUNT(DISTINCT u.id) as headcount,
+                 SUM(COALESCE(a.late_minutes, 0)) as total_late_minutes,
+                 COUNT(CASE WHEN a.late_minutes > 0 THEN 1 END) as late_occurrences,
+                 COUNT(CASE WHEN a.checkin_time IS NOT NULL THEN 1 END) as total_checkins
+            FROM users u
+            LEFT JOIN attendance a ON a.user_id = u.id AND a.date LIKE ?
+           WHERE u.is_active = 1
+           GROUP BY u.department
+           ORDER BY headcount DESC
+        `).bind(`${month}%`).all();
+
+        comparison = results.map(r => {
+          const checkins = r.total_checkins || 1;
+          const lateRate = Number(((r.late_occurrences / checkins) * 100).toFixed(1));
+          return {
+            department: r.department || 'Chung',
+            headcount: r.headcount,
+            lateRate: `${lateRate}%`,
+            lateOccurrences: r.late_occurrences,
+            totalLateMinutes: r.total_late_minutes
+          };
+        });
+      } catch (err) {
+        console.error('get_department_workforce_comparison error:', err);
+      }
+
+      return {
+        month,
+        departmentsCompared: comparison.length,
+        ranking: comparison,
+        summary: `Bảng so sánh chuyên cần tháng ${month}: Phòng ban có tỷ lệ đúng giờ cao nhất được duy trì ổn định, các phòng ban có tỷ lệ đi muộn cao cần tăng cường giám sát kỷ luật.`
+      };
+    }
+
+    case 'get_overtime_cost_trends': {
+      const monthsCount = Number(args.monthsCount) || 3;
+      const trends = [];
+      const now = new Date();
+
+      try {
+        for (let i = monthsCount - 1; i >= 0; i--) {
+          const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+          const mStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+
+          const otRes = await env.DB.prepare(`
+            SELECT SUM(COALESCE(approved_minutes, requested_minutes, 0)) as total_mins,
+                   COUNT(DISTINCT user_id) as participants
+              FROM overtime_requests
+             WHERE work_date LIKE ? AND status = 'approved'
+          `).bind(`${mStr}%`).first();
+
+          const totalHours = Number(((otRes?.total_mins || 0) / 60).toFixed(1));
+          const estimatedCostVND = Math.round(totalHours * 100000);
+
+          trends.push({
+            month: mStr,
+            overtimeHours: totalHours,
+            participantsCount: otRes?.participants || 0,
+            estimatedCostVND
+          });
+        }
+      } catch (err) {
+        console.error('get_overtime_cost_trends error:', err);
+      }
+
+      return {
+        periodMonths: monthsCount,
+        trends,
+        summary: `Xu hướng chi phí và giờ làm thêm OT trong ${monthsCount} tháng gần nhất: Dao động trung bình ~${trends.length > 0 ? (trends.reduce((a, b) => a + b.overtimeHours, 0) / trends.length).toFixed(1) : 0} giờ/tháng.`
+      };
+    }
+
+    case 'get_company_workforce_briefing': {
+      const now = new Date();
+      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const todayStr = now.toISOString().slice(0, 10);
+
+      let headcount = 0;
+      let todayCheckins = 0;
+      let todayWfh = 0;
+      let todayLeaves = 0;
+      let pendingApprovals = 0;
+
+      try {
+        const u = await env.DB.prepare('SELECT COUNT(*) as cnt FROM users WHERE is_active = 1').first();
+        headcount = u?.cnt || 0;
+
+        const att = await env.DB.prepare(`
+          SELECT COUNT(CASE WHEN checkin_time IS NOT NULL THEN 1 END) as checkins,
+                 COUNT(CASE WHEN work_type = 'wfh' THEN 1 END) as wfh
+            FROM attendance WHERE date = ?
+        `).bind(todayStr).first();
+        todayCheckins = att?.checkins || 0;
+        todayWfh = att?.wfh || 0;
+
+        const l = await env.DB.prepare("SELECT COUNT(*) as cnt FROM leave_requests WHERE status = 'approved' AND start_date <= ? AND end_date >= ?").bind(todayStr, todayStr).first();
+        todayLeaves = l?.cnt || 0;
+
+        const p = await env.DB.prepare("SELECT COUNT(*) as cnt FROM leave_requests WHERE status = 'pending'").first();
+        pendingApprovals = p?.cnt || 0;
+      } catch (err) {
+        console.error('get_company_workforce_briefing error:', err);
+      }
+
+      const presenceRate = headcount > 0 ? Number(((todayCheckins / headcount) * 100).toFixed(1)) : 0;
+
+      return {
+        date: todayStr,
+        month: currentMonth,
+        headcount,
+        todayPresence: {
+          presentOffice: todayCheckins,
+          presenceRate: `${presenceRate}%`,
+          wfh: todayWfh,
+          onLeave: todayLeaves
+        },
+        governance: {
+          pendingLeaveApprovals: pendingApprovals
+        },
+        executiveSummary: `Báo cáo điều hành ngày **${todayStr}**: Tổng quy mô **${headcount} nhân sự**, tỷ lệ có mặt tại VP đạt **${presenceRate}%** (${todayCheckins} người), **${todayWfh}** người WFH, **${todayLeaves}** người nghỉ phép và **${pendingApprovals}** đơn đang chờ duyệt.`
+      };
+    }
+
     default:
       return { error: `Unknown tool: ${toolName}` };
   }
@@ -1571,15 +2379,26 @@ export async function runCopilotTurn(env, {
 
   // 0. Step 0: Enterprise Privacy Guardrail & PII Shield
   const isSalaryQuery = /lương|thu nhập|tiền lương|bảng lương|phiếu lương|thực nhận/i.test(query);
-  const isSelfPayroll = /của tôi|của mình|của em|của anh|của chị|bản thân|lương tôi|lương em|lương anh|lương mình/i.test(query)
-    || /^(?:xem|tra cứu|kiểm tra|cho xem|cho hỏi)?\s*(?:bảng\s*)?lương\s*(?:tháng\s*\d+|được không|\?|$)/i.test(query);
-  const isAskingOtherSalary = isSalaryQuery && !isSelfPayroll && /(của|cho)\s+(anh|chị|bạn|em|ông|bà|nhân viên|đồng nghiệp)?\s*([a-zA-ZÀ-ỹ0-9_]+)/i.test(query);
+  let isAskingOtherSalary = false;
+  let targetSalaryName = 'người khác';
+  if (isSalaryQuery) {
+    const salaryOwnerMatch = query.match(/(?:lương|thu nhập|tiền lương|bảng lương|phiếu lương|thực nhận)[^.?\n]*?\bcủa\s+([^.?\n,]+)/iu);
+    if (salaryOwnerMatch) {
+      const phrase = salaryOwnerMatch[1].trim();
+      const lowerPhrase = phrase.toLowerCase();
+      const isSelf = /^(?:tôi|mình|bản thân)(?:\s|$)/.test(lowerPhrase) ||
+                     /^(?:em|anh|chị)(?:\s+(?:là\s+)?(?:thế|như|bao|sao|được|ạ|hả|\?|$)|$)/.test(lowerPhrase);
+      if (!isSelf) {
+        isAskingOtherSalary = true;
+        targetSalaryName = phrase.replace(/^(?:bạn|nhân viên|đồng nghiệp|ông|bà|sếp|giám đốc|trưởng phòng|leader|anh|chị|em)\s+/i, '').split(/\s+/)[0] || 'người khác';
+      }
+    }
+  }
 
   const isPrivileged = me.role === 'admin' || (me.department && /HCNS|Hành chính/i.test(me.department));
 
   if (isAskingOtherSalary && !isPrivileged) {
-    const match = query.match(/(của|cho)\s+(anh|chị|bạn|em|ông|bà|nhân viên|đồng nghiệp)?\s*([a-zA-ZÀ-ỹ0-9_]+)/i);
-    const targetName = match ? match[3] : 'người khác';
+    const targetName = targetSalaryName;
     const selfLastName = String(me.full_name || '').toLowerCase().split(' ').pop();
     if (!targetName.toLowerCase().includes(selfLastName)) {
       const blockedMsg = `🛡️ **Chính sách Bảo mật Dữ liệu Doanh nghiệp (Enterprise Privacy Guardrail):**\n\nTheo quy định an toàn thông tin nội bộ của NetViet HR, dữ liệu về mức lương, thu nhập và thông tin nhân sự là thông tin mật cấp độ cao.\n\n- Bạn chỉ có quyền tra cứu bảng lương và thông tin cá nhân của chính mình (**${me.full_name}**).\n- Yêu cầu tra cứu thông tin thu nhập của nhân sự khác (**${targetName}**) đã bị hệ thống từ chối.\n\nNếu bạn là cán bộ quản lý cần kiểm tra bảng lương phòng ban, vui lòng liên hệ Ban Giám đốc hoặc Phòng HCNS để được cấp quyền.`;
@@ -1873,6 +2692,57 @@ export async function runCopilotTurn(env, {
       reason: query
     }, me);
     actionCard = toolData;
+  } else if (/xin wfh|đăng ký wfh|làm việc tại nhà|tạo đơn wfh|xin làm tại nhà/i.test(query)) {
+    toolNameCalled = 'create_wfh_request_draft';
+    const dates = query.match(/\d{4}-\d{2}-\d{2}/g) || [];
+    const targetDate = dates[0] || parseRelativeDate(query, new Date().toISOString().slice(0, 10));
+    let shift = 'full';
+    if (/sáng/i.test(query)) shift = 'morning';
+    else if (/chiều/i.test(query)) shift = 'afternoon';
+    toolData = await executeTool(env, toolNameCalled, {
+      date: targetDate,
+      shift,
+      reason: query
+    }, me);
+    actionCard = toolData;
+  } else if (/quên check[- ]?in|quên chấm công|chỉnh công|giải trình công|chỉnh sửa chấm công/i.test(query)) {
+    toolNameCalled = 'create_attendance_correction_draft';
+    const dates = query.match(/\d{4}-\d{2}-\d{2}/g) || [];
+    const targetDate = dates[0] || parseRelativeDate(query, new Date().toISOString().slice(0, 10));
+    toolData = await executeTool(env, toolNameCalled, {
+      date: targetDate,
+      actualCheckin: '08:30',
+      actualCheckout: '17:00',
+      reason: query
+    }, me);
+    actionCard = toolData;
+  } else if (/(?:ai|nhân viên nào|danh sách).*đi trễ.*(?:>|trên|>=\s*)3|bất thường chấm công|đi muộn nhiều/i.test(query)) {
+    toolNameCalled = 'get_attendance_anomalies';
+    toolData = await executeTool(env, toolNameCalled, { month: extractedMonth, minLateCount: 3 }, me);
+  } else if (/(?:ai|quân số|tình hình).*(?:nghỉ|wfh|có mặt).*hôm nay|ai đang nghỉ hôm nay|quân số hôm nay/i.test(query)) {
+    toolNameCalled = 'get_daily_attendance_roster';
+    toolData = await executeTool(env, toolNameCalled, { date: todayYMD }, me);
+  } else if (/hợp đồng.*(?:sắp hết hạn|hết hạn|30 ngày|60 ngày)|hết hạn hợp đồng/i.test(query)) {
+    toolNameCalled = 'get_contract_expirations';
+    toolData = await executeTool(env, toolNameCalled, { daysThreshold: 30 }, me);
+  } else if (/(?:tổng|chi phí).*(?:giờ ot|làm thêm|ot).*phòng ban|tổng giờ làm thêm|tổng ot/i.test(query)) {
+    toolNameCalled = 'get_company_overtime_summary';
+    toolData = await executeTool(env, toolNameCalled, { month: extractedMonth }, me);
+  } else if (/báo cáo nhân sự tháng|tóm tắt nhân sự tháng|tình hình nhân sự tháng/i.test(query)) {
+    toolNameCalled = 'get_monthly_hr_summary';
+    toolData = await executeTool(env, toolNameCalled, { month: extractedMonth }, me);
+  } else if (/tăng trưởng.*nhân sự|quy mô nhân sự|tỷ lệ nghỉ việc|turnover|biến động nhân sự/i.test(query)) {
+    toolNameCalled = 'get_executive_headcount_turnover';
+    toolData = await executeTool(env, toolNameCalled, { periodMonths: 6 }, me);
+  } else if (/so sánh.*phòng ban|phòng ban nào|hiệu suất phòng ban/i.test(query)) {
+    toolNameCalled = 'get_department_workforce_comparison';
+    toolData = await executeTool(env, toolNameCalled, { month: extractedMonth }, me);
+  } else if (/xu hướng.*ot|chi phí ot.*3 tháng|xu hướng làm thêm/i.test(query)) {
+    toolNameCalled = 'get_overtime_cost_trends';
+    toolData = await executeTool(env, toolNameCalled, { monthsCount: 3 }, me);
+  } else if (/báo cáo điều hành|tóm tắt điều hành|workforce briefing/i.test(query)) {
+    toolNameCalled = 'get_company_workforce_briefing';
+    toolData = await executeTool(env, toolNameCalled, { month: extractedMonth }, me);
   } else if (/tạo task|tạo việc|thêm công việc/i.test(query) && query.length > 5) {
     toolNameCalled = 'create_task_draft';
     const titleMatch = query.replace(/^(tạo task|tạo việc|thêm công việc)\s*:?/i, '').trim();
@@ -1886,56 +2756,12 @@ export async function runCopilotTurn(env, {
     else actionCard = toolData;
   }
 
-  // 3. Step 3: Build Grounded System Instruction
-  let systemPrompt = `Bạn là Trợ lý ảo HR NetViet - Trợ lý AI chuyên trách nền tảng quản trị nhân sự NetViet HR.
-Người dùng hiện tại: ${me.full_name} (Mã NV: ${me.employee_code || 'NV'}, Vai trò: ${me.role || 'employee'}, Phòng ban: ${me.department || 'Chung'}).
-THỜI GIAN THỰC TẾ HIỆN TẠI CỦA HỆ THỐNG: ${nowFormatted} (Múi giờ Việt Nam UTC+7).
-Năm hiện tại là ${currentYear}. TUYỆT ĐỐI KHÔNG dùng các năm cũ như 2023, 2024.
+  // 3. Step 3: Build Grounded Role-aware Persona Instruction & Dynamic Tool Filtering
+  const persona = resolveUserPersona(me);
+  const allowedTools = getToolsForPersona(persona, me);
+  const systemPrompt = buildPersonaSystemPrompt(persona, me, nowFormatted, currentYear, ragResult, toolData, actionCard);
 
-DANH MỤC 12 PHÂN HỆ HỆ THỐNG:
-1. Dashboard: Báo cáo tỷ lệ chuyên cần, quân số đi làm, đi muộn, việc cần làm, sinh nhật.
-2. Thông báo: Tin tức, thông tư, quyết định điều động/khen thưởng, file đính kèm, lượt đọc.
-3. Chat: Kênh thảo luận thời gian thực WebSocket/Durable Object, chat chung & phòng ban, poll bình chọn, ghim tin nhắn, @mention.
-4. Chấm công: Check-in/out GPS geofence văn phòng & WiFi Whitelist, selfie. Chuẩn 08:30 - 17:00 (mốc 08:35 đúng giờ, từ 08:36 tính muộn). Miễn phạt 2 lần/tháng đầu tiên; từ lần 3 phạt 20.000đ/lần. Tự động checkout lúc 17:05 UTC.
-5. Nghỉ phép: Quy trình duyệt 2 bước (Bước 1: Quản lý trực tiếp -> Bước 2: HCNS duyệt cuối). Quỹ phép năm 12 ngày/năm (1 ngày/tháng).
-6. Công việc (Tasks): Bảng Kanban/Danh sách, mức ưu tiên (low, medium, high, urgent), deadline, giao việc, đính kèm file, cập nhật tiến độ.
-7. Phiếu lương (Invoices): Tra cứu phiếu lương cá nhân từng tháng, lương cơ bản, ngày công, thưởng KPI, phụ cấp, giảm trừ phạt đi muộn, bảo hiểm, thuế, thực nhận (Net), xác nhận phiếu hoặc gửi yêu cầu xem lại.
-8. Bàn giao: Bàn giao thiết bị tài sản, tài khoản hệ thống và tiến độ dự án khi thôi việc/chuyển công tác.
-9. Nhân viên: Danh bạ, hồ sơ hợp đồng, CCCD, phân quyền. Admin có quyền đổi mã nhân viên (employee_code).
-10. Bảng lương: Tổng hợp bảng lương công ty (Admin/HCNS), import/export Excel, đồng bộ công, kiểm toán AI bất thường.
-11. Địa điểm chấm công: Tọa độ GPS văn phòng, bán kính geofence mét, danh sách WiFi Whitelist.
-12. Cài đặt: Giờ làm việc chuẩn, mốc phạt, quản trị database Cloudflare D1.
-
-QUY TẮC XƯNG HÔ VÀ ĐẠI TỪ NHÂN XƯNG (BẮT BUỘC):
-- Bạn luôn tự xưng là "Tôi" (Trợ lý AI NetViet).
-- Bạn luôn gọi người dùng là "Bạn".
-- Xử lý đại từ nhân xưng của người dùng: Người dùng có thể xưng hô tự nhiên như "tôi", "em", "mình", "anh". Khi người dùng hỏi các câu như "lương của em tháng này", "hôm nay anh đã chấm công chưa", "task của mình", BẮT BUỘC hiểu đây là thông tin của chính người dùng hiện tại (${me.full_name}). Tuyệt đối KHÔNG hiểu nhầm là đang hỏi nhân sự khác và KHÔNG từ chối vô lý.
-
-QUY TẮC PHẢN HỒI (BẮT BUỘC TUÂN THỦ NGHIÊM NGẶT):
-1. PHONG CÁCH: Nghiêm túc, điềm đạm, chuẩn mực hành chính công sở.
-2. NGẮN GỌN & ĐI THẲNG VÀO TRỌNG TÂM:
-- Đi thẳng vào kết quả hoặc số liệu cốt lõi trong tối đa 1 - 3 câu ngắn hoặc danh sách gạch đầu dòng cô đọng. Tuyệt đối KHÔNG trả lời cụt lủn 1-2 từ.
-- TUYỆT ĐỐI KHÔNG chào hỏi mở đầu rườm rà (nghiêm cấm các câu như: "Xin chào bạn, tôi là...", "Chào bạn! Tôi rất vui được hỗ trợ...").
-- TUYỆT ĐỐI KHÔNG đưa ra câu kết mớm lời hay câu hỏi thừa thãi (nghiêm cấm: "Nếu bạn cần giúp gì thêm...", "Hy vọng thông tin này giúp ích...", "Bạn có muốn...", "Hãy cho tôi biết nếu..."). Dừng lại ngay lập tức sau khi hoàn thành nội dung.
-3. ĐỐI VỚI CÂU HỎI VỀ KIẾN THỨC BÊN NGOÀI: Sẵn sàng giải đáp ngắn gọn, chuẩn xác.
-4. QUY TẮC BẢO MẬT: Tuyệt đối không tiết lộ lương, CCCD, thông tin riêng tư của người khác cho tài khoản không có quyền Admin/HCNS.
-5. ĐỊNH DẠNG DỮ LIỆU: Luôn in đậm (**...**) các số liệu, ngày tháng, tên người, kết quả và trạng thái quan trọng.
-6. TUYỆT ĐỐI KHÔNG GIẢ MẠO CHẤM CÔNG HOẶC HÀNH ĐỘNG HỆ THỐNG:
-- Trợ lý AI tuyệt đối KHÔNG giả lập, không bịa đặt hoặc thông báo đã check-in / check-out thành công cho người dùng qua chat. Thao tác chấm công bắt buộc nhân sự phải tự thao tác trên thiết bị cá nhân tại văn phòng để xác thực GPS Geofence và WiFi Whitelist.
-7. BẮT BUỘC TRẢ LỜI TỪ DỮ LIỆU THỰC TẾ (GROUNDED DATA):
-- Khi người dùng hỏi về lý do nghỉ phép, tình hình công việc, chấm công: BẮT BUỘC trả lời dựa trên số liệu thực tế được cung cấp trong [TOOL DATA].
-- TUYỆT ĐỐI KHÔNG trả lời lý thuyết chung chung sách giáo khoa. Phải tổng kết cụ thể số liệu thực tế.
-`;
-
-  if (ragResult.contextText) {
-    systemPrompt += `\n--- TÀI LIỆU TRI THỨC NỘI QUY TRÍCH XUẤT (RAG CONTEXT) ---\n${ragResult.contextText}\n----------------------------------------------------\n`;
-  }
-
-  if (toolData && !actionCard) {
-    systemPrompt += `\n--- DỮ LIỆU THỰC TẾ HỆ THỐNG TRÍCH XUẤT (TOOL DATA) ---\n${JSON.stringify(toolData, null, 2)}\n----------------------------------------------------\n`;
-  }
-
-  // 4. Step 4: Run Inference via AI Gateway (with Structured Tool Calling)
+  // 4. Step 4: Run Inference via AI Gateway (with Dynamic Persona Tool Calling)
   const chatMessages = [
     ...conversationHistory.slice(-4),
     { role: 'user', content: query }
@@ -1944,7 +2770,7 @@ QUY TẮC PHẢN HỒI (BẮT BUỘC TUÂN THỦ NGHIÊM NGẶT):
   const completion = await chatCompletion(env, {
     messages: chatMessages,
     systemPrompt,
-    tools: COPILOT_TOOLS,
+    tools: allowedTools,
     temperature: 0.1,
     maxTokens: 800,
     toolData
@@ -2058,15 +2884,26 @@ export async function runCopilotTurnStream(env, {
 
   // 0. Step 0: Enterprise Privacy Guardrail & PII Shield
   const isSalaryQuery = /lương|thu nhập|tiền lương|bảng lương|phiếu lương|thực nhận/i.test(query);
-  const isSelfPayroll = /của tôi|của mình|của em|của anh|của chị|bản thân|lương tôi|lương em|lương anh|lương mình/i.test(query)
-    || /^(?:xem|tra cứu|kiểm tra|cho xem|cho hỏi)?\s*(?:bảng\s*)?lương\s*(?:tháng\s*\d+|được không|\?|$)/i.test(query);
-  const isAskingOtherSalary = isSalaryQuery && !isSelfPayroll && /(của|cho)\s+(anh|chị|bạn|em|ông|bà|nhân viên|đồng nghiệp)?\s*([a-zA-ZÀ-ỹ0-9_]+)/i.test(query);
+  let isAskingOtherSalary = false;
+  let targetSalaryName = 'người khác';
+  if (isSalaryQuery) {
+    const salaryOwnerMatch = query.match(/(?:lương|thu nhập|tiền lương|bảng lương|phiếu lương|thực nhận)[^.?\n]*?\bcủa\s+([^.?\n,]+)/iu);
+    if (salaryOwnerMatch) {
+      const phrase = salaryOwnerMatch[1].trim();
+      const lowerPhrase = phrase.toLowerCase();
+      const isSelf = /^(?:tôi|mình|bản thân)(?:\s|$)/.test(lowerPhrase) ||
+                     /^(?:em|anh|chị)(?:\s+(?:là\s+)?(?:thế|như|bao|sao|được|ạ|hả|\?|$)|$)/.test(lowerPhrase);
+      if (!isSelf) {
+        isAskingOtherSalary = true;
+        targetSalaryName = phrase.replace(/^(?:bạn|nhân viên|đồng nghiệp|ông|bà|sếp|giám đốc|trưởng phòng|leader|anh|chị|em)\s+/i, '').split(/\s+/)[0] || 'người khác';
+      }
+    }
+  }
 
   const isPrivileged = me.role === 'admin' || (me.department && /HCNS|Hành chính/i.test(me.department));
 
   if (isAskingOtherSalary && !isPrivileged) {
-    const match = query.match(/(của|cho)\s+(anh|chị|bạn|em|ông|bà|nhân viên|đồng nghiệp)?\s*([a-zA-ZÀ-ỹ0-9_]+)/i);
-    const targetName = match ? match[3] : 'người khác';
+    const targetName = targetSalaryName;
     const selfLastName = String(me.full_name || '').toLowerCase().split(' ').pop();
     if (!targetName.toLowerCase().includes(selfLastName)) {
       const blockedMsg = `🛡️ **Chính sách Bảo mật Dữ liệu Doanh nghiệp (Enterprise Privacy Guardrail):**\n\nTheo quy định an toàn thông tin nội bộ của NetViet HR, dữ liệu về mức lương, thu nhập và thông tin nhân sự là thông tin mật cấp độ cao.\n\n- Bạn chỉ có quyền tra cứu bảng lương và thông tin cá nhân của chính mình (**${me.full_name}**).\n- Yêu cầu tra cứu thông tin thu nhập của nhân sự khác (**${targetName}**) đã bị hệ thống từ chối.\n\nNếu bạn là cán bộ quản lý cần kiểm tra bảng lương phòng ban, vui lòng liên hệ Ban Giám đốc hoặc Phòng HCNS để được cấp quyền.`;
@@ -2359,6 +3196,57 @@ export async function runCopilotTurnStream(env, {
       reason: query
     }, me);
     actionCard = toolData;
+  } else if (/xin wfh|đăng ký wfh|làm việc tại nhà|tạo đơn wfh|xin làm tại nhà/i.test(query)) {
+    toolNameCalled = 'create_wfh_request_draft';
+    const dates = query.match(/\d{4}-\d{2}-\d{2}/g) || [];
+    const targetDate = dates[0] || parseRelativeDate(query, new Date().toISOString().slice(0, 10));
+    let shift = 'full';
+    if (/sáng/i.test(query)) shift = 'morning';
+    else if (/chiều/i.test(query)) shift = 'afternoon';
+    toolData = await executeTool(env, toolNameCalled, {
+      date: targetDate,
+      shift,
+      reason: query
+    }, me);
+    actionCard = toolData;
+  } else if (/quên check[- ]?in|quên chấm công|chỉnh công|giải trình công|chỉnh sửa chấm công/i.test(query)) {
+    toolNameCalled = 'create_attendance_correction_draft';
+    const dates = query.match(/\d{4}-\d{2}-\d{2}/g) || [];
+    const targetDate = dates[0] || parseRelativeDate(query, new Date().toISOString().slice(0, 10));
+    toolData = await executeTool(env, toolNameCalled, {
+      date: targetDate,
+      actualCheckin: '08:30',
+      actualCheckout: '17:00',
+      reason: query
+    }, me);
+    actionCard = toolData;
+  } else if (/(?:ai|nhân viên nào|danh sách).*đi trễ.*(?:>|trên|>=\s*)3|bất thường chấm công|đi muộn nhiều/i.test(query)) {
+    toolNameCalled = 'get_attendance_anomalies';
+    toolData = await executeTool(env, toolNameCalled, { month: extractedMonth, minLateCount: 3 }, me);
+  } else if (/(?:ai|quân số|tình hình).*(?:nghỉ|wfh|có mặt).*hôm nay|ai đang nghỉ hôm nay|quân số hôm nay/i.test(query)) {
+    toolNameCalled = 'get_daily_attendance_roster';
+    toolData = await executeTool(env, toolNameCalled, { date: todayYMD }, me);
+  } else if (/hợp đồng.*(?:sắp hết hạn|hết hạn|30 ngày|60 ngày)|hết hạn hợp đồng/i.test(query)) {
+    toolNameCalled = 'get_contract_expirations';
+    toolData = await executeTool(env, toolNameCalled, { daysThreshold: 30 }, me);
+  } else if (/(?:tổng|chi phí).*(?:giờ ot|làm thêm|ot).*phòng ban|tổng giờ làm thêm|tổng ot/i.test(query)) {
+    toolNameCalled = 'get_company_overtime_summary';
+    toolData = await executeTool(env, toolNameCalled, { month: extractedMonth }, me);
+  } else if (/báo cáo nhân sự tháng|tóm tắt nhân sự tháng|tình hình nhân sự tháng/i.test(query)) {
+    toolNameCalled = 'get_monthly_hr_summary';
+    toolData = await executeTool(env, toolNameCalled, { month: extractedMonth }, me);
+  } else if (/tăng trưởng.*nhân sự|quy mô nhân sự|tỷ lệ nghỉ việc|turnover|biến động nhân sự/i.test(query)) {
+    toolNameCalled = 'get_executive_headcount_turnover';
+    toolData = await executeTool(env, toolNameCalled, { periodMonths: 6 }, me);
+  } else if (/so sánh.*phòng ban|phòng ban nào|hiệu suất phòng ban/i.test(query)) {
+    toolNameCalled = 'get_department_workforce_comparison';
+    toolData = await executeTool(env, toolNameCalled, { month: extractedMonth }, me);
+  } else if (/xu hướng.*ot|chi phí ot.*3 tháng|xu hướng làm thêm/i.test(query)) {
+    toolNameCalled = 'get_overtime_cost_trends';
+    toolData = await executeTool(env, toolNameCalled, { monthsCount: 3 }, me);
+  } else if (/báo cáo điều hành|tóm tắt điều hành|workforce briefing/i.test(query)) {
+    toolNameCalled = 'get_company_workforce_briefing';
+    toolData = await executeTool(env, toolNameCalled, { month: extractedMonth }, me);
   } else if (/tạo task|tạo việc|thêm công việc/i.test(query) && query.length > 5) {
     toolNameCalled = 'create_task_draft';
     const titleMatch = query.replace(/^(tạo task|tạo việc|thêm công việc)\s*:?/i, '').trim();
@@ -2372,54 +3260,10 @@ export async function runCopilotTurnStream(env, {
     else actionCard = toolData;
   }
 
-  // 3. Step 3: Build Grounded System Instruction
-  let systemPrompt = `Bạn là Trợ lý ảo HR NetViet - Trợ lý AI chuyên trách nền tảng quản trị nhân sự NetViet HR.
-Người dùng hiện tại: ${me.full_name} (Mã NV: ${me.employee_code || 'NV'}, Vai trò: ${me.role || 'employee'}, Phòng ban: ${me.department || 'Chung'}).
-THỜI GIAN THỰC TẾ HIỆN TẠI CỦA HỆ THỐNG: ${nowFormatted} (Múi giờ Việt Nam UTC+7).
-Năm hiện tại là ${currentYear}. TUYỆT ĐỐI KHÔNG dùng các năm cũ như 2023, 2024.
-
-DANH MỤC 12 PHÂN HỆ HỆ THỐNG:
-1. Dashboard: Báo cáo tỷ lệ chuyên cần, quân số đi làm, đi muộn, việc cần làm, sinh nhật.
-2. Thông báo: Tin tức, thông tư, quyết định điều động/khen thưởng, file đính kèm, lượt đọc.
-3. Chat: Kênh thảo luận thời gian thực WebSocket/Durable Object, chat chung & phòng ban, poll bình chọn, ghim tin nhắn, @mention.
-4. Chấm công: Check-in/out GPS geofence văn phòng & WiFi Whitelist, selfie. Chuẩn 08:30 - 17:00 (mốc 08:35 đúng giờ, từ 08:36 tính muộn). Miễn phạt 2 lần/tháng đầu tiên; từ lần 3 phạt 20.000đ/lần. Tự động checkout lúc 17:05 UTC.
-5. Nghỉ phép: Quy trình duyệt 2 bước (Bước 1: Quản lý trực tiếp -> Bước 2: HCNS duyệt cuối). Quỹ phép năm 12 ngày/năm (1 ngày/tháng).
-6. Công việc (Tasks): Bảng Kanban/Danh sách, mức ưu tiên (low, medium, high, urgent), deadline, giao việc, đính kèm file, cập nhật tiến độ.
-7. Phiếu lương (Invoices): Tra cứu phiếu lương cá nhân từng tháng, lương cơ bản, ngày công, thưởng KPI, phụ cấp, giảm trừ phạt đi muộn, bảo hiểm, thuế, thực nhận (Net), xác nhận phiếu hoặc gửi yêu cầu xem lại.
-8. Bàn giao: Bàn giao thiết bị tài sản, tài khoản hệ thống và tiến độ dự án khi thôi việc/chuyển công tác.
-9. Nhân viên: Danh bạ, hồ sơ hợp đồng, CCCD, phân quyền. Admin có quyền đổi mã nhân viên (employee_code).
-10. Bảng lương: Tổng hợp bảng lương công ty (Admin/HCNS), import/export Excel, đồng bộ công, kiểm toán AI bất thường.
-11. Địa điểm chấm công: Tọa độ GPS văn phòng, bán kính geofence mét, danh sách WiFi Whitelist.
-12. Cài đặt: Giờ làm việc chuẩn, mốc phạt, quản trị database Cloudflare D1.
-
-QUY TẮC XƯNG HÔ VÀ ĐẠI TỪ NHÂN XƯNG (BẮT BUỘC):
-- Bạn luôn tự xưng là "Tôi" (Trợ lý AI NetViet).
-- Bạn luôn gọi người dùng là "Bạn".
-- Xử lý đại từ nhân xưng của người dùng: Người dùng có thể xưng hô tự nhiên như "tôi", "em", "mình", "anh". Khi người dùng hỏi các câu như "lương của em tháng này", "hôm nay anh đã chấm công chưa", "task của mình", BẮT BUỘC hiểu đây là thông tin của chính người dùng hiện tại (${me.full_name}). Tuyệt đối KHÔNG hiểu nhầm là đang hỏi nhân sự khác và KHÔNG từ chối vô lý.
-
-QUY TẮC PHẢN HỒI (BẮT BUỘC TUÂN THỦ NGHIÊM NGẶT):
-1. PHONG CÁCH: Nghiêm túc, điềm đạm, chuẩn mực hành chính công sở.
-2. NGẮN GỌN & ĐI THẲNG VÀO TRỌNG TÂM:
-- Đi thẳng vào kết quả hoặc số liệu cốt lõi trong tối đa 1 - 3 câu ngắn hoặc danh sách gạch đầu dòng cô đọng. Tuyệt đối KHÔNG trả lời cụt lủn 1-2 từ.
-- TUYỆT ĐỐI KHÔNG chào hỏi mở đầu rườm rà (nghiêm cấm các câu như: "Xin chào bạn, tôi là...", "Chào bạn! Tôi rất vui được hỗ trợ...").
-- TUYỆT ĐỐI KHÔNG đưa ra câu kết mớm lời hay câu hỏi thừa thãi (nghiêm cấm: "Nếu bạn cần giúp gì thêm...", "Hy vọng thông tin này giúp ích...", "Bạn có muốn...", "Hãy cho tôi biết nếu..."). Dừng lại ngay lập tức sau khi hoàn thành nội dung.
-3. ĐỐI VỚI CÂU HỎI VỀ KIẾN THỨC BÊN NGOÀI: Sẵn sàng giải đáp ngắn gọn, chuẩn xác.
-4. QUY TẮC BẢO MẬT: Tuyệt đối không tiết lộ lương, CCCD, thông tin riêng tư của người khác cho tài khoản không có quyền Admin/HCNS.
-5. ĐỊNH DẠNG DỮ LIỆU: Luôn in đậm (**...**) các số liệu, ngày tháng, tên người, kết quả và trạng thái quan trọng.
-6. TUYỆT ĐỐI KHÔNG GIẢ MẠO CHẤM CÔNG HOẶC HÀNH ĐỘNG HỆ THỐNG:
-- Trợ lý AI tuyệt đối KHÔNG giả lập, không bịa đặt hoặc thông báo đã check-in / check-out thành công cho người dùng qua chat. Thao tác chấm công bắt buộc nhân sự phải tự thao tác trên thiết bị cá nhân tại văn phòng để xác thực GPS Geofence và WiFi Whitelist.
-7. BẮT BUỘC TRẢ LỜI TỪ DỮ LIỆU THỰC TẾ (GROUNDED DATA):
-- Khi người dùng hỏi về lý do nghỉ phép, tình hình công việc, chấm công: BẮT BUỘC trả lời dựa trên số liệu thực tế được cung cấp trong [TOOL DATA].
-- TUYỆT ĐỐI KHÔNG trả lời lý thuyết chung chung sách giáo khoa. Phải tổng kết cụ thể số liệu thực tế.
-`;
-
-  if (ragResult.contextText) {
-    systemPrompt += `\n--- TÀI LIỆU TRI THỨC NỘI QUY TRÍCH XUẤT (RAG CONTEXT) ---\n${ragResult.contextText}\n----------------------------------------------------\n`;
-  }
-
-  if (toolData && !actionCard) {
-    systemPrompt += `\n--- DỮ LIỆU THỰC TẾ HỆ THỐNG TRÍCH XUẤT (TOOL DATA) ---\n${JSON.stringify(toolData, null, 2)}\n----------------------------------------------------\n`;
-  }
+  // 3. Step 3: Build Grounded Role-aware Persona Instruction & Dynamic Tool Filtering
+  const persona = resolveUserPersona(me);
+  const allowedTools = getToolsForPersona(persona, me);
+  const systemPrompt = buildPersonaSystemPrompt(persona, me, nowFormatted, currentYear, ragResult, toolData, actionCard);
 
   // 4. Step 4: Stream inference
   await onEvent('status', { message: 'Đang tổng hợp và tạo câu trả lời...' });
@@ -2436,7 +3280,7 @@ QUY TẮC PHẢN HỒI (BẮT BUỘC TUÂN THỦ NGHIÊM NGẶT):
   for await (const chunk of chatCompletionStream(env, {
     messages: chatMessages,
     systemPrompt,
-    tools: COPILOT_TOOLS,
+    tools: allowedTools,
     temperature: 0.1,
     maxTokens: 800,
     toolData

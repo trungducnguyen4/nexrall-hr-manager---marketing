@@ -2,7 +2,7 @@
  * AI Controller - HTTP Endpoints for Copilot, RAG Knowledge & LLMOps Telemetry
  */
 import { json, err } from '../lib/response.js';
-import { runCopilotTurn, runCopilotTurnStream, safeBroadcast, checkRolePermissions } from '../services/agent.service.js';
+import { runCopilotTurn, runCopilotTurnStream, safeBroadcast, checkRolePermissions, resolveUserPersona } from '../services/agent.service.js';
 import { ingestDocument, seedInitialKnowledge } from '../services/rag.service.js';
 import { ensureAiSchema } from '../services/ai-gateway.service.js';
 
@@ -61,6 +61,148 @@ function checkAiRateLimit(userId, clientIp) {
 export async function handleAiRoutes(request, env, me, path, url) {
   if (!me || !me.id) {
     return err(401, 'Vui lòng đăng nhập để sử dụng AI Copilot');
+  }
+
+  // 0. Instant Role-aware Briefing Card (0ms LLM latency, 0 token cost)
+  if (path === '/api/ai/briefing' && request.method === 'GET') {
+    try {
+      const persona = resolveUserPersona(me);
+      const now = new Date();
+      const currentYear = now.getFullYear();
+      const currentMonth = `${currentYear}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const todayStr = now.toISOString().slice(0, 10);
+
+      if (persona === 'director') {
+        const u = await env.DB.prepare('SELECT COUNT(*) as cnt FROM users WHERE is_active = 1').first();
+        const headcount = u?.cnt || 0;
+
+        const att = await env.DB.prepare(`
+          SELECT COUNT(CASE WHEN checkin_time IS NOT NULL THEN 1 END) as checkins,
+                 COUNT(CASE WHEN work_type = 'wfh' THEN 1 END) as wfh
+            FROM attendance WHERE date = ?
+        `).bind(todayStr).first();
+        const checkins = att?.checkins || 0;
+        const presenceRate = headcount > 0 ? Number(((checkins / headcount) * 100).toFixed(1)) : 0;
+
+        const ot = await env.DB.prepare("SELECT SUM(COALESCE(approved_minutes, requested_minutes, 0)) as min_sum FROM overtime_requests WHERE work_date LIKE ? AND (status = 'approved' OR status = 'pending')").bind(`${currentMonth}%`).first();
+        const otHours = Number(((ot?.min_sum || 0) / 60).toFixed(1));
+
+        const pendingReq = await env.DB.prepare("SELECT COUNT(*) as cnt FROM leave_requests WHERE status = 'pending'").first();
+        const pendingCount = pendingReq?.cnt || 0;
+
+        return json({
+          ok: true,
+          briefing: {
+            persona: 'director',
+            badge: 'Director Insights',
+            title: 'Director Insights - Cố vấn Điều hành',
+            subtitle: 'Phân tích dữ liệu & hỗ trợ quyết sách nhân sự cấp cao',
+            greeting: `Kính chào **${me.full_name}**! Dưới đây là tóm tắt điều hành nhân sự hôm nay:`,
+            metrics: [
+              { label: 'Quy mô nhân sự', value: `${headcount} người`, icon: 'users', color: 'indigo' },
+              { label: 'Tỷ lệ có mặt VP', value: `${presenceRate}%`, icon: 'activity', color: 'emerald' },
+              { label: 'Giờ OT tháng này', value: `${otHours} giờ`, icon: 'clock', color: 'amber' },
+              { label: 'Đơn chờ duyệt', value: `${pendingCount} đơn`, icon: 'shieldCheck', color: 'rose' }
+            ],
+            quickPrompts: [
+              { label: 'Tăng trưởng nhân sự', prompt: 'Phân tích tăng trưởng quy mô nhân sự và tỷ lệ nghỉ việc turnover' },
+              { label: 'So sánh phòng ban', prompt: 'So sánh chuyên cần, tỷ lệ đi muộn và hiệu suất giữa các phòng ban' },
+              { label: 'Xu hướng chi phí OT', prompt: 'Phân tích xu hướng số giờ OT và chi phí làm thêm 3 tháng gần nhất' },
+              { label: 'Báo cáo điều hành', prompt: 'Báo cáo điều hành tổng quan tình hình nhân sự công ty hôm nay' }
+            ],
+            quickTips: 'Hệ thống tự động đồng bộ số liệu thời gian thực. Bấm vào gợi ý hoặc nhập câu hỏi để phân tích chi tiết.'
+          }
+        });
+      }
+
+      if (persona === 'hr') {
+        const u = await env.DB.prepare('SELECT COUNT(*) as cnt FROM users WHERE is_active = 1').first();
+        const totalUsers = u?.cnt || 0;
+
+        const att = await env.DB.prepare(`
+          SELECT COUNT(CASE WHEN checkin_time IS NOT NULL AND work_type != 'wfh' THEN 1 END) as present,
+                 COUNT(CASE WHEN work_type = 'wfh' THEN 1 END) as wfh,
+                 COUNT(CASE WHEN late_minutes > 0 THEN 1 END) as late
+            FROM attendance WHERE date = ?
+        `).bind(todayStr).first();
+
+        const leaves = await env.DB.prepare("SELECT COUNT(*) as cnt FROM leave_requests WHERE ? BETWEEN start_date AND end_date AND status = 'approved'").bind(todayStr).first();
+        const pendingLeaves = await env.DB.prepare("SELECT COUNT(*) as cnt FROM leave_requests WHERE status = 'pending'").first();
+
+        const contracts = await env.DB.prepare("SELECT COUNT(*) as cnt FROM users WHERE is_active = 1 AND contract_end_date IS NOT NULL AND contract_end_date >= date('now') AND contract_end_date <= date('now', '+30 days')").first();
+
+        return json({
+          ok: true,
+          briefing: {
+            persona: 'hr',
+            badge: 'HR Copilot',
+            title: 'HR Copilot - Vận hành Nhân sự',
+            subtitle: 'Giám sát chuyên cần, quản trị thủ tục & thực thi chính sách',
+            greeting: `Xin chào **${me.full_name}**! Báo cáo vận hành nhân sự ngày ${todayStr}:`,
+            metrics: [
+              { label: 'Có mặt tại VP', value: `${att?.present || 0}/${totalUsers}`, icon: 'userCheck', color: 'emerald' },
+              { label: 'WFH / Nghỉ phép', value: `${att?.wfh || 0} WFH • ${leaves?.cnt || 0} nghỉ`, icon: 'home', color: 'blue' },
+              { label: 'Đơn chờ duyệt', value: `${pendingLeaves?.cnt || 0} đơn`, icon: 'fileText', color: 'amber' },
+              { label: 'HĐ sắp hết hạn', value: `${contracts?.cnt || 0} HĐ (30d)`, icon: 'alertTriangle', color: 'rose' }
+            ],
+            quickPrompts: [
+              { label: 'Đi trễ > 3 lần', prompt: 'Những nhân viên nào tháng này đi trễ trên 3 lần?' },
+              { label: 'Ai nghỉ hôm nay', prompt: 'Hôm nay ai đang nghỉ phép và ai làm việc WFH?' },
+              { label: 'Hợp đồng hết hạn', prompt: 'Danh sách nhân viên có hợp đồng lao động sắp hết hạn trong 30 ngày tới?' },
+              { label: 'Tổng giờ làm thêm', prompt: 'Tổng hợp số giờ làm thêm OT của các phòng ban tháng này?' }
+            ],
+            quickTips: 'Bạn có thể duyệt đơn nghỉ phép nhanh hoặc tra cứu quy chế công ty có trích dẫn điều khoản.'
+          }
+        });
+      }
+
+      // Default: Employee Personal Assistant
+      let leaveBal = 12;
+      try {
+        const bal = await env.DB.prepare('SELECT available_days FROM leave_balances WHERE user_id = ? AND balance_year = ?').bind(me.id, currentYear).first();
+        if (bal && bal.available_days != null) leaveBal = bal.available_days;
+      } catch (_) {}
+
+      const todayAtt = await env.DB.prepare('SELECT checkin_time, checkout_time, work_type, status, late_minutes FROM attendance WHERE user_id = ? AND date = ?').bind(me.id, todayStr).first();
+      let attStatus = 'Chưa check-in';
+      let attColor = 'amber';
+      if (todayAtt?.checkin_time) {
+        attStatus = `Check-in ${todayAtt.checkin_time}` + (todayAtt.late_minutes > 0 ? ` (Trễ ${todayAtt.late_minutes}p)` : ' (Đúng giờ)');
+        attColor = todayAtt.late_minutes > 0 ? 'rose' : 'emerald';
+      }
+
+      let taskCount = 0;
+      try {
+        const t = await env.DB.prepare("SELECT COUNT(*) as cnt FROM tasks WHERE assigned_to = ? AND status IN ('todo', 'in-progress')").bind(me.id).first();
+        taskCount = t?.cnt || 0;
+      } catch (_) {}
+
+      return json({
+        ok: true,
+        briefing: {
+          persona: 'employee',
+          badge: 'HR Cá nhân',
+          title: 'HR Assistant Cá nhân',
+          subtitle: 'Trợ lý quyền lợi, chấm công & thủ tục của riêng bạn',
+          greeting: `Xin chào **${me.full_name}**! Dưới đây là thông tin cá nhân của bạn hôm nay:`,
+          metrics: [
+            { label: 'Ngày phép còn lại', value: `${leaveBal} ngày`, icon: 'calendarDays', color: 'emerald' },
+            { label: 'Chấm công hôm nay', value: attStatus, icon: 'clock3', color: attColor },
+            { label: 'Công việc đang chờ', value: `${taskCount} task`, icon: 'clipboardList', color: 'indigo' }
+          ],
+          quickPrompts: [
+            { label: 'Xin nghỉ phép', prompt: 'Tôi muốn đăng ký nghỉ phép ngày mai' },
+            { label: 'Xin WFH', prompt: 'Tạo đơn xin làm việc tại nhà (WFH) ngày mai' },
+            { label: 'Quên check-in', prompt: 'Tôi quên check-in hôm nay, hướng dẫn gửi giải trình chỉnh công' },
+            { label: 'Phiếu lương của tôi', prompt: 'Bảng lương tháng này của tôi thế nào?' }
+          ],
+          quickTips: 'Bạn có thể gõ câu hỏi tự nhiên để tra cứu hoặc tạo đơn thủ tục với Action Card xác nhận tức thì.'
+        }
+      });
+    } catch (bErr) {
+      console.error('Copilot briefing error:', bErr);
+      return err(500, 'Không thể tạo bản tóm tắt nhanh');
+    }
   }
 
   // 1. Chat Completion / Copilot Query (Supports JSON & SSE Stream)
@@ -274,6 +416,47 @@ export async function handleAiRoutes(request, env, me, path, url) {
         const reqId = r.meta.last_row_id;
         await safeBroadcast(env, 'leave', 'leave:new', { id: reqId, user_id: me.id }, { actorId: me.id });
         const resObj = { ok: true, actionType, requestId: reqId, message: 'Đã tạo đơn xin nghỉ phép thành công' };
+        if (token) actionIdempotencyCache.set(token, { timestamp: Date.now(), response: resObj });
+        return json(resObj);
+      }
+
+      if (actionType === 'create_wfh_request') {
+        const { date, shift, reason } = payload || {};
+        if (!date) return err(400, 'Thiếu ngày làm việc WFH');
+        const cleanReason = String(reason || 'Đăng ký WFH qua AI Copilot').slice(0, 500);
+        const cleanShift = ['full', 'morning', 'afternoon'].includes(shift) ? shift : 'full';
+
+        const existing = await env.DB.prepare('SELECT id FROM attendance WHERE user_id = ? AND date = ?').bind(me.id, date).first();
+        let aid = existing?.id;
+        if (existing) {
+          await env.DB.prepare("UPDATE attendance SET work_type = 'wfh', shift = ?, wfh_status = 'pending', wfh_reason = ?, updated_at = datetime('now','localtime') WHERE id = ?").bind(cleanShift, cleanReason, existing.id).run();
+        } else {
+          const r = await env.DB.prepare("INSERT INTO attendance (user_id, date, work_type, shift, registered, status, wfh_status, wfh_reason, created_at) VALUES (?, ?, 'wfh', ?, 1, 'registered', 'pending', ?, datetime('now','localtime'))").bind(me.id, date, cleanShift, cleanReason).run();
+          aid = r.meta?.last_row_id;
+        }
+        await safeBroadcast(env, 'attendance', 'attendance:wfh_requested', { id: aid, user_id: me.id, date, wfh_status: 'pending' }, { actorId: me.id });
+        const resObj = { ok: true, actionType, attendanceId: aid, message: `Đã nộp đơn xin làm việc tại nhà (WFH) ngày ${date} thành công.` };
+        if (token) actionIdempotencyCache.set(token, { timestamp: Date.now(), response: resObj });
+        return json(resObj);
+      }
+
+      if (actionType === 'create_attendance_correction') {
+        const { date, actualCheckin, actualCheckout, reason } = payload || {};
+        if (!date) return err(400, 'Thiếu ngày làm việc cần chỉnh công');
+        const cleanReason = String(reason || 'Yêu cầu giải trình/chỉnh công qua AI Copilot').slice(0, 500);
+        const cleanIn = actualCheckin || '08:30';
+        const cleanOut = actualCheckout || '17:00';
+
+        const existing = await env.DB.prepare('SELECT id FROM attendance WHERE user_id = ? AND date = ?').bind(me.id, date).first();
+        let aid = existing?.id;
+        if (existing) {
+          await env.DB.prepare("UPDATE attendance SET checkin_requires_review = 1, checkin_review_status = 'pending', checkin_review_note = ?, note = ?, updated_at = datetime('now','localtime') WHERE id = ?").bind(cleanReason, `Giải trình AI: ${cleanReason}`, existing.id).run();
+        } else {
+          const r = await env.DB.prepare("INSERT INTO attendance (user_id, date, checkin_time, checkout_time, status, work_hours, checkin_requires_review, checkin_review_status, checkin_review_note, note, created_at) VALUES (?, ?, ?, ?, 'present', 8.5, 1, 'pending', ?, ?, datetime('now','localtime'))").bind(me.id, date, cleanIn, cleanOut, cleanReason, `Giải trình AI: ${cleanReason}`).run();
+          aid = r.meta?.last_row_id;
+        }
+        await safeBroadcast(env, 'attendance', 'attendance:correction_requested', { id: aid, user_id: me.id, date }, { actorId: me.id });
+        const resObj = { ok: true, actionType, attendanceId: aid, message: `Đã gửi yêu cầu chỉnh công / giải trình ngày ${date} thành công.` };
         if (token) actionIdempotencyCache.set(token, { timestamp: Date.now(), response: resObj });
         return json(resObj);
       }
