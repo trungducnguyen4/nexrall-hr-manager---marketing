@@ -15,7 +15,8 @@
 
 param(
     [switch]$NoDeploy,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [string]$Config = 'wrangler.toml'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -100,10 +101,10 @@ if ($NoDeploy) {
 }
 
 Write-Host ""
-Write-Host "=== Deploy len Cloudflare Workers ... ===" -ForegroundColor Green
+Write-Host "=== Deploy len Cloudflare Workers (Config: $Config) ... ===" -ForegroundColor Green
 Push-Location $root
 try {
-    npx wrangler deploy
+    npx wrangler deploy -c $Config
     if ($LASTEXITCODE -ne 0) { Write-Error "Deploy that bai (exit code $LASTEXITCODE)"; exit $LASTEXITCODE }
     Write-Host "=== DEPLOY THANH CONG ===" -ForegroundColor Green
 }

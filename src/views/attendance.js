@@ -26,6 +26,69 @@ function formatAttendanceNote(note) {
   return formatted;
 }
 
+export function renderOtCategoryBadge(cat) {
+  if (cat === 'holiday') {
+    return '<span class="badge badge-ot-cat badge-ot-cat--holiday" title="Ngày lễ (Hệ số x3.0)">Ngày lễ</span>';
+  }
+  if (cat === 'rest_day' || cat === 'weekend') {
+    return '<span class="badge badge-ot-cat badge-ot-cat--rest" title="Ngày nghỉ cuối tuần (Hệ số x2.0)">Ngày nghỉ</span>';
+  }
+  return '<span class="badge badge-ot-cat badge-ot-cat--workday" title="Ngày làm việc thường (Hệ số x1.5)">Ngày thường</span>';
+}
+
+export function parseProofList(proofData, defaultFilename = 'Minh chứng') {
+  if (!proofData) return [];
+  if (Array.isArray(proofData)) {
+    return proofData.map(item => {
+      if (typeof item === 'string') {
+        const trimmed = item.trim();
+        return { url: trimmed, filename: defaultFilename, isLink: /^https?:\/\//i.test(trimmed) };
+      }
+      return {
+        url: item.url || item.file_url || '',
+        filename: item.filename || defaultFilename,
+        document_id: item.document_id || null,
+        size: item.size || item.byte_size || null,
+        isLink: item.isLink || /^https?:\/\//i.test(item.url || item.file_url || ''),
+      };
+    }).filter(p => !!p.url);
+  }
+  if (typeof proofData === 'string') {
+    const trimmed = proofData.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) return parseProofList(parsed, defaultFilename);
+      } catch (_) {}
+    }
+    return [{ url: trimmed, filename: defaultFilename, isLink: /^https?:\/\//i.test(trimmed) }];
+  }
+  return [];
+}
+
+export function serializeProofList(proofList) {
+  if (!proofList || !proofList.length) return { url: null, filename: null, docId: null };
+  if (proofList.length === 1) {
+    const first = proofList[0];
+    return {
+      url: first.url || first.file_url,
+      filename: first.filename || 'Minh chứng',
+      docId: first.document_id || null,
+    };
+  }
+  return {
+    url: JSON.stringify(proofList.map(p => ({
+      url: p.url || p.file_url,
+      filename: p.filename || 'Minh chứng',
+      document_id: p.document_id || null,
+      size: p.size || null,
+    }))),
+    filename: `${proofList.length} tệp minh chứng`,
+    docId: proofList[0]?.document_id || null,
+  };
+}
+
 export async function renderAttendance(el, me, route = {}) {
   const isDirectorHau = (u) => {
     if (!u) return false;
@@ -89,17 +152,21 @@ export async function renderAttendance(el, me, route = {}) {
             <input id="att-wfh-reason" type="text" placeholder="Nhập lý do làm việc tại nhà (bắt buộc)..." style="background:rgba(255,255,255,.2);border-color:rgba(255,255,255,.4);color:#fff;width:100%;border-radius:6px;padding:7px 10px;"/>
           </div>
           <div class="field" style="margin-bottom:0;">
-            <label style="color:rgba(255,255,255,.85);font-size:12px;display:flex;align-items:center;gap:4px;">
-              ${icon('paperclip', 'xs')} <span>Minh chứng WFH (ảnh chụp, tài liệu hoặc link)</span>
+            <label style="color:rgba(255,255,255,.85);font-size:12px;display:flex;align-items:center;justify-content:space-between;">
+              <span style="display:flex;align-items:center;gap:4px;">
+                ${icon('paperclip', 'xs')} <span>Minh chứng WFH (ảnh chụp, tài liệu hoặc link)</span>
+              </span>
+              <span id="att-wfh-file-count" style="font-size:11px;color:rgba(255,255,255,.7)">Tối đa 5 tệp</span>
             </label>
             <div style="display:flex;gap:8px;align-items:center;margin-top:4px;flex-wrap:wrap;">
               <label class="btn-secondary btn-sm" style="cursor:pointer;margin:0;background:rgba(255,255,255,0.2);color:#fff;border-color:rgba(255,255,255,0.35);font-size:12px;padding:5px 10px;display:inline-flex;align-items:center;gap:4px;">
                 ${icon('upload', 'xs')} <span id="att-wfh-file-label">Chọn tệp / ảnh</span>
-                <input type="file" id="att-wfh-file" accept="image/*,application/pdf" style="display:none;"/>
+                <input type="file" id="att-wfh-file" multiple accept="image/*,application/pdf" style="display:none;"/>
               </label>
-              <input type="text" id="att-wfh-proof-url" placeholder="Hoặc dán link tài liệu minh chứng..." style="flex:1;min-width:180px;background:rgba(255,255,255,.15);border-color:rgba(255,255,255,.3);color:#fff;border-radius:6px;padding:5px 8px;font-size:12px;"/>
+              <input type="text" id="att-wfh-proof-url" placeholder="Hoặc dán link tài liệu..." style="flex:1;min-width:180px;background:rgba(255,255,255,.15);border-color:rgba(255,255,255,.3);color:#fff;border-radius:6px;padding:5px 8px;font-size:12px;"/>
+              <button type="button" id="att-wfh-add-link-btn" class="btn-secondary btn-sm" style="background:rgba(255,255,255,0.2);color:#fff;border-color:rgba(255,255,255,0.35);font-size:12px;padding:5px 8px;cursor:pointer;">+ Thêm link</button>
             </div>
-            <div id="att-wfh-uploaded-hint" style="display:none;font-size:11.5px;color:#86efac;margin-top:4px;"></div>
+            <div id="att-wfh-file-list" style="margin-top:6px;display:flex;flex-direction:column;gap:4px;"></div>
           </div>
         </div>
         <div id="att-business-time" style="display:none;gap:10px;" class="flex">
@@ -338,7 +405,56 @@ export async function renderAttendance(el, me, route = {}) {
   }
 
   // ── Registration form interactivity ──
-  let pendingWfhProof = null;
+  let pendingWfhProofs = [];
+
+  function renderWfhProofChips() {
+    const listEl = document.getElementById('att-wfh-file-list');
+    const countEl = document.getElementById('att-wfh-file-count');
+    const labelEl = document.getElementById('att-wfh-file-label');
+    if (!listEl) return;
+    if (labelEl) {
+      labelEl.textContent = pendingWfhProofs.length > 0 ? '+ Thêm tệp' : 'Chọn tệp / ảnh';
+    }
+    if (countEl) {
+      countEl.textContent = `Đã chọn: ${pendingWfhProofs.length}/5 minh chứng`;
+      countEl.style.color = pendingWfhProofs.length >= 5 ? '#fca5a5' : 'rgba(255,255,255,.7)';
+    }
+    if (!pendingWfhProofs.length) {
+      listEl.innerHTML = '';
+      return;
+    }
+    listEl.innerHTML = pendingWfhProofs.map((p, idx) => `
+      <div style="display:flex;align-items:center;justify-content:space-between;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.25);border-radius:6px;padding:4px 8px;font-size:11.5px;color:#fff;gap:6px;">
+        <div style="display:flex;align-items:center;gap:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">
+          ${icon(p.isLink || /^https?:\/\//i.test(p.url) ? 'externalLink' : 'paperclip', 'xs')}
+          <span title="${esc(p.filename)}">${esc(p.filename)}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:4px;flex-shrink:0;">
+          <button type="button" class="btn-xs btn-preview-wfh-item" data-index="${idx}" style="background:transparent;border:none;color:#93c5fd;cursor:pointer;padding:2px 4px;" title="Xem thử">${icon('eye', 'xs')}</button>
+          <button type="button" class="btn-xs btn-remove-wfh-item" data-index="${idx}" style="background:transparent;border:none;color:#fca5a5;cursor:pointer;padding:2px 4px;font-weight:bold;" title="Xóa">✕</button>
+        </div>
+      </div>
+    `).join('');
+
+    listEl.querySelectorAll('.btn-preview-wfh-item').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const idx = Number(btn.dataset.index);
+        const item = pendingWfhProofs[idx];
+        if (item) viewProofModal([item], item.filename);
+      });
+    });
+
+    listEl.querySelectorAll('.btn-remove-wfh-item').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const idx = Number(btn.dataset.index);
+        pendingWfhProofs.splice(idx, 1);
+        renderWfhProofChips();
+      });
+    });
+  }
+
   function updateWorktypeChips() {
     document.querySelectorAll('#att-worktype-row .att-chip').forEach(b => {
       b.classList.toggle('active', b.dataset.worktype === regWorkType);
@@ -368,26 +484,62 @@ export async function renderAttendance(el, me, route = {}) {
   const wfhFileInput = document.getElementById('att-wfh-file');
   if (wfhFileInput) {
     wfhFileInput.addEventListener('change', async (e) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      const label = document.getElementById('att-wfh-file-label');
-      const hint = document.getElementById('att-wfh-uploaded-hint');
-      if (label) label.textContent = 'Đang tải lên...';
-      try {
-        const res = await api.uploadWfhProof(file);
-        pendingWfhProof = res;
-        if (label) label.textContent = 'Đổi tệp khác';
-        if (hint) {
-          hint.style.display = 'block';
-          hint.innerHTML = `${icon('circleCheck', 'xs')} Đã đính kèm: <b>${esc(res.filename)}</b>`;
-        }
-        toast('Đã tải minh chứng lên thành công', 'success');
-      } catch (err) {
-        if (label) label.textContent = 'Chọn tệp / ảnh';
-        toast(err.message || 'Lỗi tải tệp lên', 'error');
+      const files = Array.from(e.target.files || []);
+      if (!files.length) return;
+      const available = 5 - pendingWfhProofs.length;
+      if (available <= 0) {
+        toast('Đã đạt tối đa 5 minh chứng', 'warning');
+        e.target.value = '';
+        return;
       }
+      if (files.length > available) {
+        toast(`Chỉ nhận thêm tối đa ${available} tệp (tổng tối đa 5 tệp)`, 'warning');
+      }
+      const toUpload = files.slice(0, available);
+      const label = document.getElementById('att-wfh-file-label');
+      if (label) label.textContent = 'Đang tải lên...';
+      for (const file of toUpload) {
+        try {
+          const res = await api.uploadWfhProof(file);
+          pendingWfhProofs.push({
+            url: res.file_url || res.url,
+            filename: res.filename || file.name,
+            document_id: res.document_id || null,
+            size: file.size,
+          });
+          renderWfhProofChips();
+        } catch (err) {
+          toast(err.message || `Lỗi tải ${file.name}`, 'error');
+        }
+      }
+      e.target.value = '';
+      if (label) label.textContent = pendingWfhProofs.length > 0 ? '+ Thêm tệp' : 'Chọn tệp / ảnh';
     });
   }
+
+  const addWfhLinkBtn = document.getElementById('att-wfh-add-link-btn');
+  const addWfhLinkAction = () => {
+    const input = document.getElementById('att-wfh-proof-url');
+    const val = input?.value?.trim();
+    if (!val) return;
+    if (pendingWfhProofs.length >= 5) {
+      toast('Đã đạt tối đa 5 minh chứng', 'warning');
+      return;
+    }
+    let disp = val;
+    try {
+      const u = new URL(val);
+      disp = u.hostname + (u.pathname.length > 20 ? u.pathname.slice(0, 18) + '…' : u.pathname);
+    } catch (_) {}
+    pendingWfhProofs.push({ url: val, filename: disp, isLink: true });
+    input.value = '';
+    renderWfhProofChips();
+    toast('Đã thêm link minh chứng', 'success');
+  };
+  addWfhLinkBtn?.addEventListener('click', addWfhLinkAction);
+  document.getElementById('att-wfh-proof-url')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addWfhLinkAction(); }
+  });
 
   regShifts.add('morning'); regShifts.add('afternoon'); // default: full day
   updateWorktypeChips(); updateShiftChips();
@@ -418,8 +570,8 @@ export async function renderAttendance(el, me, route = {}) {
           if (rInput && !rInput.value) rInput.value = todayRecord.wfh_reason;
         }
         if (todayRecord.wfh_proof_url) {
-          const pInput = document.getElementById('att-wfh-proof-url');
-          if (pInput && !pInput.value) pInput.value = todayRecord.wfh_proof_url;
+          pendingWfhProofs = parseProofList(todayRecord.wfh_proof_url, todayRecord.wfh_proof_filename);
+          renderWfhProofChips();
         }
       }
       if (regShifts.size === 0) { regShifts.add('morning'); regShifts.add('afternoon'); }
@@ -459,12 +611,13 @@ export async function renderAttendance(el, me, route = {}) {
 
   const wfhFooterSection = (r) => {
     if (!r || r.work_type !== 'wfh') return '';
+    const proofCount = parseProofList(r.wfh_proof_url).length;
     return `
       <div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.15);text-align:left;">
         ${r.wfh_reason ? `<div style="font-size:12px;color:#fef08a;margin-bottom:4px;"><b>Lý do WFH:</b> ${esc(r.wfh_reason)}</div>` : ''}
         ${r.wfh_review_note && r.wfh_status === 'rejected' ? `<div style="font-size:12px;color:#fca5a5;margin-bottom:4px;"><b>Lý do từ chối:</b> ${esc(r.wfh_review_note)}</div>` : ''}
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">
-          ${r.wfh_proof_url ? `<button type="button" class="btn-secondary btn-xs btn-view-today-wfh-proof" style="display:inline-flex;align-items:center;gap:4px;">${icon('paperclip', 'xs')} <span>Xem minh chứng</span></button>` : ''}
+          ${r.wfh_proof_url ? `<button type="button" class="btn-secondary btn-xs btn-view-today-wfh-proof" style="display:inline-flex;align-items:center;gap:4px;">${icon('paperclip', 'xs')} <span>Xem minh chứng${proofCount > 1 ? ` (${proofCount})` : ''}</span></button>` : ''}
           <button type="button" class="btn-secondary btn-xs btn-edit-today-wfh-proof" style="display:inline-flex;align-items:center;gap:4px;">${icon('pencil', 'xs')} <span>${r.wfh_proof_url ? 'Cập nhật minh chứng / lý do' : 'Bổ sung minh chứng WFH'}</span></button>
         </div>
       </div>
@@ -602,9 +755,14 @@ document.getElementById('btn-register').addEventListener('click', async () => {
     if (needsRegistration) {
       // Bước 1: Đăng ký
       const wfhReason = regWorkType === 'wfh' ? document.getElementById('att-wfh-reason')?.value?.trim() : undefined;
-      const wfhProofUrl = regWorkType === 'wfh' ? (document.getElementById('att-wfh-proof-url')?.value?.trim() || pendingWfhProof?.file_url || undefined) : undefined;
-      const wfhProofFilename = regWorkType === 'wfh' ? (pendingWfhProof?.filename || undefined) : undefined;
-      const wfhProofDocId = regWorkType === 'wfh' ? (pendingWfhProof?.document_id || undefined) : undefined;
+      const manualLink = document.getElementById('att-wfh-proof-url')?.value?.trim();
+      if (manualLink && pendingWfhProofs.length < 5 && !pendingWfhProofs.some(p => p.url === manualLink)) {
+        pendingWfhProofs.push({ url: manualLink, filename: manualLink, isLink: true });
+      }
+      const serialized = serializeProofList(pendingWfhProofs);
+      const wfhProofUrl = regWorkType === 'wfh' ? (serialized.url || undefined) : undefined;
+      const wfhProofFilename = regWorkType === 'wfh' ? (serialized.filename || undefined) : undefined;
+      const wfhProofDocId = regWorkType === 'wfh' ? (serialized.docId || undefined) : undefined;
       await api.registerAttendance({
         work_type: regWorkType,
         shift: resolvedShift(),
@@ -686,17 +844,40 @@ document.getElementById('btn-register').addEventListener('click', async () => {
       const pageData = paginateRows(forms, otFormPage);
       otFormPage = pageData.page;
       list.innerHTML = pageData.rows.length ? `<div class="table-wrap"><table><thead><tr><th>Nhân viên</th><th>Thời gian & lý do</th><th>Đề nghị / duyệt</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>${pageData.rows.map(form => {
-        const detail = form.items.map(item => `
-          <div class="ot-item-cell" style="display:flex;flex-direction:column;gap:3px;max-width:380px;">
-            <div style="font-weight:600;font-size:12.5px;color:var(--text);">${esc(item.start_at.replace('T', ' '))} → ${esc(item.end_at.replace('T', ' '))}</div>
-            <div style="font-size:12px;color:var(--text-2);line-height:1.4;">${esc(item.reason)} · <span class="badge badge-gray" style="font-size:11px;padding:1px 6px;">${item.time_category === 'holiday' ? 'Ngày lễ' : item.time_category === 'rest_day' ? 'Ngày nghỉ' : 'Ngày thường'}</span></div>
-          </div>
-        `).join('<hr style="border:0;border-top:1px solid var(--border);margin:7px 0">');
+        const detail = form.items.map(item => {
+          const itemProofs = parseProofList(item.proof_url);
+          const itemProofHtml = itemProofs.length ? `
+            <div style="margin-top:4px;">
+              <button type="button" class="btn-secondary btn-xs btn-ot-item-proof" data-form-id="${form.id}" data-item-id="${item.id}" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 7px;">
+                ${icon('paperclip', 'xs')} <span>Xem minh chứng${itemProofs.length > 1 ? ` (${itemProofs.length})` : ''}</span>
+              </button>
+            </div>
+          ` : '';
+          return `
+            <div class="ot-item-cell" style="display:flex;flex-direction:column;gap:3px;max-width:380px;">
+              <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
+                <span style="font-weight:600;font-size:12.5px;color:var(--text);">${esc(item.start_at.replace('T', ' '))} → ${esc(item.end_at.replace('T', ' '))}</span>
+                ${renderOtCategoryBadge(item.time_category)}
+              </div>
+              ${item.reason ? `<div style="font-size:12px;color:var(--text-2);line-height:1.4;">${esc(item.reason)}</div>` : ''}
+              ${itemProofHtml}
+            </div>
+          `;
+        }).join('<hr style="border:0;border-top:1px solid var(--border);margin:7px 0">');
         const minutes = `${(Number(form.requested_minutes || 0) / 60).toFixed(2)}h${form.status !== 'draft' ? ` / ${(Number(form.approved_minutes || 0) / 60).toFixed(2)}h` : ''}`;
         const isPendingB1 = form.status === 'pending';
         const isPendingB2 = form.status === 'pending_director';
         const canSubmit = Number(form.user_id) === Number(me.id) && form.status === 'draft';
-        
+        const formProofs = parseProofList(form.proof_url);
+        const hasItemProofs = form.items.some(it => parseProofList(it.proof_url).length > 0);
+        const proofHtml = (!hasItemProofs && formProofs.length) ? `
+          <div style="margin-top:6px;">
+            <button type="button" class="btn-secondary btn-xs btn-ot-form-proof" data-id="${form.id}" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 7px;">
+              ${icon('paperclip', 'xs')} <span>Xem minh chứng chung${formProofs.length > 1 ? ` (${formProofs.length})` : ''}</span>
+            </button>
+          </div>
+        ` : '';
+
         let actionButtons = '';
         if (isPendingB1) {
           if (isHau) {
@@ -720,10 +901,21 @@ document.getElementById('btn-register').addEventListener('click', async () => {
           actionButtons += `<small style="color:var(--text-2);display:block;margin-top:2px;">B1: ${esc(form.step1_reviewer_name)}</small>`;
         }
 
-        return `<tr><td><b>${esc(form.full_name)}</b><br><small style="color:var(--text-2);font-size:11.5px;">${esc(form.employee_code || '')}</small></td><td>${detail}</td><td><strong>${minutes}</strong></td><td>${formStatus(form.status)}${form.review_note ? `<br><small style="color:var(--text-2);">${esc(form.review_note)}</small>` : ''}</td><td>${actionButtons || '—'}</td></tr>`;
+        return `<tr><td><b>${esc(form.full_name)}</b><br><small style="color:var(--text-2);font-size:11.5px;">${esc(form.employee_code || '')}</small></td><td>${detail}${proofHtml}</td><td><strong>${minutes}</strong></td><td>${formStatus(form.status)}${form.review_note ? `<br><small style="color:var(--text-2);">${esc(form.review_note)}</small>` : ''}</td><td>${actionButtons || '—'}</td></tr>`;
       }).join('')}</tbody></table></div>${paginationHTML(pageData)}` : emptyHTML('fileText', 'Chưa có form làm thêm giờ trong kỳ này');
       bindPagination(list, page => { otFormPage = page; loadOvertimeForms(); });
       list.querySelectorAll('.ot-form-decide').forEach(button => button.addEventListener('click', () => openOvertimeFormDecision(Number(button.dataset.id))));
+      list.querySelectorAll('.btn-ot-item-proof').forEach(btn => btn.addEventListener('click', () => {
+        const targetForm = overtimeForms.find(f => Number(f.id) === Number(btn.dataset.formId));
+        const targetItem = targetForm?.items?.find(it => Number(it.id) === Number(btn.dataset.itemId));
+        if (targetItem?.proof_url) {
+          viewProofModal(targetItem.proof_url, `Minh chứng ca OT (${targetItem.start_at.replace('T', ' ')}) - ${targetForm.full_name}`);
+        }
+      }));
+      list.querySelectorAll('.btn-ot-form-proof').forEach(btn => btn.addEventListener('click', () => {
+        const target = overtimeForms.find(f => Number(f.id) === Number(btn.dataset.id));
+        if (target?.proof_url) viewProofModal(target.proof_url, `Minh chứng OT - ${target.full_name}`);
+      }));
       list.querySelectorAll('.ot-form-submit').forEach(button => button.addEventListener('click', async () => {
         try { await api.submitOvertimeForm(button.dataset.id); toast('Đã gửi form OT chờ duyệt', 'success'); loadOvertimeForms(); }
         catch (error) { toast(error.message, 'error'); }
@@ -732,36 +924,268 @@ document.getElementById('btn-register').addEventListener('click', async () => {
   }
 
   function openOvertimeFormCreator() {
-    let itemIndex = 0;
-    const renderItem = () => `<div class="ot-form-item" data-index="${itemIndex++}" style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px"><div class="input-row"><div class="field"><label>Từ *</label><input class="ot-start" type="datetime-local"/></div><div class="field"><label>Đến *</label><input class="ot-end" type="datetime-local"/></div></div><div class="input-row"><div class="field"><label>Thời điểm *</label><select class="ot-category"><option value="workday">Ngày thường</option><option value="rest_day">Ngày nghỉ</option><option value="holiday">Ngày lễ</option></select></div><div class="field" style="flex:2"><label>Lý do *</label><input class="ot-item-reason" maxlength="1000" placeholder="Ví dụ: Theo lịch tổ chức sự kiện"/></div></div><button type="button" class="btn-danger btn-sm ot-remove-row">Xóa dòng</button></div>`;
-    openModal('Tạo form làm thêm giờ', `<div class="field"><label>Tháng OT *</label><input id="ot-form-month" type="month" value="${closingMonth}"/></div><p style="font-size:12px;color:var(--text-2)">Có thể thêm nhiều ca, kể cả ca qua ngày. Chỉ giờ được HCNS duyệt mới được tính.</p><div id="ot-form-items">${renderItem()}</div><button id="ot-add-row" type="button" class="btn-secondary btn-sm">+ Thêm ca OT</button>`, '<button class="btn-secondary" id="ot-form-cancel">Hủy</button><button class="btn-primary" id="ot-form-send">Gửi HCNS duyệt</button>');
-    const bindRows = () => {
-      document.querySelectorAll('.ot-remove-row').forEach(button => button.onclick = () => { const rows = document.querySelectorAll('.ot-form-item'); if (rows.length === 1) { toast('Form cần ít nhất một ca OT', 'error'); return; } button.closest('.ot-form-item').remove(); });
-      // Auto-fill "Đến" when "Từ" is filled: same day at 18:00, or start+2h if start >= 18:00
-      document.querySelectorAll('.ot-start').forEach(input => {
-        input.addEventListener('change', () => {
-          const row = input.closest('.ot-form-item');
-          const endInput = row.querySelector('.ot-end');
-          if (!endInput || endInput.value || !input.value) return;
-          const startVal = input.value; // "2026-08-11T17:00"
-          const [datePart, timePart] = startVal.split('T');
-          const [h, m] = (timePart || '00:00').split(':').map(Number);
-          const endH = h >= 18 ? h + 2 : 18;
-          const endTime = `${String(Math.min(endH, 23)).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-          endInput.value = `${datePart}T${endTime}`;
-        });
+    let itemCounter = 0;
+    const itemProofsMap = new Map();
+
+    const renderItem = (id) => `
+      <div class="ot-form-item" data-id="${id}" style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px;background:rgba(255,255,255,0.015);">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <div style="font-weight:600;font-size:13px;color:var(--text);display:flex;align-items:center;gap:6px;">
+            <span class="ot-item-header-label">Ca OT</span>
+          </div>
+          <button type="button" class="btn-danger btn-xs ot-remove-row" style="padding:2px 8px;font-size:11px;">✕ Xóa ca này</button>
+        </div>
+        <div class="input-row">
+          <div class="field"><label>Từ *</label><input class="ot-start" type="datetime-local"/></div>
+          <div class="field"><label>Đến *</label><input class="ot-end" type="datetime-local"/></div>
+        </div>
+        <div class="input-row">
+          <div class="field">
+            <label>Thời điểm *</label>
+            <select class="ot-category">
+              <option value="workday">Ngày thường (Hệ số x1.5)</option>
+              <option value="rest_day">Ngày nghỉ (Hệ số x2.0)</option>
+              <option value="holiday">Ngày lễ (Hệ số x3.0)</option>
+            </select>
+          </div>
+          <div class="field" style="flex:2">
+            <label>Lý do *</label>
+            <input class="ot-item-reason" maxlength="1000" placeholder="Ví dụ: Theo lịch tổ chức sự kiện"/>
+          </div>
+        </div>
+        <div class="ot-item-proof-box" style="border:1px dashed var(--border);border-radius:6px;padding:8px 10px;margin-top:8px;background:rgba(0,0,0,0.12);">
+          <div style="font-weight:600;display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;font-size:12px;">
+            <span style="display:flex;align-items:center;gap:4px;">
+              ${icon('paperclip', 'xs')} <span>Minh chứng ca này (tối đa 5 tệp / link)</span>
+            </span>
+            <span class="ot-item-proof-count" style="font-size:11px;color:var(--text-3);">0/5 tệp</span>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
+            <label class="btn-secondary btn-xs" style="cursor:pointer;margin:0;display:inline-flex;align-items:center;gap:4px;padding:4px 8px;">
+              ${icon('upload', 'xs')} <span class="ot-item-file-label">Chọn tệp / ảnh</span>
+              <input type="file" class="ot-item-file-input" multiple accept="image/*,application/pdf" style="display:none;"/>
+            </label>
+            <input type="text" class="ot-item-link-input" placeholder="Hoặc dán link tài liệu..." style="flex:1;min-width:140px;padding:4px 8px;border-radius:5px;font-size:11.5px;border:1px solid var(--border);background:var(--bg-input,rgba(0,0,0,0.2));color:var(--text);"/>
+            <button type="button" class="btn-secondary btn-xs ot-item-add-link" style="padding:4px 8px;font-size:11.5px;">+ Thêm link</button>
+          </div>
+          <div class="ot-item-proof-chips" style="display:flex;flex-direction:column;gap:4px;"></div>
+        </div>
+      </div>
+    `;
+
+    const initialId = ++itemCounter;
+    itemProofsMap.set(initialId, []);
+
+    openModal('Tạo form làm thêm giờ', `
+      <div class="field"><label>Tháng OT *</label><input id="ot-form-month" type="month" value="${closingMonth}"/></div>
+      <p style="font-size:12px;color:var(--text-2)">Có thể thêm nhiều ca, kể cả ca qua ngày. Mỗi ca có thể đính kèm minh chứng riêng (tối đa 5 tệp/link).</p>
+      <div id="ot-form-items">${renderItem(initialId)}</div>
+      <button id="ot-add-row" type="button" class="btn-secondary btn-sm" style="margin-bottom:12px;">+ Thêm ca OT</button>
+    `, '<button class="btn-secondary" id="ot-form-cancel">Hủy</button><button class="btn-primary" id="ot-form-send">Gửi HCNS duyệt</button>');
+
+    const renderItemChips = (itemId) => {
+      const row = document.querySelector(`.ot-form-item[data-id="${itemId}"]`);
+      if (!row) return;
+      const proofs = itemProofsMap.get(itemId) || [];
+      const countEl = row.querySelector('.ot-item-proof-count');
+      const labelEl = row.querySelector('.ot-item-file-label');
+      const chipsEl = row.querySelector('.ot-item-proof-chips');
+      if (labelEl) {
+        labelEl.textContent = proofs.length > 0 ? '+ Thêm tệp' : 'Chọn tệp / ảnh';
+      }
+      if (countEl) {
+        countEl.textContent = `Đã đính kèm: ${proofs.length}/5 tệp`;
+        countEl.style.color = proofs.length >= 5 ? 'var(--danger)' : 'var(--text-3)';
+      }
+      if (!chipsEl) return;
+      if (!proofs.length) {
+        chipsEl.innerHTML = '<div style="font-size:11px;color:var(--text-3);padding:2px 0;">Chưa có tệp minh chứng cho ca này.</div>';
+        return;
+      }
+      chipsEl.innerHTML = proofs.map((p, pIdx) => `
+        <div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg-card,#1e293b);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:11.5px;color:var(--text);gap:6px;">
+          <div style="display:flex;align-items:center;gap:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">
+            ${icon(p.isLink || /^https?:\/\//i.test(p.url) ? 'externalLink' : 'paperclip', 'xs')}
+            <span title="${esc(p.filename)}">${esc(p.filename)}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:4px;flex-shrink:0;">
+            <button type="button" class="btn-xs ot-item-preview-chip" data-item-id="${itemId}" data-p-idx="${pIdx}" style="background:transparent;border:none;color:var(--primary);cursor:pointer;padding:2px 4px;" title="Xem thử">${icon('eye', 'xs')}</button>
+            <button type="button" class="btn-xs ot-item-remove-chip" data-item-id="${itemId}" data-p-idx="${pIdx}" style="background:transparent;border:none;color:var(--danger);cursor:pointer;padding:2px 4px;font-weight:bold;" title="Xóa">✕</button>
+          </div>
+        </div>
+      `).join('');
+
+      chipsEl.querySelectorAll('.ot-item-preview-chip').forEach(btn => {
+        btn.onclick = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const p = proofs[Number(btn.dataset.pIdx)];
+          if (p) viewProofModal([p], p.filename);
+        };
+      });
+
+      chipsEl.querySelectorAll('.ot-item-remove-chip').forEach(btn => {
+        btn.onclick = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          proofs.splice(Number(btn.dataset.pIdx), 1);
+          renderItemChips(itemId);
+        };
       });
     };
-    bindRows();
-    document.getElementById('ot-add-row').onclick = () => { document.getElementById('ot-form-items').insertAdjacentHTML('beforeend', renderItem()); bindRows(); };
+
+    const updateShiftLabels = () => {
+      const rows = document.querySelectorAll('.ot-form-item');
+      rows.forEach((row, index) => {
+        const label = row.querySelector('.ot-item-header-label');
+        if (label) label.textContent = `Ca OT ${index + 1}`;
+      });
+    };
+
+    const bindRowEvents = (row, itemId) => {
+      row.querySelector('.ot-remove-row')?.addEventListener('click', () => {
+        const rows = document.querySelectorAll('.ot-form-item');
+        if (rows.length === 1) {
+          toast('Form cần ít nhất một ca OT', 'error');
+          return;
+        }
+        itemProofsMap.delete(itemId);
+        row.remove();
+        updateShiftLabels();
+      });
+
+      const startInput = row.querySelector('.ot-start');
+      const endInput = row.querySelector('.ot-end');
+      startInput?.addEventListener('change', () => {
+        if (!endInput || endInput.value || !startInput.value) return;
+        const startVal = startInput.value;
+        const [datePart, timePart] = startVal.split('T');
+        const [h, m] = (timePart || '00:00').split(':').map(Number);
+        const endH = h >= 18 ? h + 2 : 18;
+        const endTime = `${String(Math.min(endH, 23)).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+        endInput.value = `${datePart}T${endTime}`;
+      });
+
+      const fileInput = row.querySelector('.ot-item-file-input');
+      const fileLabel = row.querySelector('.ot-item-file-label');
+      fileInput?.addEventListener('change', async (e) => {
+        const files = Array.from(e.target.files || []);
+        if (!files.length) return;
+        const proofs = itemProofsMap.get(itemId) || [];
+        const available = 5 - proofs.length;
+        if (available <= 0) {
+          toast('Ca này đã đạt tối đa 5 minh chứng', 'warning');
+          e.target.value = '';
+          return;
+        }
+        if (files.length > available) {
+          toast(`Chỉ nhận thêm tối đa ${available} tệp cho ca này`, 'warning');
+        }
+        const toUpload = files.slice(0, available);
+        if (fileLabel) fileLabel.textContent = 'Đang tải lên...';
+        for (const file of toUpload) {
+          try {
+            const res = await api.uploadWfhProof(file);
+            proofs.push({
+              url: res.file_url || res.url,
+              filename: res.filename || file.name,
+              document_id: res.document_id || null,
+              size: file.size,
+            });
+            renderItemChips(itemId);
+          } catch (err) {
+            toast(err.message || `Lỗi tải ${file.name}`, 'error');
+          }
+        }
+        e.target.value = '';
+        if (fileLabel) fileLabel.textContent = proofs.length > 0 ? '+ Thêm tệp' : 'Chọn tệp / ảnh';
+      });
+
+      const linkInput = row.querySelector('.ot-item-link-input');
+      const addLinkBtn = row.querySelector('.ot-item-add-link');
+      const addLinkAction = () => {
+        const val = linkInput?.value?.trim();
+        if (!val) return;
+        const proofs = itemProofsMap.get(itemId) || [];
+        if (proofs.length >= 5) {
+          toast('Ca này đã đạt tối đa 5 minh chứng', 'warning');
+          return;
+        }
+        let disp = val;
+        try {
+          const u = new URL(val);
+          disp = u.hostname + (u.pathname.length > 20 ? u.pathname.slice(0, 18) + '…' : u.pathname);
+        } catch (_) {}
+        proofs.push({ url: val, filename: disp, isLink: true });
+        linkInput.value = '';
+        renderItemChips(itemId);
+        toast('Đã thêm link minh chứng cho ca này', 'success');
+      };
+      addLinkBtn?.addEventListener('click', addLinkAction);
+      linkInput?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); addLinkAction(); }
+      });
+
+      renderItemChips(itemId);
+    };
+
+    const firstRow = document.querySelector(`.ot-form-item[data-id="${initialId}"]`);
+    if (firstRow) {
+      bindRowEvents(firstRow, initialId);
+      updateShiftLabels();
+    }
+
+    document.getElementById('ot-add-row').onclick = () => {
+      const id = ++itemCounter;
+      itemProofsMap.set(id, []);
+      const container = document.getElementById('ot-form-items');
+      container.insertAdjacentHTML('beforeend', renderItem(id));
+      const newRow = container.querySelector(`.ot-form-item[data-id="${id}"]`);
+      if (newRow) {
+        bindRowEvents(newRow, id);
+        updateShiftLabels();
+      }
+    };
     document.getElementById('ot-form-cancel').onclick = closeModal;
+
     document.getElementById('ot-form-send').onclick = async event => {
       const period_month = document.getElementById('ot-form-month').value;
-      const items = [...document.querySelectorAll('.ot-form-item')].map(row => ({ start_at: row.querySelector('.ot-start').value, end_at: row.querySelector('.ot-end').value, reason: row.querySelector('.ot-item-reason').value.trim(), time_category: row.querySelector('.ot-category').value }));
-      if (!period_month || items.some(item => !item.start_at || !item.end_at || !item.reason)) { toast('Vui lòng nhập đầy đủ thời gian và lý do', 'error'); return; }
+      const rows = [...document.querySelectorAll('.ot-form-item')];
+      const items = rows.map(row => {
+        const itemId = Number(row.dataset.id);
+        const proofs = itemProofsMap.get(itemId) || [];
+        const manualLink = row.querySelector('.ot-item-link-input')?.value?.trim();
+        if (manualLink && proofs.length < 5 && !proofs.some(p => p.url === manualLink)) {
+          proofs.push({ url: manualLink, filename: manualLink, isLink: true });
+        }
+        const serialized = serializeProofList(proofs);
+        return {
+          start_at: row.querySelector('.ot-start').value,
+          end_at: row.querySelector('.ot-end').value,
+          reason: row.querySelector('.ot-item-reason').value.trim(),
+          time_category: row.querySelector('.ot-category').value,
+          proof_url: serialized.url || null,
+        };
+      });
+
+      if (!period_month || items.some(item => !item.start_at || !item.end_at || !item.reason)) {
+        toast('Vui lòng nhập đầy đủ thời gian và lý do cho tất cả các ca', 'error');
+        return;
+      }
+
       event.currentTarget.disabled = true;
-      try { await api.createOvertimeForm({ period_month, items, submit: true }); closeModal(); toast('Đã gửi form OT chờ HCNS duyệt', 'success'); loadOvertimeForms(); }
-      catch (error) { toast(error.message, 'error'); event.currentTarget.disabled = false; }
+      try {
+        await api.createOvertimeForm({
+          period_month,
+          items,
+          submit: true,
+          proof_url: items.find(it => it.proof_url)?.proof_url || null,
+        });
+        closeModal();
+        toast('Đã gửi form OT chờ HCNS duyệt', 'success');
+        loadOvertimeForms();
+      } catch (error) {
+        toast(error.message, 'error');
+        event.currentTarget.disabled = false;
+      }
     };
   }
 
@@ -773,8 +1197,56 @@ document.getElementById('btn-register').addEventListener('click', async () => {
     const modalTitle = isFinalStep ? 'Phê duyệt cuối cùng (Phó Tổng Giám Đốc) - Form OT' : 'Duyệt Bước 1 (HCNS) - Form OT';
     const approveBtnLabel = isFinalStep ? 'Phê duyệt chốt' : 'Duyệt Bước 1';
 
-    const rows = form.items.map(item => `<tr><td>${esc(item.start_at.replace('T', ' '))}<br>${esc(item.end_at.replace('T', ' '))}</td><td>${esc(item.reason)}</td><td>${Number(item.requested_minutes)} phút</td><td><input class="ot-form-approved" data-id="${item.id}" type="number" min="0" max="${item.requested_minutes}" value="${item.requested_minutes}"/></td></tr>`).join('');
-    openModal(modalTitle, `<div class="table-wrap"><table><thead><tr><th>Thời gian</th><th>Lý do</th><th>Đề nghị</th><th>Duyệt phút</th></tr></thead><tbody>${rows}</tbody></table></div><div class="field"><label>Ghi chú duyệt/từ chối</label><textarea id="ot-form-review-note" rows="3"></textarea></div>`, `<button class="btn-danger" id="ot-form-reject">Từ chối</button><button class="btn-primary" id="ot-form-approve">${approveBtnLabel}</button>`);
+    const formProofs = parseProofList(form.proof_url);
+    const hasItemProofs = form.items.some(it => parseProofList(it.proof_url).length > 0);
+    const proofHeader = (!hasItemProofs && formProofs.length) ? `
+      <div style="margin-bottom:12px;padding:8px 12px;background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.25);border-radius:6px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+        <div style="font-size:12.5px;color:var(--text);display:flex;align-items:center;gap:6px;">
+          ${icon('paperclip', 'xs')} <b>Minh chứng chung (${formProofs.length} tệp):</b> <span style="color:var(--text-2);">${esc(formProofs.map(p => p.filename).join(', '))}</span>
+        </div>
+        <button type="button" class="btn-secondary btn-sm" id="ot-decision-view-proof" style="display:inline-flex;align-items:center;gap:4px;">
+          ${icon('eye', 'xs')} <span>Xem chi tiết minh chứng</span>
+        </button>
+      </div>
+    ` : '';
+
+    const rows = form.items.map(item => {
+      const itemProofs = parseProofList(item.proof_url);
+      const proofBtn = itemProofs.length ? `
+        <div style="margin-top:4px;">
+          <button type="button" class="btn-secondary btn-xs ot-decision-item-proof" data-id="${item.id}" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 6px;">
+            ${icon('eye', 'xs')} <span>Minh chứng (${itemProofs.length})</span>
+          </button>
+        </div>
+      ` : '';
+      return `<tr>
+        <td>
+          <div style="font-weight:600;font-size:12px;">${esc(item.start_at.replace('T', ' '))}</div>
+          <div style="font-size:12px;color:var(--text-2);">→ ${esc(item.end_at.replace('T', ' '))}</div>
+          <div style="margin-top:4px;">${renderOtCategoryBadge(item.time_category)}</div>
+        </td>
+        <td>${esc(item.reason)}${proofBtn}</td>
+        <td>${Number(item.requested_minutes)} phút</td>
+        <td><input class="ot-form-approved" data-id="${item.id}" type="number" min="0" max="${item.requested_minutes}" value="${item.requested_minutes}"/></td>
+      </tr>`;
+    }).join('');
+
+    openModal(modalTitle, `${proofHeader}<div class="table-wrap"><table><thead><tr><th>Thời gian</th><th>Lý do & Minh chứng</th><th>Đề nghị</th><th>Duyệt phút</th></tr></thead><tbody>${rows}</tbody></table></div><div class="field"><label>Ghi chú duyệt/từ chối</label><textarea id="ot-form-review-note" rows="3"></textarea></div>`, `<button class="btn-danger" id="ot-form-reject">Từ chối</button><button class="btn-primary" id="ot-form-approve">${approveBtnLabel}</button>`);
+
+    document.getElementById('ot-decision-view-proof')?.addEventListener('click', () => {
+      viewProofModal(form.proof_url, `Minh chứng OT - ${form.full_name}`);
+    });
+
+    document.querySelectorAll('.ot-decision-item-proof').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const itemId = Number(btn.dataset.id);
+        const item = form.items.find(it => Number(it.id) === itemId);
+        if (item?.proof_url) {
+          viewProofModal(item.proof_url, `Minh chứng ca OT (${item.start_at.replace('T', ' ')}) - ${form.full_name}`);
+        }
+      });
+    });
+
     const decide = async action => {
       const review_note = document.getElementById('ot-form-review-note').value.trim();
       if (action === 'reject' && !review_note) { toast('Vui lòng nhập lý do từ chối', 'error'); return; }
@@ -840,32 +1312,162 @@ document.getElementById('btn-register').addEventListener('click', async () => {
     };
   }
 
-  function viewProofModal(url, filename) {
-    if (!url) return;
-    const isImage = /\.(jpeg|jpg|png|webp|gif)($|\?)/i.test(url) || /\/wfh-proof\/[0-9a-fA-F-]+$/i.test(url);
-    const isPdf = /\.pdf($|\?)/i.test(url);
-    const isExternal = /^https?:\/\//i.test(url) && !url.includes(location.host);
-
-    if (isExternal) {
-      window.open(url, '_blank', 'noopener,noreferrer');
+  function viewProofModal(proofData, defaultFilename = 'Tài liệu') {
+    const proofs = parseProofList(proofData, defaultFilename);
+    if (!proofs.length) {
+      toast('Không có minh chứng để hiển thị', 'info');
       return;
     }
 
-    openModal(`Minh chứng WFH: ${esc(filename || 'Tài liệu')}`, `
-      <div style="text-align:center;max-height:70vh;overflow:auto;padding:10px;">
-        ${isPdf
-          ? `<iframe src="${esc(url)}" style="width:100%;height:500px;border:none;border-radius:6px;"></iframe>`
-          : `<img src="${esc(url)}" alt="Minh chứng" style="max-width:100%;max-height:65vh;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.15);" onerror="this.outerHTML='<p style=\\'color:var(--text-2)\\'>Không thể hiển thị ảnh trực tiếp. <a href=\\'${esc(url)}\\' target=\\'_blank\\' class=\\'btn-secondary btn-sm\\' style=\\'margin-top:8px;display:inline-block;\\'>Mở trong tab mới</a></p>'"/>`
-        }
-      </div>
-    `, `<a href="${esc(url)}" target="_blank" download="${esc(filename || 'minh-chung')}" class="btn-secondary">${icon('download', 'xs')} <span>Tải xuống</span></a><button class="btn-primary" id="wfh-proof-close">Đóng</button>`);
-    document.getElementById('wfh-proof-close')?.addEventListener('click', closeModal);
+    if (proofs.length === 1) {
+      const item = proofs[0];
+      const url = item.url || item.file_url;
+      const filename = item.filename || defaultFilename;
+      const isPdf = /\.pdf($|\?)/i.test(url);
+      const isExternal = /^https?:\/\//i.test(url) && !url.includes(location.host);
+
+      if (isExternal) {
+        window.open(url, '_blank', 'noopener,noreferrer');
+        return;
+      }
+
+      openModal(`Minh chứng: ${esc(filename)}`, `
+        <div style="text-align:center;max-height:70vh;overflow:auto;padding:10px;">
+          ${isPdf
+            ? `<iframe src="${esc(url)}" style="width:100%;height:500px;border:none;border-radius:6px;"></iframe>`
+            : `<img src="${esc(url)}" alt="Minh chứng" style="max-width:100%;max-height:65vh;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.15);" onerror="this.outerHTML='<p style=\\'color:var(--text-2)\\'>Không thể hiển thị ảnh trực tiếp. <a href=\\'${esc(url)}\\' target=\\'_blank\\' class=\\'btn-secondary btn-sm\\' style=\\'margin-top:8px;display:inline-block;\\'>Mở trong tab mới</a></p>'"/>`
+          }
+        </div>
+      `, `<a href="${esc(url)}" target="_blank" download="${esc(filename)}" class="btn-secondary">${icon('download', 'xs')} <span>Tải xuống</span></a><button class="btn-primary" id="wfh-proof-close">Đóng</button>`);
+      document.getElementById('wfh-proof-close')?.addEventListener('click', closeModal);
+      return;
+    }
+
+    let activeIndex = 0;
+    function renderMultiProofModal() {
+      const activeItem = proofs[activeIndex];
+      const url = activeItem.url || activeItem.file_url;
+      const filename = activeItem.filename || `Tệp ${activeIndex + 1}`;
+      const isPdf = /\.pdf($|\?)/i.test(url);
+      const isExternal = /^https?:\/\//i.test(url) && !url.includes(location.host);
+
+      const tabsHtml = proofs.map((p, idx) => {
+        const active = idx === activeIndex;
+        const pName = p.filename || `Tệp ${idx + 1}`;
+        return `<button type="button" class="proof-tab-btn btn-sm ${active ? 'btn-primary' : 'btn-secondary'}" data-index="${idx}" style="font-size:12px;padding:5px 10px;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;border-radius:6px;cursor:pointer;">
+          ${icon(p.isLink || /^https?:\/\//i.test(p.url) ? 'externalLink' : 'paperclip', 'xs')}
+          <span>${esc(pName.length > 20 ? pName.slice(0, 18) + '…' : pName)}</span>
+        </button>`;
+      }).join(' ');
+
+      let previewContent = '';
+      if (isExternal) {
+        previewContent = `
+          <div style="padding:36px 16px;text-align:center;background:rgba(255,255,255,0.03);border-radius:8px;border:1px dashed var(--border);">
+            <div style="margin-bottom:10px;color:var(--primary);">${icon('externalLink', 'lg')}</div>
+            <div style="font-weight:600;margin-bottom:6px;word-break:break-all;color:var(--text);">${esc(url)}</div>
+            <p style="font-size:12px;color:var(--text-3);margin-bottom:14px;">Liên kết ngoài</p>
+            <a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;">
+              ${icon('externalLink', 'xs')} <span>Mở liên kết trong tab mới</span>
+            </a>
+          </div>
+        `;
+      } else if (isPdf) {
+        previewContent = `<iframe src="${esc(url)}" style="width:100%;height:480px;border:none;border-radius:6px;"></iframe>`;
+      } else {
+        previewContent = `<img src="${esc(url)}" alt="Minh chứng" style="max-width:100%;max-height:60vh;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.15);object-fit:contain;" onerror="this.outerHTML='<p style=\\'color:var(--text-2)\\'>Không thể hiển thị ảnh trực tiếp. <a href=\\'${esc(url)}\\' target=\\'_blank\\' class=\\'btn-secondary btn-sm\\' style=\\'margin-top:8px;display:inline-block;\\'>Mở trong tab mới</a></p>'"/>`;
+      }
+
+      openModal(`Minh chứng (${proofs.length} tệp) - ${esc(filename)}`, `
+        <div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:10px;border-bottom:1px solid var(--border);">
+          ${tabsHtml}
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <span style="font-size:12px;color:var(--text-2);">Tệp ${activeIndex + 1}/${proofs.length}: <b>${esc(filename)}</b></span>
+          <div style="display:flex;gap:6px;">
+            <button type="button" class="btn-secondary btn-xs" id="proof-prev-btn" ${activeIndex === 0 ? 'disabled' : ''}>← Trước</button>
+            <button type="button" class="btn-secondary btn-xs" id="proof-next-btn" ${activeIndex === proofs.length - 1 ? 'disabled' : ''}>Sau →</button>
+          </div>
+        </div>
+        <div style="text-align:center;max-height:65vh;overflow:auto;padding:6px;background:rgba(0,0,0,0.05);border-radius:8px;">
+          ${previewContent}
+        </div>
+      `, `
+        ${!isExternal ? `<a href="${esc(url)}" target="_blank" download="${esc(filename)}" class="btn-secondary">${icon('download', 'xs')} <span>Tải tệp này</span></a>` : ''}
+        <button class="btn-primary" id="wfh-proof-close">Đóng</button>
+      `);
+
+      document.getElementById('wfh-proof-close')?.addEventListener('click', closeModal);
+      document.getElementById('proof-prev-btn')?.addEventListener('click', () => {
+        if (activeIndex > 0) { activeIndex--; renderMultiProofModal(); }
+      });
+      document.getElementById('proof-next-btn')?.addEventListener('click', () => {
+        if (activeIndex < proofs.length - 1) { activeIndex++; renderMultiProofModal(); }
+      });
+      document.querySelectorAll('.proof-tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          activeIndex = Number(btn.dataset.index);
+          renderMultiProofModal();
+        });
+      });
+    }
+
+    renderMultiProofModal();
   }
 
   function openWfhProofModal(record) {
     if (!record) return;
-    let newUploadProof = null;
+    let modalPendingProofs = parseProofList(record.wfh_proof_url, record.wfh_proof_filename);
     const isReapplying = record.wfh_status === 'rejected';
+
+    const renderModalChips = () => {
+      const container = document.getElementById('modal-wfh-file-list');
+      const countEl = document.getElementById('modal-wfh-file-count');
+      const labelEl = document.getElementById('modal-wfh-file-label');
+      if (!container) return;
+      if (labelEl) {
+        labelEl.textContent = modalPendingProofs.length > 0 ? '+ Thêm tệp' : 'Chọn tệp / ảnh';
+      }
+      if (countEl) {
+        countEl.textContent = `Đã đính kèm: ${modalPendingProofs.length}/5 minh chứng`;
+        countEl.style.color = modalPendingProofs.length >= 5 ? 'var(--danger)' : 'var(--text-3)';
+      }
+      if (!modalPendingProofs.length) {
+        container.innerHTML = '<div style="font-size:12px;color:var(--text-3);padding:4px 0;">Chưa có tệp minh chứng nào.</div>';
+        return;
+      }
+      container.innerHTML = modalPendingProofs.map((p, idx) => `
+        <div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg-card,#1e293b);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px;color:var(--text);gap:6px;">
+          <div style="display:flex;align-items:center;gap:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">
+            ${icon(p.isLink || /^https?:\/\//i.test(p.url) ? 'externalLink' : 'paperclip', 'xs')}
+            <span title="${esc(p.filename)}">${esc(p.filename)}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:4px;flex-shrink:0;">
+            <button type="button" class="btn-xs modal-preview-item" data-index="${idx}" style="background:transparent;border:none;color:var(--primary);cursor:pointer;padding:2px 4px;" title="Xem thử">${icon('eye', 'xs')}</button>
+            <button type="button" class="btn-xs modal-remove-item" data-index="${idx}" style="background:transparent;border:none;color:var(--danger);cursor:pointer;padding:2px 4px;font-weight:bold;" title="Xóa">✕</button>
+          </div>
+        </div>
+      `).join('');
+
+      container.querySelectorAll('.modal-preview-item').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const idx = Number(btn.dataset.index);
+          const item = modalPendingProofs[idx];
+          if (item) viewProofModal([item], item.filename);
+        });
+      });
+
+      container.querySelectorAll('.modal-remove-item').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const idx = Number(btn.dataset.index);
+          modalPendingProofs.splice(idx, 1);
+          renderModalChips();
+        });
+      });
+    };
+
     openModal(
       isReapplying ? `Bổ sung giải trình WFH - Ngày ${record.date}` : `Cập nhật minh chứng WFH - Ngày ${record.date}`,
       `
@@ -877,60 +1479,98 @@ document.getElementById('btn-register').addEventListener('click', async () => {
           <textarea id="modal-wfh-reason" rows="3" placeholder="Nhập lý do làm việc tại nhà..." style="width:100%;padding:8px 10px;border-radius:6px;">${esc(record.wfh_reason || '')}</textarea>
         </div>
         <div class="field" style="margin-bottom:10px;">
-          <label style="font-weight:600;">Minh chứng đính kèm</label>
-          ${record.wfh_proof_url ? `
-            <div style="margin-bottom:6px;font-size:12px;">
-              Đang có: <button type="button" class="btn-secondary btn-xs" id="modal-wfh-view-current">${icon('paperclip', 'xs')} <span>Xem tệp hiện tại (${esc(record.wfh_proof_filename || 'Tài liệu')})</span></button>
-            </div>
-          ` : ''}
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <label style="font-weight:600;display:flex;align-items:center;justify-content:space-between;">
+            <span>Minh chứng đính kèm (tối đa 5 tệp)</span>
+            <span id="modal-wfh-file-count" style="font-size:11.5px;color:var(--text-3);">0/5 tệp</span>
+          </label>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
             <label class="btn-secondary btn-sm" style="cursor:pointer;margin:0;display:inline-flex;align-items:center;gap:4px;">
-              ${icon('upload', 'xs')} <span id="modal-wfh-file-label">Tải lên tệp mới</span>
-              <input type="file" id="modal-wfh-file" accept="image/*,application/pdf" style="display:none;"/>
+              ${icon('upload', 'xs')} <span id="modal-wfh-file-label">Chọn tệp / ảnh</span>
+              <input type="file" id="modal-wfh-file" multiple accept="image/*,application/pdf" style="display:none;"/>
             </label>
-            <input type="text" id="modal-wfh-proof-url" value="${esc(record.wfh_proof_url || '')}" placeholder="Hoặc dán link tài liệu..." style="flex:1;min-width:180px;padding:6px 10px;border-radius:6px;"/>
+            <input type="text" id="modal-wfh-proof-url" placeholder="Hoặc dán link tài liệu..." style="flex:1;min-width:180px;padding:6px 10px;border-radius:6px;font-size:12px;"/>
+            <button type="button" id="modal-wfh-add-link" class="btn-secondary btn-sm" style="padding:6px 10px;font-size:12px;">+ Thêm link</button>
           </div>
-          <div id="modal-wfh-hint" style="display:none;font-size:11.5px;color:var(--success);margin-top:4px;"></div>
+          <div id="modal-wfh-file-list" style="display:flex;flex-direction:column;gap:5px;"></div>
         </div>
       `,
       `<button class="btn-secondary" id="modal-wfh-cancel">Hủy</button><button class="btn-primary" id="modal-wfh-save">${isReapplying ? 'Gửi duyệt lại' : 'Lưu thay đổi'}</button>`
     );
+
+    renderModalChips();
+
     document.getElementById('modal-wfh-cancel')?.addEventListener('click', closeModal);
-    document.getElementById('modal-wfh-view-current')?.addEventListener('click', () => {
-      viewProofModal(record.wfh_proof_url, record.wfh_proof_filename);
-    });
+
     document.getElementById('modal-wfh-file')?.addEventListener('change', async (e) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      const label = document.getElementById('modal-wfh-file-label');
-      const hint = document.getElementById('modal-wfh-hint');
-      if (label) label.textContent = 'Đang tải lên...';
-      try {
-        const res = await api.uploadWfhProof(file);
-        newUploadProof = res;
-        if (label) label.textContent = 'Đổi tệp';
-        if (hint) {
-          hint.style.display = 'block';
-          hint.innerHTML = `${icon('circleCheck', 'xs')} Đã tải lên: <b>${esc(res.filename)}</b>`;
-        }
-        toast('Đã tải minh chứng lên thành công', 'success');
-      } catch (err) {
-        if (label) label.textContent = 'Tải lên tệp mới';
-        toast(err.message || 'Lỗi tải tệp lên', 'error');
+      const files = Array.from(e.target.files || []);
+      if (!files.length) return;
+      const available = 5 - modalPendingProofs.length;
+      if (available <= 0) {
+        toast('Đã đạt tối đa 5 minh chứng', 'warning');
+        e.target.value = '';
+        return;
       }
+      if (files.length > available) {
+        toast(`Chỉ nhận thêm tối đa ${available} tệp (tổng tối đa 5 tệp)`, 'warning');
+      }
+      const toUpload = files.slice(0, available);
+      const label = document.getElementById('modal-wfh-file-label');
+      if (label) label.textContent = 'Đang tải lên...';
+      for (const file of toUpload) {
+        try {
+          const res = await api.uploadWfhProof(file);
+          modalPendingProofs.push({
+            url: res.file_url || res.url,
+            filename: res.filename || file.name,
+            document_id: res.document_id || null,
+            size: file.size,
+          });
+          renderModalChips();
+        } catch (err) {
+          toast(err.message || `Lỗi tải ${file.name}`, 'error');
+        }
+      }
+      e.target.value = '';
+      if (label) label.textContent = modalPendingProofs.length > 0 ? '+ Thêm tệp' : 'Chọn tệp / ảnh';
     });
+
+    const addLinkAction = () => {
+      const input = document.getElementById('modal-wfh-proof-url');
+      const val = input?.value?.trim();
+      if (!val) return;
+      if (modalPendingProofs.length >= 5) {
+        toast('Đã đạt tối đa 5 minh chứng', 'warning');
+        return;
+      }
+      let disp = val;
+      try {
+        const u = new URL(val);
+        disp = u.hostname + (u.pathname.length > 20 ? u.pathname.slice(0, 18) + '…' : u.pathname);
+      } catch (_) {}
+      modalPendingProofs.push({ url: val, filename: disp, isLink: true });
+      input.value = '';
+      renderModalChips();
+      toast('Đã thêm link minh chứng', 'success');
+    };
+    document.getElementById('modal-wfh-add-link')?.addEventListener('click', addLinkAction);
+    document.getElementById('modal-wfh-proof-url')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); addLinkAction(); }
+    });
+
     document.getElementById('modal-wfh-save')?.addEventListener('click', async () => {
       const reason = document.getElementById('modal-wfh-reason')?.value.trim() || '';
       if (!reason) { toast('Vui lòng nhập lý do WFH', 'error'); return; }
-      const proofUrl = newUploadProof?.file_url || document.getElementById('modal-wfh-proof-url')?.value.trim() || record.wfh_proof_url || null;
-      const proofFilename = newUploadProof?.filename || record.wfh_proof_filename || null;
-      const proofDocId = newUploadProof?.document_id || record.wfh_proof_document_id || null;
+      const manualLink = document.getElementById('modal-wfh-proof-url')?.value?.trim();
+      if (manualLink && modalPendingProofs.length < 5 && !modalPendingProofs.some(p => p.url === manualLink)) {
+        modalPendingProofs.push({ url: manualLink, filename: manualLink, isLink: true });
+      }
+      const serialized = serializeProofList(modalPendingProofs);
       try {
         await api.updateWfhProof(record.id, {
           wfh_reason: reason,
-          wfh_proof_url: proofUrl,
-          wfh_proof_filename: proofFilename,
-          wfh_proof_document_id: proofDocId,
+          wfh_proof_url: serialized.url,
+          wfh_proof_filename: serialized.filename,
+          wfh_proof_document_id: serialized.docId,
         });
         closeModal();
         toast(isReapplying ? 'Đã gửi lại yêu cầu WFH để HR xem xét' : 'Đã cập nhật minh chứng WFH', 'success');
@@ -1256,7 +1896,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
         <td>${index === 0 ? esc(form.full_name || '—') : ''}</td><td>${index === 0 ? esc(form.employee_code || '—') : ''}</td>
         <td>${formatOtMoment(item.start_at)}</td><td>${formatOtMoment(item.end_at)}</td>
         <td>${(Number(item.requested_minutes || 0) / 60).toFixed(2)}</td><td>${esc(item.reason || '—')}</td>
-        <td>${esc(item.time_category === 'holiday' ? 'Ngày lễ' : item.time_category === 'weekend' ? 'Ngày nghỉ' : 'Ngày thường')}</td>
+        <td>${renderOtCategoryBadge(item.time_category)}</td>
         <td>${index === 0 ? statusBadge(form.status) : ''}</td></tr>`));
       content.innerHTML = `
         <div class="table-wrap att-monthly-board-table"><table><thead><tr><th>Nhân viên</th><th>Mã NV</th>${Array.from({ length: daysInMonth }, (_, index) => `<th>${index + 1}</th>`).join('')}<th>Tổng công</th></tr></thead><tbody>
@@ -1348,7 +1988,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
 
       const formatHours = min => (Number(min || 0) / 60).toFixed(2) + 'h';
       const formatTime = v => v ? new Date(v).toLocaleString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
-      const timeCatLabel = c => c === 'holiday' ? '<span class="badge badge-danger">Ngày lễ</span>' : c === 'rest_day' || c === 'weekend' ? '<span class="badge badge-warning">Ngày nghỉ</span>' : '<span class="badge badge-gray">Ngày thường</span>';
+      const timeCatLabel = c => renderOtCategoryBadge(c);
 
       const renderBoard = (filterText = '', deptFilter = '') => {
         let filtered = userList;

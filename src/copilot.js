@@ -907,55 +907,65 @@ function injectCopilotStyles() {
       border-radius: 14px;
       box-shadow: var(--shadow-sm, 0 1px 2px rgba(11, 31, 58, 0.04));
       border: 1px solid var(--border, #e2e8f0);
+      font-family: var(--font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif);
       font-size: 13.5px;
-      line-height: 1.55;
+      line-height: 1.5;
+      font-weight: 400;
+      letter-spacing: -0.01em;
       color: var(--text, #0f172a);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      text-rendering: optimizeLegibility;
     }
     .ai-message.user .ai-msg-body {
       background: var(--primary-gradient, linear-gradient(135deg, #EE4D2D 0%, #FF643D 100%));
       color: #ffffff;
       border: none;
       border-bottom-right-radius: 4px;
-      font-weight: 600;
+      font-weight: 400;
       box-shadow: 0 2px 8px rgba(238, 77, 45, 0.25);
     }
     .ai-message.user .ai-msg-body p {
-      font-weight: 600;
+      font-weight: 400;
       margin: 0;
       color: #ffffff;
+      line-height: 1.5;
     }
     .ai-message.assistant .ai-msg-body {
       border-bottom-left-radius: 4px;
-      font-weight: 600;
+      font-weight: 400;
       color: var(--text, #0f172a);
       background: var(--surface, #ffffff);
       border: 1px solid var(--border, #e2e8f0);
     }
     .ai-message.assistant .ai-msg-body p {
-      font-weight: 600;
+      font-weight: 400;
       margin: 0 0 6px 0;
+      line-height: 1.5;
     }
     .ai-message.assistant .ai-msg-body p:last-child {
       margin-bottom: 0;
     }
-    .ai-message.assistant .ai-msg-body ul {
+    .ai-message.assistant .ai-msg-body ul,
+    .ai-message.assistant .ai-msg-body ol {
       margin: 6px 0;
       padding-left: 20px;
     }
     .ai-message.assistant .ai-msg-body li {
-      font-weight: 600;
+      font-weight: 400;
       margin-bottom: 3px;
+      line-height: 1.5;
     }
     .ai-message.assistant .ai-msg-body strong,
     .ai-message.assistant .ai-msg-body b {
-      font-weight: 800;
-      color: #000000;
+      font-weight: 600;
+      color: var(--text, #0f172a);
     }
     .ai-message.assistant .ai-msg-body h3,
     .ai-message.assistant .ai-msg-body h4 {
-      font-weight: 800;
+      font-weight: 700;
       color: var(--accent, #0B1F3A);
-      margin: 6px 0 4px 0;
+      margin: 8px 0 4px 0;
       font-size: 14px;
     }
     .ai-citation-tag {

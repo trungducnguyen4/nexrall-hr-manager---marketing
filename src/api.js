@@ -5,7 +5,7 @@
 import { EventBus } from './event-bus.js';
 
 let _token = null;
-const NATIVE_API_ORIGIN = 'https://nexrall-hr-manager-marketing.netviettv-hr-manager.workers.dev';
+const NATIVE_API_ORIGIN = 'https://nexrall-hr-demo.netviettv-hr-manager.workers.dev';
 const isNativeApp = () => !!globalThis.Capacitor?.isNativePlatform?.();
 const apiUrl = (path) => isNativeApp() ? NATIVE_API_ORIGIN + path : path;
 
@@ -350,6 +350,17 @@ export const api = {
   addAttendanceBatch: (d, dryRun = false) =>
     req('POST', '/api/attendance/batch' + (dryRun ? '?dry_run=1' : ''), d).then(r => { inv('/api/attendance', '/api/attendance/employees', '/api/invoices'); return r; }),
   uploadWfhProof: (file) => uploadForm('/api/attendance/wfh-proof-upload', {}, file),
+  uploadWfhProofs: async (files) => {
+    if (!files || !files.length) return [];
+    const list = Array.isArray(files) ? files : [files];
+    const results = await Promise.all(list.map(f => uploadForm('/api/attendance/wfh-proof-upload', {}, f)));
+    return results.map((r, i) => ({
+      url: r.file_url || r.url,
+      filename: r.filename || list[i]?.name || 'Tệp minh chứng',
+      document_id: r.document_id || null,
+      size: list[i]?.size || null,
+    }));
+  },
   getWfhRequests: (params = {}) => { const q = new URLSearchParams(params).toString(); return req('GET', '/api/attendance/wfh-requests' + (q ? '?' + q : '')); },
   decideWfhRequest: (id, d) => req('POST', `/api/attendance/${id}/wfh-decision`, d).then(r => { inv('/api/attendance'); return r; }),
   updateWfhProof: (id, d) => req('POST', `/api/attendance/${id}/wfh-proof`, d).then(r => { inv('/api/attendance'); return r; }),

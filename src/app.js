@@ -16,7 +16,7 @@ let _viewModules = {};
 async function getView(name) {
   if (!_viewModules[name]) {
     if (name === 'dashboard')    _viewModules[name] = await import('./views/dashboard.js?v=20260817-dash-geo-v1');
-    else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js?v=20260817-att-map-v1');
+    else if (name === 'attendance')  _viewModules[name] = await import('./views/attendance.js?v=20261006-ot-day-badge-v1');
     else if (name === 'tasks')       _viewModules[name] = await import('./views/tasks.js?v=20260826-project-members-picker-v7');
     else if (name === 'invoices')    _viewModules[name] = await import('./views/invoices.js?v=20260916-invoice-export-fix-v2');
     else if (name === 'users')       _viewModules[name] = await import('./views/users.js?v=20260826-leave-annual-policy-v6');

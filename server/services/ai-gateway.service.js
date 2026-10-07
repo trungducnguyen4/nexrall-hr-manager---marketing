@@ -725,7 +725,19 @@ ${toolData.tasks.map(t => `- **[${t.priority.toUpperCase()}]** ${t.title} - *Tr�
 - Chức năng: Quản lý theo bảng Kanban/Danh sách, phân loại ưu tiên (Urgent, High, Medium, Low), đặt hạn chót, phân công và theo dõi tiến độ.`;
   }
 
-  return `Trợ lý ảo HR NetViet tiếp nhận yêu cầu. Hệ thống hỗ trợ tra cứu thông tin 12 phân hệ quản trị nhân sự, nội quy công ty và các kiến thức chuyên môn khác.`;
+  if (/(?:^|\b)(?:xin\s*)?(?:chào|hi|hello|hey|good\s*(?:morning|afternoon|evening))\b/i.test(q)) {
+    return `Chào bạn. Tôi là Trợ lý AI NetViet, sẵn sàng hỗ trợ bạn tra cứu chấm công, bảng lương, nghỉ phép, công việc và các quy chế công ty.`;
+  }
+
+  if (/(?:bạn\s*là\s*ai|giới\s*thiệu\s*bản\s*thân|chức\s*năng\s*của\s*bạn|bạn\s*làm\s*được\s*gì|hướng\s*dẫn\s*sử\s*dụng)/i.test(q)) {
+    return `Tôi là Trợ lý AI NetViet, hỗ trợ bạn tra cứu:
+- **Chấm công & Đi muộn**: Check-in/out, số lần trễ và tiền phạt.
+- **Phiếu lương**: Lương cơ bản, ngày công, KPI, khấu trừ và thực nhận.
+- **Nghỉ phép & Công việc**: Quỹ phép năm, tạo đơn nghỉ, danh sách task.
+- **Nội quy & Chính sách**: Tra cứu các quy chế vận hành doanh nghiệp.`;
+  }
+
+  return `Yêu cầu của bạn chưa có trong dữ liệu mẫu. Bạn có thể hỏi tôi về: chấm công, phiếu lương, quỹ phép năm, danh sách công việc hoặc nội quy công ty.`;
 }
 
 /**
@@ -955,7 +967,50 @@ export async function* chatCompletionStream(env, {
     allErrors.push('gemini: circuit breaker OPEN (skipping)');
   }
 
-  // 2. Fallback: Edge Rule-based Fallback with smooth pacing
+  // 2. Try Cloudflare Workers AI (Edge Llama 3.3 / Llama 3.1)
+  if (env && env.AI && typeof env.AI.run === 'function') {
+    const cfCandidates = [
+      '@cf/meta/llama-3.3-70b-instruct',
+      '@cf/meta/llama-3.1-8b-instruct',
+      '@cf/meta/llama-3.2-3b-instruct',
+      '@cf/qwen/qwen2.5-7b-instruct'
+    ];
+    for (const cfModel of cfCandidates) {
+      try {
+        const cfRes = await env.AI.run(cfModel, {
+          messages: fullMessages,
+          max_tokens: maxTokens,
+          temperature
+        });
+        const cfText = typeof cfRes === 'string' ? cfRes : cfRes?.response;
+        if (cfText && cfText.trim()) {
+          selectedProvider = 'cloudflare';
+          selectedModel = cfModel.replace('@cf/', '');
+          completionTokens = estimateTokens(cfText);
+          const totalLatency = Date.now() - startTime;
+          const cost = calculateCost(selectedProvider, selectedModel, promptTokens, completionTokens);
+          for await (const chunk of streamPacedText(cfText, 12)) {
+            yield { type: 'delta', text: chunk };
+          }
+          yield {
+            type: 'done',
+            provider: selectedProvider,
+            model: selectedModel,
+            content: cfText,
+            tokens: { prompt: promptTokens, completion: completionTokens, total: promptTokens + completionTokens },
+            cost,
+            latencyMs: totalLatency,
+            debugErrors: allErrors
+          };
+          return;
+        }
+      } catch (cfErr) {
+        allErrors.push(`CF AI (${cfModel}) ERR: ${cfErr?.message}`);
+      }
+    }
+  }
+
+  // 3. Fallback: Edge Rule-based Fallback with smooth pacing
   selectedProvider = 'edge-local';
   selectedModel = 'edge-heuristic-v1';
   const lastUserMsg = messages.filter(m => m.role === 'user').pop()?.content || '';

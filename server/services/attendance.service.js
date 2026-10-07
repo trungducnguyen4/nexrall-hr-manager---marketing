@@ -910,37 +910,55 @@ export const AttendanceService = {
   },
 
   async uploadWfhProof(env, form, me, { safeDownloadName }) {
-    const file = form?.get('file');
-    if (!file || typeof file.stream !== 'function') return { error: 'Vui lòng chọn tệp đính kèm', status: 400 };
-    const contentType = String(file.type || '').toLowerCase();
+    if (!form) return { error: 'Vui lòng chọn tệp đính kèm', status: 400 };
+    const rawFiles = form.getAll('files').length > 0 ? form.getAll('files') : (form.getAll('file').length > 0 ? form.getAll('file') : []);
+    const files = rawFiles.filter(f => f && typeof f.stream === 'function');
+    if (!files.length) return { error: 'Vui lòng chọn tệp đính kèm', status: 400 };
+    if (files.length > 5) return { error: 'Tối đa 5 tệp cho mỗi lần tải lên', status: 400 };
+
     const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
-    if (!allowed.includes(contentType) || !Number.isFinite(file.size) || file.size < 1 || file.size > 10 * 1024 * 1024) {
-      return { error: 'Chỉ nhận ảnh (JPG, PNG, WebP, GIF) hoặc PDF, tối đa 10 MB', status: 400 };
+    const uploaded = [];
+
+    for (const file of files) {
+      const contentType = String(file.type || '').toLowerCase();
+      if (!allowed.includes(contentType) || !Number.isFinite(file.size) || file.size < 1 || file.size > 10 * 1024 * 1024) {
+        return { error: `Tệp ${file.name || ''}: Chỉ nhận ảnh (JPG, PNG, WebP, GIF) hoặc PDF, tối đa 10 MB`, status: 400 };
+      }
+      const bytes = await file.arrayBuffer();
+      const documentId = crypto.randomUUID();
+      const filename = typeof safeDownloadName === 'function' ? safeDownloadName(file.name) : file.name;
+      const fileUrl = `/api/attendance/wfh-proof/${documentId}`;
+      if (env.HR_DOCUMENTS) {
+        const storageKey = `wfh-proofs/${me.id}/${documentId}`;
+        await env.HR_DOCUMENTS.put(storageKey, bytes, {
+          httpMetadata: { contentType, cacheControl: 'private, no-store' },
+          customMetadata: { owner_id: String(me.id) }
+        });
+        await env.DB.prepare('INSERT INTO wfh_proof_files (id, user_id, filename, content_type, byte_size, data_base64) VALUES (?, ?, ?, ?, ?, ?)')
+          .bind(documentId, me.id, filename, contentType, file.size, null).run();
+      } else {
+        const b64 = Buffer.from(bytes).toString('base64');
+        await env.DB.prepare('INSERT INTO wfh_proof_files (id, user_id, filename, content_type, byte_size, data_base64) VALUES (?, ?, ?, ?, ?, ?)')
+          .bind(documentId, me.id, filename, contentType, file.size, b64).run();
+      }
+      uploaded.push({ document_id: documentId, filename, file_url: fileUrl, size: file.size });
     }
-    const bytes = await file.arrayBuffer();
-    const documentId = crypto.randomUUID();
-    const filename = typeof safeDownloadName === 'function' ? safeDownloadName(file.name) : file.name;
-    const fileUrl = `/api/attendance/wfh-proof/${documentId}`;
-    if (env.HR_DOCUMENTS) {
-      const storageKey = `wfh-proofs/${me.id}/${documentId}`;
-      await env.HR_DOCUMENTS.put(storageKey, bytes, {
-        httpMetadata: { contentType, cacheControl: 'private, no-store' },
-        customMetadata: { owner_id: String(me.id) }
-      });
-      await env.DB.prepare('INSERT INTO wfh_proof_files (id, user_id, filename, content_type, byte_size, data_base64) VALUES (?, ?, ?, ?, ?, ?)')
-        .bind(documentId, me.id, filename, contentType, file.size, null).run();
-    } else {
-      const b64 = Buffer.from(bytes).toString('base64');
-      await env.DB.prepare('INSERT INTO wfh_proof_files (id, user_id, filename, content_type, byte_size, data_base64) VALUES (?, ?, ?, ?, ?, ?)')
-        .bind(documentId, me.id, filename, contentType, file.size, b64).run();
-    }
-    return { ok: true, document_id: documentId, filename, file_url: fileUrl };
+
+    const first = uploaded[0];
+    return {
+      ok: true,
+      document_id: first.document_id,
+      filename: first.filename,
+      file_url: first.file_url,
+      files: uploaded,
+    };
   },
 
-  async getWfhProofFile(env, url, documentId, me, { isAttendanceAdmin, safeDownloadName }) {
+  async getWfhProofFile(env, url, documentId, me, { isAttendanceAdmin, safeDownloadName, isDirectorHau }) {
     const row = await env.DB.prepare('SELECT * FROM wfh_proof_files WHERE id=?').bind(documentId).first();
     if (!row) return { error: 'Tệp không tồn tại', status: 404 };
-    const canAccess = Number(row.user_id) === Number(me.id) || isAttendanceAdmin;
+    const isHau = typeof isDirectorHau === 'function' ? isDirectorHau(me) : false;
+    const canAccess = Number(row.user_id) === Number(me.id) || isAttendanceAdmin || isHau || me?.role === 'admin';
     if (!canAccess) return { error: 'Không có quyền xem tệp', status: 403 };
     const disposition = url.searchParams.get('disposition') === 'attachment' ? 'attachment' : 'inline';
     const filename = typeof safeDownloadName === 'function' ? safeDownloadName(row.filename || 'proof') : (row.filename || 'proof');

@@ -15,7 +15,7 @@ const PING_INTERVAL = 30_000;
 const PING_TIMEOUT = 10_000;
 const INITIAL_BACKOFF = 1_000;
 const MAX_BACKOFF = 30_000;
-const NATIVE_API_ORIGIN = 'https://nexrall-hr-manager-marketing.netviettv-hr-manager.workers.dev';
+const NATIVE_API_ORIGIN = 'https://nexrall-hr-demo.netviettv-hr-manager.workers.dev';
 
 export class RealtimeClient {
   constructor(options = {}) {

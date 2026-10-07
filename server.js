@@ -141,6 +141,7 @@ async function ensureTwoStepApprovalSchema(env) {
   })) {
     try { await env.DB.exec(`ALTER TABLE overtime_forms ADD COLUMN ${col} ${def}`); } catch (_) {}
   }
+  try { await env.DB.exec('ALTER TABLE overtime_form_items ADD COLUMN proof_url TEXT'); } catch (_) {}
 
   // Attendance (WFH) step 1 fields
   for (const [col, def] of Object.entries({
@@ -1181,6 +1182,7 @@ export async function migrate(env) {
     created_at TEXT DEFAULT (datetime('now','localtime')),
     updated_at TEXT DEFAULT (datetime('now','localtime'))
   )`); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE overtime_forms ADD COLUMN proof_url TEXT'); } catch (_) {}
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS overtime_form_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     form_id INTEGER NOT NULL,
@@ -1190,9 +1192,11 @@ export async function migrate(env) {
     approved_minutes INTEGER,
     reason TEXT NOT NULL,
     time_category TEXT NOT NULL DEFAULT 'workday',
+    proof_url TEXT,
     created_at TEXT DEFAULT (datetime('now','localtime')),
     updated_at TEXT DEFAULT (datetime('now','localtime'))
   )`); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE overtime_form_items ADD COLUMN proof_url TEXT'); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_overtime_forms_user_period ON overtime_forms(user_id,period_month)'); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_overtime_forms_status_period ON overtime_forms(status,period_month)'); } catch (_) {}
   try { await env.DB.exec('CREATE INDEX IF NOT EXISTS idx_overtime_form_items_form ON overtime_form_items(form_id)'); } catch (_) {}
@@ -1771,9 +1775,11 @@ async function ensureAttendanceOvertimeSchema(env) {
     review_note TEXT,reviewer_id INTEGER,reviewer_name TEXT,reviewed_at TEXT,submitted_at TEXT,
     created_at TEXT DEFAULT (datetime('now','localtime')),updated_at TEXT DEFAULT (datetime('now','localtime'))
   )`); } catch (_) {}
+  try { await env.DB.exec('ALTER TABLE overtime_forms ADD COLUMN proof_url TEXT'); } catch (_) {}
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS overtime_form_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,form_id INTEGER NOT NULL,start_at TEXT NOT NULL,end_at TEXT NOT NULL,
     requested_minutes INTEGER NOT NULL,approved_minutes INTEGER,reason TEXT NOT NULL,time_category TEXT NOT NULL DEFAULT 'workday',
+    proof_url TEXT,
     created_at TEXT DEFAULT (datetime('now','localtime')),updated_at TEXT DEFAULT (datetime('now','localtime'))
   )`); } catch (_) {}
   try { await env.DB.exec(`CREATE TABLE IF NOT EXISTS attendance_import_batches (
@@ -1788,6 +1794,7 @@ async function ensureAttendanceOvertimeSchema(env) {
     'CREATE INDEX IF NOT EXISTS idx_overtime_forms_user_period ON overtime_forms(user_id,period_month)',
     'CREATE INDEX IF NOT EXISTS idx_overtime_forms_status_period ON overtime_forms(status,period_month)',
     'CREATE INDEX IF NOT EXISTS idx_overtime_form_items_form ON overtime_form_items(form_id)',
+    'ALTER TABLE overtime_form_items ADD COLUMN proof_url TEXT',
     'ALTER TABLE attendance ADD COLUMN source_batch_id INTEGER',
     'ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0',
     'ALTER TABLE users ADD COLUMN profile_pending INTEGER DEFAULT 0',
@@ -3316,7 +3323,14 @@ function normalizeOvertimeItems(items, periodMonth, { allowFuture = false } = {}
     const key = `${startAt}|${endAt}`;
     if (seen.has(key)) return { error: 'Không được nhập hai dòng OT trùng thời gian' };
     seen.add(key);
-    normalized.push({ start_at: startAt, end_at: endAt, requested_minutes: Math.round((end - start) / 60000), reason, time_category: category });
+    normalized.push({
+      start_at: startAt,
+      end_at: endAt,
+      requested_minutes: Math.round((end - start) / 60000),
+      reason,
+      time_category: category,
+      proof_url: raw?.proof_url ? String(raw.proof_url).trim().slice(0, 10000) : null,
+    });
   }
   return { items: normalized };
 }
@@ -5677,7 +5691,7 @@ export async function handle(request, env) {
         if (duplicate) { report.overtime_exceptions.push({ employee_code: code, reason: 'Đã có form OT lịch sử cho tháng này' }); continue; }
         const form = await env.DB.prepare("INSERT INTO overtime_forms (user_id,period_month,status,source,source_batch_id,submitted_at) VALUES (?,?,'pending','attendance_import',?,datetime('now','localtime'))").bind(user.id, periodMonth, batchId).run();
         const items = await applyCalendarOvertimeCategories(env, validated.items);
-        await env.DB.batch(items.map(item => env.DB.prepare('INSERT INTO overtime_form_items (form_id,start_at,end_at,requested_minutes,reason,time_category) VALUES (?,?,?,?,?,?)').bind(form.meta.last_row_id, item.start_at, item.end_at, item.requested_minutes, item.reason, item.time_category)));
+        await env.DB.batch(items.map(item => env.DB.prepare('INSERT INTO overtime_form_items (form_id,start_at,end_at,requested_minutes,reason,time_category,proof_url) VALUES (?,?,?,?,?,?,?)').bind(form.meta.last_row_id, item.start_at, item.end_at, item.requested_minutes, item.reason, item.time_category, item.proof_url || null)));
         report.overtime_forms.push({ employee_code: code, form_id: form.meta.last_row_id });
       }
       await d1WriteWithRetry(() => env.DB.prepare("UPDATE attendance_import_batches SET status='committed',committed_at=datetime('now','localtime') WHERE id=?").bind(batchId).run());
@@ -5948,7 +5962,7 @@ export async function handle(request, env) {
 
   const wfhProofServeMatch = path.match(/^\/api\/attendance\/wfh-proof\/([0-9a-fA-F-]{36})$/);
   if (wfhProofServeMatch && request.method === 'GET') {
-    return AttendanceController.serveWfhProof({ env, request, isAdmin, me }, wfhProofServeMatch[1], { isAttendanceAdmin, safeDownloadName });
+    return AttendanceController.serveWfhProof({ env, request, isAdmin, me }, wfhProofServeMatch[1], { isAttendanceAdmin, safeDownloadName, isDirectorHau });
   }
 
   const wfhProofUpdateMatch = path.match(/^\/api\/attendance\/(\d+)\/wfh-proof$/);
@@ -6182,18 +6196,20 @@ export async function handle(request, env) {
     if (validated.error) return json({ error: validated.error }, 400);
     const items = await applyCalendarOvertimeCategories(env, validated.items);
     const status = b.submit === false ? 'draft' : 'pending';
+    const proofUrl = b.proof_url ? String(b.proof_url).trim().slice(0, 10000) : null;
     const r = await env.DB.prepare(
-      "INSERT INTO overtime_forms (user_id,period_month,status,source,submitted_at) VALUES (?,?,?,?,CASE WHEN ?='pending' THEN datetime('now','localtime') ELSE NULL END)"
-    ).bind(me.id, periodMonth, status, 'employee', status).run();
+      "INSERT INTO overtime_forms (user_id,period_month,status,source,submitted_at,proof_url) VALUES (?,?,?,?,CASE WHEN ?='pending' THEN datetime('now','localtime') ELSE NULL END,?)"
+    ).bind(me.id, periodMonth, status, 'employee', status, proofUrl).run();
     const formId = r.meta.last_row_id;
     await env.DB.batch(items.map(item => env.DB.prepare(
-      'INSERT INTO overtime_form_items (form_id,start_at,end_at,requested_minutes,reason,time_category) VALUES (?,?,?,?,?,?)'
-    ).bind(formId, item.start_at, item.end_at, item.requested_minutes, item.reason, item.time_category)));
+      'INSERT INTO overtime_form_items (form_id,start_at,end_at,requested_minutes,reason,time_category,proof_url) VALUES (?,?,?,?,?,?,?)'
+    ).bind(formId, item.start_at, item.end_at, item.requested_minutes, item.reason, item.time_category, item.proof_url || null)));
     await broadcastAppEvent(env, 'attendance', 'overtime_form:created', {
       id: formId,
       user_id: me.id,
       period_month: periodMonth,
       status,
+      proof_url: proofUrl,
     }, { actorId: me.id });
     return json({ ok: true, id: formId, status });
   }
@@ -6209,15 +6225,17 @@ export async function handle(request, env) {
     const validated = normalizeOvertimeItems(b.items, periodMonth);
     if (validated.error) return json({ error: validated.error }, 400);
     const items = await applyCalendarOvertimeCategories(env, validated.items);
+    const proofUrl = b.proof_url !== undefined ? (b.proof_url ? String(b.proof_url).trim().slice(0, 10000) : null) : (form.proof_url || null);
     await env.DB.batch([
-      env.DB.prepare("UPDATE overtime_forms SET period_month=?,updated_at=datetime('now','localtime') WHERE id=?").bind(periodMonth, formId),
+      env.DB.prepare("UPDATE overtime_forms SET period_month=?,proof_url=?,updated_at=datetime('now','localtime') WHERE id=?").bind(periodMonth, proofUrl, formId),
       env.DB.prepare('DELETE FROM overtime_form_items WHERE form_id=?').bind(formId),
-      ...items.map(item => env.DB.prepare('INSERT INTO overtime_form_items (form_id,start_at,end_at,requested_minutes,reason,time_category) VALUES (?,?,?,?,?,?)').bind(formId, item.start_at, item.end_at, item.requested_minutes, item.reason, item.time_category)),
+      ...items.map(item => env.DB.prepare('INSERT INTO overtime_form_items (form_id,start_at,end_at,requested_minutes,reason,time_category,proof_url) VALUES (?,?,?,?,?,?,?)').bind(formId, item.start_at, item.end_at, item.requested_minutes, item.reason, item.time_category, item.proof_url || null)),
     ]);
     await broadcastAppEvent(env, 'attendance', 'overtime_form:updated', {
       id: formId,
       user_id: me.id,
       period_month: periodMonth,
+      proof_url: proofUrl,
     }, { actorId: me.id });
     return json({ ok: true });
   }
