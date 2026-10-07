@@ -329,6 +329,7 @@ export async function chatCompletion(env, {
   const fullMessages = [];
   if (systemPrompt) fullMessages.push({ role: 'system', content: systemPrompt });
   fullMessages.push(...messages);
+  const lastUserMsg = messages.filter(m => m.role === 'user').pop()?.content || '';
 
   // 1. Try Google Gemini (Primary high-performance LLM)
   const rawKey = env?.GEMINI_API_KEY || env?.GOOGLE_API_KEY || '';
@@ -519,9 +520,21 @@ export async function chatCompletion(env, {
           temperature
         });
         if (res && (res.response || typeof res === 'string')) {
-          selectedProvider = 'cloudflare';
-          selectedModel = cfModel.replace('@cf/', '');
           responseText = typeof res === 'string' ? res : res.response;
+
+          // Anti-Hallucination Interception Guardrail:
+          // Check if response contains typical hallucinated placeholder names not present in toolData
+          const isHallucinated = /(?:Nguyễn Văn A|NV001|NV-001)/i.test(responseText) && !JSON.stringify(toolData || {}).includes('Nguyễn Văn A');
+          if (toolData && isHallucinated) {
+            console.warn(`[AI Gateway] Intercepted hallucination in "${cfModel}" with placeholder names. Overriding with grounded heuristic truth.`);
+            responseText = buildHeuristicResponse(lastUserMsg, systemPrompt, toolData);
+            selectedProvider = 'edge-local';
+            selectedModel = 'grounded-truth-interceptor';
+          } else {
+            selectedProvider = 'cloudflare';
+            selectedModel = cfModel.replace('@cf/', '');
+          }
+
           completionTokens = estimateTokens(responseText);
           const totalLatency = Date.now() - startTime;
           const cost = calculateCost(selectedProvider, selectedModel, promptTokens, completionTokens);
@@ -550,7 +563,6 @@ export async function chatCompletion(env, {
   // 4. Edge Rule-based Fallback (Generates structured grounded output)
   selectedProvider = 'edge-local';
   selectedModel = 'edge-heuristic-v1';
-  const lastUserMsg = messages.filter(m => m.role === 'user').pop()?.content || '';
   responseText = buildHeuristicResponse(lastUserMsg, systemPrompt, toolData);
   completionTokens = estimateTokens(responseText);
   const totalLatency = Date.now() - startTime;
@@ -645,8 +657,41 @@ ${toolData.tasks.map(t => `- **[${t.priority.toUpperCase()}]** ${t.title} - *Tr�
     }
 
     if (toolData.categories && (toolData.totalCount !== undefined || toolData.requests)) {
+      const isTopQuery = /(?:ai|người nào|nhân viên nào).*(?:xin nghỉ|nghỉ phép|nghỉ).*nhiều nhất|top.*(?:nghỉ phép|xin nghỉ)|ai xin nghỉ nhiều nhất|ai là người xin nghỉ/i.test(query);
+
+      if (isTopQuery && toolData.topLeaveEmployees && toolData.topLeaveEmployees.length > 0) {
+        const monthLabel = toolData.month && toolData.month !== 'all' ? `Tháng ${toolData.month}` : 'Toàn thời gian';
+        let out = `### 📊 Thống Kê Nhân Sự Xin Nghỉ Phép - ${monthLabel}\n\n`;
+        if (toolData.summary) {
+          out += `${toolData.summary}\n\n`;
+        }
+        out += `#### 🏆 Danh Sách Nhân Sự Nghỉ Nhiều Nhất:\n`;
+        out += `| Xếp hạng | Mã NV | Họ và tên | Phòng ban | Số ngày nghỉ | Số đơn | Lý do tiêu biểu |\n`;
+        out += `| :---: | :--- | :--- | :--- | :---: | :---: | :--- |\n`;
+        toolData.topLeaveEmployees.forEach(e => {
+          out += `| #${e.rank} | **${e.employeeCode}** | **${e.name}** | ${e.department} | **${e.totalDays} ngày** | ${e.leaveCount} đơn | ${e.reasonsSummary || 'Nghỉ phép'} |\n`;
+        });
+        out += `\n`;
+
+        if (toolData.categoriesCount) {
+          out += `> 📌 **Phân loại lý do:** Việc riêng/gia đình: ${toolData.categoriesCount.familyAndPersonal || 0} đơn | Nghỉ ốm/khám: ${toolData.categoriesCount.sickAndHealth || 0} đơn | Du lịch/về quê: ${toolData.categoriesCount.travelAndHomecoming || 0} đơn | Phép năm/khác: ${toolData.categoriesCount.annualAndOther || 0} đơn\n`;
+        }
+        return out;
+      }
+
       let out = `### 📋 Tổng Quan Đơn Xin Nghỉ Phép (${toolData.totalCount} đơn)\n\n`;
       out += `${toolData.summary}\n\n`;
+
+      if (toolData.topLeaveEmployees && toolData.topLeaveEmployees.length > 0) {
+        out += `#### 🏆 Top Nhân Sự Nghỉ Nhiều Nhất:\n`;
+        out += `| Xếp hạng | Mã NV | Họ và tên | Phòng ban | Số ngày nghỉ | Số đơn |\n`;
+        out += `| :---: | :--- | :--- | :--- | :---: | :---: |\n`;
+        toolData.topLeaveEmployees.slice(0, 5).forEach(e => {
+          out += `| #${e.rank} | **${e.employeeCode}** | **${e.name}** | ${e.department} | **${e.totalDays} ngày** | ${e.leaveCount} đơn |\n`;
+        });
+        out += `\n`;
+      }
+
       for (const [cat, list] of Object.entries(toolData.categories)) {
         if (list.length > 0) {
           out += `#### 📌 ${cat} (${list.length} đơn):\n`;
@@ -843,6 +888,7 @@ export async function* chatCompletionStream(env, {
   const fullMessages = [];
   if (systemPrompt) fullMessages.push({ role: 'system', content: systemPrompt });
   fullMessages.push(...messages);
+  const lastUserMsg = messages.filter(m => m.role === 'user').pop()?.content || '';
 
   // 1. Try Google Gemini Streaming
   const rawKey = env?.GEMINI_API_KEY || env?.GOOGLE_API_KEY || '';
@@ -998,19 +1044,30 @@ export async function* chatCompletionStream(env, {
         });
         const cfText = typeof cfRes === 'string' ? cfRes : cfRes?.response;
         if (cfText && cfText.trim()) {
-          selectedProvider = 'cloudflare';
-          selectedModel = cfModel.replace('@cf/', '');
-          completionTokens = estimateTokens(cfText);
+          // Anti-Hallucination Interception Guardrail:
+          const isHallucinated = /(?:Nguyễn Văn A|NV001|NV-001)/i.test(cfText) && !JSON.stringify(toolData || {}).includes('Nguyễn Văn A');
+          let outputText = cfText;
+          if (toolData && isHallucinated) {
+            console.warn(`[AI Gateway Stream] Intercepted hallucination in "${cfModel}" with placeholder names. Overriding with grounded heuristic truth.`);
+            outputText = buildHeuristicResponse(lastUserMsg, systemPrompt, toolData);
+            selectedProvider = 'edge-local';
+            selectedModel = 'grounded-truth-interceptor';
+          } else {
+            selectedProvider = 'cloudflare';
+            selectedModel = cfModel.replace('@cf/', '');
+          }
+
+          completionTokens = estimateTokens(outputText);
           const totalLatency = Date.now() - startTime;
           const cost = calculateCost(selectedProvider, selectedModel, promptTokens, completionTokens);
-          for await (const chunk of streamPacedText(cfText, 12)) {
+          for await (const chunk of streamPacedText(outputText, 12)) {
             yield { type: 'delta', text: chunk };
           }
           yield {
             type: 'done',
             provider: selectedProvider,
             model: selectedModel,
-            content: cfText,
+            content: outputText,
             tokens: { prompt: promptTokens, completion: completionTokens, total: promptTokens + completionTokens },
             cost,
             latencyMs: totalLatency,
@@ -1027,7 +1084,6 @@ export async function* chatCompletionStream(env, {
   // 3. Fallback: Edge Rule-based Fallback with smooth pacing
   selectedProvider = 'edge-local';
   selectedModel = 'edge-heuristic-v1';
-  const lastUserMsg = messages.filter(m => m.role === 'user').pop()?.content || '';
   const responseText = buildHeuristicResponse(lastUserMsg, systemPrompt, toolData);
 
   // Yield word by word with ~15ms delay

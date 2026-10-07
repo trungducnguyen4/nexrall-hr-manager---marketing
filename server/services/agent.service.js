@@ -565,6 +565,11 @@ QUY TẮC PHẢN HỒI CHO NHÂN VIÊN:
     prompt += `\n\n--- DỮ LIỆU THỰC TẾ HỆ THỐNG TRÍCH XUẤT (TOOL DATA) ---\n${JSON.stringify(toolData, null, 2)}\n----------------------------------------------------\n`;
   }
 
+  prompt += `\n\nQUY TẮC BẢO ĐẢM TÍNH XÁC THỰC CỦA DỮ LIỆU (CHỐNG ẢO GIÁC - ZERO MOCK DATA):
+1. BẮT BUỘC SỬ DỤNG DỮ LIỆU THẬT TỪ HỆ THỐNG: Mọi số liệu, họ tên nhân sự, mã nhân viên, phòng ban, số ngày nghỉ, số lần đi trễ BẮT BUỘC phải lấy 100% từ mục [TOOL DATA] ở trên nếu có.
+2. TUYỆT ĐỐI KHÔNG TỰ BỊA ĐẶT / PLACEHOLDER: Nghiêm cấm tự bịa tên nhân viên giả lập như "Nguyễn Văn A", "Trần Văn B", "NV001", "NV002"... Nếu [TOOL DATA] ghi nhận nhân sự nào (ví dụ Phạm Hoàng Anh, Nguyễn Duy Vĩnh Sơn), BẮT BUỘC trả lời chính xác thông tin của nhân sự đó.
+3. KHI KHÔNG CÓ DỮ LIỆU HOẶC KHÔNG TÌM THẤY: Hãy trả lời trung thực: "Hệ thống hiện tại chưa ghi nhận dữ liệu trong khoảng thời gian này." Tuyệt đối không tự suy diễn hoặc dựng dữ liệu mẫu.`;
+
   return prompt;
 }
 
@@ -1260,7 +1265,7 @@ export async function executeTool(env, toolName, args = {}, me) {
           query += ' AND (lr.start_date LIKE ? OR lr.end_date LIKE ?)';
           binds.push(`${args.month}%`, `${args.month}%`);
         }
-        query += ' ORDER BY lr.id DESC LIMIT 50';
+        query += ' ORDER BY lr.id DESC LIMIT 300';
         const res = await env.DB.prepare(query).bind(...binds).all();
         rows = res.results || [];
       } catch (err) {
@@ -1269,7 +1274,7 @@ export async function executeTool(env, toolName, args = {}, me) {
           let query = `
             SELECT r.id, r.start_date, r.end_date, r.reason, r.status, COALESCE(r.type, r.request_type) as type,
                    COALESCE(u.full_name, 'Nhân sự') as employee_name,
-                   u.department, u.employee_code
+                   u.department, u.employee_code, r.user_id
               FROM requests r
               LEFT JOIN users u ON (CAST(r.user_id AS TEXT) = CAST(u.id AS TEXT) OR r.employee_id = u.id)
              WHERE (r.type = 'leave' OR r.request_type = 'leave')
@@ -1283,7 +1288,7 @@ export async function executeTool(env, toolName, args = {}, me) {
             query += ' AND (r.start_date LIKE ? OR r.end_date LIKE ?)';
             binds.push(`${args.month}%`, `${args.month}%`);
           }
-          query += ' ORDER BY r.id DESC LIMIT 50';
+          query += ' ORDER BY r.id DESC LIMIT 300';
           const res = await env.DB.prepare(query).bind(...binds).all();
           rows = res.results || [];
         } catch (_) {}
@@ -1291,12 +1296,64 @@ export async function executeTool(env, toolName, args = {}, me) {
 
       if (rows.length === 0) {
         return {
+          month: args.month || 'all',
+          totalRequests: 0,
           totalCount: 0,
           summary: 'Hệ thống hiện tại chưa ghi nhận đơn xin nghỉ phép nào trong cơ sở dữ liệu.',
           requests: [],
+          topLeaveEmployees: [],
+          mostLeaveEmployee: null,
           categories: {}
         };
       }
+
+      // Calculate days duration and aggregate by employee
+      const calcDays = (start, end) => {
+        if (!start) return 1;
+        if (!end || end === start) return 1;
+        const d1 = new Date(start);
+        const d2 = new Date(end);
+        const diff = Math.round((d2 - d1) / (1000 * 60 * 60 * 24)) + 1;
+        return isNaN(diff) || diff < 1 ? 1 : diff;
+      };
+
+      const employeeMap = new Map();
+      for (const r of rows) {
+        const key = String(r.user_id || r.employee_code || r.employee_name);
+        if (!employeeMap.has(key)) {
+          employeeMap.set(key, {
+            name: r.employee_name || 'Nhân sự',
+            employeeCode: r.employee_code || 'NV',
+            department: r.department || 'Chung',
+            leaveCount: 0,
+            totalDays: 0,
+            reasons: [],
+            statuses: []
+          });
+        }
+        const emp = employeeMap.get(key);
+        emp.leaveCount += 1;
+        const days = calcDays(r.start_date, r.end_date);
+        emp.totalDays += days;
+        if (r.reason && !emp.reasons.includes(r.reason)) {
+          emp.reasons.push(r.reason);
+        }
+        if (r.status && !emp.statuses.includes(r.status)) {
+          emp.statuses.push(r.status);
+        }
+      }
+
+      const topLeaveEmployees = Array.from(employeeMap.values())
+        .sort((a, b) => b.totalDays - a.totalDays || b.leaveCount - a.leaveCount)
+        .map((e, idx) => ({
+          rank: idx + 1,
+          name: e.name,
+          employeeCode: e.employeeCode,
+          department: e.department,
+          leaveCount: e.leaveCount,
+          totalDays: e.totalDays,
+          reasonsSummary: e.reasons.slice(0, 3).join('; ')
+        }));
 
       // Group by reason categories
       const categories = {
@@ -1314,7 +1371,7 @@ export async function executeTool(env, toolName, args = {}, me) {
           department: r.department || 'Chung',
           dates: `${r.start_date} → ${r.end_date}`,
           reason: r.reason || 'Nghỉ phép thường',
-          status: r.status === 'approved' ? 'Đã duyệt' : r.status === 'pending' ? 'Chờ duyệt' : 'Từ chối'
+          status: r.status === 'approved' ? 'Đã duyệt' : (r.status === 'pending' || r.status === 'pending_director') ? 'Chờ duyệt' : 'Từ chối'
         };
 
         if (/gia đình|việc nhà|việc riêng|con|bố|mẹ|vợ|chồng|cưới|đám|hỷ/i.test(text)) {
@@ -1334,8 +1391,22 @@ export async function executeTool(env, toolName, args = {}, me) {
         rejected: rows.filter(r => r.status === 'rejected').length
       };
 
+      const top1 = topLeaveEmployees[0];
+      const monthLabel = args.month && args.month !== 'all' ? `tháng ${args.month}` : 'toàn thời gian';
+      let summary = '';
+      if (top1) {
+        summary = `Trong ${monthLabel}, nhân viên xin nghỉ nhiều nhất là **${top1.name} (Mã NV: ${top1.employeeCode})** thuộc phòng ban **${top1.department}** với tổng cộng **${top1.totalDays} ngày nghỉ** (qua ${top1.leaveCount} đơn). Tổng số đơn xin nghỉ trong kỳ là **${rows.length} đơn**.`;
+      } else {
+        summary = `Hệ thống hiện tại chưa ghi nhận đơn xin nghỉ phép nào trong ${monthLabel}.`;
+      }
+
       return {
+        month: args.month || 'all',
         totalRequests: rows.length,
+        totalCount: rows.length,
+        totalLeaveEmployees: topLeaveEmployees.length,
+        topLeaveEmployees: topLeaveEmployees.slice(0, 10),
+        mostLeaveEmployee: top1 || null,
         statusCounts,
         categoriesCount: {
           familyAndPersonal: categories['Việc gia đình & Việc riêng'].length,
@@ -1356,7 +1427,10 @@ export async function executeTool(env, toolName, args = {}, me) {
           reason: r.reason,
           dates: `${r.start_date} → ${r.end_date}`,
           status: r.status
-        }))
+        })),
+        requests: rows,
+        categories,
+        summary
       };
     }
 
@@ -2369,13 +2443,14 @@ export function stripFollowUpSuggestions(text) {
  */
 export async function runCopilotTurn(env, {
   userMessage,
+  query: rawQuery,
   conversationHistory = [],
   me,
   conversationId = 'default'
 }) {
   const reqStartTime = Date.now();
   const reqId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-  const query = String(userMessage || '').trim();
+  const query = String(userMessage || rawQuery || '').trim();
 
   // 0. Step 0: Enterprise Privacy Guardrail & PII Shield
   const isSalaryQuery = /lương|thu nhập|tiền lương|bảng lương|phiếu lương|thực nhận/i.test(query);
@@ -2668,9 +2743,10 @@ export async function runCopilotTurn(env, {
   } else if (/quỹ phép|ngày phép còn lại|phép năm còn|hạn mức phép|còn bao nhiêu ngày phép/i.test(query)) {
     toolNameCalled = 'get_leave_balance';
     toolData = await executeTool(env, toolNameCalled, {}, me);
-  } else if (/(?:tổng quan|thống kê|xem|tổng hợp|danh sách|lý do|lí do).*mọi người.*nghỉ phép|(?:lý do|lí do).*nghỉ phép.*(mọi người|nhân sự|nhân viên|công ty|phòng ban)|(?:tổng quan|tình hình|ai).*nghỉ phép|mọi người.*nghỉ phép.*vì|lý do.*nghỉ phép/i.test(query)) {
+  } else if (/(?:ai|nhân viên nào|ai là người|người nào|danh sách|thống kê|tổng quan|tổng hợp).*(?:xin nghỉ|nghỉ phép|nghỉ việc|nghỉ).*nhiều nhất|(?:ai|nhân viên nào|ai là người).*(?:xin nghỉ|nghỉ phép|nghỉ)|(?:tổng quan|thống kê|xem|tổng hợp|danh sách|lý do|lí do|tình hình).*(?:mọi người|nhân sự|nhân viên|công ty|phòng ban).*nghỉ|(?:nghỉ phép|xin nghỉ).*(?:tháng\s*\d+|nhiều nhất|lý do|lí do)|mọi người.*(?:nghỉ phép|xin nghỉ).*vì|lý do.*(?:nghỉ phép|xin nghỉ)/i.test(query)) {
     toolNameCalled = 'get_leave_requests_overview';
-    toolData = await executeTool(env, toolNameCalled, { month: 'all', status: 'all' }, me);
+    const isSpecificMonth = /(?:tháng\s*\d+|tháng\s*này|tháng\s*trước|\b202\d-\d{2}\b)/i.test(query);
+    toolData = await executeTool(env, toolNameCalled, { month: isSpecificMonth ? extractedMonth : 'all', status: 'all' }, me);
   } else if (/thông báo mới|bản tin|tin tức công ty|quyết định mới/i.test(query)) {
     toolNameCalled = 'get_announcements_summary';
     toolData = await executeTool(env, toolNameCalled, { limit: 5 }, me);
@@ -2871,6 +2947,7 @@ export async function runCopilotTurn(env, {
  */
 export async function runCopilotTurnStream(env, {
   userMessage,
+  query: rawQuery,
   conversationHistory = [],
   me,
   conversationId = 'default',
@@ -2878,7 +2955,7 @@ export async function runCopilotTurnStream(env, {
 }) {
   const reqStartTime = Date.now();
   const reqId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-  const query = String(userMessage || '').trim();
+  const query = String(userMessage || rawQuery || '').trim();
 
   await onEvent('status', { message: 'Đang kiểm tra bảo mật & an toàn dữ liệu...' });
 
@@ -3093,7 +3170,7 @@ export async function runCopilotTurnStream(env, {
   const handoverConfirmMatch = query.match(/(?:xác nhận bàn giao|đã nhận bàn giao)\s*#?(\d+)/i);
   const handoverCreateMatch = query.match(/(?:tạo biên bản bàn giao|bàn giao tài sản|bàn giao dự án)\s*:?\s*(.+)/i);
 
-  if (taskStatusMatch || taskAssignMatch || taskDeadlineMatch || taskPriorityMatch || taskDeleteMatch || leaveApproveMatch || leaveRejectMatch || leaveCancelMatch || annPostMatch || empCodeMatch || payReviewMatch || handoverConfirmMatch || handoverCreateMatch || /kiểm toán.*lương|audit.*payroll/i.test(query) || /bảng lương|phiếu lương|tiền lương của tôi/i.test(query) || /chấm công|đi muộn|đi trễ/i.test(query) || /quỹ phép|ngày phép còn lại/i.test(query) || /(?:tổng quan|thống kê).*nghỉ phép/i.test(query) || /thông báo mới|bản tin/i.test(query) || /hướng dẫn.*module|phân hệ/i.test(query) || /task của tôi|công việc của tôi/i.test(query) || /xin nghỉ phép|tạo đơn nghỉ/i.test(query) || (/tạo task|tạo việc/i.test(query) && query.length > 5)) {
+  if (taskStatusMatch || taskAssignMatch || taskDeadlineMatch || taskPriorityMatch || taskDeleteMatch || leaveApproveMatch || leaveRejectMatch || leaveCancelMatch || annPostMatch || empCodeMatch || payReviewMatch || handoverConfirmMatch || handoverCreateMatch || /kiểm toán.*lương|audit.*payroll/i.test(query) || /bảng lương|phiếu lương|tiền lương của tôi/i.test(query) || /chấm công|đi muộn|đi trễ/i.test(query) || /quỹ phép|ngày phép còn lại/i.test(query) || /(?:tổng quan|thống kê|danh sách|ai|nhân viên nào).*(?:nghỉ phép|xin nghỉ)/i.test(query) || /thông báo mới|bản tin/i.test(query) || /hướng dẫn.*module|phân hệ/i.test(query) || /task của tôi|công việc của tôi/i.test(query) || /xin nghỉ phép|tạo đơn nghỉ/i.test(query) || (/tạo task|tạo việc/i.test(query) && query.length > 5)) {
     await onEvent('status', { message: 'Đang kết nối phân hệ nghiệp vụ & kiểm tra dữ liệu...' });
   }
 
@@ -3172,9 +3249,10 @@ export async function runCopilotTurnStream(env, {
   } else if (/quỹ phép|ngày phép còn lại|phép năm còn|hạn mức phép|còn bao nhiêu ngày phép/i.test(query)) {
     toolNameCalled = 'get_leave_balance';
     toolData = await executeTool(env, toolNameCalled, {}, me);
-  } else if (/(?:tổng quan|thống kê|xem|tổng hợp|danh sách|lý do|lí do).*mọi người.*nghỉ phép|(?:lý do|lí do).*nghỉ phép.*(mọi người|nhân sự|nhân viên|công ty|phòng ban)|(?:tổng quan|tình hình|ai).*nghỉ phép|mọi người.*nghỉ phép.*vì|lý do.*nghỉ phép/i.test(query)) {
+  } else if (/(?:ai|nhân viên nào|ai là người|người nào|danh sách|thống kê|tổng quan|tổng hợp).*(?:xin nghỉ|nghỉ phép|nghỉ việc|nghỉ).*nhiều nhất|(?:ai|nhân viên nào|ai là người).*(?:xin nghỉ|nghỉ phép|nghỉ)|(?:tổng quan|thống kê|xem|tổng hợp|danh sách|lý do|lí do|tình hình).*(?:mọi người|nhân sự|nhân viên|công ty|phòng ban).*nghỉ|(?:nghỉ phép|xin nghỉ).*(?:tháng\s*\d+|nhiều nhất|lý do|lí do)|mọi người.*(?:nghỉ phép|xin nghỉ).*vì|lý do.*(?:nghỉ phép|xin nghỉ)/i.test(query)) {
     toolNameCalled = 'get_leave_requests_overview';
-    toolData = await executeTool(env, toolNameCalled, { month: 'all', status: 'all' }, me);
+    const isSpecificMonth = /(?:tháng\s*\d+|tháng\s*này|tháng\s*trước|\b202\d-\d{2}\b)/i.test(query);
+    toolData = await executeTool(env, toolNameCalled, { month: isSpecificMonth ? extractedMonth : 'all', status: 'all' }, me);
   } else if (/thông báo mới|bản tin|tin tức công ty|quyết định mới/i.test(query)) {
     toolNameCalled = 'get_announcements_summary';
     toolData = await executeTool(env, toolNameCalled, { limit: 5 }, me);
