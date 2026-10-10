@@ -4503,18 +4503,26 @@ export async function handle(request, env, ctx) {
 
   if (request.method === 'OPTIONS') return new Response(null, { status: 204 });
 
-  // ── AUDIT: DASHBOARD UI & INGESTION ─────────────────────────────
-  if (path === '/audit' || path === '/audit/' || path === '/admin-audit') {
-    return AuditController.renderUi();
-  }
-  if (path === '/api/audit/ingest' && request.method === 'POST') {
-    return AuditController.ingest({ env, request, executionCtx: ctx });
-  }
-  if (path === '/api/audit/logs' && request.method === 'GET') {
-    return AuditController.getLogs({ env, request });
-  }
-  if (path === '/api/audit/logs' && request.method === 'DELETE') {
-    return AuditController.clearLogs({ env, request });
+  // ── AUDIT: DASHBOARD UI & INGESTION (CHỈ MỞ TRÊN DEMO WORKER) ────
+  const isAuditDemo = url.hostname.includes('demo') || String(env?.ENVIRONMENT || '').toLowerCase() === 'demo';
+  if (isAuditDemo) {
+    if (path === '/audit' || path === '/audit/' || path === '/admin-audit') {
+      return AuditController.renderUi();
+    }
+    if (path === '/api/audit/ingest' && request.method === 'POST') {
+      return AuditController.ingest({ env, request, executionCtx: ctx });
+    }
+    if (path === '/api/audit/logs' && request.method === 'GET') {
+      return AuditController.getLogs({ env, request });
+    }
+    if (path === '/api/audit/logs' && request.method === 'DELETE') {
+      return AuditController.clearLogs({ env, request });
+    }
+  } else {
+    // Production hoàn toàn không mở route audit nào
+    if (path === '/audit' || path === '/audit/' || path === '/admin-audit' || path.startsWith('/api/audit/')) {
+      return json({ error: 'Không tìm thấy' }, 404);
+    }
   }
 
   try {

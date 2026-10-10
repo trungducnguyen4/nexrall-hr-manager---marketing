@@ -21,9 +21,13 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // Live Security Audit Dashboard
+    // Live Security Audit Dashboard (CHỈ HOẠT ĐỘNG TRÊN DEMO WORKER)
+    const isDemo = url.hostname.includes('demo') || String(env?.ENVIRONMENT || '').toLowerCase() === 'demo';
     if (url.pathname === '/audit' || url.pathname === '/audit/' || url.pathname === '/admin-audit') {
-      return AuditController.renderUi();
+      if (isDemo) {
+        return AuditController.renderUi();
+      }
+      return new Response('Not Found', { status: 404 });
     }
 
     if (url.pathname.startsWith('/api/')) {

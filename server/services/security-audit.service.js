@@ -71,8 +71,8 @@ export async function logSecurityEvent(env, ctx, eventData) {
         : (eventData.response_summary ? JSON.stringify(eventData.response_summary) : null),
     };
 
-    // 1. Ghi vào D1 cục bộ
-    if (env?.DB) {
+    // 1. Chỉ ghi vào D1 nếu đang chạy tại Demo (Production không lưu vết cục bộ)
+    if (isDemo && env?.DB) {
       try {
         await env.DB.prepare(`
           INSERT INTO security_audit_logs (
@@ -88,7 +88,7 @@ export async function logSecurityEvent(env, ctx, eventData) {
           log.request_payload, log.response_summary
         ).run();
       } catch (err) {
-        console.error('Local D1 audit insert error:', err);
+        console.error('Demo D1 audit insert error:', err);
       }
     }
 
