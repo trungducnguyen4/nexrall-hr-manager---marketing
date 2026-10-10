@@ -823,6 +823,8 @@ document.getElementById('btn-register').addEventListener('click', async () => {
 
   let historyPage = 1;
   let otFormPage = 1;
+  let wfhPage = 1;
+  let otRequestPage = 1;
   let overtimeForms = [];
 
   const formStatus = status => ({
@@ -1590,7 +1592,9 @@ document.getElementById('btn-register').addEventListener('click', async () => {
       const month = document.getElementById('att-month-filter')?.value || closingMonth;
       const status = document.getElementById('wfh-status-filter')?.value || '';
       const { wfh_requests: rows = [] } = await api.getWfhRequests({ month, status });
-      list.innerHTML = rows.length ? `
+      const pageData = paginateRows(rows, wfhPage, 10);
+      wfhPage = pageData.page;
+      list.innerHTML = pageData.rows.length ? `
         <div class="table-wrap">
           <table>
             <thead>
@@ -1606,7 +1610,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
               </tr>
             </thead>
             <tbody>
-              ${rows.map(r => {
+              ${pageData.rows.map(r => {
                 const shiftText = SHIFT_LABEL_SHORT[r.shift] || SHIFT_LABEL_SHORT.full;
                 const hoursText = r.work_hours ? `${Number(r.work_hours).toFixed(1)}h` : '—';
                 const inOutText = `${esc(r.checkin_time || '—')} / ${esc(r.checkout_time || '—')}`;
@@ -1662,7 +1666,12 @@ document.getElementById('btn-register').addEventListener('click', async () => {
             </tbody>
           </table>
         </div>
+        ${paginationHTML(pageData)}
       ` : emptyHTML('home', 'Không có yêu cầu duyệt WFH');
+      bindPagination(list, page => {
+        wfhPage = page;
+        loadWfhRequests();
+      });
       list.querySelectorAll('.btn-wfh-table-proof').forEach(btn => {
         btn.addEventListener('click', () => viewProofModal(btn.dataset.url, btn.dataset.filename));
       });
@@ -1727,7 +1736,9 @@ document.getElementById('btn-register').addEventListener('click', async () => {
       const month = document.getElementById('att-month-filter')?.value || closingMonth;
       const status = document.getElementById('ot-status-filter')?.value || '';
       const { overtime_requests: rows = [] } = await api.getOvertimeRequests({ month, status });
-      list.innerHTML = rows.length ? `
+      const pageData = paginateRows(rows, otRequestPage, 10);
+      otRequestPage = pageData.page;
+      list.innerHTML = pageData.rows.length ? `
         <div class="table-wrap">
           <table>
             <thead>
@@ -1742,7 +1753,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
               </tr>
             </thead>
             <tbody>
-              ${rows.map(r => {
+              ${pageData.rows.map(r => {
                 let statusBadgeHtml = '';
                 if (r.status === 'pending') {
                   statusBadgeHtml = '<span class="badge badge-step1">Chờ duyệt B1 (HCNS)</span>';
@@ -1786,7 +1797,12 @@ document.getElementById('btn-register').addEventListener('click', async () => {
             </tbody>
           </table>
         </div>
+        ${paginationHTML(pageData)}
       ` : emptyHTML('clock3', 'Không có yêu cầu làm thêm giờ');
+      bindPagination(list, page => {
+        otRequestPage = page;
+        loadOvertimeRequests();
+      });
       list.querySelectorAll('.ot-decide').forEach(btn => btn.addEventListener('click', () => openOvertimeDecision(btn.dataset)));
     } catch (e) { list.innerHTML = emptyHTML('triangleAlert', e.message || 'Không thể tải yêu cầu OT'); }
   }
@@ -1832,17 +1848,26 @@ document.getElementById('btn-register').addEventListener('click', async () => {
       }
     });
   }
-  document.getElementById('wfh-status-filter')?.addEventListener('change', loadWfhRequests);
-  document.getElementById('ot-status-filter')?.addEventListener('change', loadOvertimeRequests);
+  document.getElementById('wfh-status-filter')?.addEventListener('change', () => { wfhPage = 1; loadWfhRequests(); });
+  document.getElementById('ot-status-filter')?.addEventListener('change', () => { otRequestPage = 1; loadOvertimeRequests(); });
   document.getElementById('btn-create-ot-form')?.addEventListener('click', openOvertimeFormCreator);
   document.getElementById('btn-import-att')?.addEventListener('click', openHistoricalImport);
   if (canManageAttendance) { loadOvertimeRequests(); loadWfhRequests(); }
   loadOvertimeForms();
 
-
-
   // Month filter
-  document.getElementById('att-month-filter').addEventListener('change', () => { historyPage = 1; otFormPage = 1; loadHistory(); loadOvertimeForms(); if (canManageAttendance) { loadOvertimeRequests(); loadWfhRequests(); } });
+  document.getElementById('att-month-filter')?.addEventListener('change', () => {
+    historyPage = 1;
+    otFormPage = 1;
+    wfhPage = 1;
+    otRequestPage = 1;
+    loadHistory();
+    loadOvertimeForms();
+    if (canManageAttendance) {
+      loadOvertimeRequests();
+      loadWfhRequests();
+    }
+  });
   document.getElementById('att-date-filter')?.addEventListener('change', () => { historyPage = 1; loadHistory(); });
   document.getElementById('att-search')?.addEventListener('input', () => { historyPage = 1; loadHistory(); });
   document.getElementById('att-dept-filter')?.addEventListener('change', () => { historyPage = 1; loadHistory(); });
@@ -1916,237 +1941,276 @@ document.getElementById('btn-register').addEventListener('click', async () => {
   }
 
   async function openOvertimeSummaryBoard() {
-    const monthValue = document.getElementById('att-month-filter')?.value || closingMonth;
-    const [year, month] = monthValue.split('-').map(Number);
-    openModal(`Bảng tổng hợp làm thêm giờ (OT) Tháng ${String(month).padStart(2, '0')}/${year}`, `<div id="ot-summary-board-content">${loadingHTML()}</div>`, `<button class="btn-secondary" id="ot-summary-board-close">Đóng</button>`);
+    let boardMonth = document.getElementById('att-month-filter')?.value || closingMonth;
+
+    function getBoardTitle(mStr) {
+      const [yr, mo] = mStr.split('-').map(Number);
+      return `Bảng tổng hợp làm thêm giờ (OT) Tháng ${String(mo).padStart(2, '0')}/${yr}`;
+    }
+
+    openModal(getBoardTitle(boardMonth), `<div id="ot-summary-board-content">${loadingHTML()}</div>`, `<button class="btn-secondary" id="ot-summary-board-close">Đóng</button>`);
     document.getElementById('modal')?.classList.add('modal--scroll-fixed', 'modal--attendance-board');
     document.getElementById('ot-summary-board-close')?.addEventListener('click', closeModal);
 
-    try {
-      const { overtime_forms: forms = [] } = await api.getOvertimeForms({ month: monthValue });
+    async function fetchAndRenderBoard(targetMonth) {
       const content = document.getElementById('ot-summary-board-content');
       if (!content) return;
+      content.innerHTML = loadingHTML();
 
-      if (!forms.length) {
-        content.innerHTML = emptyHTML('fileText', `Chưa có dữ liệu làm thêm giờ trong tháng ${String(month).padStart(2, '0')}/${year}`);
-        return;
-      }
+      const modalTitleEl = document.querySelector('#modal .modal-header h3, #modal .modal-title');
+      if (modalTitleEl) modalTitleEl.textContent = getBoardTitle(targetMonth);
 
-      // Aggregate by user
-      const userMap = new Map();
-      let grandTotalRequestedMinutes = 0;
-      let grandTotalApprovedMinutes = 0;
+      try {
+        const { overtime_forms: forms = [] } = await api.getOvertimeForms({ month: targetMonth });
+        const [year, month] = targetMonth.split('-').map(Number);
 
-      forms.forEach(form => {
-        const uid = Number(form.user_id);
-        if (!userMap.has(uid)) {
-          userMap.set(uid, {
-            userId: uid,
-            fullName: form.full_name || '—',
-            employeeCode: form.employee_code || '—',
-            department: form.department || '—',
-            totalForms: 0,
-            approvedForms: 0,
-            pendingForms: 0,
-            rejectedForms: 0,
-            draftForms: 0,
-            totalRequestedMinutes: 0,
-            totalApprovedMinutes: 0,
-            workdayApprovedMinutes: 0,
-            restdayApprovedMinutes: 0,
-            holidayApprovedMinutes: 0,
-            forms: [],
-          });
-        }
-        const u = userMap.get(uid);
-        u.totalForms++;
-        if (form.status === 'approved' || form.status === 'partially_approved') u.approvedForms++;
-        else if (form.status === 'pending') u.pendingForms++;
-        else if (form.status === 'rejected') u.rejectedForms++;
-        else if (form.status === 'draft') u.draftForms++;
+        // Aggregate by user
+        const userMap = new Map();
+        let grandTotalRequestedMinutes = 0;
+        let grandTotalApprovedMinutes = 0;
 
-        const reqMin = Number(form.requested_minutes || 0);
-        const appMin = Number(form.approved_minutes || 0);
-        u.totalRequestedMinutes += reqMin;
-        u.totalApprovedMinutes += appMin;
-        grandTotalRequestedMinutes += reqMin;
-        grandTotalApprovedMinutes += appMin;
-
-        (form.items || []).forEach(item => {
-          const itemAppMin = Number(item.approved_minutes || 0);
-          if (itemAppMin > 0) {
-            if (item.time_category === 'holiday') u.holidayApprovedMinutes += itemAppMin;
-            else if (item.time_category === 'rest_day' || item.time_category === 'weekend') u.restdayApprovedMinutes += itemAppMin;
-            else u.workdayApprovedMinutes += itemAppMin;
+        forms.forEach(form => {
+          const uid = Number(form.user_id);
+          if (!userMap.has(uid)) {
+            userMap.set(uid, {
+              userId: uid,
+              fullName: form.full_name || '—',
+              employeeCode: form.employee_code || '—',
+              department: form.department || '—',
+              totalForms: 0,
+              approvedForms: 0,
+              pendingForms: 0,
+              rejectedForms: 0,
+              draftForms: 0,
+              totalRequestedMinutes: 0,
+              totalApprovedMinutes: 0,
+              workdayApprovedMinutes: 0,
+              restdayApprovedMinutes: 0,
+              holidayApprovedMinutes: 0,
+              forms: [],
+            });
           }
-        });
+          const u = userMap.get(uid);
+          u.totalForms++;
+          const isApproved = form.status === 'approved' || form.status === 'partially_approved';
+          if (isApproved) u.approvedForms++;
+          else if (form.status === 'pending') u.pendingForms++;
+          else if (form.status === 'rejected') u.rejectedForms++;
+          else if (form.status === 'draft') u.draftForms++;
 
-        u.forms.push(form);
-      });
+          const reqMin = Number(form.requested_minutes || 0);
+          const appMin = isApproved ? Number(form.approved_minutes || 0) : 0;
+          u.totalRequestedMinutes += reqMin;
+          u.totalApprovedMinutes += appMin;
+          grandTotalRequestedMinutes += reqMin;
+          grandTotalApprovedMinutes += appMin;
 
-      const userList = Array.from(userMap.values()).sort((a, b) => b.totalApprovedMinutes - a.totalApprovedMinutes || compareVietnameseNames(a.fullName, b.fullName));
-
-      const formatHours = min => (Number(min || 0) / 60).toFixed(2) + 'h';
-      const formatTime = v => v ? new Date(v).toLocaleString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
-      const timeCatLabel = c => renderOtCategoryBadge(c);
-
-      const renderBoard = (filterText = '', deptFilter = '') => {
-        let filtered = userList;
-        if (filterText) {
-          const s = filterText.toLowerCase();
-          filtered = filtered.filter(u => u.fullName.toLowerCase().includes(s) || u.employeeCode.toLowerCase().includes(s));
-        }
-        if (deptFilter) {
-          filtered = filtered.filter(u => u.department === deptFilter);
-        }
-
-        const uniqueDepts = [...new Set(userList.map(u => u.department).filter(Boolean))];
-
-        content.innerHTML = `
-          <div class="att-board-note" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px;padding:12px 16px;background:linear-gradient(135deg, rgba(79,70,229,0.05) 0%, rgba(59,130,246,0.08) 100%);border:1px solid rgba(79,70,229,0.15);border-radius:10px;">
-            <div style="display:flex;gap:18px;flex-wrap:wrap;">
-              <div><small style="color:var(--text-2);display:block">Tổng nhân sự có OT</small><strong style="font-size:18px;color:var(--text)">${userList.length}</strong></div>
-              <div><small style="color:var(--text-2);display:block">Tổng số form OT</small><strong style="font-size:18px;color:var(--text)">${forms.length}</strong></div>
-              <div><small style="color:var(--text-2);display:block">Tổng giờ đề nghị</small><strong style="font-size:18px;color:var(--primary)">${formatHours(grandTotalRequestedMinutes)}</strong></div>
-              <div><small style="color:var(--text-2);display:block">Tổng giờ đã duyệt</small><strong style="font-size:18px;color:#10B981">${formatHours(grandTotalApprovedMinutes)}</strong></div>
-            </div>
-            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-              <input type="text" id="ot-summary-search" placeholder="Tìm theo tên, mã NV..." value="${esc(filterText)}" style="padding:6px 10px;font-size:13px;border-radius:6px;border:1px solid var(--border);min-width:180px;background:var(--surface);"/>
-              ${uniqueDepts.length > 1 ? `
-                <select id="ot-summary-dept" style="padding:6px 10px;font-size:13px;border-radius:6px;border:1px solid var(--border);background:var(--surface);">
-                  <option value="">Tất cả phòng ban</option>
-                  ${uniqueDepts.map(d => `<option value="${esc(d)}" ${d === deptFilter ? 'selected' : ''}>${esc(d)}</option>`).join('')}
-                </select>
-              ` : ''}
-            </div>
-          </div>
-
-          <div class="table-wrap att-overtime-board-table" style="max-height:60vh;">
-            <table>
-              <thead>
-                <tr style="background:var(--surface-2);">
-                  <th style="width:40px;text-align:center;">#</th>
-                  <th>Nhân viên</th>
-                  <th>Phòng ban</th>
-                  <th style="text-align:center;">Số form</th>
-                  <th style="text-align:right;">Ngày thường</th>
-                  <th style="text-align:right;">Ngày nghỉ</th>
-                  <th style="text-align:right;">Ngày lễ</th>
-                  <th style="text-align:right;">Tổng đề nghị</th>
-                  <th style="text-align:right;color:#10B981;font-weight:700;">Tổng đã duyệt</th>
-                  <th style="text-align:center;width:90px;">Chi tiết</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${filtered.length ? filtered.map((u, idx) => `
-                  <tr class="ot-summary-main-row" data-user-id="${u.userId}" style="cursor:pointer;">
-                    <td style="text-align:center;color:var(--text-2);">${idx + 1}</td>
-                    <td>
-                      <strong>${esc(u.fullName)}</strong>
-                      <br><small style="color:var(--text-2);">${esc(u.employeeCode)}</small>
-                    </td>
-                    <td>${esc(u.department)}</td>
-                    <td style="text-align:center;">
-                      <span class="badge ${u.approvedForms > 0 ? 'badge-success' : 'badge-gray'}">${u.totalForms} form</span>
-                      ${u.pendingForms > 0 ? `<br><small style="color:var(--warning)">(${u.pendingForms} chờ duyệt)</small>` : ''}
-                    </td>
-                    <td style="text-align:right;">${u.workdayApprovedMinutes > 0 ? `<span style="color:var(--text)">${formatHours(u.workdayApprovedMinutes)}</span>` : '<span style="color:var(--text-3)">—</span>'}</td>
-                    <td style="text-align:right;">${u.restdayApprovedMinutes > 0 ? `<span style="color:#D97706;font-weight:600">${formatHours(u.restdayApprovedMinutes)}</span>` : '<span style="color:var(--text-3)">—</span>'}</td>
-                    <td style="text-align:right;">${u.holidayApprovedMinutes > 0 ? `<span style="color:#DC2626;font-weight:600">${formatHours(u.holidayApprovedMinutes)}</span>` : '<span style="color:var(--text-3)">—</span>'}</td>
-                    <td style="text-align:right;color:var(--text-2);">${formatHours(u.totalRequestedMinutes)}</td>
-                    <td style="text-align:right;">
-                      <strong style="color:#10B981;font-size:13.5px;background:rgba(16,185,129,0.1);padding:3px 8px;border-radius:6px;">${formatHours(u.totalApprovedMinutes)}</strong>
-                    </td>
-                    <td style="text-align:center;">
-                      <button class="btn-secondary btn-sm ot-toggle-detail-btn" data-user-id="${u.userId}" style="padding:3px 8px;font-size:11.5px;">
-                        ▼ Xem
-                      </button>
-                    </td>
-                  </tr>
-                  <tr class="ot-summary-detail-row" id="ot-detail-row-${u.userId}" style="display:none;background:var(--surface-2);">
-                    <td colspan="10" style="padding:12px 16px;">
-                      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;">
-                        <div style="font-weight:650;font-size:13px;margin-bottom:8px;color:var(--text);display:flex;align-items:center;gap:6px;">
-                          ${icon('clipboardList', 'xs')} Chi tiết ${u.forms.length} form OT của ${esc(u.fullName)} (${esc(u.employeeCode)})
-                        </div>
-                        <table style="width:100%;font-size:12px;border-collapse:collapse;">
-                          <thead>
-                            <tr style="border-bottom:1px solid var(--border);color:var(--text-2);text-align:left;">
-                              <th style="padding:6px 8px;">Form ID</th>
-                              <th style="padding:6px 8px;">Thời gian ca OT</th>
-                              <th style="padding:6px 8px;">Thời điểm</th>
-                              <th style="padding:6px 8px;">Lý do</th>
-                              <th style="padding:6px 8px;text-align:right;">Đề nghị</th>
-                              <th style="padding:6px 8px;text-align:right;">Đã duyệt</th>
-                              <th style="padding:6px 8px;text-align:center;">Trạng thái</th>
-                              <th style="padding:6px 8px;">Ghi chú / Người duyệt</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            ${u.forms.map(form => {
-                              const items = form.items && form.items.length ? form.items : [{
-                                start_at: '—', end_at: '—', reason: '—', time_category: 'workday',
-                                requested_minutes: form.requested_minutes, approved_minutes: form.approved_minutes
-                              }];
-                              return items.map((item, itIdx) => `
-                                <tr style="border-bottom:1px dashed var(--border);">
-                                  <td style="padding:6px 8px;color:var(--text-2);">${itIdx === 0 ? `#${form.id}` : ''}</td>
-                                  <td style="padding:6px 8px;">${formatTime(item.start_at)}<br>→ ${formatTime(item.end_at)}</td>
-                                  <td style="padding:6px 8px;">${timeCatLabel(item.time_category)}</td>
-                                  <td style="padding:6px 8px;max-width:200px;">${esc(item.reason || '—')}</td>
-                                  <td style="padding:6px 8px;text-align:right;">${(Number(item.requested_minutes || 0) / 60).toFixed(2)}h</td>
-                                  <td style="padding:6px 8px;text-align:right;color:#10B981;font-weight:600;">${(Number(item.approved_minutes || 0) / 60).toFixed(2)}h</td>
-                                  <td style="padding:6px 8px;text-align:center;">${itIdx === 0 ? formStatus(form.status) : ''}</td>
-                                  <td style="padding:6px 8px;font-size:11px;color:var(--text-2);">${itIdx === 0 ? `${esc(form.review_note || '')}${form.reviewer_name ? ` · ${esc(form.reviewer_name)}` : ''}` : ''}</td>
-                                </tr>
-                              `).join('');
-                            }).join('')}
-                          </tbody>
-                        </table>
-                      </div>
-                    </td>
-                  </tr>
-                `).join('') : `<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--text-2);">Không tìm thấy nhân viên phù hợp</td></tr>`}
-              </tbody>
-            </table>
-          </div>
-        `;
-
-        // Bind search & filter events
-        const searchInput = document.getElementById('ot-summary-search');
-        if (searchInput) {
-          searchInput.addEventListener('input', e => renderBoard(e.target.value, document.getElementById('ot-summary-dept')?.value || ''));
-          searchInput.focus();
-          searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
-        }
-        const deptSelect = document.getElementById('ot-summary-dept');
-        if (deptSelect) {
-          deptSelect.addEventListener('change', e => renderBoard(document.getElementById('ot-summary-search')?.value || '', e.target.value));
-        }
-
-        // Bind row toggle buttons
-        content.querySelectorAll('.ot-toggle-detail-btn, .ot-summary-main-row').forEach(el => {
-          el.addEventListener('click', e => {
-            // Prevent double toggle if clicking button directly
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-            const uid = el.dataset.userId;
-            const detailRow = document.getElementById(`ot-detail-row-${uid}`);
-            const btn = content.querySelector(`.ot-toggle-detail-btn[data-user-id="${uid}"]`);
-            if (detailRow) {
-              const isHidden = detailRow.style.display === 'none';
-              detailRow.style.display = isHidden ? 'table-row' : 'none';
-              if (btn) btn.textContent = isHidden ? '▲ Đóng' : '▼ Xem';
+          (form.items || []).forEach(item => {
+            let itemAppMin = 0;
+            if (isApproved) {
+              itemAppMin = item.approved_minutes != null
+                ? Number(item.approved_minutes)
+                : (form.status === 'approved' ? Number(item.requested_minutes || 0) : 0);
+            }
+            if (itemAppMin > 0) {
+              if (item.time_category === 'holiday') u.holidayApprovedMinutes += itemAppMin;
+              else if (item.time_category === 'rest_day' || item.time_category === 'weekend') u.restdayApprovedMinutes += itemAppMin;
+              else u.workdayApprovedMinutes += itemAppMin;
             }
           });
+
+          u.forms.push(form);
         });
-      };
 
-      renderBoard();
+        const userList = Array.from(userMap.values()).sort((a, b) => b.totalApprovedMinutes - a.totalApprovedMinutes || compareVietnameseNames(a.fullName, b.fullName));
 
-    } catch (error) {
-      const content = document.getElementById('ot-summary-board-content');
-      if (content) content.innerHTML = emptyHTML('triangleAlert', error.message || 'Không thể tải bảng tổng hợp làm thêm giờ');
+        const formatHours = min => (Number(min || 0) / 60).toFixed(2) + 'h';
+        const formatTime = v => v ? new Date(v).toLocaleString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+        const timeCatLabel = c => renderOtCategoryBadge(c);
+
+        let activeSearch = '';
+        let activeDept = '';
+
+        const renderBoard = () => {
+          let filtered = userList;
+          if (activeSearch) {
+            const s = activeSearch.toLowerCase();
+            filtered = filtered.filter(u => u.fullName.toLowerCase().includes(s) || u.employeeCode.toLowerCase().includes(s));
+          }
+          if (activeDept) {
+            filtered = filtered.filter(u => u.department === activeDept);
+          }
+
+          const uniqueDepts = [...new Set(userList.map(u => u.department).filter(Boolean))];
+
+          content.innerHTML = `
+            <div class="att-board-note" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px;padding:12px 16px;background:linear-gradient(135deg, rgba(79,70,229,0.05) 0%, rgba(59,130,246,0.08) 100%);border:1px solid rgba(79,70,229,0.15);border-radius:10px;">
+              <div style="display:flex;gap:18px;flex-wrap:wrap;">
+                <div><small style="color:var(--text-2);display:block">Tổng nhân sự có OT</small><strong style="font-size:18px;color:var(--text)">${userList.length}</strong></div>
+                <div><small style="color:var(--text-2);display:block">Tổng số form OT</small><strong style="font-size:18px;color:var(--text)">${forms.length}</strong></div>
+                <div><small style="color:var(--text-2);display:block">Tổng giờ đề nghị</small><strong style="font-size:18px;color:var(--primary)">${formatHours(grandTotalRequestedMinutes)}</strong></div>
+                <div><small style="color:var(--text-2);display:block">Tổng giờ đã duyệt</small><strong style="font-size:18px;color:#10B981">${formatHours(grandTotalApprovedMinutes)}</strong></div>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <input type="month" id="ot-summary-month-picker" value="${targetMonth}" title="Chọn tháng xem tổng hợp" style="padding:6px 10px;font-size:13px;border-radius:6px;border:1px solid var(--border);background:var(--surface);font-weight:600;"/>
+                <input type="text" id="ot-summary-search" placeholder="Tìm theo tên, mã NV..." value="${esc(activeSearch)}" style="padding:6px 10px;font-size:13px;border-radius:6px;border:1px solid var(--border);min-width:170px;background:var(--surface);"/>
+                ${uniqueDepts.length > 1 ? `
+                  <select id="ot-summary-dept" style="padding:6px 10px;font-size:13px;border-radius:6px;border:1px solid var(--border);background:var(--surface);">
+                    <option value="">Tất cả phòng ban</option>
+                    ${uniqueDepts.map(d => `<option value="${esc(d)}" ${d === activeDept ? 'selected' : ''}>${esc(d)}</option>`).join('')}
+                  </select>
+                ` : ''}
+              </div>
+            </div>
+
+            ${!forms.length ? emptyHTML('fileText', `Chưa có dữ liệu làm thêm giờ trong tháng ${String(month).padStart(2, '0')}/${year}`) : `
+            <div class="table-wrap att-overtime-board-table" style="max-height:60vh;">
+              <table>
+                <thead>
+                  <tr style="background:var(--surface-2);">
+                    <th style="width:40px;text-align:center;">#</th>
+                    <th>Nhân viên</th>
+                    <th>Phòng ban</th>
+                    <th style="text-align:center;">Số form</th>
+                    <th style="text-align:right;">Ngày thường</th>
+                    <th style="text-align:right;">Ngày nghỉ</th>
+                    <th style="text-align:right;">Ngày lễ</th>
+                    <th style="text-align:right;">Tổng đề nghị</th>
+                    <th style="text-align:right;color:#10B981;font-weight:700;">Tổng đã duyệt</th>
+                    <th style="text-align:center;width:90px;">Chi tiết</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${filtered.length ? filtered.map((u, idx) => `
+                    <tr class="ot-summary-main-row" data-user-id="${u.userId}" style="cursor:pointer;">
+                      <td style="text-align:center;color:var(--text-2);">${idx + 1}</td>
+                      <td>
+                        <strong>${esc(u.fullName)}</strong>
+                        <br><small style="color:var(--text-2);">${esc(u.employeeCode)}</small>
+                      </td>
+                      <td>${esc(u.department)}</td>
+                      <td style="text-align:center;">
+                        <span class="badge ${u.approvedForms > 0 ? 'badge-success' : 'badge-gray'}">${u.totalForms} form</span>
+                        ${u.pendingForms > 0 ? `<br><small style="color:var(--warning)">(${u.pendingForms} chờ duyệt)</small>` : ''}
+                      </td>
+                      <td style="text-align:right;">${u.workdayApprovedMinutes > 0 ? `<span style="color:var(--text)">${formatHours(u.workdayApprovedMinutes)}</span>` : '<span style="color:var(--text-3)">—</span>'}</td>
+                      <td style="text-align:right;">${u.restdayApprovedMinutes > 0 ? `<span style="color:#D97706;font-weight:600">${formatHours(u.restdayApprovedMinutes)}</span>` : '<span style="color:var(--text-3)">—</span>'}</td>
+                      <td style="text-align:right;">${u.holidayApprovedMinutes > 0 ? `<span style="color:#DC2626;font-weight:600">${formatHours(u.holidayApprovedMinutes)}</span>` : '<span style="color:var(--text-3)">—</span>'}</td>
+                      <td style="text-align:right;color:var(--text-2);">${formatHours(u.totalRequestedMinutes)}</td>
+                      <td style="text-align:right;">
+                        <strong style="color:#10B981;font-size:13.5px;background:rgba(16,185,129,0.1);padding:3px 8px;border-radius:6px;">${formatHours(u.totalApprovedMinutes)}</strong>
+                      </td>
+                      <td style="text-align:center;">
+                        <button class="btn-secondary btn-sm ot-toggle-detail-btn" data-user-id="${u.userId}" style="padding:3px 8px;font-size:11.5px;">
+                          ▼ Xem
+                        </button>
+                      </td>
+                    </tr>
+                    <tr class="ot-summary-detail-row" id="ot-detail-row-${u.userId}" style="display:none;background:var(--surface-2);">
+                      <td colspan="10" style="padding:12px 16px;">
+                        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;">
+                          <div style="font-weight:650;font-size:13px;margin-bottom:8px;color:var(--text);display:flex;align-items:center;gap:6px;">
+                            ${icon('clipboardList', 'xs')} Chi tiết ${u.forms.length} form OT của ${esc(u.fullName)} (${esc(u.employeeCode)})
+                          </div>
+                          <table style="width:100%;font-size:12px;border-collapse:collapse;">
+                            <thead>
+                              <tr style="border-bottom:1px solid var(--border);color:var(--text-2);text-align:left;">
+                                <th style="padding:6px 8px;">Form ID</th>
+                                <th style="padding:6px 8px;">Thời gian ca OT</th>
+                                <th style="padding:6px 8px;">Thời điểm</th>
+                                <th style="padding:6px 8px;">Lý do</th>
+                                <th style="padding:6px 8px;text-align:right;">Đề nghị</th>
+                                <th style="padding:6px 8px;text-align:right;">Đã duyệt</th>
+                                <th style="padding:6px 8px;text-align:center;">Trạng thái</th>
+                                <th style="padding:6px 8px;">Ghi chú / Người duyệt</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              ${u.forms.map(form => {
+                                const items = form.items && form.items.length ? form.items : [{
+                                  start_at: '—', end_at: '—', reason: '—', time_category: 'workday',
+                                  requested_minutes: form.requested_minutes, approved_minutes: form.approved_minutes
+                                }];
+                                return items.map((item, itIdx) => `
+                                  <tr style="border-bottom:1px dashed var(--border);">
+                                    <td style="padding:6px 8px;color:var(--text-2);">${itIdx === 0 ? `#${form.id}` : ''}</td>
+                                    <td style="padding:6px 8px;">${formatTime(item.start_at)}<br>→ ${formatTime(item.end_at)}</td>
+                                    <td style="padding:6px 8px;">${timeCatLabel(item.time_category)}</td>
+                                    <td style="padding:6px 8px;max-width:200px;">${esc(item.reason || '—')}</td>
+                                    <td style="padding:6px 8px;text-align:right;">${(Number(item.requested_minutes || 0) / 60).toFixed(2)}h</td>
+                                    <td style="padding:6px 8px;text-align:right;color:#10B981;font-weight:600;">${(Number(item.approved_minutes || 0) / 60).toFixed(2)}h</td>
+                                    <td style="padding:6px 8px;text-align:center;">${itIdx === 0 ? formStatus(form.status) : ''}</td>
+                                    <td style="padding:6px 8px;font-size:11px;color:var(--text-2);">${itIdx === 0 ? `${esc(form.review_note || '')}${form.reviewer_name ? ` · ${esc(form.reviewer_name)}` : ''}` : ''}</td>
+                                  </tr>
+                                `).join('');
+                              }).join('')}
+                            </tbody>
+                          </table>
+                        </div>
+                      </td>
+                    </tr>
+                  `).join('') : `<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--text-2);">Không tìm thấy nhân viên phù hợp</td></tr>`}
+                </tbody>
+              </table>
+            </div>`}
+          `;
+
+          // Bind month change
+          const monthPicker = document.getElementById('ot-summary-month-picker');
+          if (monthPicker) {
+            monthPicker.addEventListener('change', e => {
+              if (e.target.value) {
+                boardMonth = e.target.value;
+                fetchAndRenderBoard(boardMonth);
+              }
+            });
+          }
+
+          // Bind search & filter events
+          const searchInput = document.getElementById('ot-summary-search');
+          if (searchInput) {
+            searchInput.addEventListener('input', e => {
+              activeSearch = e.target.value;
+              renderBoard();
+              const inputAgain = document.getElementById('ot-summary-search');
+              if (inputAgain) {
+                inputAgain.focus();
+                inputAgain.setSelectionRange(inputAgain.value.length, inputAgain.value.length);
+              }
+            });
+          }
+          const deptSelect = document.getElementById('ot-summary-dept');
+          if (deptSelect) {
+            deptSelect.addEventListener('change', e => {
+              activeDept = e.target.value;
+              renderBoard();
+            });
+          }
+
+          // Bind row toggle buttons
+          content.querySelectorAll('.ot-summary-main-row').forEach(el => {
+            el.addEventListener('click', e => {
+              if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+              const uid = el.dataset.userId;
+              const detailRow = document.getElementById(`ot-detail-row-${uid}`);
+              const btn = content.querySelector(`.ot-toggle-detail-btn[data-user-id="${uid}"]`);
+              if (detailRow) {
+                const isHidden = detailRow.style.display === 'none';
+                detailRow.style.display = isHidden ? 'table-row' : 'none';
+                if (btn) btn.textContent = isHidden ? '▲ Đóng' : '▼ Xem';
+              }
+            });
+          });
+        };
+
+        renderBoard();
+
+      } catch (error) {
+        content.innerHTML = emptyHTML('triangleAlert', error.message || 'Không thể tải bảng tổng hợp làm thêm giờ');
+      }
     }
+
+    fetchAndRenderBoard(boardMonth);
   }
 
   async function loadHistory() {

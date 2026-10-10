@@ -53,11 +53,14 @@ function getPersonaChipsHtml(persona) {
   if (persona === 'director') {
     return `
       <div class="ai-chips-bar">
+        <button class="ai-chip" data-prompt="Hôm nay những ai đi muộn?">${icon('alertTriangle', 'xs')} <span>Ai đi muộn hôm nay</span></button>
+        <button class="ai-chip" data-prompt="Hôm nay ai đang nghỉ phép và ai làm WFH?">${icon('userCheck', 'xs')} <span>Ai nghỉ/WFH hôm nay</span></button>
+        <button class="ai-chip" data-prompt="Phòng Marketing có những ai?">${icon('users', 'xs')} <span>Nhân sự Marketing</span></button>
+        <button class="ai-chip" data-prompt="Danh sách hợp đồng lao động sắp hết hạn trong 30 ngày tới?">${icon('fileText', 'xs')} <span>HĐ sắp hết hạn</span></button>
         <button class="ai-chip" data-prompt="Phân tích tăng trưởng quy mô nhân sự và tỷ lệ nghỉ việc turnover">${icon('trendingUp', 'xs')} <span>Tăng trưởng nhân sự</span></button>
         <button class="ai-chip" data-prompt="So sánh chuyên cần, tỷ lệ đi muộn và hiệu suất giữa các phòng ban">${icon('layoutDashboard', 'xs')} <span>So sánh phòng ban</span></button>
         <button class="ai-chip" data-prompt="Phân tích xu hướng số giờ OT và chi phí làm thêm 3 tháng gần nhất">${icon('clock3', 'xs')} <span>Xu hướng chi phí OT</span></button>
         <button class="ai-chip" data-prompt="Báo cáo điều hành tổng quan tình hình nhân sự công ty hôm nay">${icon('shieldCheck', 'xs')} <span>Báo cáo điều hành</span></button>
-        <button class="ai-chip" data-prompt="Tình hình quân số và tỷ lệ có mặt tại văn phòng hôm nay?">${icon('users', 'xs')} <span>Quân số hôm nay</span></button>
         <button class="ai-chip" data-prompt="Kiểm toán bất thường bảng lương tháng này">${icon('shieldAlert', 'xs')} <span>Kiểm toán lương AI</span></button>
       </div>
     `;
@@ -65,12 +68,13 @@ function getPersonaChipsHtml(persona) {
   if (persona === 'hr') {
     return `
       <div class="ai-chips-bar">
-        <button class="ai-chip" data-prompt="Những nhân viên nào tháng này đi trễ trên 3 lần?">${icon('alertTriangle', 'xs')} <span>Đi trễ > 3 lần</span></button>
-        <button class="ai-chip" data-prompt="Hôm nay ai đang nghỉ phép và ai làm việc WFH?">${icon('userCheck', 'xs')} <span>Ai nghỉ hôm nay</span></button>
-        <button class="ai-chip" data-prompt="Danh sách nhân viên có hợp đồng lao động sắp hết hạn trong 30 ngày tới?">${icon('fileText', 'xs')} <span>HĐ hết hạn</span></button>
+        <button class="ai-chip" data-prompt="Hôm nay những ai đi muộn?">${icon('alertTriangle', 'xs')} <span>Ai đi muộn hôm nay</span></button>
+        <button class="ai-chip" data-prompt="Hôm nay ai đang nghỉ phép và ai làm việc WFH?">${icon('userCheck', 'xs')} <span>Ai nghỉ/WFH hôm nay</span></button>
+        <button class="ai-chip" data-prompt="Những ai đang thử việc trong công ty?">${icon('clipboardList', 'xs')} <span>Ai đang thử việc</span></button>
+        <button class="ai-chip" data-prompt="Danh sách nhân viên có hợp đồng lao động sắp hết hạn trong 30 ngày tới?">${icon('fileText', 'xs')} <span>HĐ sắp hết hạn</span></button>
+        <button class="ai-chip" data-prompt="Những nhân viên nào tháng này đi trễ trên 3 lần?">${icon('clock3', 'xs')} <span>Đi trễ > 3 lần</span></button>
+        <button class="ai-chip" data-prompt="Phòng Marketing có những ai?">${icon('users', 'xs')} <span>Nhân sự Marketing</span></button>
         <button class="ai-chip" data-prompt="Tổng hợp số giờ làm thêm OT của các phòng ban tháng này?">${icon('clock3', 'xs')} <span>Tổng giờ OT</span></button>
-        <button class="ai-chip" data-prompt="Báo cáo tổng hợp tình hình nhân sự tháng này?">${icon('clipboardList', 'xs')} <span>Báo cáo tháng</span></button>
-        <button class="ai-chip" data-prompt="Tổng quan các đơn xin nghỉ phép trong công ty?">${icon('calendarDays', 'xs')} <span>Đơn nghỉ phép</span></button>
         <button class="ai-chip" data-prompt="Kiểm toán bất thường bảng lương tháng này">${icon('shieldAlert', 'xs')} <span>Kiểm toán lương AI</span></button>
       </div>
     `;

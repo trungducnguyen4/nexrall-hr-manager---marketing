@@ -84,8 +84,22 @@ export async function handleAiRoutes(request, env, me, path, url) {
         const checkins = att?.checkins || 0;
         const presenceRate = headcount > 0 ? Number(((checkins / headcount) * 100).toFixed(1)) : 0;
 
-        const ot = await env.DB.prepare("SELECT SUM(COALESCE(approved_minutes, requested_minutes, 0)) as min_sum FROM overtime_requests WHERE work_date LIKE ? AND (status = 'approved' OR status = 'pending')").bind(`${currentMonth}%`).first();
-        const otHours = Number(((ot?.min_sum || 0) / 60).toFixed(1));
+        let otHours = 0;
+        try {
+          const otReq = await env.DB.prepare("SELECT SUM(COALESCE(approved_minutes, requested_minutes, 0)) as min_sum FROM overtime_requests WHERE work_date LIKE ? AND (status = 'approved' OR status = 'pending')").bind(`${currentMonth}%`).first();
+          const otForm = await env.DB.prepare(`
+            SELECT SUM(CASE 
+                         WHEN i.approved_minutes IS NOT NULL THEN i.approved_minutes 
+                         WHEN f.status = 'approved' THEN i.requested_minutes 
+                         ELSE 0 
+                       END) as min_sum
+              FROM overtime_forms f
+              JOIN overtime_form_items i ON i.form_id = f.id
+             WHERE (f.status IN ('approved','partially_approved') OR f.status = 'pending')
+               AND (f.period_month = ? OR i.start_at LIKE ?)
+          `).bind(currentMonth, `${currentMonth}%`).first();
+          otHours = Number((((otReq?.min_sum || 0) + (otForm?.min_sum || 0)) / 60).toFixed(1));
+        } catch (_) {}
 
         const pendingReq = await env.DB.prepare("SELECT COUNT(*) as cnt FROM leave_requests WHERE status = 'pending'").first();
         const pendingCount = pendingReq?.cnt || 0;

@@ -20,3 +20,7 @@ backups/
 
 # Dependencies
 node_modules/
+
+# Temporary artifacts
+screenshots_ot/
+screenshots_ot.zip
