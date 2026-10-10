@@ -1514,3 +1514,36 @@ export const AttendanceService = {
     return { ok: true };
   }
 };
+
+export async function buildMonthlyOvertimeSummary(env, userId, month, year, baseSalary = 0) {
+  const mm = String(month).padStart(2, '0');
+  const { results: legacyResults = [] } = await env.DB.prepare(
+    "SELECT work_date, COALESCE(approved_minutes, requested_minutes, 0) AS approved_minutes FROM overtime_requests WHERE (user_id=? OR CAST(user_id AS TEXT)=CAST(? AS TEXT)) AND status='approved' AND strftime('%m',work_date)=? AND strftime('%Y',work_date)=?"
+  ).bind(userId, userId, mm, String(year)).all();
+  const { results: formResults = [] } = await env.DB.prepare(
+    `SELECT substr(i.start_at,1,10) AS work_date,
+            COALESCE(NULLIF(i.approved_minutes, 0), i.requested_minutes, 0) AS approved_minutes,
+            i.time_category
+       FROM overtime_form_items i JOIN overtime_forms f ON f.id=i.form_id
+      WHERE (f.user_id=? OR CAST(f.user_id AS TEXT)=CAST(? AS TEXT))
+        AND f.status IN ('approved','partially_approved')
+        AND strftime('%m',substr(i.start_at,1,10))=? AND strftime('%Y',substr(i.start_at,1,10))=?`
+  ).bind(userId, userId, mm, String(year)).all();
+  const { results: holidays = [] } = await env.DB.prepare(
+    "SELECT holiday_date FROM company_holidays WHERE is_active=1 AND strftime('%m',holiday_date)=? AND strftime('%Y',holiday_date)=?"
+  ).bind(mm, String(year)).all();
+  const holidayDates = new Set(holidays.map(h => h.holiday_date));
+  const standardDays = attCountBusinessDays(year, month) || 1;
+  const hourlyRate = Number(baseSalary || 0) / standardDays / 8;
+  let approvedMinutes = 0;
+  let overtimePay = 0;
+  for (const item of [...legacyResults, ...formResults]) {
+    const minutes = Math.max(0, Number(item.approved_minutes || 0));
+    const day = new Date(`${item.work_date}T00:00:00`).getDay();
+    const multiplier = item.time_category === 'holiday' || holidayDates.has(item.work_date) ? 3 : item.time_category === 'rest_day' || day === 0 || day === 6 ? 2 : 1.5;
+    approvedMinutes += minutes;
+    overtimePay += (minutes / 60) * hourlyRate * multiplier;
+  }
+  return { approvedOvertimeMinutes: approvedMinutes, approvedOvertimeHours: approvedMinutes / 60, overtimePay: Math.round(overtimePay) };
+}
+

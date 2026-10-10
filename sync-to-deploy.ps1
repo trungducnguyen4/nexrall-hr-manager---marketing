@@ -85,6 +85,15 @@ Copy-File (Join-Path $root 'icon-192.png')
 Copy-File (Join-Path $root 'icon-512.png')
 Copy-File (Join-Path $root 'apple-touch-icon.png')
 
+# 3b. Xoa cac file backend/nhay cam neu vo tinh rot vao .local-public
+foreach ($f in @('server.js', 'worker.js', 'package.json', 'wrangler.toml', 'wrangler.prod.toml')) {
+    $p = Join-Path $pub $f
+    if (Test-Path $p) {
+        Remove-Item $p -Force
+        Write-Host "  -> Da go bo file backend: $f" -ForegroundColor Yellow
+    }
+}
+
 # 4. Xac nhan
 $pubCount = @(Get-ChildItem (Join-Path $pub 'src') -Recurse -File).Count
 Write-Host ""

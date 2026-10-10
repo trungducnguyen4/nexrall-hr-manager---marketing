@@ -49,6 +49,16 @@ for (const fileName of filesToCopy) {
   }
 }
 
+// Clean up any stray backend or sensitive files from public assets
+const forbiddenFiles = ['server.js', 'worker.js', 'package.json', 'wrangler.toml', 'wrangler.prod.toml'];
+for (const f of forbiddenFiles) {
+  const forbiddenPath = path.join(pub, f);
+  if (fs.existsSync(forbiddenPath)) {
+    fs.unlinkSync(forbiddenPath);
+    console.log(`  -> Removed stray backend file: ${f}`);
+  }
+}
+
 const fileCount = countFiles(pub);
 console.log(`=== SYNC COMPLETE: ${fileCount} files in .local-public ===\n`);
 
