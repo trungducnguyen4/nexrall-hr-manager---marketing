@@ -111,8 +111,9 @@ console.log('  ok save, fetch, and clear audit logs in DB');
 // 3. UI rendering check
 const html = renderAuditUiHtml();
 assert.ok(html.includes('<!DOCTYPE html>'), 'HTML doc type');
-assert.ok(html.includes('NetViet HR Security Monitor'), 'Page title');
+assert.ok(html.includes('NetViet HR'), 'Brand title');
+assert.ok(html.includes('Security Audit Center'), 'Center title');
 assert.ok(html.includes('/api/audit/logs'), 'API call inside script');
-console.log('  ok renderAuditUiHtml produces complete interactive dashboard');
+console.log('  ok renderAuditUiHtml produces complete interactive dashboard with NetViet brandkit');
 
 console.log('PASS: All Security Audit tests passed successfully!');

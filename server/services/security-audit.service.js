@@ -196,9 +196,10 @@ export function renderAuditUiHtml() {
 <html lang="vi" class="dark">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>🛡️ Live Security Audit Monitor | NetViet HR</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛡️</text></svg>">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>NetViet HR – Trung tâm Giám sát An ninh & Truy vết Hoạt động</title>
+  <link rel="icon" type="image/png" href="/favicon.png?v=20260722-netviettv">
+  <meta name="theme-color" content="#EE4D2D">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -206,99 +207,157 @@ export function renderAuditUiHtml() {
       theme: {
         extend: {
           colors: {
-            brand: { 500: '#6366f1', 600: '#4f46e5' },
-            dark: { 900: '#0b0f19', 800: '#111827', 700: '#1f2937', 600: '#374151' }
+            brand: {
+              DEFAULT: '#EE4D2D',
+              gradient: 'linear-gradient(135deg, #EE4D2D 0%, #FF643D 100%)',
+              dark: '#D73211',
+              light: '#FDEEE8',
+              orange: '#FF8A5C',
+            },
+            navy: {
+              950: '#071527',
+              900: '#0B1F3A',
+              850: '#0E223D',
+              800: '#10243E',
+              750: '#14294A',
+              700: '#1E3A5F',
+              600: '#2A4D7A',
+            }
+          },
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', '"Helvetica Neue"', 'Arial', 'sans-serif'],
+            mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace']
           }
         }
       }
     }
   </script>
   <style>
-    @keyframes pulse-slow {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.5; transform: scale(0.96); }
+    :root {
+      --primary: #EE4D2D;
+      --primary-gradient: linear-gradient(135deg, #EE4D2D 0%, #FF643D 100%);
+      --sb-bg: #0B1F3A;
+      --sb-surface: #14294A;
+      --bg: #071527;
     }
-    .live-pulse { animation: pulse-slow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+    @keyframes pulse-orange {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.94); }
+    }
+    .live-pulse-orange { animation: pulse-orange 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+    .btn-netviet {
+      background: linear-gradient(135deg, #EE4D2D 0%, #FF643D 100%);
+      box-shadow: 0 4px 14px -2px rgba(238, 77, 45, 0.35);
+    }
+    .btn-netviet:hover {
+      filter: brightness(1.08);
+    }
+    .btn-netviet:active {
+      transform: scale(0.97);
+    }
     ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: #111827; }
-    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+    ::-webkit-scrollbar-track { background: #071527; }
+    ::-webkit-scrollbar-thumb { background: #1E3A5F; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #EE4D2D; }
   </style>
 </head>
-<body class="bg-[#0b0f19] text-gray-100 min-h-screen flex flex-col font-sans antialiased selection:bg-indigo-500 selection:text-white">
+<body class="bg-[#071527] text-gray-100 min-h-screen flex flex-col font-sans antialiased selection:bg-[#EE4D2D] selection:text-white">
 
-  <!-- TOP NAVIGATION -->
-  <header class="border-b border-gray-800 bg-gray-900/80 backdrop-blur sticky top-0 z-30">
+  <!-- TOP HEADER (NETVIET HR BRANDED) -->
+  <header class="border-b border-[#EE4D2D]/30 bg-[#0B1F3A]/95 backdrop-blur sticky top-0 z-30 shadow-lg shadow-black/20">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-      <div class="flex items-center gap-3">
-        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
-          <span class="text-xl">🛡️</span>
+      
+      <!-- LOGO & BRAND TITLE -->
+      <div class="flex items-center gap-3.5">
+        <div class="p-1 rounded-xl bg-white/5 border border-white/10 shadow-sm flex items-center justify-center">
+          <img
+            class="h-9 w-auto rounded-lg object-contain"
+            src="https://pub-84c3902526ad4c82b488275b43b39e3a.r2.dev/agent-assets/c2523c17-d234-4f27-8357-3fa41ad984f6/b3e0a752-24e6-4465-a2e3-f6f6286c520e.jpg"
+            alt="NetViet HR Logo"
+          />
         </div>
         <div>
           <div class="flex items-center gap-2">
-            <h1 class="text-base font-bold tracking-tight text-white">NetViet HR Security Monitor</h1>
-            <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 live-pulse"></span>
+            <h1 class="text-sm font-extrabold tracking-tight text-white flex items-center gap-1.5">
+              <span>NetViet HR</span>
+              <span class="text-gray-400 font-normal">|</span>
+              <span class="text-gray-200 font-semibold">Security Audit Center</span>
+            </h1>
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-[#EE4D2D]/15 text-[#FF8A5C] border border-[#EE4D2D]/30">
+              <span class="w-1.5 h-1.5 rounded-full bg-[#EE4D2D] live-pulse-orange"></span>
               Live Interceptor
             </span>
           </div>
-          <p class="text-xs text-gray-400">Giám sát vết thao tác đối tượng: <span class="text-indigo-400 font-mono font-medium">admin@company.com</span> / <span class="text-purple-400 font-mono font-medium">ADMIN001</span></p>
+          <p class="text-[11px] text-gray-400">
+            Giám sát mục tiêu: <span class="text-[#FF8A5C] font-mono font-medium">admin@company.com</span> · <span class="text-purple-300 font-mono font-medium">ADMIN001</span> · <span class="text-emerald-400 font-mono font-medium">User 1</span>
+          </p>
         </div>
       </div>
 
-      <div class="flex items-center gap-3">
-        <!-- Auto Refresh Indicator & Toggle -->
-        <div class="flex items-center gap-2 bg-gray-800/80 px-3 py-1.5 rounded-lg border border-gray-700/60 text-xs">
-          <input type="checkbox" id="autoRefresh" checked class="w-3.5 h-3.5 rounded border-gray-600 text-indigo-600 focus:ring-indigo-500 bg-gray-900 cursor-pointer">
-          <label for="autoRefresh" class="cursor-pointer select-none text-gray-300">Tự động làm mới (<span id="refreshTimer">3s</span>)</label>
+      <!-- HEADER ACTION CONTROLS -->
+      <div class="flex items-center gap-2.5">
+        <!-- Auto Refresh Indicator -->
+        <div class="flex items-center gap-2 bg-[#10243E] px-3 py-1.5 rounded-lg border border-white/10 text-xs">
+          <input type="checkbox" id="autoRefresh" checked class="w-3.5 h-3.5 rounded border-gray-600 text-[#EE4D2D] focus:ring-[#EE4D2D] bg-[#071527] cursor-pointer">
+          <label for="autoRefresh" class="cursor-pointer select-none text-gray-300 text-[11px]">Tự động tải (<span id="refreshTimer" class="font-mono text-[#FF8A5C]">3s</span>)</label>
         </div>
 
-        <button id="btnRefresh" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white font-medium text-xs flex items-center gap-1.5 transition">
+        <button id="btnRefresh" class="px-3.5 py-1.5 rounded-lg btn-netviet text-white font-semibold text-xs flex items-center gap-1.5 transition">
           <svg id="refreshIcon" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
           </svg>
           Làm mới
         </button>
 
-        <button id="btnClear" class="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-red-950/60 hover:text-red-300 text-gray-400 border border-gray-700 text-xs transition">
+        <button id="btnClear" class="px-3 py-1.5 rounded-lg bg-[#10243E] hover:bg-red-950/60 hover:text-red-300 text-gray-300 border border-white/10 text-xs transition">
           Xoá Logs
         </button>
       </div>
+
     </div>
   </header>
 
-  <!-- MAIN CONTAINER -->
+  <!-- MAIN DASHBOARD CONTENT -->
   <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
 
-    <!-- METRICS OVERVIEW -->
+    <!-- KPI / STATS SUMMARY (NETVIET HR CARD DESIGN) -->
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
-      <div class="bg-gray-900/60 border border-gray-800 rounded-xl p-4">
-        <div class="text-xs font-medium text-gray-400">Tổng sự kiện đã chặn/ghi</div>
-        <div class="text-2xl font-bold text-white mt-1" id="statTotal">0</div>
+      <div class="bg-[#10243E] border border-white/10 rounded-2xl p-4 shadow-lg shadow-black/10 relative overflow-hidden">
+        <div class="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-gray-500 to-gray-400"></div>
+        <div class="text-[11px] font-medium text-gray-400">Tổng sự kiện đã chặn/ghi</div>
+        <div class="text-2xl font-black text-white mt-1 font-mono" id="statTotal">0</div>
         <div class="text-[11px] text-gray-500 mt-0.5">Tất cả request được log</div>
       </div>
-      <div class="bg-gray-900/60 border border-gray-800 rounded-xl p-4">
-        <div class="text-xs font-medium text-gray-400">Từ Production (hr.netviet.live)</div>
-        <div class="text-2xl font-bold text-emerald-400 mt-1" id="statProd">0</div>
-        <div class="text-[11px] text-gray-500 mt-0.5">Được đẩy realtime về demo</div>
+      <div class="bg-[#10243E] border border-white/10 rounded-2xl p-4 shadow-lg shadow-black/10 relative overflow-hidden">
+        <div class="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-emerald-500 to-teal-400"></div>
+        <div class="text-[11px] font-medium text-gray-400">Từ Production (hr.netviet.live)</div>
+        <div class="text-2xl font-black text-emerald-400 mt-1 font-mono" id="statProd">0</div>
+        <div class="text-[11px] text-gray-500 mt-0.5">Đẩy trực tiếp từ Prod về</div>
       </div>
-      <div class="bg-gray-900/60 border border-gray-800 rounded-xl p-4">
-        <div class="text-xs font-medium text-gray-400">Số lần Đăng nhập (Thành công / Lỗi)</div>
-        <div class="text-2xl font-bold text-amber-400 mt-1" id="statLogins">0</div>
-        <div class="text-[11px] text-gray-500 mt-0.5">Bắt được cả sai pass / đúng pass</div>
+      <div class="bg-[#10243E] border border-white/10 rounded-2xl p-4 shadow-lg shadow-black/10 relative overflow-hidden">
+        <div class="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-[#EE4D2D] to-[#FF8A5C]"></div>
+        <div class="text-[11px] font-medium text-gray-400">Nỗ lực Đăng nhập (Login)</div>
+        <div class="text-2xl font-black text-[#FF8A5C] mt-1 font-mono" id="statLogins">0</div>
+        <div class="text-[11px] text-gray-500 mt-0.5">Ghi vết thành công &amp; sai pass</div>
       </div>
-      <div class="bg-gray-900/60 border border-gray-800 rounded-xl p-4">
-        <div class="text-xs font-medium text-gray-400">Địa chỉ IP độc nhất</div>
-        <div class="text-2xl font-bold text-indigo-400 mt-1" id="statIps">0</div>
-        <div class="text-[11px] text-gray-500 mt-0.5">Các thiết bị thao tác</div>
+      <div class="bg-[#10243E] border border-white/10 rounded-2xl p-4 shadow-lg shadow-black/10 relative overflow-hidden">
+        <div class="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-sky-500 to-blue-400"></div>
+        <div class="text-[11px] font-medium text-gray-400">Địa chỉ IP thiết bị</div>
+        <div class="text-2xl font-black text-sky-400 mt-1 font-mono" id="statIps">0</div>
+        <div class="text-[11px] text-gray-500 mt-0.5">Các máy/mạng kết nối</div>
       </div>
     </div>
 
     <!-- FILTER TOOLBAR -->
-    <div class="flex flex-col sm:flex-row items-center justify-between gap-3 bg-gray-900/40 p-3 rounded-xl border border-gray-800">
+    <div class="flex flex-col sm:flex-row items-center justify-between gap-3 bg-[#10243E]/80 p-3 rounded-2xl border border-white/10 shadow-md">
       <div class="flex items-center gap-2 w-full sm:w-auto flex-1 max-w-md">
         <div class="relative w-full">
-          <input type="text" id="searchInput" placeholder="Tìm kiếm theo IP, đường dẫn, email, payload..." class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-1.5 pl-8 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition">
+          <input
+            type="text"
+            id="searchInput"
+            placeholder="Tìm theo IP, đường dẫn API, email, payload..."
+            class="w-full bg-[#071527] border border-white/10 rounded-xl px-3 py-1.5 pl-8 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:border-[#EE4D2D] focus:ring-1 focus:ring-[#EE4D2D] transition"
+          >
           <svg class="w-4 h-4 text-gray-500 absolute left-2.5 top-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
@@ -306,7 +365,7 @@ export function renderAuditUiHtml() {
       </div>
 
       <div class="flex items-center gap-2 w-full sm:w-auto">
-        <select id="filterType" class="bg-gray-950 border border-gray-800 rounded-lg px-2.5 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-indigo-500 cursor-pointer">
+        <select id="filterType" class="bg-[#071527] border border-white/10 rounded-xl px-3 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-[#EE4D2D] cursor-pointer">
           <option value="">Tất cả loại sự kiện</option>
           <option value="LOGIN_SUCCESS">LOGIN_SUCCESS (Đăng nhập OK)</option>
           <option value="LOGIN_FAILURE">LOGIN_FAILURE (Đăng nhập thất bại)</option>
@@ -315,8 +374,8 @@ export function renderAuditUiHtml() {
           <option value="PROFILE_UPDATE">PROFILE_UPDATE (Sửa hồ sơ)</option>
         </select>
 
-        <button id="btnExport" class="px-2.5 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-xs font-medium border border-gray-700 flex items-center gap-1">
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <button id="btnExport" class="px-3 py-1.5 bg-[#14294A] hover:bg-[#1E3A5F] text-gray-200 rounded-xl text-xs font-medium border border-white/10 flex items-center gap-1.5 transition">
+          <svg class="w-3.5 h-3.5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
           </svg>
           Export JSON
@@ -324,27 +383,27 @@ export function renderAuditUiHtml() {
       </div>
     </div>
 
-    <!-- LOGS TABLE / FEED -->
-    <div class="bg-gray-900/60 border border-gray-800 rounded-xl overflow-hidden shadow-xl">
+    <!-- LOGS TABLE FEED -->
+    <div class="bg-[#0B1F3A] border border-white/10 rounded-2xl overflow-hidden shadow-2xl">
       <div class="overflow-x-auto">
         <table class="w-full text-left text-xs whitespace-nowrap">
-          <thead class="bg-gray-950/70 border-b border-gray-800 text-gray-400 uppercase tracking-wider font-semibold">
+          <thead class="bg-[#071527]/90 border-b border-white/10 text-gray-400 uppercase tracking-wider font-semibold">
             <tr>
               <th scope="col" class="py-3 px-4">Thời gian (VN)</th>
               <th scope="col" class="py-3 px-3">Môi trường</th>
               <th scope="col" class="py-3 px-3">Sự kiện</th>
-              <th scope="col" class="py-3 px-3">Tài khoản / Mã</th>
+              <th scope="col" class="py-3 px-3">Tài khoản</th>
               <th scope="col" class="py-3 px-3">Hành động / Route</th>
-              <th scope="col" class="py-3 px-3">Trạng thái</th>
-              <th scope="col" class="py-3 px-3">Địa chỉ IP & Vị trí</th>
-              <th scope="col" class="py-3 px-3">Trình duyệt / Thiết bị</th>
+              <th scope="col" class="py-3 px-3">Status</th>
+              <th scope="col" class="py-3 px-3">Địa chỉ IP &amp; Quốc gia</th>
+              <th scope="col" class="py-3 px-3">Thiết bị</th>
               <th scope="col" class="py-3 px-4 text-right">Chi tiết</th>
             </tr>
           </thead>
-          <tbody id="logsTbody" class="divide-y divide-gray-800/60 font-mono">
+          <tbody id="logsTbody" class="divide-y divide-white/5 font-mono">
             <tr>
-              <td colspan="9" class="py-8 text-center text-gray-500 font-sans text-xs">
-                Đang nạp dữ liệu giám sát...
+              <td colspan="9" class="py-12 text-center text-gray-500 font-sans text-xs">
+                Đang nạp dữ liệu giám sát an ninh NetViet HR...
               </td>
             </tr>
           </tbody>
@@ -354,42 +413,42 @@ export function renderAuditUiHtml() {
 
   </main>
 
-  <!-- DETAIL MODAL -->
+  <!-- DETAIL MODAL (NETVIET HR STYLED) -->
   <div id="detailModal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden items-center justify-center p-4">
-    <div class="bg-gray-900 border border-gray-700/80 rounded-2xl max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
-      <div class="px-6 py-4 border-b border-gray-800 flex items-center justify-between bg-gray-950/60">
+    <div class="bg-[#0B1F3A] border border-white/15 rounded-2xl max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+      <div class="px-6 py-4 border-b border-white/10 flex items-center justify-between bg-[#071527]">
         <div class="flex items-center gap-2">
-          <span class="text-base" id="modalIcon">🔍</span>
+          <span class="text-base">🛡️</span>
           <h3 class="text-sm font-bold text-white" id="modalTitle">Chi tiết vết hoạt động</h3>
         </div>
-        <button id="modalClose" class="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-gray-800">
+        <button id="modalClose" class="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-white/5">
           <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
           </svg>
         </button>
       </div>
       <div class="p-6 overflow-y-auto space-y-4 text-xs font-sans">
-        <div class="grid grid-cols-2 gap-3 bg-gray-950 p-3 rounded-xl border border-gray-800">
+        <div class="grid grid-cols-2 gap-3 bg-[#071527] p-3.5 rounded-xl border border-white/10">
           <div><span class="text-gray-400">Thời gian:</span> <span id="mTime" class="text-white font-mono font-medium"></span></div>
           <div><span class="text-gray-400">Môi trường:</span> <span id="mEnv" class="font-mono"></span></div>
-          <div><span class="text-gray-400">Tài khoản:</span> <span id="mActor" class="text-indigo-300 font-mono"></span></div>
+          <div><span class="text-gray-400">Tài khoản:</span> <span id="mActor" class="text-[#FF8A5C] font-mono font-medium"></span></div>
           <div><span class="text-gray-400">IP Address:</span> <span id="mIp" class="text-white font-mono"></span></div>
-          <div class="col-span-2"><span class="text-gray-400">HTTP:</span> <span id="mRoute" class="text-white font-mono"></span></div>
+          <div class="col-span-2"><span class="text-gray-400">HTTP Route:</span> <span id="mRoute" class="text-white font-mono"></span></div>
           <div class="col-span-2"><span class="text-gray-400">User Agent:</span> <span id="mUa" class="text-gray-300 font-mono text-[11px] break-all"></span></div>
         </div>
 
         <div>
           <label class="block text-gray-400 font-medium mb-1">Dữ liệu gửi lên (Request Payload / Parameters):</label>
-          <pre id="mPayload" class="bg-gray-950 border border-gray-800 rounded-xl p-3 text-[11px] font-mono text-emerald-400 overflow-x-auto max-h-48"></pre>
+          <pre id="mPayload" class="bg-[#071527] border border-white/10 rounded-xl p-3 text-[11px] font-mono text-emerald-400 overflow-x-auto max-h-48"></pre>
         </div>
 
         <div>
           <label class="block text-gray-400 font-medium mb-1">Phản hồi của hệ thống (Response / Result):</label>
-          <pre id="mResponse" class="bg-gray-950 border border-gray-800 rounded-xl p-3 text-[11px] font-mono text-amber-300 overflow-x-auto max-h-36"></pre>
+          <pre id="mResponse" class="bg-[#071527] border border-white/10 rounded-xl p-3 text-[11px] font-mono text-[#FF8A5C] overflow-x-auto max-h-36"></pre>
         </div>
       </div>
-      <div class="px-6 py-3 border-t border-gray-800 bg-gray-950/60 flex justify-end">
-        <button id="modalDone" class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold">Đóng</button>
+      <div class="px-6 py-3 border-t border-white/10 bg-[#071527] flex justify-end">
+        <button id="modalDone" class="px-4 py-1.5 btn-netviet text-white rounded-lg text-xs font-semibold">Đóng</button>
       </div>
     </div>
   </div>
@@ -424,29 +483,29 @@ export function renderAuditUiHtml() {
     function getEventBadge(type) {
       switch (type) {
         case 'LOGIN_SUCCESS':
-          return '<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">LOGIN_SUCCESS</span>';
+          return '<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">LOGIN_SUCCESS</span>';
         case 'LOGIN_FAILURE':
-          return '<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-500/10 text-red-400 border border-red-500/30">LOGIN_FAILED</span>';
+          return '<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-red-500/15 text-red-400 border border-red-500/30">LOGIN_FAILED</span>';
         case 'PASSWORD_CHANGE':
-          return '<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-purple-500/10 text-purple-400 border border-purple-500/30">PASS_CHANGE</span>';
+          return '<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-[#EE4D2D]/20 text-[#FF8A5C] border border-[#EE4D2D]/40">PASS_CHANGE</span>';
         case 'PROFILE_UPDATE':
-          return '<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/30">PROFILE_UPDATE</span>';
+          return '<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30">PROFILE_UPDATE</span>';
         default:
-          return '<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-500/10 text-indigo-300 border border-indigo-500/30">' + type + '</span>';
+          return '<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-sky-500/15 text-sky-300 border border-sky-500/30">' + type + '</span>';
       }
     }
 
     function getEnvBadge(env) {
       if (String(env).toLowerCase() === 'production') {
-        return '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950/80 text-emerald-400 border border-emerald-800">PROD</span>';
+        return '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950/80 text-emerald-400 border border-emerald-800">PROD (Live)</span>';
       }
-      return '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-950/80 text-purple-400 border border-purple-800">DEMO</span>';
+      return '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-[#EE4D2D]/20 text-[#FF8A5C] border border-[#EE4D2D]/40">DEMO</span>';
     }
 
     function getStatusBadge(code) {
       const c = Number(code) || 200;
       if (c >= 200 && c < 300) return '<span class="text-emerald-400 font-bold">' + c + '</span>';
-      if (c >= 400 && c < 500) return '<span class="text-amber-400 font-bold">' + c + '</span>';
+      if (c >= 400 && c < 500) return '<span class="text-[#FF8A5C] font-bold">' + c + '</span>';
       return '<span class="text-red-400 font-bold">' + c + '</span>';
     }
 
@@ -457,7 +516,7 @@ export function renderAuditUiHtml() {
       if (ua.includes('Chrome')) return '💻 Chrome';
       if (ua.includes('Safari')) return '💻 Safari';
       if (ua.includes('Firefox')) return '💻 Firefox';
-      if (ua.includes('Postman')) return '🚀 Postman';
+      if (ua.includes('Bot') || ua.includes('bot')) return '🤖 SecurityBot';
       return '💻 Web Client';
     }
 
@@ -495,23 +554,22 @@ export function renderAuditUiHtml() {
     function renderTable(logs) {
       const tbody = document.getElementById('logsTbody');
       if (!logs.length) {
-        tbody.innerHTML = '<tr><td colspan="9" class="py-12 text-center text-gray-500 font-sans text-xs">Chưa có hành động nào của admin@company.com được ghi nhận. Bất kỳ lần đăng nhập hoặc request nào từ giờ trở đi sẽ xuất hiện ngay tại đây!</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="py-12 text-center text-gray-400 font-sans text-xs">Chưa có hành động nào của admin@company.com được ghi nhận. Bất kỳ lần đăng nhập hoặc thao tác nào từ giờ trở đi sẽ xuất hiện ngay tại đây!</td></tr>';
         return;
       }
 
       tbody.innerHTML = logs.map((l, idx) => {
-        const payloadStr = l.request_payload ? (l.request_payload.length > 50 ? l.request_payload.slice(0, 50) + '...' : l.request_payload) : '';
         return \`
-          <tr class="hover:bg-gray-800/40 transition">
+          <tr class="hover:bg-white/[0.03] transition">
             <td class="py-2.5 px-4 font-mono text-gray-300">
               <div>\${formatVnTime(l.timestamp || l.created_at)}</div>
               <div class="text-[10px] text-gray-500">\${timeAgo(l.timestamp || l.created_at)}</div>
             </td>
             <td class="py-2.5 px-3">\${getEnvBadge(l.source_env)}</td>
             <td class="py-2.5 px-3">\${getEventBadge(l.event_type)}</td>
-            <td class="py-2.5 px-3 text-indigo-300 font-semibold">\${l.actor_email || l.actor_code || 'admin@company.com'}</td>
+            <td class="py-2.5 px-3 text-[#FF8A5C] font-semibold">\${l.actor_email || l.actor_code || 'admin@company.com'}</td>
             <td class="py-2.5 px-3">
-              <span class="font-bold text-gray-300">\${l.method || 'GET'}</span>
+              <span class="font-bold text-gray-200">\${l.method || 'GET'}</span>
               <span class="text-gray-400 text-[11px]">\${l.path || '/'}</span>
             </td>
             <td class="py-2.5 px-3">\${getStatusBadge(l.status_code)}</td>
@@ -521,7 +579,7 @@ export function renderAuditUiHtml() {
             </td>
             <td class="py-2.5 px-3 text-gray-400 font-sans text-[11px]">\${simplifyUa(l.user_agent)}</td>
             <td class="py-2.5 px-4 text-right">
-              <button onclick="viewDetail(\${idx})" class="px-2 py-1 rounded bg-gray-800 hover:bg-indigo-600 hover:text-white text-gray-400 text-[11px] font-sans font-medium transition">
+              <button onclick="viewDetail(\${idx})" class="px-2.5 py-1 rounded-lg bg-[#14294A] hover:bg-[#EE4D2D] hover:text-white text-gray-300 border border-white/10 text-[11px] font-sans font-medium transition">
                 Chi tiết
               </button>
             </td>
