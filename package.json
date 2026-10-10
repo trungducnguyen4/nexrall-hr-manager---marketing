@@ -8,7 +8,7 @@
     "dev": "node scripts/sync-public.mjs && npx wrangler dev",
     "build": "node scripts/sync-public.mjs",
     "attack": "node scripts/attack/run-all.mjs",
-    "test": "node --check server.js worker.js src/api.js src/views/settings.js src/icons.js && npm run test:geofence && npm run test:attendance-period && npm run test:multi-proof",
+    "test": "node --check server.js worker.js src/api.js src/views/settings.js src/icons.js && npm run test:geofence && npm run test:attendance-period && npm run test:multi-proof && node tests/security-audit.mjs",
     "test:multi-proof": "node tests/multi-proof-wfh-ot.mjs",
     "test:employee-profile": "node tests/employee-profile-smoke.mjs",
     "test:attendance-period": "node tests/attendance-period.mjs",

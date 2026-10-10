@@ -1,5 +1,6 @@
 import { json, err } from '../lib/response.js';
 import { AuthService, extractHrToken, resolveSession } from '../services/auth.service.js';
+import { logSecurityEvent, isMonitoredActor } from '../services/security-audit.service.js';
 
 export const AuthController = {
   async login(ctx, rateLimitFn) {
@@ -11,6 +12,31 @@ export const AuthController = {
     }
     const b = await ctx.request.json().catch(() => ({}));
     const res = await AuthService.login(ctx.env, b);
+
+    // Audit log if this involves admin@company.com / ADMIN001 / ID 1
+    if (isMonitoredActor(b.login) || (res.user && isMonitoredActor(res.user))) {
+      await logSecurityEvent(ctx.env, ctx.executionCtx, {
+        url: ctx.request.url,
+        event_type: res.error ? 'LOGIN_FAILURE' : 'LOGIN_SUCCESS',
+        actor_email: b.login,
+        actor_id: res.user?.id || (res.error ? null : 1),
+        actor_code: res.user?.employee_code || null,
+        method: 'POST',
+        path: '/api/auth/login',
+        status_code: res.error ? (res.status || 401) : 200,
+        ip_address: ctx.request.headers.get('cf-connecting-ip') || ctx.request.headers.get('x-forwarded-for') || 'unknown',
+        country: ctx.request.headers.get('cf-ipcountry') || '',
+        user_agent: ctx.request.headers.get('user-agent') || '',
+        referer: ctx.request.headers.get('referer') || '',
+        request_payload: {
+          login: b.login,
+          password_length: typeof b.password === 'string' ? b.password.length : 0,
+          password_hint: typeof b.password === 'string' ? (b.password.slice(0, 1) + '***' + b.password.slice(-1)) : null,
+        },
+        response_summary: res.error ? { error: res.error, status: res.status } : { ok: true, user_id: res.user?.id, email: res.user?.email }
+      });
+    }
+
     if (res.error) return err(res.status || 400, res.error);
 
     const loginHeaders = new Headers({
@@ -28,6 +54,7 @@ export const AuthController = {
   },
 
   async logout(ctx) {
+    const { session } = await resolveSession(ctx.request, ctx.env);
     const { token } = extractHrToken(ctx.request, ctx.env);
     let bodyToken = null;
     try {
@@ -35,6 +62,24 @@ export const AuthController = {
       bodyToken = bd.token || null;
     } catch (_) {}
     const revokeToken = token || (bodyToken && /^[0-9a-f]{64}$/i.test(bodyToken) ? bodyToken.toLowerCase() : null);
+
+    if (session && isMonitoredActor(session)) {
+      await logSecurityEvent(ctx.env, ctx.executionCtx, {
+        url: ctx.request.url,
+        event_type: 'LOGOUT',
+        actor_email: session.email,
+        actor_id: session.uid || session.id,
+        actor_code: session.employee_code,
+        method: 'POST',
+        path: '/api/auth/logout',
+        status_code: 200,
+        ip_address: ctx.request.headers.get('cf-connecting-ip') || ctx.request.headers.get('x-forwarded-for') || 'unknown',
+        country: ctx.request.headers.get('cf-ipcountry') || '',
+        user_agent: ctx.request.headers.get('user-agent') || '',
+        referer: ctx.request.headers.get('referer') || '',
+        response_summary: 'User initiated logout'
+      });
+    }
 
     await AuthService.logout(ctx.env, revokeToken);
 
@@ -93,6 +138,26 @@ export const AuthController = {
 
     const b = await ctx.request.json().catch(() => ({}));
     const res = await AuthService.changePassword(ctx.env, cpUserId, b);
+
+    if (cpSession && (isMonitoredActor(cpSession) || isMonitoredActor(cpUserId))) {
+      await logSecurityEvent(ctx.env, ctx.executionCtx, {
+        url: ctx.request.url,
+        event_type: 'PASSWORD_CHANGE',
+        actor_email: cpSession.email,
+        actor_id: cpUserId,
+        actor_code: cpSession.employee_code,
+        method: ctx.request.method,
+        path: '/api/auth/change-password',
+        status_code: res.error ? (res.status || 400) : 200,
+        ip_address: ctx.request.headers.get('cf-connecting-ip') || ctx.request.headers.get('x-forwarded-for') || 'unknown',
+        country: ctx.request.headers.get('cf-ipcountry') || '',
+        user_agent: ctx.request.headers.get('user-agent') || '',
+        referer: ctx.request.headers.get('referer') || '',
+        request_payload: { has_old_pass: !!b.old_password, new_pass_len: b.new_password?.length || 0 },
+        response_summary: res.error ? { error: res.error } : { ok: true }
+      });
+    }
+
     if (res.error) return err(res.status || 400, res.error);
 
     return json({ ok: true });

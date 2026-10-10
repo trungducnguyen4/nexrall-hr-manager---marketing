@@ -1,6 +1,7 @@
 import { handle, handleScheduled } from './server.js';
 import { ChatRoom } from './src/chat-room.js';
 import { AppSyncHub } from './src/sync-hub.js';
+import { AuditController } from './server/controllers/audit.controller.js';
 
 function secureAssetResponse(response, pathname) {
   const headers = new Headers(response.headers);
@@ -11,18 +12,23 @@ function secureAssetResponse(response, pathname) {
   if (pathname === '/' || pathname.endsWith('.html')) {
     headers.set('Cache-Control', 'no-store, max-age=0');
     // The UI is a module SPA and currently loads a vetted logo from R2.
-    headers.set('Content-Security-Policy', "default-src 'self'; img-src 'self' https://pub-84c3902526ad4c82b488275b43b39e3a.r2.dev https://api.vietqr.io data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
+    headers.set('Content-Security-Policy', "default-src 'self'; img-src 'self' https://pub-84c3902526ad4c82b488275b43b39e3a.r2.dev https://api.vietqr.io data:; style-src 'self' 'unsafe-inline'; script-src 'self' https://cdn.tailwindcss.com; connect-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
   }
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    // Live Security Audit Dashboard
+    if (url.pathname === '/audit' || url.pathname === '/audit/' || url.pathname === '/admin-audit') {
+      return AuditController.renderUi();
+    }
 
     if (url.pathname.startsWith('/api/')) {
       try {
-        return await handle(request, env);
+        return await handle(request, env, ctx);
       } catch (error) {
         const errorId = crypto.randomUUID();
         console.error('Unhandled API error', { errorId, path: url.pathname, message: String(error?.message || error), stack: error?.stack });

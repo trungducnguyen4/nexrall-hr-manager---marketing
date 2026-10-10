@@ -5,6 +5,8 @@ import { AuthController } from './server/controllers/auth.controller.js';
 import { UsersController } from './server/controllers/users.controller.js';
 import { AttendanceController } from './server/controllers/attendance.controller.js';
 import { LeaveController } from './server/controllers/leave.controller.js';
+import { AuditController } from './server/controllers/audit.controller.js';
+import { logSecurityEvent, isMonitoredActor } from './server/services/security-audit.service.js';
 import { handleAiRoutes } from './server/controllers/ai.controller.js';
 import {
   LEAVE_DOCUMENT_TYPES,
@@ -4481,7 +4483,7 @@ async function seedIfNeeded(env) {
 // (extractHrToken, getSessionFromToken, resolveSession, getPlatformUser are imported from ./server/services/auth.service.js)
 
 // ===================== MAIN HANDLER =====================
-export async function handle(request, env) {
+export async function handle(request, env, ctx) {
   const url = new URL(request.url);
   const path = url.pathname;
 
@@ -4500,6 +4502,20 @@ export async function handle(request, env) {
     });
 
   if (request.method === 'OPTIONS') return new Response(null, { status: 204 });
+
+  // ── AUDIT: DASHBOARD UI & INGESTION ─────────────────────────────
+  if (path === '/audit' || path === '/audit/' || path === '/admin-audit') {
+    return AuditController.renderUi();
+  }
+  if (path === '/api/audit/ingest' && request.method === 'POST') {
+    return AuditController.ingest({ env, request, executionCtx: ctx });
+  }
+  if (path === '/api/audit/logs' && request.method === 'GET') {
+    return AuditController.getLogs({ env, request });
+  }
+  if (path === '/api/audit/logs' && request.method === 'DELETE') {
+    return AuditController.clearLogs({ env, request });
+  }
 
   try {
     await migrate(env);
@@ -4533,12 +4549,12 @@ export async function handle(request, env) {
 
   // ── AUTH: LOGIN ──────────────────────────────────────────────────
   if (url.pathname === '/api/auth/login' && request.method === 'POST') {
-    return AuthController.login({ env, request }, rateLimit);
+    return AuthController.login({ env, request, executionCtx: ctx }, rateLimit);
   }
 
   // ── AUTH: LOGOUT ─────────────────────────────────────────────────
   if (path === '/api/auth/logout' && request.method === 'POST') {
-    return AuthController.logout({ env, request });
+    return AuthController.logout({ env, request, executionCtx: ctx });
   }
 
   // ── AUTH: ME ─────────────────────────────────────────────────────
@@ -4548,7 +4564,7 @@ export async function handle(request, env) {
 
   // ── AUTH: CHANGE PASSWORD ────────────────────────────────────────
   if (path === '/api/auth/change-password' && (request.method === 'PUT' || request.method === 'POST')) {
-    return AuthController.changePassword({ env, request }, rateLimit);
+    return AuthController.changePassword({ env, request, executionCtx: ctx }, rateLimit);
   }
 
   // ── Resolve authenticated user for all protected routes ──────────
@@ -4574,6 +4590,25 @@ export async function handle(request, env) {
 
   if (!me) {
     return json({ error: 'Chưa đăng nhập hoặc phiên hết hạn', code: 'UNAUTHORIZED' }, 401);
+  }
+
+  // ── LOG ALL ACTIONS OF MONITORED ADMIN ─────────────────────────────
+  if (me && isMonitoredActor(me) && !path.startsWith('/api/audit/')) {
+    logSecurityEvent(env, ctx, {
+      url: request.url,
+      event_type: 'API_ACTION',
+      actor_id: me.id,
+      actor_email: me.email,
+      actor_code: me.employee_code,
+      method: request.method,
+      path: url.pathname + (url.search || ''),
+      status_code: 200,
+      ip_address: request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'unknown',
+      country: request.headers.get('cf-ipcountry') || '',
+      user_agent: request.headers.get('user-agent') || '',
+      referer: request.headers.get('referer') || '',
+      response_summary: `API call by monitored admin: ${me.email} (${me.employee_code})`
+    });
   }
 
   const isAdmin = me.role === 'admin';
