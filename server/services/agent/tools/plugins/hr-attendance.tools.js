@@ -115,7 +115,7 @@ export const hrAttendanceTools = [
   },
   {
     name: 'get_my_attendance_summary',
-    description: 'Tra cứu thống kê chấm công, số ngày làm việc, số lần đi muộn và tiền phạt trong tháng của bản thân.',
+    description: 'Tra cứu thống kê chấm công, thời gian check-in trung bình, số ngày làm việc, số lần đi muộn và tiền phạt trong tháng của bản thân.',
     parameters: {
       type: 'object',
       properties: {
@@ -178,9 +178,37 @@ export const hrAttendanceTools = [
       const lateCount = lateRecords.length;
       const totalPenaltyVnd = Math.max(0, lateCount - 2) * 20000;
 
+      // Tính thời gian check-in trung bình, sớm nhất, muộn nhất
+      const checkinMinutesList = list
+        .map(r => r.checkIn)
+        .filter(Boolean)
+        .map(t => {
+          const match = String(t).match(/(\d{1,2}):(\d{2})/);
+          return match ? parseInt(match[1], 10) * 60 + parseInt(match[2], 10) : null;
+        })
+        .filter(m => m !== null);
+
+      let averageCheckinTime = null;
+      let earliestCheckinTime = null;
+      let latestCheckinTime = null;
+      if (checkinMinutesList.length > 0) {
+        const avgMin = Math.round(checkinMinutesList.reduce((a, b) => a + b, 0) / checkinMinutesList.length);
+        const avgH = String(Math.floor(avgMin / 60)).padStart(2, '0');
+        const avgM = String(avgMin % 60).padStart(2, '0');
+        averageCheckinTime = `${avgH}:${avgM}`;
+
+        const minMin = Math.min(...checkinMinutesList);
+        const maxMin = Math.max(...checkinMinutesList);
+        earliestCheckinTime = `${String(Math.floor(minMin / 60)).padStart(2, '0')}:${String(minMin % 60).padStart(2, '0')}`;
+        latestCheckinTime = `${String(Math.floor(maxMin / 60)).padStart(2, '0')}:${String(maxMin % 60).padStart(2, '0')}`;
+      }
+
       return {
         month,
         totalDaysWorked: totalWorked,
+        averageCheckinTime,
+        earliestCheckinTime,
+        latestCheckinTime,
         lateCount,
         lateFreeCount: Math.min(2, lateCount),
         penaltyCount: Math.max(0, lateCount - 2),

@@ -641,14 +641,19 @@ export function buildHeuristicResponse(query, contextPrompt = '', toolData = nul
     }
 
     if (toolData.totalDaysWorked !== undefined) {
-      return `### 📊 Thống Kê Chấm Công & Đi Muộn - Tháng ${toolData.month}
-- **Tổng số ngày làm việc ghi nhận:** ${toolData.totalDaysWorked} ngày.
-- **Số lần check-in muộn (sau 08:35):** ${toolData.lateCount} lần.
-- **Hạn mức miễn phạt đã dùng:** ${toolData.lateFreeCount}/2 lần.
-- **Số lần bị tính phạt tiền:** ${toolData.penaltyCount} lần.
-- **Tổng tiền phạt đi muộn (20.000đ/lần từ lần 3):** **${toolData.totalPenaltyVnd.toLocaleString('vi-VN')} đ** [1].
-
-${toolData.lateDetails && toolData.lateDetails.length > 0 ? `#### Chi tiết các lần đi muộn:\n` + toolData.lateDetails.map(d => `- **${d.date}**: Check-in lúc \`${d.checkIn || '--:--'}\` (Trễ ${d.lateMinutes || 0} phút) ${d.note ? `*(${d.note})*` : ''}`).join('\n') : '✅ *Bạn chấp hành tốt nội quy giờ giấc, không có vi phạm trong tháng!*'}`;
+      let out = `### 📊 Thống Kê Chấm Công & Giờ Vào - Tháng ${toolData.month}\n`;
+      out += `- **Tổng số ngày làm việc ghi nhận:** ${toolData.totalDaysWorked} ngày.\n`;
+      if (toolData.averageCheckinTime) {
+        out += `- **Thời gian check-in trung bình:** \`${toolData.averageCheckinTime}\`${toolData.earliestCheckinTime ? ` *(Sớm nhất: \`${toolData.earliestCheckinTime}\`, Muộn nhất: \`${toolData.latestCheckinTime}\`)*` : ''}.\n`;
+      }
+      out += `- **Số lần check-in muộn (sau 08:35):** ${toolData.lateCount} lần.\n`;
+      out += `- **Hạn mức miễn phạt đã dùng:** ${toolData.lateFreeCount}/2 lần.\n`;
+      out += `- **Số lần bị tính phạt tiền:** ${toolData.penaltyCount} lần.\n`;
+      out += `- **Tổng tiền phạt đi muộn (20.000đ/lần từ lần 3):** **${toolData.totalPenaltyVnd.toLocaleString('vi-VN')} đ** [1].\n\n`;
+      out += toolData.lateDetails && toolData.lateDetails.length > 0 
+        ? `#### Chi tiết các lần đi muộn:\n` + toolData.lateDetails.map(d => `- **${d.date}**: Check-in lúc \`${d.checkIn || '--:--'}\` (Trễ ${d.lateMinutes || 0} phút) ${d.note ? `*(${d.note})*` : ''}`).join('\n') 
+        : '✅ *Bạn chấp hành tốt nội quy giờ giấc, không có vi phạm trong tháng!*';
+      return out;
     }
 
     if (toolData.tasks) {

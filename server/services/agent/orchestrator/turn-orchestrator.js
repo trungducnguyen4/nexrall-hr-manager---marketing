@@ -313,7 +313,7 @@ export async function runCopilotTurn(env, {
   } else if (/bảng lương|phiếu lương|tiền lương của tôi|lương tháng|thu nhập của tôi|thực nhận của tôi/i.test(query) || (isSalaryQuery && isSelfPayroll)) {
     toolNameCalled = 'get_my_payslip_summary';
     toolData = await executeTool(env, toolNameCalled, { month: extractedMonth }, me);
-  } else if (/chấm công|đi muộn|đi trễ|vào muộn|vào trễ|trễ bao nhiêu|muộn bao nhiêu|lần trễ|lần muộn|tiền phạt|bảng công|công tháng|ngày công|lịch sử chấm/i.test(query)) {
+  } else if (/chấm công|check[- ]?in|checkin|thời gian vào|giờ vào|thời gian check|checkin trung bình|giờ check|đi muộn|đi trễ|vào muộn|vào trễ|trễ bao nhiêu|muộn bao nhiêu|lần trễ|lần muộn|tiền phạt|bảng công|công tháng|ngày công|lịch sử chấm/i.test(query)) {
     toolNameCalled = 'get_my_attendance_summary';
     toolData = await executeTool(env, toolNameCalled, { month: extractedMonth }, me);
   } else if (/quỹ phép|ngày phép còn lại|phép năm còn|hạn mức phép|còn bao nhiêu ngày phép/i.test(query)) {
