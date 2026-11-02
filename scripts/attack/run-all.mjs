@@ -1,9 +1,4 @@
 #!/usr/bin/env node
-/**
- * Attack Squad: Master Orchestrator
- * Điều phối đồng thời 4 mũi nhọn (Features, Bugs, Performance, Security)
- * và quyết định Release Gate (PASS / BLOCK).
- */
 import { auditFeatures } from './audit-features.mjs';
 import { auditChaos } from './audit-chaos.mjs';
 import { auditPerformance } from './audit-perf.mjs';
@@ -11,9 +6,10 @@ import { auditSecurity } from './audit-security.mjs';
 import fs from 'node:fs';
 
 async function runAttackSquad() {
-  console.log('========================================================');
-  console.log('🚀 [ATTACK SQUAD] KHỞI ĐỘNG CHIẾN DỊCH TỔNG TẤN CÔNG PRE-LAUNCH');
-  console.log('========================================================\n');
+  console.log('========================================================================');
+  console.log('🚀 [ATTACK SQUAD] KHỞI ĐỘNG CHIẾN DỊCH GIẢ LẬP TẤN CÔNG PRE-LAUNCH');
+  console.log('Hệ thống mục tiêu: NetViet HR Marketing Pro (Cloudflare Workers & D1)');
+  console.log('========================================================================\n');
 
   const [featuresRes, chaosRes, perfRes, secRes] = await Promise.all([
     auditFeatures(),
@@ -25,7 +21,7 @@ async function runAttackSquad() {
   const allResults = [featuresRes, chaosRes, perfRes, secRes];
 
   let hasCriticalOrHigh = false;
-  let markdownSummary = `# 🛡️ Attack Squad Pre-Launch Report\n\n`;
+  let markdownSummary = `# 🛡️ Attack Squad Pre-Launch Report: NetViet HR Marketing Pro\n\n`;
   markdownSummary += `> **Thời gian thực hiện**: ${new Date().toISOString()}\n\n`;
   markdownSummary += `| Mũi nhọn (Vector) | Trạng thái | Đạt tiêu chuẩn | Vấn đề phát hiện |\n`;
   markdownSummary += `| :--- | :--- | :--- | :--- |\n`;
@@ -60,7 +56,7 @@ async function runAttackSquad() {
 
   console.log(markdownSummary);
 
-  console.log('\n========================================================');
+  console.log('========================================================================');
   console.log('📊 KẾT QUẢ ĐÁNH GIÁ RELEASE GATE:');
   if (hasCriticalOrHigh) {
     console.error('❌ RELEASE GATE: BỊ CHẶN (BLOCKED)!');
@@ -71,9 +67,8 @@ async function runAttackSquad() {
     console.log('Hệ thống an toàn để tiến hành Launch / Release.');
     markdownSummary += `\n> [!NOTE]\n> **RELEASE GATE: PASSED!** Hệ thống đạt tiêu chuẩn xuất xưởng an toàn.\n`;
   }
-  console.log('========================================================\n');
+  console.log('========================================================================\n');
 
-  // Nếu chạy trong môi trường GitHub Actions, ghi vào Step Summary
   if (process.env.GITHUB_STEP_SUMMARY) {
     try {
       fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdownSummary);

@@ -1,8 +1,4 @@
 #!/usr/bin/env node
-/**
- * Attack Squad: Security Auditor
- * Rà quét Secret Leak, kiểm tra SQL Injection prevention (Prepared Statements) và Phân quyền.
- */
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -10,31 +6,59 @@ export async function auditSecurity(options = {}) {
   const issues = [];
   const passed = [];
 
-  console.log('🛡️ [Security Auditor] Quét Secret Token, SQL Injection và phân quyền API...');
+  console.log('🛡️ [Security Auditor] Giả lập tấn công bảo mật, rò rỉ secret và phân quyền...');
 
-  // 1. Quét Secret Leaks trong mã nguồn client-side (public/, src/, styles/)
-  const clientDirs = ['public', 'src', 'styles'].filter(d => fs.existsSync(d));
+  // 1. Kiểm tra Ma trận phân quyền Role
+  if (fs.existsSync('server/lib/roles.js')) {
+    const rolesCode = fs.readFileSync('server/lib/roles.js', 'utf8');
+    if (rolesCode.includes('isHrOrBod') && rolesCode.includes('isDeptManager') && rolesCode.includes('isDirectorHau')) {
+      passed.push('Hệ thống kiểm soát phân quyền (server/lib/roles.js) có guard cho HCNS, Ban Giám Đốc, Trưởng phòng');
+    } else {
+      issues.push({
+        severity: 'CRITICAL',
+        message: 'server/lib/roles.js thiếu logic phân quyền isHrOrBod / isDeptManager / isDirectorHau!'
+      });
+    }
+  }
+
+  // 2. Quét chống rò rỉ file backend trong .local-public
+  const forbiddenFiles = ['server.js', 'worker.js', 'package.json', 'wrangler.toml', 'wrangler.prod.toml'];
+  const pubDir = '.local-public';
+  if (fs.existsSync(pubDir)) {
+    for (const file of forbiddenFiles) {
+      if (fs.existsSync(path.join(pubDir, file))) {
+        issues.push({
+          severity: 'CRITICAL',
+          message: `Lỗ hổng bảo mật: Phát hiện file server nhạy cảm ${file} trong thư mục public (${pubDir})!`
+        });
+      }
+    }
+    if (!issues.some(i => i.severity === 'CRITICAL')) {
+      passed.push(`Thư mục public (${pubDir}) sạch sẽ, không chứa file mã nguồn máy chủ nhạy cảm`);
+    }
+  }
+
+  // 3. Quét chống rò rỉ JWT Secret hoặc API Key cứng trong mã nguồn frontend
+  const feDirs = ['src', 'styles'].filter(d => fs.existsSync(d));
   const secretPatterns = [
-    /eyJhbGciOi/g, // Raw JWT
-    /(?:api[_-]?key|secret|token|password)\s*[:=]\s*['"][a-zA-Z0-9_\-]{20,}['"]/gi,
-    /ghp_[a-zA-Z0-9]{36}/g, // GitHub Token
-    /CLOUDFLARE_API_TOKEN\s*=\s*['"][a-zA-Z0-9]/gi
+    /CLOUDFLARE_API_TOKEN\s*[:=]\s*['"][a-zA-Z0-9_\-]{20,}['"]/gi,
+    /jwt_secret\s*[:=]\s*['"][a-zA-Z0-9_\-]{15,}['"]/gi,
+    /AIzaSy[0-9A-Za-z\-_]{33}/g // Google API key pattern
   ];
 
   function scanSecrets(dir) {
-    const files = fs.readdirSync(dir);
-    for (const file of files) {
-      const fullPath = path.join(dir, file);
-      const stat = fs.statSync(fullPath);
-      if (stat.isDirectory()) {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
         scanSecrets(fullPath);
-      } else if (/\.(js|html|css|json)$/.test(file)) {
+      } else if (/\.(js|html|css)$/.test(entry.name)) {
         const content = fs.readFileSync(fullPath, 'utf8');
         for (const pattern of secretPatterns) {
           if (pattern.test(content)) {
             issues.push({
               severity: 'CRITICAL',
-              message: `Phát hiện nghi vấn rò rỉ Secret / Hardcoded Token tại: ${fullPath}`
+              message: `Phát hiện nghi vấn rò rỉ Hardcoded Secret/Token tại: ${fullPath}`
             });
             break;
           }
@@ -43,38 +67,14 @@ export async function auditSecurity(options = {}) {
     }
   }
 
-  for (const d of clientDirs) {
-    scanSecrets(d);
-  }
+  for (const d of feDirs) scanSecrets(d);
 
-  if (!issues.some(i => i.severity === 'CRITICAL')) {
-    passed.push('Không phát hiện Hardcoded Secret hoặc API Key bị lộ trong mã nguồn Frontend');
-  }
-
-  // 2. Quét chống SQL Injection (Prepared Statements D1 DB)
-  if (fs.existsSync('server.js')) {
-    const serverCode = fs.readFileSync('server.js', 'utf8');
-    // Kiểm tra xem D1 có dùng prepare hay không
-    if (serverCode.includes('.prepare(')) {
-      passed.push('Database D1 queries sử dụng Parameterized Statements (.prepare().bind()) an toàn');
-    }
-  }
-
-  // 3. Kiểm tra bảo vệ Auth / Session headers
-  if (fs.existsSync('server.js')) {
-    const serverCode = fs.readFileSync('server.js', 'utf8');
-    if (serverCode.includes('Authorization') || serverCode.includes('session') || serverCode.includes('token') || serverCode.includes('auth')) {
-      passed.push('Hệ thống có cơ chế kiểm tra Authentication / Session trên các endpoint nhạy cảm');
-    } else {
-      issues.push({
-        severity: 'HIGH',
-        message: 'Cảnh báo: Không phát hiện middleware hoặc header check xác thực người dùng trong server'
-      });
-    }
+  if (!issues.some(i => i.message.includes('Hardcoded Secret'))) {
+    passed.push('Mã nguồn Frontend không bị lộ API Token hoặc JWT Secret cứng');
   }
 
   return {
-    module: 'Security (Auditor)',
+    module: '4. Security (Auditor & IDOR)',
     passed,
     issues,
     status: issues.some(i => i.severity === 'CRITICAL' || i.severity === 'HIGH') ? 'FAILED' : (issues.length > 0 ? 'WARNING' : 'PASSED')

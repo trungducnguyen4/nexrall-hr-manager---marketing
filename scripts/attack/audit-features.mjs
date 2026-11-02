@@ -1,65 +1,68 @@
 #!/usr/bin/env node
-/**
- * Attack Squad: Feature Navigator
- * Kiểm tra tính toàn vẹn của tất cả User Flows, routes, static pages và template links.
- */
 import fs from 'node:fs';
-import path from 'node:path';
 
 export async function auditFeatures(options = {}) {
   const issues = [];
   const passed = [];
 
-  console.log('🧭 [Feature Navigator] Bắt đầu duyệt toàn bộ user flows & routes...');
+  console.log('🧭 [Feature Navigator] Rà quét luồng tính năng và giao diện NetViet HR...');
 
-  // 1. Kiểm tra các file HTML và SPA entry points
-  const candidateHtml = fs.existsSync('index.html') ? 'index.html' : 'public/index.html';
-  const expectedPages = [
-    candidateHtml,
+  // 1. Kiểm tra các views cốt lõi ở Frontend
+  const coreViews = [
     'src/app.js',
-    'src/api.js',
-    'server.js'
+    'src/views/dashboard.js',
+    'src/views/attendance.js',
+    'src/views/leave.js',
+    'src/views/payroll.js',
+    'src/views/users.js',
+    'src/views/tasks.js',
+    'src/views/departments.js',
+    'src/views/settings.js',
+    'src/copilot.js',
+    'styles/main.css'
   ];
 
-  for (const page of expectedPages) {
-    if (fs.existsSync(page)) {
-      passed.push(`Trang/Module cốt lõi tồn tại: ${page}`);
+  for (const viewPath of coreViews) {
+    if (fs.existsSync(viewPath)) {
+      passed.push(`View/Module cốt lõi tồn tại: ${viewPath}`);
     } else {
-      issues.push({ severity: 'CRITICAL', message: `Thiếu module trọng yếu: ${page}` });
+      issues.push({ severity: 'HIGH', message: `Thiếu view/module cốt lõi: ${viewPath}` });
     }
   }
 
-  // 2. Quét các route endpoints được định nghĩa trong server.js
-  if (fs.existsSync('server.js')) {
-    const serverCode = fs.readFileSync('server.js', 'utf8');
-    const routeRegex = /url\.pathname\s*===?\s*['"]([^'"]+)['"]/g;
-    let match;
-    const detectedRoutes = new Set();
-    while ((match = routeRegex.exec(serverCode)) !== null) {
-      detectedRoutes.add(match[1]);
-    }
-
-    if (detectedRoutes.size > 0) {
-      passed.push(`Phát hiện ${detectedRoutes.size} endpoint routes hợp lệ trên server`);
+  // 2. Kiểm tra điều hướng và phòng vệ click copilot
+  if (fs.existsSync('src/copilot.js')) {
+    const copilotCode = fs.readFileSync('src/copilot.js', 'utf8');
+    if (copilotCode.includes('btn-confirm-action') && !copilotCode.includes('btn-nav-action')) {
+      issues.push({
+        severity: 'HIGH',
+        message: 'Cảnh báo: copilot.js có thể đang dùng class btn-confirm-action cho thẻ điều hướng a href.'
+      });
     } else {
-      issues.push({ severity: 'HIGH', message: 'Không phát hiện bất kỳ route handler nào trong server.js' });
+      passed.push('Copilot action handlers được phân định rõ ràng (btn-nav-action vs btn-confirm-action)');
     }
   }
 
-  // 3. Quét các nút bấm và navigation tabs trong HTML / src
-  if (fs.existsSync('public/index.html')) {
-    const htmlContent = fs.readFileSync('public/index.html', 'utf8');
-    // Kiểm tra thẻ href rỗng hoặc '#' không có handler
-    const emptyLinks = (htmlContent.match(/href=["']#["']/g) || []).length;
-    if (emptyLinks > 5) {
-      issues.push({ severity: 'WARNING', message: `Phát hiện ${emptyLinks} thẻ liên kết dạng href='#' có thể là dead links` });
+  // 3. Kiểm tra các backend controllers
+  const backendControllers = [
+    'server/controllers/attendance.controller.js',
+    'server/controllers/leave.controller.js',
+    'server/controllers/payroll.controller.js',
+    'server/controllers/ai.controller.js',
+    'server/controllers/users.controller.js',
+    'server/controllers/auth.controller.js'
+  ];
+
+  for (const c of backendControllers) {
+    if (fs.existsSync(c)) {
+      passed.push(`Backend controller sẵn sàng: ${c}`);
     } else {
-      passed.push('Không có dead links bất thường trong index.html');
+      issues.push({ severity: 'CRITICAL', message: `Thiếu backend controller: ${c}` });
     }
   }
 
   return {
-    module: 'Features (User Flow Navigator)',
+    module: '1. Features (User Flow & Nav)',
     passed,
     issues,
     status: issues.some(i => i.severity === 'CRITICAL' || i.severity === 'HIGH') ? 'FAILED' : (issues.length > 0 ? 'WARNING' : 'PASSED')
