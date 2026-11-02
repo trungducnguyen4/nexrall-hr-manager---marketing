@@ -554,7 +554,7 @@ async function sendMessage(text) {
           <div class="ai-action-card" id="card-${finalResult.requestId}">
             <div class="ai-card-title">${icon(ac.icon || 'doorOpen', 'xs')} <span>${esc(ac.title || 'Điều hướng')}</span></div>
             <div class="ai-card-actions">
-              <a href="${esc(ac.link || '#/attendance')}" class="btn-confirm-action" style="text-decoration: none; display: inline-flex; align-items: center; gap: 6px;">
+              <a href="${esc(ac.link || '#/attendance')}" class="btn-nav-action" style="text-decoration: none; display: inline-flex; align-items: center; gap: 6px;">
                 ${icon(ac.buttonIcon || 'externalLink', 'xs')} <span>${esc(ac.buttonText || 'Mở màn hình')}</span>
               </a>
             </div>
@@ -685,9 +685,10 @@ function formatAiMarkdown(text, citations = [], isStreaming = false) {
  */
 function bindMessageEvents(el) {
   // Confirm action button
-  el.querySelectorAll('.btn-confirm-action').forEach(btn => {
+  el.querySelectorAll('button.btn-confirm-action').forEach(btn => {
     btn.addEventListener('click', async () => {
       const type = btn.dataset.type;
+      if (!type) return;
       let payload = {};
       try { payload = JSON.parse(btn.dataset.payload); } catch (_) {}
       btn.disabled = true;
@@ -1178,7 +1179,8 @@ function injectCopilotStyles() {
     }
     .ai-card-field { margin-bottom: 3px; color: var(--text-2, #334155); }
     .ai-card-actions { display: flex; gap: 6px; margin-top: 8px; }
-    .btn-confirm-action {
+    .btn-confirm-action,
+    .btn-nav-action {
       background: var(--success, #047857);
       color: #fff;
       border: none;

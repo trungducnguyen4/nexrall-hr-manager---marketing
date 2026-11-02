@@ -1,4 +1,5 @@
 name = "nexrall-hr-demo"
+account_id = "6686de4107ae24b5df25827d98b5ffd5"
 main = "worker.js"
 compatibility_date = "2026-07-22"
 
@@ -18,11 +19,11 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "nexrall-hr-demo"
-database_id = "8c20fc00-f890-4bf4-8274-cfb6a33c642a"
+database_id = "ab2bc0ba-3bd1-4085-8aa8-8765ecb629ce"
 
-[[r2_buckets]]
-binding = "HR_DOCUMENTS"
-bucket_name = "netviet-hr-demo-documents"
+# [[r2_buckets]]
+# binding = "HR_DOCUMENTS"
+# bucket_name = "netviet-hr-demo-documents"
 
 # Cloudflare Workers AI (Edge Llama 3.3 & BAAI Embeddings)
 [ai]
