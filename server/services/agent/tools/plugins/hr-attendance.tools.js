@@ -662,32 +662,84 @@ export const hrAttendanceTools = [
           FROM requests r
           LEFT JOIN users u ON u.id = r.user_id
          WHERE r.id = ? OR CAST(r.id AS TEXT) = ?
+      `).bind(Number(args.requestId), String(args.requestId)).first()
+        || await env.DB.prepare(`
+        SELECT lr.*, u.full_name as user_name, u.department as user_dept, u.employee_code
+          FROM leave_requests lr
+          LEFT JOIN users u ON u.id = lr.employee_id
+         WHERE lr.id = ? OR CAST(lr.id AS TEXT) = ?
       `).bind(Number(args.requestId), String(args.requestId)).first();
 
       if (!reqRow) return { error: 'NOT_FOUND', message: `Không tìm thấy đơn xin nghỉ phép #${args.requestId}.` };
 
-      await env.DB.prepare(`
-        UPDATE requests
-           SET status = 'approved', step1_status = 'approved', step2_status = 'approved',
-               updated_at = datetime('now','localtime')
-         WHERE id = ?
-      `).bind(reqRow.id).run();
+      if (['approved', 'rejected', 'cancelled'].includes(reqRow.status)) {
+        return { error: 'INVALID_STATE', message: 'Đơn nghỉ phép này đã được xử lý hoặc đã bị hủy trước đó.' };
+      }
 
-      await safeBroadcast(env, 'leave', 'leave:approved', { id: reqRow.id }, { actorId: me.id });
+      if (Number(reqRow.user_id || reqRow.employee_id) === Number(me.id) && me.role !== 'admin') {
+        return { error: 'SELF_APPROVAL_FORBIDDEN', message: 'Quy định công ty không cho phép tự phê duyệt đơn xin nghỉ phép của chính mình.' };
+      }
 
-      return {
-        executed: true,
-        actionType: 'approve_leave_request',
-        icon: 'badgeCheck',
-        title: 'Phê duyệt đơn xin nghỉ phép',
-        message: `Đã phê duyệt đơn xin nghỉ phép #${reqRow.id} của nhân sự **${reqRow.user_name || 'Nhân viên'}** (${reqRow.employee_code || 'NV'}).`,
-        details: [
-          { label: 'Mã đơn', value: `#${reqRow.id}` },
-          { label: 'Nhân sự', value: reqRow.user_name || 'NV' },
-          { label: 'Thời gian', value: `${reqRow.start_date} → ${reqRow.end_date}` },
-          { label: 'Trạng thái mới', value: 'Đã duyệt (Approved)' }
-        ]
-      };
+      const isDirectorHau = Boolean(me.isDirectorHau) || me.employee_code === 'BGD-02' || me.employee_code === 'BGD-01' || me.role === 'director';
+      if (isManager && !isAdmin && !isHcns && !isDirectorHau && reqRow.user_dept && reqRow.user_dept !== me.department) {
+        return { error: 'PERMISSION_DENIED', message: 'Bạn không có quyền phê duyệt đơn nghỉ phép ngoài phòng ban của mình.' };
+      }
+
+      const currentStatus = reqRow.status || 'pending';
+      if (currentStatus === 'pending_director' && !isDirectorHau && !isAdmin) {
+        return { error: 'PERMISSION_DENIED', message: 'Chỉ Ban Giám Đốc hoặc Quản trị viên mới có quyền phê duyệt bước 2 (Step 2).' };
+      }
+      const isFinalApproval = currentStatus === 'pending_director' || isDirectorHau || isAdmin;
+
+      if (isFinalApproval) {
+        await env.DB.prepare(`
+          UPDATE requests
+             SET status = 'approved', step1_status = 'approved', step2_status = 'approved',
+                 updated_at = datetime('now','localtime')
+           WHERE id = ?
+        `).bind(reqRow.id).run();
+        try { await env.DB.prepare("UPDATE leave_requests SET status = 'approved', updated_at = datetime('now','localtime') WHERE id = ?").bind(reqRow.id).run(); } catch (_) {}
+
+        await safeBroadcast(env, 'leave', 'leave:approved', { id: reqRow.id, final: true }, { actorId: me.id });
+
+        return {
+          executed: true,
+          actionType: 'approve_leave_request',
+          icon: 'badgeCheck',
+          title: 'Phê duyệt đơn xin nghỉ phép',
+          message: `Đã phê duyệt hoàn tất đơn xin nghỉ phép #${reqRow.id} của nhân sự **${reqRow.user_name || 'Nhân viên'}** (${reqRow.employee_code || 'NV'}).`,
+          details: [
+            { label: 'Mã đơn', value: `#${reqRow.id}` },
+            { label: 'Nhân sự', value: reqRow.user_name || 'NV' },
+            { label: 'Thời gian', value: `${reqRow.start_date} → ${reqRow.end_date}` },
+            { label: 'Trạng thái mới', value: 'Đã duyệt chính thức (Approved)' }
+          ]
+        };
+      } else {
+        await env.DB.prepare(`
+          UPDATE requests
+             SET status = 'pending_director', step1_status = 'approved', step2_status = 'pending',
+                 updated_at = datetime('now','localtime')
+           WHERE id = ?
+        `).bind(reqRow.id).run();
+        try { await env.DB.prepare("UPDATE leave_requests SET status = 'pending_director', updated_at = datetime('now','localtime') WHERE id = ?").bind(reqRow.id).run(); } catch (_) {}
+
+        await safeBroadcast(env, 'leave', 'leave:forwarded', { id: reqRow.id, status: 'pending_director', final: false }, { actorId: me.id });
+
+        return {
+          executed: true,
+          actionType: 'approve_leave_request',
+          icon: 'badgeCheck',
+          title: 'Duyệt bước 1 đơn xin nghỉ phép',
+          message: `Đã duyệt Bước 1 đơn xin nghỉ phép #${reqRow.id} của **${reqRow.user_name || 'Nhân viên'}**. Đơn đang chờ Phó Tổng Giám Đốc phê duyệt chốt.`,
+          details: [
+            { label: 'Mã đơn', value: `#${reqRow.id}` },
+            { label: 'Nhân sự', value: reqRow.user_name || 'NV' },
+            { label: 'Thời gian', value: `${reqRow.start_date} → ${reqRow.end_date}` },
+            { label: 'Trạng thái mới', value: 'Chờ Phó TGĐ duyệt (pending_director)' }
+          ]
+        };
+      }
     }
   },
   {
@@ -719,8 +771,33 @@ export const hrAttendanceTools = [
         return { error: 'PERMISSION_DENIED', message: 'Chỉ Quản lý, HCNS hoặc Ban Giám đốc mới có quyền từ chối đơn xin nghỉ phép.' };
       }
 
-      const reqRow = await env.DB.prepare('SELECT id, user_id FROM requests WHERE id = ?').bind(Number(args.requestId)).first();
+      const reqRow = await env.DB.prepare(`
+        SELECT r.*, u.full_name as user_name, u.department as user_dept, u.employee_code
+          FROM requests r
+          LEFT JOIN users u ON u.id = r.user_id
+         WHERE r.id = ? OR CAST(r.id AS TEXT) = ?
+      `).bind(Number(args.requestId), String(args.requestId)).first()
+        || await env.DB.prepare(`
+        SELECT lr.*, u.full_name as user_name, u.department as user_dept, u.employee_code
+          FROM leave_requests lr
+          LEFT JOIN users u ON u.id = lr.employee_id
+         WHERE lr.id = ? OR CAST(lr.id AS TEXT) = ?
+      `).bind(Number(args.requestId), String(args.requestId)).first();
+
       if (!reqRow) return { error: 'NOT_FOUND', message: `Không tìm thấy đơn xin nghỉ phép #${args.requestId}.` };
+
+      if (['approved', 'rejected', 'cancelled'].includes(reqRow.status)) {
+        return { error: 'INVALID_STATE', message: 'Đơn nghỉ phép này đã được xử lý hoặc đã bị hủy trước đó.' };
+      }
+
+      if (Number(reqRow.user_id || reqRow.employee_id) === Number(me.id) && me.role !== 'admin') {
+        return { error: 'SELF_OPERATION_FORBIDDEN', message: 'Bạn không thể tự từ chối đơn của chính mình qua chức năng duyệt.' };
+      }
+
+      const isDirectorHau = Boolean(me.isDirectorHau) || me.employee_code === 'BGD-02' || me.employee_code === 'BGD-01' || me.role === 'director';
+      if (isManager && !isAdmin && !isHcns && !isDirectorHau && reqRow.user_dept && reqRow.user_dept !== me.department) {
+        return { error: 'PERMISSION_DENIED', message: 'Bạn không có quyền từ chối đơn nghỉ phép ngoài phòng ban của mình.' };
+      }
 
       const rejectReason = args.reason || 'Từ chối bởi Quản lý qua AI Copilot';
       await env.DB.prepare(`
@@ -729,8 +806,9 @@ export const hrAttendanceTools = [
                updated_at = datetime('now','localtime')
          WHERE id = ?
       `).bind(reqRow.id).run();
+      try { await env.DB.prepare("UPDATE leave_requests SET status = 'rejected', updated_at = datetime('now','localtime') WHERE id = ?").bind(reqRow.id).run(); } catch (_) {}
 
-      await safeBroadcast(env, 'leave', 'leave:rejected', { id: reqRow.id }, { actorId: me.id });
+      await safeBroadcast(env, 'leave', 'leave:rejected', { id: reqRow.id, reason: rejectReason }, { actorId: me.id });
 
       return {
         executed: true,

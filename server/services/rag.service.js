@@ -77,17 +77,21 @@ export async function ingestDocument(env, {
   effectiveDate = null,
   rawContent = '',
   actorId = 1,
-  version = '1.0'
+  version = '1.0',
+  visibility = 'public',
+  allowedRoles = '["all"]',
+  targetDepartment = null
 }) {
   if (!env || !env.DB) throw new Error('Database not available');
   const cleanTitle = String(title || '').trim();
   if (!cleanTitle) throw new Error('Tiêu đề tài liệu không được để trống');
+  const cleanRoles = Array.isArray(allowedRoles) ? JSON.stringify(allowedRoles) : String(allowedRoles || '["all"]');
 
-  // Insert document record
+  // Insert document record with document ACL (SEC-006)
   const r = await env.DB.prepare(`
-    INSERT INTO knowledge_documents (title, category, version, effective_date, raw_content, created_by)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).bind(cleanTitle, category, version, effectiveDate, rawContent, actorId).run();
+    INSERT INTO knowledge_documents (title, category, version, effective_date, raw_content, created_by, visibility, allowed_roles, target_department)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(cleanTitle, category, version, effectiveDate, rawContent, actorId, visibility, cleanRoles, targetDepartment).run();
   const documentId = r.meta.last_row_id;
 
   // Split into chunks
@@ -119,9 +123,83 @@ export async function ingestDocument(env, {
 }
 
 /**
- * Calculate BM25-like keyword relevance score
+ * Vietnamese Text Normalization and Tokenizer
+ * Normalizes diacritics, strips punctuation, and extracts both single words and compound bi-grams.
  */
-function calculateKeywordScore(query, text) {
+export function tokenizeVietnamese(text) {
+  if (!text || typeof text !== 'string') return [];
+  const clean = text
+    .toLowerCase()
+    .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?"'<>\[\]\\|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!clean) return [];
+
+  const unigrams = clean.split(' ').filter(w => w.length > 0);
+  const tokens = [...unigrams];
+  // Extract bigrams for Vietnamese compound terms (e.g. "đi muộn", "nghỉ phép", "tiền phạt", "ban giám đốc")
+  for (let i = 0; i < unigrams.length - 1; i++) {
+    tokens.push(`${unigrams[i]} ${unigrams[i + 1]}`);
+  }
+  return tokens;
+}
+
+/**
+ * Genuine Okapi BM25 Implementation (RAG-002)
+ * Computes statistical BM25 scores for candidate documents:
+ * - Term Frequency saturation (k1 = 1.5)
+ * - Inverse Document Frequency (Robertson-Spärck Jones IDF)
+ * - Document Length Normalization (b = 0.75, avgdl)
+ */
+export function calculateBM25Scores(query, documents, { k1 = 1.5, b = 0.75 } = {}) {
+  const queryTokens = tokenizeVietnamese(query);
+  if (queryTokens.length === 0 || !Array.isArray(documents) || documents.length === 0) {
+    return (documents || []).map(() => 0);
+  }
+
+  const docTokenArrays = documents.map(d => tokenizeVietnamese(`${d.section_title || ''} ${d.content || ''}`));
+  const docLengths = docTokenArrays.map(tokens => tokens.length);
+  const totalLength = docLengths.reduce((sum, len) => sum + len, 0);
+  const avgdl = totalLength / (documents.length || 1);
+  const N = documents.length;
+
+  // Build document frequency (DF) for query tokens
+  const dfMap = new Map();
+  for (const qToken of queryTokens) {
+    let df = 0;
+    for (const tokens of docTokenArrays) {
+      if (tokens.includes(qToken)) df++;
+    }
+    dfMap.set(qToken, df);
+  }
+
+  // Calculate scores per document
+  return docTokenArrays.map((tokens, docIdx) => {
+    const docLen = docLengths[docIdx];
+    const tfMap = new Map();
+    for (const t of tokens) {
+      tfMap.set(t, (tfMap.get(t) || 0) + 1);
+    }
+
+    let score = 0;
+    for (const qToken of queryTokens) {
+      const tf = tfMap.get(qToken) || 0;
+      if (tf === 0) continue;
+      const df = dfMap.get(qToken) || 0;
+      // Robertson-Spärck Jones IDF
+      const idf = Math.log(1 + (N - df + 0.5) / (df + 0.5));
+      // BM25 term weight
+      const termWeight = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (docLen / (avgdl || 1))));
+      score += idf * termWeight;
+    }
+    return Math.max(0, score);
+  });
+}
+
+/**
+ * Backward-compatible token overlap score helper
+ */
+export function calculateKeywordScore(query, text) {
   const qTokens = query.toLowerCase().split(/\s+/).filter(w => w.length > 1);
   if (qTokens.length === 0) return 0;
   const target = text.toLowerCase();
@@ -139,26 +217,50 @@ export async function hybridSearch(env, {
   query,
   limit = 4,
   category = null,
-  minConfidence = 0.15
+  minConfidence = 0.15,
+  me = null
 }) {
   if (!env || !env.DB || !query) return { results: [], contextText: '', citations: [] };
 
   const cleanQuery = String(query).trim();
   const queryVector = await calcEmbedding(env, cleanQuery);
 
-  // Fetch candidate chunks from D1
+  // Fetch candidate chunks from D1 with Document-Level Authorization (SEC-006)
   let sql = `
     SELECT c.id, c.document_id, c.chunk_index, c.section_title, c.content, c.embedding_vector,
-           d.title as doc_title, d.category as doc_category, d.effective_date
+           d.title as doc_title, d.category as doc_category, d.effective_date,
+           d.visibility, d.allowed_roles, d.target_department
       FROM knowledge_chunks c
       JOIN knowledge_documents d ON d.id = c.document_id
   `;
   const binds = [];
+  const filters = [];
+
   if (category) {
-    sql += ' WHERE d.category = ?';
+    filters.push('d.category = ?');
     binds.push(category);
   }
-  sql += ' ORDER BY c.id ASC LIMIT 200';
+
+  // Enforce document ACL before ranking
+  if (me) {
+    const isAdmin = me.role === 'admin' ? 1 : 0;
+    const userRole = me.role || 'employee';
+    filters.push(`(
+      d.visibility = 'public'
+      OR d.visibility IS NULL
+      OR d.allowed_roles LIKE '%all%'
+      OR d.allowed_roles LIKE ?
+      OR d.target_department = ?
+      OR ? = 1
+    )`);
+    binds.push(`%"${userRole}"%`, me.department || '', isAdmin);
+  }
+
+  if (filters.length > 0) {
+    sql += ' WHERE ' + filters.join(' AND ');
+  }
+
+  sql += ' ORDER BY c.id ASC LIMIT 1000';
 
   const stmt = env.DB.prepare(sql);
   const { results: rawChunks = [] } = await (binds.length ? stmt.bind(...binds) : stmt).all();
@@ -175,10 +277,13 @@ export async function hybridSearch(env, {
     return { chunk, vectorScore: sim };
   }).sort((a, b) => b.vectorScore - a.vectorScore);
 
-  // 2. Keyword Scoring
-  const keywordRanked = rawChunks.map(chunk => {
-    const kwScore = calculateKeywordScore(cleanQuery, `${chunk.section_title} ${chunk.content}`);
-    return { chunk, keywordScore: kwScore };
+  // 2. Genuine Okapi BM25 Scoring (RAG-002)
+  const bm25Scores = calculateBM25Scores(cleanQuery, rawChunks);
+  const maxBm25 = Math.max(...bm25Scores, 0.001);
+  const keywordRanked = rawChunks.map((chunk, idx) => {
+    const rawScore = bm25Scores[idx] || 0;
+    const normalizedScore = Number((rawScore / maxBm25).toFixed(4));
+    return { chunk, keywordScore: normalizedScore, rawBm25: rawScore };
   }).sort((a, b) => b.keywordScore - a.keywordScore);
 
   // 3. Reciprocal Rank Fusion (RRF)
@@ -233,6 +338,7 @@ export async function hybridSearch(env, {
   return {
     results: sortedCandidates.map(c => ({
       id: c.chunk.id,
+      document_id: c.chunk.document_id,
       docTitle: c.chunk.doc_title,
       section: c.chunk.section_title,
       content: c.chunk.content,

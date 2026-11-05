@@ -1,0 +1,46 @@
+{
+  "testCasesCount": 450,
+  "timestamp": "2026-11-05T13:01:55.666Z",
+  "metrics": {
+    "recallAt5": {
+      "baseline": 0.9811,
+      "improved": 0.9811
+    },
+    "recallAt10": {
+      "baseline": 0.9811,
+      "improved": 0.9811
+    },
+    "mrrAt10": {
+      "baseline": 0.9885,
+      "improved": 0.9759
+    },
+    "ndcgAt10": {
+      "baseline": 0.9755,
+      "improved": 0.9679
+    },
+    "factRecall": {
+      "baseline": 0.7356,
+      "improved": 0.7156
+    },
+    "citationPrecision": {
+      "baseline": 0.8581,
+      "improved": 0.8637
+    },
+    "citationRecall": {
+      "baseline": 1,
+      "improved": 1
+    },
+    "unauthorizedLeaks": {
+      "baseline": 0,
+      "improved": 0
+    },
+    "p50LatencyMs": {
+      "baseline": 1.02,
+      "improved": 0.74
+    },
+    "p95LatencyMs": {
+      "baseline": 1.77,
+      "improved": 1.29
+    }
+  }
+}
