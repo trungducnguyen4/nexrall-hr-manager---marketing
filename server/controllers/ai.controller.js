@@ -253,14 +253,20 @@ export async function handleAiRoutes(request, env, me, path, url) {
         return err(400, 'Nội dung tin nhắn vượt quá giới hạn 2.000 ký tự');
       }
 
-      let conversationHistory = Array.isArray(body.history) ? body.history : [];
+      // SEC-005: Strict Conversation History Trust Boundary
+      const rawHistory = Array.isArray(body.history) ? body.history : [];
+      let conversationHistory = [];
+      for (const item of rawHistory) {
+        if (!item || typeof item !== 'object') continue;
+        const role = String(item.role || '').toLowerCase().trim();
+        // Discard any client-supplied system, developer, or tool messages
+        if (role !== 'user' && role !== 'assistant') continue;
+        const content = String(item.content || '').slice(0, 2000).trim();
+        if (!content) continue;
+        conversationHistory.push({ role, content });
+      }
       if (conversationHistory.length > 10) {
         conversationHistory = conversationHistory.slice(-10);
-      }
-      for (const item of conversationHistory) {
-        if (item && item.content && String(item.content).length > 2000) {
-          item.content = String(item.content).slice(0, 2000);
-        }
       }
 
       const conversationId = String(body.conversationId || 'default').slice(0, 64);
@@ -483,6 +489,7 @@ export async function handleAiRoutes(request, env, me, path, url) {
         const allowedPriorities = ['low', 'medium', 'high', 'urgent'];
         const cleanPriority = allowedPriorities.includes(priority) ? priority : 'medium';
         const cleanDueDate = (dueDate && /^\d{4}-\d{2}-\d{2}$/.test(dueDate)) ? dueDate : null;
+        const targetAssignee = (assigneeId && (isAdmin || isManager)) ? Number(assigneeId) : me.id;
 
         const r = await env.DB.prepare(`
           INSERT INTO tasks (
@@ -494,7 +501,7 @@ export async function handleAiRoutes(request, env, me, path, url) {
           String(description || '').slice(0, 2000),
           cleanPriority,
           cleanDueDate,
-          assigneeId || me.id,
+          targetAssignee,
           me.id,
           me.id
         ).run();
@@ -535,6 +542,8 @@ export async function handleAiRoutes(request, env, me, path, url) {
         const tid = Number(taskId);
         const task = await env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(tid).first();
         if (!task) return err(404, 'Không tìm thấy công việc');
+        const isAuthorized = isAdmin || isManager || task.assigned_to === me.id || task.assigned_by === me.id;
+        if (!isAuthorized) return err(403, 'Bạn không có quyền cập nhật công việc này');
         await env.DB.prepare("UPDATE tasks SET due_date = COALESCE(?, due_date), priority = COALESCE(?, priority), updated_at = datetime('now','localtime') WHERE id = ?")
           .bind(dueDate || null, priority || null, tid).run();
         await safeBroadcast(env, 'tasks', 'task:updated', { id: tid, due_date: dueDate, priority }, { actorId: me.id });
@@ -553,31 +562,78 @@ export async function handleAiRoutes(request, env, me, path, url) {
       }
 
       if (actionType === 'approve_leave_request') {
-        if (!isAdmin && !isHcns && !isManager) return err(403, 'Không có quyền duyệt');
+        const isDirectorHau = Boolean(me.isDirectorHau) || me.employee_code === 'BGD-02' || me.employee_code === 'BGD-01' || me.role === 'director';
+        if (!isAdmin && !isHcns && !isManager && !isDirectorHau) return err(403, 'Không có quyền duyệt');
         const { requestId } = payload || {};
         const rid = Number(requestId);
-        await env.DB.prepare(`
-          UPDATE requests
-             SET status = 'approved', step1_status = 'approved', step2_status = 'approved',
-                 updated_at = datetime('now','localtime')
-           WHERE id = ?
-        `).bind(rid).run();
-        await safeBroadcast(env, 'leave', 'leave:approved', { id: rid }, { actorId: me.id });
-        return json({ ok: true, actionType, requestId: rid, message: `Đã phê duyệt đơn xin nghỉ phép #${rid}` });
+        const reqRow = await env.DB.prepare('SELECT * FROM requests WHERE id = ?').bind(rid).first()
+          || await env.DB.prepare('SELECT * FROM leave_requests WHERE id = ?').bind(rid).first();
+        if (!reqRow) return err(404, 'Không tìm thấy đơn xin nghỉ phép');
+        if (['approved', 'rejected', 'cancelled'].includes(reqRow.status)) {
+          return err(400, 'Đơn nghỉ phép đã được xử lý hoặc đã bị hủy');
+        }
+        if (Number(reqRow.user_id || reqRow.employee_id) === Number(me.id) && !isAdmin) {
+          return err(403, 'Không thể tự duyệt đơn của chính mình');
+        }
+        if (isManager && !isAdmin && !isHcns && !isDirectorHau && reqRow.department && reqRow.department !== me.department) {
+          return err(403, 'Không có quyền duyệt đơn ngoài phòng ban');
+        }
+
+        const currentStatus = reqRow.status || 'pending';
+        if (currentStatus === 'pending_director' && !isDirectorHau && !isAdmin) {
+          return err(403, 'Chỉ Ban Giám Đốc hoặc Quản trị viên mới có quyền phê duyệt bước 2 (Step 2).');
+        }
+        const isFinalApproval = currentStatus === 'pending_director' || isDirectorHau || isAdmin;
+
+        if (isFinalApproval) {
+          await env.DB.prepare(`
+            UPDATE requests
+               SET status = 'approved', step1_status = 'approved', step2_status = 'approved',
+                   updated_at = datetime('now','localtime')
+             WHERE id = ?
+          `).bind(rid).run();
+          try { await env.DB.prepare("UPDATE leave_requests SET status = 'approved', updated_at = datetime('now','localtime') WHERE id = ?").bind(rid).run(); } catch (_) {}
+          await safeBroadcast(env, 'leave', 'leave:approved', { id: rid, final: true }, { actorId: me.id });
+          return json({ ok: true, actionType, requestId: rid, status: 'approved', final: true, message: `Đã phê duyệt hoàn tất đơn xin nghỉ phép #${rid}` });
+        } else {
+          await env.DB.prepare(`
+            UPDATE requests
+               SET status = 'pending_director', step1_status = 'approved', step2_status = 'pending',
+                   updated_at = datetime('now','localtime')
+             WHERE id = ?
+          `).bind(rid).run();
+          try { await env.DB.prepare("UPDATE leave_requests SET status = 'pending_director', updated_at = datetime('now','localtime') WHERE id = ?").bind(rid).run(); } catch (_) {}
+          await safeBroadcast(env, 'leave', 'leave:forwarded', { id: rid, status: 'pending_director', final: false }, { actorId: me.id });
+          return json({ ok: true, actionType, requestId: rid, status: 'pending_director', final: false, message: `Đã duyệt Bước 1 đơn xin nghỉ phép #${rid}. Đang chờ Phó Tổng Giám Đốc phê duyệt chốt.` });
+        }
       }
 
       if (actionType === 'reject_leave_request') {
-        if (!isAdmin && !isHcns && !isManager) return err(403, 'Không có quyền từ chối');
+        const isDirectorHau = Boolean(me.isDirectorHau) || me.employee_code === 'BGD-02' || me.employee_code === 'BGD-01' || me.role === 'director';
+        if (!isAdmin && !isHcns && !isManager && !isDirectorHau) return err(403, 'Không có quyền từ chối');
         const { requestId, reason } = payload || {};
         const rid = Number(requestId);
+        const reqRow = await env.DB.prepare('SELECT * FROM requests WHERE id = ?').bind(rid).first()
+          || await env.DB.prepare('SELECT * FROM leave_requests WHERE id = ?').bind(rid).first();
+        if (!reqRow) return err(404, 'Không tìm thấy đơn xin nghỉ phép');
+        if (['approved', 'rejected', 'cancelled'].includes(reqRow.status)) {
+          return err(400, 'Đơn nghỉ phép đã được xử lý hoặc đã bị hủy');
+        }
+        if (Number(reqRow.user_id || reqRow.employee_id) === Number(me.id) && !isAdmin) {
+          return err(403, 'Không thể tự thao tác trên đơn của chính mình');
+        }
+        if (isManager && !isAdmin && !isHcns && !isDirectorHau && reqRow.department && reqRow.department !== me.department) {
+          return err(403, 'Không có quyền từ chối đơn ngoài phòng ban');
+        }
         await env.DB.prepare(`
           UPDATE requests
              SET status = 'rejected', step1_status = 'rejected', step2_status = 'rejected',
                  updated_at = datetime('now','localtime')
            WHERE id = ?
         `).bind(rid).run();
-        await safeBroadcast(env, 'leave', 'leave:rejected', { id: rid }, { actorId: me.id });
-        return json({ ok: true, actionType, requestId: rid, message: `Đã từ chối đơn xin nghỉ phép #${rid}` });
+        try { await env.DB.prepare("UPDATE leave_requests SET status = 'rejected', updated_at = datetime('now','localtime') WHERE id = ?").bind(rid).run(); } catch (_) {}
+        await safeBroadcast(env, 'leave', 'leave:rejected', { id: rid, reason }, { actorId: me.id });
+        return json({ ok: true, actionType, requestId: rid, status: 'rejected', message: `Đã từ chối đơn xin nghỉ phép #${rid}` });
       }
 
       if (actionType === 'post_announcement') {
@@ -626,6 +682,10 @@ export async function handleAiRoutes(request, env, me, path, url) {
       if (actionType === 'confirm_handover') {
         const { handoverId } = payload || {};
         const hid = Number(handoverId);
+        const asset = await env.DB.prepare('SELECT * FROM asset_handovers WHERE id = ?').bind(hid).first();
+        if (!asset) return err(404, 'Không tìm thấy biên bản bàn giao');
+        const isAuthorized = asset.mentor_id === me.id || asset.user_id === me.id || isAdmin || isHcns || me.role === 'director';
+        if (!isAuthorized) return err(403, 'Bạn không có quyền xác nhận bàn giao này');
         await env.DB.prepare("UPDATE asset_handovers SET status = 'completed', updated_at = datetime('now') WHERE id = ?").bind(hid).run();
         await safeBroadcast(env, 'handover', 'handover:confirmed', { id: hid }, { actorId: me.id });
         return json({ ok: true, actionType, handoverId: hid, message: `Đã xác nhận hoàn tất bàn giao #${hid}` });
@@ -643,23 +703,30 @@ export async function handleAiRoutes(request, env, me, path, url) {
     try {
       const body = await request.json();
       const { actionType, payload } = body;
+      const { isAdmin, isManager } = checkRolePermissions(me);
       if (actionType === 'update_task_status') {
         const { taskId, status } = payload || {};
         const tid = Number(taskId);
-        if (tid && status) {
-          await env.DB.prepare("UPDATE tasks SET status = ?, updated_at = datetime('now','localtime') WHERE id = ?").bind(status, tid).run();
-          await safeBroadcast(env, 'tasks', 'task:updated', { id: tid, status }, { actorId: me.id });
-          return json({ ok: true, message: `Đã hoàn tác trạng thái Task #${tid} về "${status}"` });
-        }
+        if (!tid || !status) return err(400, 'Thiếu thông tin hoàn tác task');
+        const task = await env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(tid).first();
+        if (!task) return err(404, 'Không tìm thấy công việc');
+        const isAuthorized = isAdmin || isManager || task.assigned_to === me.id || task.assigned_by === me.id;
+        if (!isAuthorized) return err(403, 'Bạn không có quyền hoàn tác công việc này');
+        await env.DB.prepare("UPDATE tasks SET status = ?, updated_at = datetime('now','localtime') WHERE id = ?").bind(status, tid).run();
+        await safeBroadcast(env, 'tasks', 'task:updated', { id: tid, status }, { actorId: me.id });
+        return json({ ok: true, message: `Đã hoàn tác trạng thái Task #${tid} về "${status}"` });
       }
       if (actionType === 'assign_task') {
         const { taskId, assigneeId } = payload || {};
         const tid = Number(taskId);
-        if (tid) {
-          await env.DB.prepare("UPDATE tasks SET assigned_to = ?, updated_at = datetime('now','localtime') WHERE id = ?").bind(assigneeId || null, tid).run();
-          await safeBroadcast(env, 'tasks', 'task:assigned', { id: tid, assigned_to: assigneeId }, { actorId: me.id });
-          return json({ ok: true, message: `Đã hoàn tác người nhận việc cho Task #${tid}` });
-        }
+        if (!tid) return err(400, 'Thiếu taskId để hoàn tác');
+        const task = await env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(tid).first();
+        if (!task) return err(404, 'Không tìm thấy công việc');
+        const isAuthorized = isAdmin || isManager || task.assigned_by === me.id;
+        if (!isAuthorized) return err(403, 'Bạn không có quyền hoàn tác phân công công việc này');
+        await env.DB.prepare("UPDATE tasks SET assigned_to = ?, updated_at = datetime('now','localtime') WHERE id = ?").bind(assigneeId || null, tid).run();
+        await safeBroadcast(env, 'tasks', 'task:assigned', { id: tid, assigned_to: assigneeId }, { actorId: me.id });
+        return json({ ok: true, message: `Đã hoàn tác người nhận việc cho Task #${tid}` });
       }
       return json({ ok: true, message: 'Đã hoàn tác thao tác thành công' });
     } catch (e) {

@@ -219,7 +219,7 @@ export async function runCopilotTurn(env, {
   const isPolicyQuery = /muộn|trễ|phạt|giờ làm|quy định|nội quy|nghỉ phép|phép năm|ốm|bảo mật|chính sách|phúc lợi/i.test(query);
   let ragResult = { results: [], contextText: '', citations: [] };
   if (isPolicyQuery) {
-    ragResult = await hybridSearch(env, { query, limit: 3 });
+    ragResult = await hybridSearch(env, { query, limit: 3, me });
   }
 
   // 2. Step 2: Detect operational commands & query tools
@@ -413,55 +413,101 @@ export async function runCopilotTurn(env, {
   const allowedTools = getToolsForPersona(persona, me);
   const systemPrompt = buildPersonaSystemPrompt(persona, me, nowFormatted, currentYear, ragResult, toolData, actionCard);
 
-  // 4. Step 4: Run Inference via AI Gateway (with Dynamic Persona Tool Calling)
+  // 4. Step 4: Bounded Iterative Tool Execution Loop (N <= 5)
+  const MAX_AGENT_ITERATIONS = 5;
   const chatMessages = [
     ...conversationHistory.slice(-4),
     { role: 'user', content: query }
   ];
 
-  const completion = await chatCompletion(env, {
-    messages: chatMessages,
-    systemPrompt,
-    tools: allowedTools,
-    temperature: 0.1,
-    maxTokens: 800,
-    toolData
-  });
+  let currentIteration = 0;
+  let finalCompletion = null;
+  let lastContent = '';
+  const toolsExecutedHistory = [];
 
-  // Handle LLM Native Tool Calling (P1.1, P1.2, P1.3)
-  if (completion.toolCalls && completion.toolCalls.length > 0) {
-    const primaryTool = completion.toolCalls[0];
-    toolNameCalled = primaryTool.name;
-    const auth = verifyToolAuthorization(primaryTool.name, primaryTool.args, me);
-    if (!auth.allowed) {
-      completion.content = `🛡️ **Từ chối quyền thực thi tác vụ (${primaryTool.name}):**\n\n${auth.message}`;
-    } else {
-      const res = await executeTool(env, primaryTool.name, primaryTool.args, me);
-      if (res.isActionCard) {
-        actionCard = res;
-      } else if (res.executed) {
-        executedAction = res;
-      } else {
-        toolData = res;
-        if (!completion.content || !completion.content.trim()) {
-          const followUp = await chatCompletion(env, {
-            messages: [
-              ...chatMessages,
-              { role: 'assistant', content: `[Đã thực thi công cụ ${primaryTool.name}]` },
-              { role: 'user', content: `Hãy tổng hợp câu trả lời súc tích dựa trên dữ liệu công cụ sau:\n${JSON.stringify(res)}` }
-            ],
-            systemPrompt,
-            temperature: 0.1,
-            maxTokens: 800,
-            toolData: res
-          });
-          if (followUp && followUp.content) {
-            completion.content = followUp.content;
+  while (currentIteration < MAX_AGENT_ITERATIONS) {
+    currentIteration++;
+
+    const completion = await chatCompletion(env, {
+      messages: chatMessages,
+      systemPrompt,
+      tools: allowedTools,
+      temperature: 0.1,
+      maxTokens: 800,
+      toolData
+    });
+
+    finalCompletion = completion;
+
+    // Handle LLM Native Tool Calling (Iterative)
+    if (completion.toolCalls && completion.toolCalls.length > 0) {
+      let shouldContinueLoop = false;
+
+      for (const primaryTool of completion.toolCalls) {
+        toolNameCalled = primaryTool.name;
+        toolsExecutedHistory.push({ name: primaryTool.name, args: primaryTool.args });
+
+        const auth = verifyToolAuthorization(primaryTool.name, primaryTool.args, me);
+        if (!auth.allowed) {
+          const denialNotice = `🛡️ **Từ chối quyền thực thi tác vụ (${primaryTool.name}):**\n\n${auth.message}`;
+          chatMessages.push({ role: 'assistant', content: `[Gọi công cụ ${primaryTool.name}]` });
+          chatMessages.push({ role: 'user', content: `Hệ thống từ chối quyền: ${denialNotice}. Hãy giải thích rõ ràng cho người dùng về quyền hạn này.` });
+          shouldContinueLoop = true;
+        } else {
+          try {
+            const res = await executeTool(env, primaryTool.name, primaryTool.args, me);
+            if (res.isActionCard) {
+              actionCard = res;
+              lastContent = completion.content || `Tôi đã tạo phiếu thao tác bên dưới để bạn kiểm tra và xác nhận:`;
+              shouldContinueLoop = false;
+              break;
+            } else if (res.executed) {
+              executedAction = res;
+              lastContent = res.message || completion.content || 'Đã thực thi thành công tác vụ.';
+              shouldContinueLoop = false;
+              break;
+            } else {
+              toolData = res;
+              chatMessages.push({ role: 'assistant', content: `[Đã thực thi công cụ ${primaryTool.name}]` });
+              chatMessages.push({
+                role: 'user',
+                content: `Kết quả từ công cụ ${primaryTool.name}:\n${JSON.stringify(res)}\nHãy tổng hợp câu trả lời dựa trên dữ liệu trên.`
+              });
+              shouldContinueLoop = true;
+            }
+          } catch (toolErr) {
+            chatMessages.push({ role: 'assistant', content: `[Lỗi khi thực thi công cụ ${primaryTool.name}]` });
+            chatMessages.push({ role: 'user', content: `Công cụ ${primaryTool.name} gặp lỗi: ${toolErr.message}` });
+            shouldContinueLoop = true;
           }
         }
       }
+
+      if (!shouldContinueLoop) {
+        break;
+      }
+    } else {
+      // Direct completion without tool calls
+      lastContent = completion.content || '';
+      break;
     }
   }
+
+  if (finalCompletion) {
+    if (lastContent) {
+      finalCompletion.content = lastContent;
+    }
+  } else {
+    finalCompletion = {
+      provider: 'edge-local',
+      model: 'edge-heuristic-v1',
+      content: lastContent || 'Đã xử lý yêu cầu của bạn.',
+      tokens: { prompt: estimateTokens(query), completion: estimateTokens(lastContent), total: estimateTokens(query) + estimateTokens(lastContent) },
+      cost: { costUsd: 0, costVnd: 0 }
+    };
+  }
+
+  const completion = finalCompletion;
 
   const totalTimeMs = Date.now() - reqStartTime;
   let cleanContent = (executedAction?.message && completion.provider === 'edge-local')

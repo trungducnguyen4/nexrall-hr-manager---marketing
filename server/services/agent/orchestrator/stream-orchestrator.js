@@ -238,7 +238,7 @@ export async function runCopilotTurnStream(env, {
   let ragResult = { results: [], contextText: '', citations: [] };
   if (isPolicyQuery) {
     await onEvent('status', { message: 'Đang tra cứu cơ sở tri thức nội quy RAG...' });
-    ragResult = await hybridSearch(env, { query, limit: 3 });
+    ragResult = await hybridSearch(env, { query, limit: 3, me });
   }
 
   // 2. Step 2: Detect operational commands & query tools
@@ -436,9 +436,10 @@ export async function runCopilotTurnStream(env, {
   const allowedTools = getToolsForPersona(persona, me);
   const systemPrompt = buildPersonaSystemPrompt(persona, me, nowFormatted, currentYear, ragResult, toolData, actionCard);
 
-  // 4. Step 4: Stream inference
+  // 4. Step 4: Stream inference with Bounded Agent Loop (N <= 5)
   await onEvent('status', { message: 'Đang tổng hợp và tạo câu trả lời...' });
 
+  const MAX_AGENT_ITERATIONS = 5;
   const chatMessages = [
     ...conversationHistory.slice(-4),
     { role: 'user', content: query }
@@ -447,44 +448,78 @@ export async function runCopilotTurnStream(env, {
   let accumulatedContent = '';
   let completionInfo = null;
   let firstTokenTime = null;
+  let currentIteration = 0;
+  let hasMoreIterations = true;
 
-  for await (const chunk of chatCompletionStream(env, {
-    messages: chatMessages,
-    systemPrompt,
-    tools: allowedTools,
-    temperature: 0.1,
-    maxTokens: 800,
-    toolData
-  })) {
-    if (chunk.type === 'tool_call') {
-      toolNameCalled = chunk.name;
-      await onEvent('status', { message: `Đang kết nối phân hệ: ${chunk.name}...` });
-      const auth = verifyToolAuthorization(chunk.name, chunk.args, me);
-      if (!auth.allowed) {
-        const denyText = `🛡️ **Từ chối quyền thực thi tác vụ (${chunk.name}):**\n\n${auth.message}`;
-        accumulatedContent += denyText;
-        await onEvent('delta', { text: denyText });
-      } else {
-        const res = await executeTool(env, chunk.name, chunk.args, me);
-        if (res.isActionCard) {
-          actionCard = res;
-          const cardNotice = `Tôi đã chuẩn bị thẻ thao tác bên dưới để bạn kiểm tra và xác nhận:\n\n`;
-          accumulatedContent += cardNotice;
-          await onEvent('delta', { text: cardNotice });
-        } else if (res.executed) {
-          executedAction = res;
+  while (currentIteration < MAX_AGENT_ITERATIONS && hasMoreIterations) {
+    currentIteration++;
+    let hadToolCall = false;
+    let iterationToolData = null;
+
+    for await (const chunk of chatCompletionStream(env, {
+      messages: chatMessages,
+      systemPrompt,
+      tools: allowedTools,
+      temperature: 0.1,
+      maxTokens: 800,
+      toolData
+    })) {
+      if (chunk.type === 'tool_call') {
+        hadToolCall = true;
+        toolNameCalled = chunk.name;
+        await onEvent('status', { message: `Đang kết nối phân hệ: ${chunk.name}...` });
+        const auth = verifyToolAuthorization(chunk.name, chunk.args, me);
+        if (!auth.allowed) {
+          const denyText = `🛡️ **Từ chối quyền thực thi tác vụ (${chunk.name}):**\n\n${auth.message}`;
+          accumulatedContent += denyText;
+          await onEvent('delta', { text: denyText });
+          chatMessages.push({ role: 'assistant', content: `[Gọi công cụ ${chunk.name}]` });
+          chatMessages.push({ role: 'user', content: `Hệ thống từ chối quyền: ${denyText}` });
         } else {
-          toolData = res;
+          try {
+            const res = await executeTool(env, chunk.name, chunk.args, me);
+            if (res.isActionCard) {
+              actionCard = res;
+              const cardNotice = `Tôi đã chuẩn bị thẻ thao tác bên dưới để bạn kiểm tra và xác nhận:\n\n`;
+              accumulatedContent += cardNotice;
+              await onEvent('delta', { text: cardNotice });
+              hasMoreIterations = false;
+              break;
+            } else if (res.executed) {
+              executedAction = res;
+              const execNotice = res.message || 'Đã thực thi thành công tác vụ.';
+              accumulatedContent += execNotice;
+              await onEvent('delta', { text: execNotice });
+              hasMoreIterations = false;
+              break;
+            } else {
+              toolData = res;
+              iterationToolData = res;
+              chatMessages.push({ role: 'assistant', content: `[Đã thực thi công cụ ${chunk.name}]` });
+              chatMessages.push({
+                role: 'user',
+                content: `Dữ liệu nhận từ công cụ ${chunk.name}:\n${JSON.stringify(res)}\nHãy tổng hợp câu trả lời chi tiết và trình bày rõ ràng cho người dùng.`
+              });
+            }
+          } catch (toolErr) {
+            chatMessages.push({ role: 'assistant', content: `[Lỗi công cụ ${chunk.name}]` });
+            chatMessages.push({ role: 'user', content: `Lỗi công cụ: ${toolErr.message}` });
+          }
         }
+      } else if (chunk.type === 'delta') {
+        if (!firstTokenTime) {
+          firstTokenTime = Date.now();
+        }
+        accumulatedContent += chunk.text;
+        await onEvent('delta', { text: chunk.text });
+      } else if (chunk.type === 'done') {
+        completionInfo = chunk;
       }
-    } else if (chunk.type === 'delta') {
-      if (!firstTokenTime) {
-        firstTokenTime = Date.now();
-      }
-      accumulatedContent += chunk.text;
-      await onEvent('delta', { text: chunk.text });
-    } else if (chunk.type === 'done') {
-      completionInfo = chunk;
+    }
+
+    // If no tool was called, or if toolData didn't require further follow-up synthesis, terminate loop
+    if (!hadToolCall || !iterationToolData) {
+      hasMoreIterations = false;
     }
   }
 

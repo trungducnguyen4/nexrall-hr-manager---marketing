@@ -33,11 +33,17 @@ export async function ensureAiSchema(env) {
         file_url TEXT,
         raw_content TEXT,
         chunk_count INTEGER DEFAULT 0,
+        visibility TEXT DEFAULT 'public',
+        allowed_roles TEXT DEFAULT '["all"]',
+        target_department TEXT,
         created_by INTEGER,
         created_at TEXT DEFAULT (datetime('now','localtime')),
         updated_at TEXT DEFAULT (datetime('now','localtime'))
       );
     `);
+    try { await env.DB.exec("ALTER TABLE knowledge_documents ADD COLUMN visibility TEXT DEFAULT 'public'"); } catch (_) {}
+    try { await env.DB.exec("ALTER TABLE knowledge_documents ADD COLUMN allowed_roles TEXT DEFAULT '[\"all\"]'"); } catch (_) {}
+    try { await env.DB.exec("ALTER TABLE knowledge_documents ADD COLUMN target_department TEXT"); } catch (_) {}
 
     // 2. Quản lý các vector chunks đã bóc tách
     await env.DB.exec(`
