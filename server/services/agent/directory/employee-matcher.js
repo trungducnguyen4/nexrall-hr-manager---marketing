@@ -82,8 +82,10 @@ export function extractEmployeeLookupTarget(query) {
  */
 export function isSelfLookup(target, me) {
   if (!target) return true;
-  const lower = stripVietnameseAccents(target);
+  const lower = stripVietnameseAccents(target).trim();
   if (/^(?:tôi|toi|mình|minh|bản thân|ban than|em|anh|chị|chi)$/i.test(lower)) return true;
+  if (/^(?:cá nhân|ca nhan)(?:\s+(?:của|cua))?\s*(?:tôi|toi|mình|minh|bản thân|ban than|em|anh)?$/i.test(lower)) return true;
+  if (/^(?:của|cua)\s+(?:tôi|toi|mình|minh|bản thân|ban than|em|anh)$/i.test(lower)) return true;
   if (me?.employee_code && lower === stripVietnameseAccents(me.employee_code)) return true;
   if (me?.full_name && lower === stripVietnameseAccents(me.full_name)) return true;
   return false;
@@ -97,7 +99,12 @@ export function extractEmployeeLookupIntent(query, me) {
   if (!q) return null;
 
   // 1. Self Lookup
-  if (/^(?:tôi|mình|bản thân)\s+(?:là ai|ở phòng nào|chức vụ gì)|^(?:thông tin|hồ sơ|lý lịch)\s+(?:của\s+)?(?:tôi|mình|bản thân)|^tôi là ai(?:\s*\?)?$/iu.test(q)) {
+  if (
+    /^(?:tôi|mình|bản thân)\s+(?:là ai|ở phòng nào|chức vụ gì|làm gì)|^tôi là ai(?:\s*\?)?$/iu.test(q) ||
+    /(?:xem|tra cứu|cho xem|hiển thị|kiểm tra)?\s*(?:thông tin|hồ sơ|lý lịch|profile)(?:\s+cá nhân)?(?:\s+(?:của|về))?\s*(?:tôi|mình|bản thân|em|anh)\b/iu.test(q) ||
+    /^(?:thông tin|hồ sơ|profile)\s+cá nhân(?:\s*\?)?$/iu.test(q) ||
+    /^(?:thông tin|hồ sơ)\s+(?:về\s+)?(?:tôi|mình|bản thân)(?:\s*\?)?$/iu.test(q)
+  ) {
     return { type: 'self' };
   }
 
